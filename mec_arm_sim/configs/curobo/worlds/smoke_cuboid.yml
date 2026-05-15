@@ -1,0 +1,18 @@
+##
+## cuRobo world config: 第一版 smoke test 障碍物。
+##
+## 注意：
+## 1. pose 格式是 [x, y, z, qw, qx, qy, qz]。
+## 2. 第一版建议在 robot base frame 下使用这个 cuboid。
+## 3. 不要一开始直接上完整 3DGS collision mesh，先用这个文件验证 MotionPlanner/坐标系/执行链路。
+##
+
+cuboid:
+  table_proxy:
+    dims: [0.8, 0.8, 0.04]
+    pose: [0.35, 0.0, -0.02, 1.0, 0.0, 0.0, 0.0]
+  test_block:
+    dims: [0.10, 0.10, 0.20]
+    pose: [0.35, 0.20, 0.10, 1.0, 0.0, 0.0, 0.0]
+
+mesh: {}
