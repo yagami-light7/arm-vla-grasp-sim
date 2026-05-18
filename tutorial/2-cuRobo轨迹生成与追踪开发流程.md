@@ -37,9 +37,15 @@ scripts/
   curobo/
     0_make_go2_x5_arm_urdf.py
     1_build_go2_x5_curobo_model.py
+    2_check_go2_x5_curobo_model.py
+    3_check_isaac_curobo_fk.py
+    4_demo_plan_to_pose.py
+    5_demo_track_trajectory.py
+    9_task_nav_grasp_demo.py
 
   isaac/
-    后续放 Isaac Sim Script Editor 脚本
+    0_inspect_go2_x5_articulation.py
+    1_dump_go2_x5_state.py
 ```
 
 ## 1. 原始整机 URDF
@@ -217,6 +223,14 @@ source/robot/go2_x5/curobo/go2_x5_arm.xrdf
 
 最终 `go2_x5_arm.yml` 已通过 cuRobo MotionPlanner 最小 FK 检查。
 
+检查脚本：
+
+```bash
+PYTHONPATH=/home/light/workspace/curobo:${PYTHONPATH:-} \
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python \
+  scripts/curobo/2_check_go2_x5_curobo_model.py
+```
+
 当前验证结果：
 
 ```text
@@ -238,7 +252,72 @@ collision spheres 已生效
 
 ## 7. 下一步：Isaac Sim 状态导出
 
-下一步要在 Isaac Sim 中加载完整 Go2-X5 articulation，并导出：
+已经完成第一版 Go2-X5 articulation 检查脚本：
+
+```text
+scripts/isaac/0_inspect_go2_x5_articulation.py
+```
+
+该脚本在 Isaac Sim Script Editor 中运行，只读检查，不控制机器人。
+
+当前 Isaac Sim 检查结果：
+
+```text
+full DOF count: 20
+
+arm_joint1 -> Isaac DOF index 8
+arm_joint2 -> Isaac DOF index 13
+arm_joint3 -> Isaac DOF index 14
+arm_joint4 -> Isaac DOF index 15
+arm_joint5 -> Isaac DOF index 16
+arm_joint6 -> Isaac DOF index 17
+
+gripper:
+arm_joint7 -> Isaac DOF index 18
+arm_joint8 -> Isaac DOF index 19
+
+q_arm:
+[-9.720044e-08, -6.754778e-06, 3.272774e-04,
+  5.515186e-05, 1.818794e-08, -4.312500e-10]
+
+dq_arm:
+[7.079308e-06, 5.403319e-04, -5.967533e-04,
+ -1.689788e-02, 9.961595e-06, -4.473274e-07]
+
+base frame:
+/World/go2_x5/arm_base_link
+
+tcp frame:
+/World/go2_x5/arm_link6/arm_eef_link
+
+T_base_tcp:
+position_xyz=(0.184251, -0.000501, 0.156651)
+quat_wxyz=(1.000000, 0.000000, -0.000195, -0.000000)
+```
+
+关键结论：
+
+```text
+Go2-X5 在 Isaac Sim 中是 20 DOF articulation
+arm_joint1~6 在完整 DOF order 中不是连续的一整段
+后续执行 cuRobo trajectory 时必须按 joint name 映射写回完整 articulation
+arm_eef_link 在 stage 中直接存在，不需要 fallback 到 arm_link6 + offset
+```
+
+注意：
+
+```text
+本次输出中腿部关节速度较大，后续做轨迹追踪前需要让 Go2 底盘固定或进入稳定站立状态。
+这不影响当前 arm joint 映射和 TCP frame 检查。
+```
+
+状态导出脚本：
+
+```text
+scripts/isaac/1_dump_go2_x5_state.py
+```
+
+该脚本在 Isaac Sim Script Editor 中运行，导出：
 
 ```text
 full DOF order
@@ -249,14 +328,26 @@ T_world_arm_eef_link
 T_arm_base_link_arm_eef_link
 ```
 
-建议脚本：
+当前导出结果：
 
 ```text
-scripts/isaac/0_inspect_go2_x5_articulation.py
-scripts/isaac/1_dump_go2_x5_state.py
+JSON: /tmp/go2_x5_isaac_state.json
+
+q_arm:
+[-1.027045e-07, -6.764444e-06, 3.272372e-04,
+  5.525928e-05, 2.924621e-08, -6.144016e-10]
+
+dq_arm:
+[0, 0, 0, 0, 0, 0]
+
+T_base_tcp position:
+[0.1842512795, -0.0005006811, 0.1566514643]
+
+T_base_tcp quat_wxyz:
+[0.9999999811, 3.6427732531e-08, -0.0001946613, -1.2153377168e-08]
 ```
 
-其中最重要的是确认 Isaac 的 DOF order 中能找到：
+这里最重要的是确认 Isaac 的 DOF order 中能找到：
 
 ```text
 arm_joint1
@@ -269,12 +360,12 @@ arm_joint6
 
 cuRobo 只吃 `q_arm`，不能直接吃完整 Go2-X5 的 `q_full`。
 
-## 8. 下一步：Isaac FK 与 cuRobo FK 对齐
+## 8. Isaac FK 与 cuRobo FK 对齐
 
-在拿到 Isaac 导出的状态后，写普通 Python 脚本：
+普通 Python 检查脚本：
 
 ```text
-scripts/curobo/2_check_go2_x5_fk_align.py
+scripts/curobo/3_check_isaac_curobo_fk.py
 ```
 
 目标：
@@ -293,12 +384,34 @@ position error < 0.02 m
 orientation error < 5 deg
 ```
 
+当前运行结果：
+
+```text
+Isaac position:
+[ 0.18425128 -0.00050068  0.15665146]
+
+cuRobo position:
+[ 0.18425128 -0.00050043  0.15665136]
+
+position error: 2.663979200521848e-07 m
+orientation error: 8.189109132934075e-06 deg
+result: FK 对齐通过
+```
+
+结论：
+
+```text
+Isaac Sim 中的 arm_base_link -> arm_eef_link
+与 cuRobo 中的 arm_base_link -> arm_eef_link
+在当前 q_arm 下已经对齐。
+```
+
 ## 9. 下一步：轨迹生成
 
 FK 对齐后，再进入轨迹生成：
 
 ```text
-scripts/curobo/3_demo_plan_to_pose.py
+scripts/curobo/4_demo_plan_to_pose.py
 ```
 
 第一版输入：
@@ -331,7 +444,7 @@ cuRobo 规划输出的是 arm_joint1~6 的轨迹
 轨迹追踪脚本建议：
 
 ```text
-scripts/isaac/2_track_go2_x5_arm_trajectory.py
+scripts/curobo/5_demo_track_trajectory.py
 ```
 
 第一版只控制机械臂关节：
@@ -377,4 +490,3 @@ Go2 腿部关节保持站立状态或当前状态
 5. Isaac 执行 arm trajectory
 6. 后续再加入夹爪 close/open 和 lift/place
 ```
-
