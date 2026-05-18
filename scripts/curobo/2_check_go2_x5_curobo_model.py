@@ -55,8 +55,10 @@ EXPECTED_JOINT_NAMES = [
     "arm_joint6",
 ]
 
-# refit 后的最终版本中 arm_link1 是 4 个较大的球。
-EXPECTED_ARM_LINK1_SPHERE_COUNT = 4
+# 这个值只用于提示模型版本差异，不作为硬性失败条件。
+# 注意：如果你重新运行官方 build_robot_model，arm_link1 可能回到 12 个小球；
+# 如果你重新运行 refit-link arm_link1，可能是 4 个较大的球。
+PREFERRED_ARM_LINK1_SPHERE_COUNT = 4
 
 
 if CUROBO_SOURCE_ROOT.exists():
@@ -125,10 +127,12 @@ def check_yaml_fields(data: dict) -> None:
         print("arm_link1 radius max:", max(radii))
         print("arm_link1 radius avg:", sum(radii) / len(radii))
 
-    if len(arm_link1_spheres) != EXPECTED_ARM_LINK1_SPHERE_COUNT:
-        raise RuntimeError(
-            "arm_link1 sphere 数量不是最终 refit 版本。"
-            f"当前={len(arm_link1_spheres)}, 期望={EXPECTED_ARM_LINK1_SPHERE_COUNT}"
+    if len(arm_link1_spheres) != PREFERRED_ARM_LINK1_SPHERE_COUNT:
+        print(
+            "[warning] arm_link1 sphere 数量不是之前记录的 refit 版本。"
+            f"当前={len(arm_link1_spheres)}, "
+            f"refit 参考值={PREFERRED_ARM_LINK1_SPHERE_COUNT}。"
+            "这不阻止 MotionPlanner 加载；是否需要重新 refit 取决于后续碰撞效果。"
         )
 
     print("YAML 关键字段检查通过")

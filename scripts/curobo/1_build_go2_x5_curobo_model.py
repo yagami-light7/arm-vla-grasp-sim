@@ -45,6 +45,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+import yaml
 
 
 WORKSPACE = Path("/home/light/workspace/arm_vla")
@@ -58,6 +59,14 @@ DEFAULT_TOOL_FRAME = "arm_eef_link"
 DEFAULT_SPHERE_DENSITY = 1.0
 DEFAULT_NUM_COLLISION_SAMPLES = 1000
 DEFAULT_SEED = 42
+
+# 官方 build_robot_model 会重新生成 self_collision_ignore。
+# 对 Go2-X5 arm-only 模型，当前 zero/start 附近 arm_link2 与 arm_link4
+# 会出现约 2.3 mm 的 collision sphere 重叠。它们中间只隔着 arm_link3，
+# 属于需要在本项目中忽略的近邻链节 pair。
+PROJECT_SELF_COLLISION_IGNORE_PATCHES = [
+    ("arm_link2", "arm_link4"),
+]
 
 
 def check_required_file(path: Path, description: str) -> None:
@@ -121,6 +130,48 @@ def build_subprocess_env() -> dict[str, str]:
             env["PYTHONPATH"] = str(CUROBO_SOURCE_ROOT)
 
     return env
+
+
+def _append_unique(values: list, item: str) -> None:
+    """向 YAML list 中追加不重复元素。"""
+    if item not in values:
+        values.append(item)
+
+
+def apply_project_yaml_patches(yml_path: Path) -> None:
+    """
+    应用项目级 cuRobo YAML 补丁。
+
+    这些补丁不是替代官方 CLI，而是在官方 CLI 生成后补充项目已经验证过的
+    self-collision ignore pair。这样你以后重新运行 build 脚本时，不会把手动调过
+    的关键 pair 冲掉。
+    """
+    with yml_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    # cuRobo 不同导出路径可能是：
+    #   robot_cfg:
+    #     kinematics: ...
+    # 或者直接：
+    #   kinematics: ...
+    if "robot_cfg" in data:
+        kinematics = data["robot_cfg"]["kinematics"]
+    else:
+        kinematics = data["kinematics"]
+    ignore = kinematics.setdefault("self_collision_ignore", {})
+
+    for link_a, link_b in PROJECT_SELF_COLLISION_IGNORE_PATCHES:
+        ignore.setdefault(link_a, [])
+        ignore.setdefault(link_b, [])
+        _append_unique(ignore[link_a], link_b)
+        _append_unique(ignore[link_b], link_a)
+
+    with yml_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False)
+
+    print("[patch] 已应用项目级 self_collision_ignore 补丁：")
+    for link_a, link_b in PROJECT_SELF_COLLISION_IGNORE_PATCHES:
+        print(f"  - {link_a} <-> {link_b}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -208,6 +259,7 @@ def main() -> None:
     print("============================================================")
 
     subprocess.run(command, env=env, check=True)
+    apply_project_yaml_patches(args.output_yml)
 
     output_xrdf = args.output_yml.with_suffix(".xrdf")
     print()

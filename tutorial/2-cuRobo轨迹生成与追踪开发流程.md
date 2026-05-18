@@ -199,16 +199,20 @@ PYTHONPATH=/home/light/workspace/curobo:${PYTHONPATH:-} \
   --viz-port 8081
 ```
 
-比较后选择 refit 版本作为最终版本。
+这一步可以作为后续优化碰撞球的工具链参考。
 
-当前最终版本中：
+注意：当前正在使用、且已经让 `planner_success=True` 的 `go2_x5_arm.yml`
+是官方 CLI 生成版本再手动修正 `self_collision_ignore` 后的版本，不是
+`arm_link1` refit 临时版本。
+
+当前实际使用版本中：
 
 ```text
-arm_link1 sphere_count: 4
-arm_link1 radius_min: 0.015955 m
-arm_link1 radius_max: 0.028712 m
-arm_link1 radius_avg: 0.022301 m
-total robot spheres: 54
+arm_link1 sphere_count: 12
+arm_link1 radius_min: 0.002000 m
+arm_link1 radius_max: 0.002000 m
+arm_link1 radius_avg: 0.002000 m
+total robot spheres: 62
 ```
 
 最终只保留：
@@ -437,6 +441,59 @@ singularity warning
 ```text
 cuRobo 规划输出的是 arm_joint1~6 的轨迹
 执行到 Isaac 时，需要写回完整 articulation 中对应的 arm joint index
+```
+
+当前单 TCP pose 规划已经跑通：
+
+```bash
+PYTHONPATH=/home/light/workspace/curobo:${PYTHONPATH:-} \
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python \
+  scripts/curobo/4_demo_plan_to_pose.py
+```
+
+输出文件：
+
+```text
+/tmp/go2_x5_arm_plan_to_pose.json
+```
+
+当前结果：
+
+```text
+planner_success: True
+trajectory shape: (41, 6)
+final_position_error_m: 3.332412745749025e-08
+final_orientation_error_deg: 2.9575586669421963e-06
+```
+
+调试过程记录：
+
+```text
+第一次运行时，末端 pose 已经收敛，但 planner_success=False。
+RobotDebugger 显示起点附近存在 arm_link2 <-> arm_link4 自碰撞。
+最大 penetration 约 0.002293 m。
+```
+
+修复方式是在 `source/robot/go2_x5/curobo/go2_x5_arm.yml` 中加入：
+
+```yaml
+self_collision_ignore:
+  arm_link2:
+  - arm_link1
+  - arm_link3
+  - arm_link4
+  arm_link4:
+  - arm_link2
+  - arm_link3
+  - arm_link5
+  - arm_link7
+  - arm_link8
+```
+
+修复后，RobotDebugger 检查保存的 41 个 waypoint：
+
+```text
+self_collision_check: passed for saved trajectory
 ```
 
 ## 10. 下一步：轨迹追踪
