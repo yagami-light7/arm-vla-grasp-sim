@@ -193,7 +193,7 @@ def make_target_pose(
     # 单位：m。第一版目标要保守，否则 IK / trajopt 容易失败。
     # 不要设置成 1e-4 m 这种“几乎原地”的目标；
     # 对当前 cuRobo IK/TrajOpt 阈值来说，过近目标反而容易被判定不可行。
-    offset = np.array([0.03, 0.00, 0.03], dtype=np.float32)
+    offset = np.array([0.1, 0, 0.3], dtype=np.float32)
 
     target_position = current_position + offset
     target_quaternion = current_quaternion.copy()
@@ -302,6 +302,67 @@ def plan_to_pose(
 
     return q_traj, plan_info
 
+
+# 四元数（wxyz顺序）转旋转矩阵
+def quat_wxyz_to_rotmat(quat):
+    w, x, y, z = normalize_quat(quat)
+    return np.array([
+        [1 - 2 * (y*y + z*z), 2 * (x*y - z*w), 2 * (x*z + y*w)],
+        [2 * (x*y + z*w), 1 - 2 * (x*x + z*z), 2 * (y*z - x*w)],
+        [2 * (x*z - y*w), 2 * (y*z + x*w), 1 - 2 * (x*x + y*y)],
+    ], dtype=float)
+
+
+# 位置向量和四元数转齐次变换矩阵
+def pose_to_matrix(position, quat_wxyz):
+    T = np.eye(4, dtype=float)
+    T[:3, :3] = quat_wxyz_to_rotmat(quat_wxyz)
+    T[:3, 3] = np.asarray(position, dtype=float)
+    return T
+
+
+# 旋转矩阵转四元数（wxyz顺序）
+def rotmat_to_quat_wxyz(R):
+    R = np.asarray(R, dtype=float)
+    tr = np.trace(R)
+
+    if tr > 0.0:
+        s = np.sqrt(tr + 1.0) * 2.0
+        w = 0.25 * s
+        x = (R[2, 1] - R[1, 2]) / s
+        y = (R[0, 2] - R[2, 0]) / s
+        z = (R[1, 0] - R[0, 1]) / s
+    else:
+        i = int(np.argmax(np.diag(R)))
+        if i == 0:
+            s = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2.0
+            w = (R[2, 1] - R[1, 2]) / s
+            x = 0.25 * s
+            y = (R[0, 1] + R[1, 0]) / s
+            z = (R[0, 2] + R[2, 0]) / s
+        elif i == 1:
+            s = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2.0
+            w = (R[0, 2] - R[2, 0]) / s
+            x = (R[0, 1] + R[1, 0]) / s
+            y = 0.25 * s
+            z = (R[1, 2] + R[2, 1]) / s
+        else:
+            s = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2.0
+            w = (R[1, 0] - R[0, 1]) / s
+            x = (R[0, 2] + R[2, 0]) / s
+            y = (R[1, 2] + R[2, 1]) / s
+            z = 0.25 * s
+
+    return normalize_quat([w, x, y, z])
+
+
+# 齐次变换矩阵位置向量和四元数（wxyz顺序）
+def matrix_to_pose(T):
+    pos = T[:3, 3].copy()
+    quat = rotmat_to_quat_wxyz(T[:3, :3])
+    return pos, quat
+
+
 # 归一化四元数
 def normalize_quat(q):
     q = np.asarray(q, dtype=float)
@@ -328,6 +389,32 @@ def run_fk(planner: MotionPlanner, q_arm: np.ndarray):
     return pos, quat
 
 
+# 基于FK计算每一个waypoint的TCP位姿
+def compute_tcp_path(planner, q_traj, T_world_base):
+    tcp_pos_base = []
+    tcp_quat_base = []
+    tcp_pos_world = []
+    tcp_quat_world = []
+
+    for q_arm in q_traj:
+        pos_b, quat_b = run_fk(planner, q_arm)
+        T_base_tcp = pose_to_matrix(pos_b, quat_b)
+        T_world_tcp = T_world_base @ T_base_tcp
+        pos_w, quat_w = matrix_to_pose(T_world_tcp)
+
+        tcp_pos_base.append(pos_b.tolist())
+        tcp_quat_base.append(quat_b.tolist())
+        tcp_pos_world.append(pos_w.tolist())
+        tcp_quat_world.append(quat_w.tolist())
+
+    return {
+        "tcp_position_base": tcp_pos_base,
+        "tcp_quaternion_base": tcp_quat_base,
+        "tcp_position_world": tcp_pos_world,
+        "tcp_quaternion_world": tcp_quat_world,
+    }
+
+
 # 检查最终误差
 def check_final_error(planner, q_final, target_position, target_quaternion):
     final_pos, final_quat = run_fk(planner, q_final)
@@ -349,6 +436,7 @@ def save_trajectory(
     target_position,
     target_quaternion,
     plan_info: dict,
+    tcp_path: dict,
 ):
     payload = {
         "schema_version": 1,
@@ -368,6 +456,9 @@ def save_trajectory(
         },
     }
 
+    # 把每个 waypoint 对应的 TCP pose 也写入 trajectory 字段
+    payload["trajectory"].update(tcp_path)
+
     with OUTPUT_JSON.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 
@@ -377,6 +468,7 @@ def save_trajectory(
 def main():
     print("========== Go2-X5 单 TCP pose 规划 ==========")
 
+    # 读取Isaac Sim 导出的机器人状态，获取规划起点 q_arm 和当前 TCP pose
     data = load_isaac_state(STATE_JSON)
     q_start, current_pos, current_quat = get_start_state_from_json(data)
 
@@ -384,12 +476,15 @@ def main():
     print("current_tcp_position:", current_pos)
     print("current_tcp_quat_wxyz:", current_quat)
 
+    # 对 q_start 做 joint limit 裁剪
     joint_limits = load_joint_limits_from_urdf(ROBOT_URDF)
     q_start = clip_q_to_joint_limits(q_start, joint_limits)
     print("q_start_used_by_planner:", q_start)
 
+    # 创建轨迹规划器
     planner = create_planner()
 
+    # 构造规划输入：planner 的 current_state 和 goal_pose
     current_state = make_joint_state(q_start, planner)
 
     target_pos, target_quat = make_target_pose(current_pos, current_quat)
@@ -398,11 +493,18 @@ def main():
 
     goal_pose = make_goal_tool_pose(target_pos, target_quat, planner)
 
+    # 生成trajectory
     q_traj, plan_info = plan_to_pose(planner, current_state, goal_pose)
     print("trajectory shape:", q_traj.shape)
     print("q_start_from_traj:", q_traj[0])
     print("q_final_from_traj:", q_traj[-1])
 
+    # 基于FK计算trajectory中每个waypoint的TCP pose， 用于Isaac Sim中可视化和后续误差分析
+    T_world_base = np.asarray(data["poses"]["world_base"]["matrix_4x4"], dtype=float)
+    tcp_path = compute_tcp_path(planner, q_traj, T_world_base)
+    print("tcp_path waypoints:", len(tcp_path["tcp_position_world"]))
+
+    # 检查trajectory末端的TCP pose误差，验证是否达到预期目标。
     pos_error, ori_error = check_final_error(
         planner,
         q_traj[-1],
@@ -410,7 +512,8 @@ def main():
         target_quat,
     )
 
-    save_trajectory(q_traj, target_pos, target_quat, plan_info)
+    # 保存轨迹
+    save_trajectory(q_traj, target_pos, target_quat, plan_info, tcp_path)
 
     print("========== planning complete ==========")
     print("position error [m]:", pos_error)
