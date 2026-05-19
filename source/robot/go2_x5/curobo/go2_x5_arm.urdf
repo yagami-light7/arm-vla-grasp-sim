@@ -205,6 +205,13 @@
       <inertia ixx="0.0" ixy="0.0" ixz="0.0" iyy="0.0" iyz="0.0" izz="0.0" />
     </inertial>
   </link>
+  <link name="grasp_tcp_link">
+    <inertial>
+      <mass value="0.0" />
+      <origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+      <inertia ixx="0.0" ixy="0.0" ixz="0.0" iyy="0.0" iyz="0.0" izz="0.0" />
+    </inertial>
+  </link>
   <joint name="arm_joint1" type="revolute">
     <origin xyz="0 0 0.0605" rpy="0 0 0" />
     <parent link="arm_base_link" />
@@ -267,5 +274,10 @@
     <origin xyz="0.08657 0.0 0.0" rpy="0 0 0" />
     <parent link="arm_link6" />
     <child link="arm_eef_link" />
+  </joint>
+  <joint name="grasp_tcp_fixed_joint" type="fixed">
+    <origin xyz="0.1425699970126152 0.0 0.0" rpy="0 0 0" />
+    <parent link="arm_link6" />
+    <child link="grasp_tcp_link" />
   </joint>
 </robot>

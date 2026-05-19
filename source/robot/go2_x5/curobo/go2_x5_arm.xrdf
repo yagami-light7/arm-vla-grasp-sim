@@ -380,6 +380,7 @@ self_collision:
     arm_link2:
     - arm_link1
     - arm_link3
+    - arm_link4
     arm_link3:
     - arm_link2
     - arm_link4
@@ -391,6 +392,7 @@ self_collision:
     - arm_link5
     - arm_link7
     - arm_link8
+    - arm_link2
     arm_link5:
     - arm_link4
     - arm_link6
@@ -401,10 +403,13 @@ self_collision:
     - arm_link7
     - arm_link8
     - arm_eef_link
+    - grasp_tcp_link
     arm_link7:
     - arm_link6
     - arm_link8
     arm_link8:
     - arm_link6
+    grasp_tcp_link:
+    - arm_link6
 tool_frames:
-- arm_eef_link
+- grasp_tcp_link

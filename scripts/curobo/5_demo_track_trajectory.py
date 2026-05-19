@@ -14,11 +14,16 @@ DEBUG_ROOT = "/World/debug_go2_x5_arm_trajectory"
 
 ROBOT_ROOT_PATH = "/World/go2_x5"
 ARTICULATION_ROOT_PATH = "/World/go2_x5/root_joint"
-TCP_PRIM_PATH = "/World/go2_x5/arm_link6/arm_eef_link"
+TCP_PRIM_PATH = "/World/go2_x5/arm_link6/grasp_tcp_link"
 
 STEPS_PER_WAYPOINT = 4
 START_Q_TOL = 0.05
 
+TRACK_RESULT_JSON = "/tmp/go2_x5_arm_track_result.json"
+
+SETTLE_TO_START_DURATION = 1.0
+HOLD_FINAL_DURATION = 0.5
+TRACK_LOG_EVERY_N_STEPS = 15
 
 # 读取curobo规划的轨迹数据
 def load_trajectory():
@@ -28,11 +33,18 @@ def load_trajectory():
     if not data["plan_info"]["planner_success"]:
         raise RuntimeError("planner_success=False，不建议执行。")
 
-    q_traj = np.asarray(data["trajectory"]["q"], dtype=float)
-    tcp_world = np.asarray(data["trajectory"]["tcp_position_world"], dtype=float)
+    traj = data["trajectory"]
+
+    q_traj = np.asarray(traj["q"], dtype=float)
+    qd_traj = np.asarray(traj.get("qd", np.zeros_like(q_traj)), dtype=float)
+    time_from_start = np.asarray(traj["time_from_start"], dtype=float)
+    tcp_world = np.asarray(traj["tcp_position_world"], dtype=float)
     joint_names = data["joint_names"]
 
-    return data, joint_names, q_traj, tcp_world
+    if q_traj.shape[0] != time_from_start.shape[0]:
+        raise RuntimeError("q_traj 和 time_from_start 长度不一致。")
+
+    return data, joint_names, time_from_start, q_traj, qd_traj, tcp_world
 
 
 # 绘制TCP轨迹
@@ -88,37 +100,173 @@ def get_arm_indices(robot, joint_names):
     print("[mapping]", dict(zip(joint_names, indices)))
     return indices
 
+# cubic Hermite样条插值
+def sample_cubic_hermite(time_from_start, q, qd, t):
+    """
+    按时间采样关节目标。
+
+    使用 cubic Hermite：
+        q(t_i)
+        q(t_{i+1})
+        qd(t_i)
+        qd(t_{i+1})
+
+    比单纯 waypoint 跳点更平滑。
+    """
+    t = float(np.clip(t, time_from_start[0], time_from_start[-1]))
+
+    index = int(np.searchsorted(time_from_start, t, side="right") - 1)
+    index = max(0, min(index, len(time_from_start) - 2))
+
+    t0 = time_from_start[index]
+    t1 = time_from_start[index + 1]
+    h = t1 - t0
+
+    if h <= 1.0e-9:
+        return q[index].copy()
+
+    u = (t - t0) / h
+
+    q0 = q[index]
+    q1 = q[index + 1]
+    v0 = qd[index]
+    v1 = qd[index + 1]
+
+    h00 = 2.0 * u**3 - 3.0 * u**2 + 1.0
+    h10 = u**3 - 2.0 * u**2 + u
+    h01 = -2.0 * u**3 + 3.0 * u**2
+    h11 = u**3 - u**2
+
+    return h00 * q0 + h10 * h * v0 + h01 * q1 + h11 * h * v1
+
+
+# 控制 arm joints 的 action helper
+def make_arm_action(q_arm_target, arm_indices, q_full_fallback):
+    """
+    优先只给 arm_joint1~6 发送目标。
+
+    如果当前 Isaac 版本的 ArticulationAction 不支持 joint_indices，
+    就 fallback 到完整 q_full target。
+    """
+    arm_indices_np = np.asarray(arm_indices, dtype=np.int32)
+
+    try:
+        return ArticulationAction(
+            joint_positions=np.asarray(q_arm_target, dtype=float),
+            joint_indices=arm_indices_np,
+        )
+    except TypeError:
+        q_full_target = q_full_fallback.copy()
+        q_full_target[arm_indices] = q_arm_target
+        return ArticulationAction(joint_positions=q_full_target)
+
+
+async def settle_to_start(world, robot, arm_indices, q_start):
+    """
+    正式执行轨迹前，先平滑移动到轨迹起点。
+    """
+    q_full_initial = np.asarray(robot.get_joint_positions(), dtype=float).copy()
+    q_arm_initial = q_full_initial[arm_indices].copy()
+
+    num_steps = max(2, int(SETTLE_TO_START_DURATION * 60.0))
+
+    print("[settle] q_arm current:", q_arm_initial)
+    print("[settle] q_arm start:", q_start)
+
+    for step in range(num_steps):
+        u = step / float(num_steps - 1)
+        s = 10.0 * u**3 - 15.0 * u**4 + 6.0 * u**5
+
+        q_arm_target = (1.0 - s) * q_arm_initial + s * q_start
+        q_full_now = np.asarray(robot.get_joint_positions(), dtype=float).copy()
+        action = make_arm_action(q_arm_target, arm_indices, q_full_now)
+
+        robot.apply_action(action)
+        world.step(render=True)
+        await omni.kit.app.get_app().next_update_async()
+
+    print("[settle] done")
+
 
 # 执行轨迹
-async def track_trajectory(world, robot, arm_indices, q_traj):
-    q_full_hold = np.asarray(robot.get_joint_positions(), dtype=float).copy()
-    q_arm_now = q_full_hold[arm_indices]
-    start_error = float(np.linalg.norm(q_arm_now - q_traj[0]))
+async def track_trajectory(world, robot, arm_indices, time_from_start, q_traj, qd_traj):
+    """
+    按仿真时间连续跟踪 q_arm trajectory。
+    """
+    await settle_to_start(world, robot, arm_indices, q_traj[0])
 
-    print("[start] q_arm current:", q_arm_now)
-    print("[start] q_arm traj[0]:", q_traj[0])
-    print("[start] error:", start_error)
+    duration = float(time_from_start[-1])
+    sim_dt = 1.0 / 60.0
+    num_steps = int(np.ceil(duration / sim_dt)) + 1
 
-    if start_error > START_Q_TOL:
-        raise RuntimeError("当前 Isaac q_arm 和轨迹起点差太大，请重新 dump state 并重新规划。")
+    log = {
+        "time": [],
+        "target_q_arm": [],
+        "actual_q_arm": [],
+        "joint_error_norm": [],
+    }
 
-    for i, q_arm in enumerate(q_traj):
-        q_full_target = q_full_hold.copy()
-        q_full_target[arm_indices] = q_arm
+    print("[track] duration:", duration)
+    print("[track] sim steps:", num_steps)
 
-        action = ArticulationAction(joint_positions=q_full_target)
+    for step in range(num_steps):
+        t = min(step * sim_dt, duration)
+        q_arm_target = sample_cubic_hermite(time_from_start, q_traj, qd_traj, t)
 
-        for _ in range(STEPS_PER_WAYPOINT):
-            robot.apply_action(action)
-            world.step(render=True)
-            await omni.kit.app.get_app().next_update_async()
+        q_full_now = np.asarray(robot.get_joint_positions(), dtype=float).copy()
+        action = make_arm_action(q_arm_target, arm_indices, q_full_now)
 
-        if i % 5 == 0 or i == len(q_traj) - 1:
-            q_now = np.asarray(robot.get_joint_positions(), dtype=float)
-            err = float(np.linalg.norm(q_now[arm_indices] - q_arm))
-            print(f"[track] wp={i:03d}, joint_error={err:.6f}")
+        robot.apply_action(action)
+        world.step(render=True)
+        await omni.kit.app.get_app().next_update_async()
+
+        q_full_actual = np.asarray(robot.get_joint_positions(), dtype=float)
+        q_arm_actual = q_full_actual[arm_indices]
+        err = float(np.linalg.norm(q_arm_actual - q_arm_target))
+
+        log["time"].append(t)
+        log["target_q_arm"].append(q_arm_target.tolist())
+        log["actual_q_arm"].append(q_arm_actual.tolist())
+        log["joint_error_norm"].append(err)
+
+        if step % TRACK_LOG_EVERY_N_STEPS == 0 or step == num_steps - 1:
+            print(f"[track] t={t:.3f}/{duration:.3f}, joint_error={err:.6f}")
+
+    # 终点保持
+    q_final = q_traj[-1]
+    hold_steps = int(HOLD_FINAL_DURATION * 60.0)
+    for _ in range(hold_steps):
+        q_full_now = np.asarray(robot.get_joint_positions(), dtype=float).copy()
+        action = make_arm_action(q_final, arm_indices, q_full_now)
+        robot.apply_action(action)
+        world.step(render=True)
+        await omni.kit.app.get_app().next_update_async()
 
     print("[track] done")
+    return log
+
+
+# 保存跟踪结果到json
+def save_tracking_result(log, source_plan):
+    result = {
+        "schema_version": 1,
+        "source_plan": TRAJ_JSON,
+        "planner_success": source_plan["plan_info"]["planner_success"],
+        "joint_names": source_plan["joint_names"],
+        "tracking": log,
+        "summary": {
+            "num_samples": len(log["time"]),
+            "max_joint_error_norm": float(np.max(log["joint_error_norm"])),
+            "mean_joint_error_norm": float(np.mean(log["joint_error_norm"])),
+            "final_joint_error_norm": float(log["joint_error_norm"][-1]),
+        },
+    }
+
+    with open(TRACK_RESULT_JSON, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2)
+
+    print("[output] tracking result:", TRACK_RESULT_JSON)
+    print("[summary]", result["summary"])
 
 
 async def main():
@@ -128,8 +276,9 @@ async def main():
     if stage is None:
         raise RuntimeError("当前没有打开 Isaac stage")
 
-    data, joint_names, q_traj, tcp_world = load_trajectory()
+    data, joint_names, time_from_start, q_traj, qd_traj, tcp_world = load_trajectory()
     print("[trajectory] q shape:", q_traj.shape)
+    print("[trajectory] duration:", float(time_from_start[-1]))
     print("[trajectory] tcp waypoints:", len(tcp_world))
 
     draw_tcp_path(stage, tcp_world)
@@ -138,7 +287,16 @@ async def main():
     await omni.kit.app.get_app().next_update_async()
 
     arm_indices = get_arm_indices(robot, joint_names)
-    await track_trajectory(world, robot, arm_indices, q_traj)
+    log = await track_trajectory(
+        world,
+        robot,
+        arm_indices,
+        time_from_start,
+        q_traj,
+        qd_traj,
+    )
+
+    save_tracking_result(log, data)
 
     print("========== complete ==========")
 

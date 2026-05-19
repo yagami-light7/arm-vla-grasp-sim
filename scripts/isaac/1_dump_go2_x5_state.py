@@ -24,7 +24,7 @@
     普通 Python / cuRobo 脚本不能直接读取 Isaac Sim stage。
     所以后续 FK 对齐脚本会读取这个 JSON：
 
-        Isaac q_arm -> cuRobo FK -> arm_eef_link pose
+        Isaac q_arm -> cuRobo FK -> grasp_tcp_link pose
         Isaac 导出的 T_base_tcp -> 对比误差
 
 注意：
@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
+import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -49,6 +49,20 @@ from isaacsim.core.api.world import World
 from isaacsim.core.prims import SingleArticulation
 
 
+WORKSPACE = Path("/home/light/workspace/arm_vla")
+SCRIPTS_DIR = WORKSPACE / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from SE3 import (
+    matrix_to_pose,
+    normalize_quat_wxyz,
+    pose_dict_from_matrix,
+    pose_to_matrix,
+    xyz_rpy_to_matrix,
+)
+
+
 # 如果自动检测失败，在这里手动指定。
 ROBOT_ROOT_PATH = None
 ARTICULATION_ROOT_PATH = None
@@ -57,7 +71,7 @@ OUTPUT_JSON_PATH = Path("/tmp/go2_x5_isaac_state.json")
 
 ROBOT_NAME = "go2_x5"
 PLANNER_BASE_LINK_NAME = "arm_base_link"
-PLANNER_TOOL_FRAME_NAME = "arm_eef_link"
+PLANNER_TOOL_FRAME_NAME = "grasp_tcp_link"
 
 ACTIVE_ARM_JOINT_NAMES = [
     "arm_joint1",
@@ -74,117 +88,10 @@ GRIPPER_JOINT_NAMES = [
 ]
 
 TCP_FALLBACK_PARENT_LINK_NAME = "arm_link6"
-TCP_FALLBACK_OFFSET_XYZ = (0.08657, 0.0, 0.0)
+# 如果 Isaac stage 还没有直接包含 grasp_tcp_link prim，则用这个固定变换
+# 从 arm_link6 推算 TCP。该数值必须和 URDF 的 grasp_tcp_fixed_joint 一致。
+TCP_FALLBACK_OFFSET_XYZ = (0.1425699970126152, 0.0, 0.0)
 TCP_FALLBACK_OFFSET_RPY = (0.0, 0.0, 0.0)
-
-
-def normalize_quat_wxyz(quat) -> np.ndarray:
-    """归一化 wxyz 四元数。"""
-    quat = np.asarray(quat, dtype=float)
-    norm = np.linalg.norm(quat)
-    if norm < 1.0e-12:
-        raise ValueError(f"四元数范数太小，无法归一化: {quat}")
-    return quat / norm
-
-
-def quat_wxyz_to_rotmat(quat) -> np.ndarray:
-    """wxyz 四元数转 3x3 旋转矩阵。"""
-    w, x, y, z = normalize_quat_wxyz(quat)
-    return np.array(
-        [
-            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
-            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
-            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
-        ],
-        dtype=float,
-    )
-
-
-def rotmat_to_quat_wxyz(rotation) -> np.ndarray:
-    """3x3 旋转矩阵转 wxyz 四元数。"""
-    rotation = np.asarray(rotation, dtype=float)
-    trace = np.trace(rotation)
-
-    if trace > 0.0:
-        scale = np.sqrt(trace + 1.0) * 2.0
-        w = 0.25 * scale
-        x = (rotation[2, 1] - rotation[1, 2]) / scale
-        y = (rotation[0, 2] - rotation[2, 0]) / scale
-        z = (rotation[1, 0] - rotation[0, 1]) / scale
-    else:
-        diag = np.diag(rotation)
-        index = int(np.argmax(diag))
-
-        if index == 0:
-            scale = np.sqrt(1.0 + rotation[0, 0] - rotation[1, 1] - rotation[2, 2]) * 2.0
-            w = (rotation[2, 1] - rotation[1, 2]) / scale
-            x = 0.25 * scale
-            y = (rotation[0, 1] + rotation[1, 0]) / scale
-            z = (rotation[0, 2] + rotation[2, 0]) / scale
-        elif index == 1:
-            scale = np.sqrt(1.0 + rotation[1, 1] - rotation[0, 0] - rotation[2, 2]) * 2.0
-            w = (rotation[0, 2] - rotation[2, 0]) / scale
-            x = (rotation[0, 1] + rotation[1, 0]) / scale
-            y = 0.25 * scale
-            z = (rotation[1, 2] + rotation[2, 1]) / scale
-        else:
-            scale = np.sqrt(1.0 + rotation[2, 2] - rotation[0, 0] - rotation[1, 1]) * 2.0
-            w = (rotation[1, 0] - rotation[0, 1]) / scale
-            x = (rotation[0, 2] + rotation[2, 0]) / scale
-            y = (rotation[1, 2] + rotation[2, 1]) / scale
-            z = 0.25 * scale
-
-    return normalize_quat_wxyz([w, x, y, z])
-
-
-def rpy_to_rotmat(rpy_xyz) -> np.ndarray:
-    """URDF rpy 转 3x3 旋转矩阵。"""
-    roll, pitch, yaw = [float(value) for value in rpy_xyz]
-
-    cr, sr = math.cos(roll), math.sin(roll)
-    cp, sp = math.cos(pitch), math.sin(pitch)
-    cy, sy = math.cos(yaw), math.sin(yaw)
-
-    rot_x = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]], dtype=float)
-    rot_y = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]], dtype=float)
-    rot_z = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]], dtype=float)
-
-    return rot_z @ rot_y @ rot_x
-
-
-def pose_to_matrix(position_xyz, quat_wxyz) -> np.ndarray:
-    """position + wxyz quaternion 转标准 4x4 SE(3) 矩阵，平移在最后一列。"""
-    transform = np.eye(4, dtype=float)
-    transform[:3, :3] = quat_wxyz_to_rotmat(quat_wxyz)
-    transform[:3, 3] = np.asarray(position_xyz, dtype=float)
-    return transform
-
-
-def xyz_rpy_to_matrix(xyz, rpy) -> np.ndarray:
-    """xyz + rpy 转标准 4x4 SE(3) 矩阵。"""
-    transform = np.eye(4, dtype=float)
-    transform[:3, :3] = rpy_to_rotmat(rpy)
-    transform[:3, 3] = np.asarray(xyz, dtype=float)
-    return transform
-
-
-def matrix_to_pose(transform) -> tuple[np.ndarray, np.ndarray]:
-    """标准 4x4 SE(3) 矩阵转 position + wxyz quaternion。"""
-    transform = np.asarray(transform, dtype=float)
-    position = transform[:3, 3].copy()
-    quaternion = rotmat_to_quat_wxyz(transform[:3, :3])
-    return position, quaternion
-
-
-def pose_dict_from_matrix(transform) -> dict:
-    """把标准 4x4 SE(3) 矩阵转成 JSON 友好字段。"""
-    position, quaternion = matrix_to_pose(transform)
-    return {
-        "position_xyz": position.tolist(),
-        "quaternion_wxyz": quaternion.tolist(),
-        "matrix_4x4": np.asarray(transform, dtype=float).tolist(),
-        "matrix_convention": "standard_SE3_translation_last_column",
-    }
 
 
 def get_stage():

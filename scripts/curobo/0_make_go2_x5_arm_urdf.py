@@ -12,7 +12,7 @@
     因此本脚本从完整 go2_x5.urdf 中派生一个 arm-only URDF：
         - base link: arm_base_link
         - active joints: arm_joint1 ~ arm_joint6
-        - tool frame: arm_eef_link
+        - tool frame: grasp_tcp_link
         - gripper links: 保留几何
         - gripper joints: arm_joint7 / arm_joint8 固定到给定开合位置，不参与规划
 
@@ -52,7 +52,10 @@ ARM_LINK_NAMES = [
     "arm_link6",
     "arm_link7",
     "arm_link8",
+    # 保留原始末端参考帧，便于和旧配置/Isaac 导入结果对照。
     "arm_eef_link",
+    # 新的抓取 TCP，位于两指抓取中心附近，作为 cuRobo tool frame。
+    "grasp_tcp_link",
 ]
 
 # cuRobo 第一版只把这 6 个关节当成 active joints。
@@ -71,10 +74,15 @@ GRIPPER_JOINT_NAMES_TO_FIX = [
     "arm_joint8",
 ]
 
-# TCP frame 由 arm_gripper_fixed_joint 挂在 arm_link6 上。
-TCP_FIXED_JOINT_NAME = "arm_gripper_fixed_joint"
+# 固定参考帧：
+#   arm_gripper_fixed_joint: 原 URDF 自带 eef frame
+#   grasp_tcp_fixed_joint:  本项目新增真实抓取 TCP frame
+FIXED_FRAME_JOINT_NAMES = [
+    "arm_gripper_fixed_joint",
+    "grasp_tcp_fixed_joint",
+]
 
-ARM_JOINT_NAMES = ACTIVE_ARM_JOINT_NAMES + GRIPPER_JOINT_NAMES_TO_FIX + [TCP_FIXED_JOINT_NAME]
+ARM_JOINT_NAMES = ACTIVE_ARM_JOINT_NAMES + GRIPPER_JOINT_NAMES_TO_FIX + FIXED_FRAME_JOINT_NAMES
 
 
 def parse_xyz_attribute(text: str | None, default: tuple[float, float, float]) -> list[float]:
@@ -296,7 +304,7 @@ def main() -> None:
     print(f"active joints: {ACTIVE_ARM_JOINT_NAMES}")
     print(f"fixed gripper joints: {GRIPPER_JOINT_NAMES_TO_FIX}")
     print(f"gripper fixed position: {args.gripper_fixed_position}")
-    print("tool frame: arm_eef_link")
+    print("tool frame: grasp_tcp_link")
 
 
 if __name__ == "__main__":

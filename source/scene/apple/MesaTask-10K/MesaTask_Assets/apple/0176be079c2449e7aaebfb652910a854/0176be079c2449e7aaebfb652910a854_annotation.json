@@ -1,0 +1,17 @@
+{
+    "uid": "0176be079c2449e7aaebfb652910a854",
+    "category": "apple",
+    "description": "Round apple with smooth, shiny red and yellow skin, short stem, and subtle surface variations.",
+    "material": "skin, flesh, stem",
+    "dimensions": "0.1 * 0.1 * 0.1",
+    "mass": 0.2,
+    "placement": [
+        "OnFloor",
+        "OnTable"
+    ],
+    "asset_type": "rigid",
+    "glb_size": 2.03,
+    "usd_size": 2.63,
+    "usd_material_softlink": false,
+    "source": "holodeck"
+}

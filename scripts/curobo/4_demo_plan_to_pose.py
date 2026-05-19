@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
-import math
 import sys
 import xml.etree.ElementTree as ET
 
@@ -26,14 +25,15 @@ import numpy as np
 import torch
 
 WORKSPACE = Path("/home/light/workspace/arm_vla")
+SCRIPTS_DIR = WORKSPACE / "scripts"
 CUROBO_SOURCE_ROOT = Path("/home/light/workspace/curobo")
 
-STATE_JSON = Path("/tmp/go2_x5_isaac_state.json")
+STATE_JSON = Path("/tmp/go2_x5_isaac_state.json")   # curobo 读取当前isaacsim导出的机器人状态，用作规划
 ROBOT_YAML = WORKSPACE / "source/robot/go2_x5/curobo/go2_x5_arm.yml"
 ROBOT_URDF = WORKSPACE / "source/robot/go2_x5/curobo/go2_x5_arm.urdf"
 OUTPUT_JSON = Path("/tmp/go2_x5_arm_plan_to_pose.json")
 
-EXPECTED_TOOL_FRAME = "arm_eef_link"
+EXPECTED_TOOL_FRAME = "grasp_tcp_link"
 EXPECTED_JOINT_NAMES = [
     "arm_joint1",
     "arm_joint2",
@@ -56,9 +56,24 @@ POSE_ACCEPTANCE_ORIENTATION_RAD = 5.0e-2
 
 if CUROBO_SOURCE_ROOT.exists():
     sys.path.insert(0, str(CUROBO_SOURCE_ROOT))
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
 from curobo.types import JointState, Pose, GoalToolPose
+
+from SE3 import matrix_to_pose, pose_to_matrix, quat_error_deg
+
+
+TARGET_POSE_JSON = Path("/tmp/go2_x5_target_tcp_pose.json") # curobo 读取当前目标TCP_Pose，用作规划
+
+# 如果没有 target pose 文件，就用这个默认偏移量做 smoke test。
+DEFAULT_TARGET_OFFSET_BASE = np.array([0.03, 0.0, 0.03], dtype=np.float32)
+
+# 轨迹执行用的时间参数化配置。
+TRAJECTORY_DT = 1.0 / 100.0  #规划结果输出给 Isaac 的采样间隔，先按 100 Hz
+MIN_TRAJECTORY_DURATION = 3.0   # 轨迹最短执行时间，避免太快导致抖动
+MAX_JOINT_SPEED_FOR_TIMING = 0.45   # 用来估计轨迹持续时间，越小越慢越稳
 
 
 # 加载isaac写入的json文件
@@ -183,22 +198,52 @@ def make_joint_state(q_arm: np.ndarray, planner: MotionPlanner) -> JointState:
     )
     
 
-# 构造目标TCP Pose
-# target_tcp_position: 当前 TCP + [0.03, 0.00, 0.03]
-# target_tcp_quat_wxyz: 与当前 TCP 姿态相同
-def make_target_pose(
-        current_position: np.ndarray,
-        current_quaternion: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    # 单位：m。第一版目标要保守，否则 IK / trajopt 容易失败。
-    # 不要设置成 1e-4 m 这种“几乎原地”的目标；
-    # 对当前 cuRobo IK/TrajOpt 阈值来说，过近目标反而容易被判定不可行。
-    offset = np.array([0.1, 0, 0.3], dtype=np.float32)
+# 读取目标TCP Pose
+def load_target_pose_or_default(
+    current_position: np.ndarray,
+    current_quaternion: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """
+    读取目标 TCP pose。
 
-    target_position = current_position + offset
+    优先读取 /tmp/go2_x5_target_tcp_pose.json。
+    如果文件不存在，就使用当前 TCP pose + DEFAULT_TARGET_OFFSET_BASE。
+
+    当前只支持 frame = arm_base_link。
+    后续如果需要 world frame，再加入 world -> base 的转换。
+    """
+    if TARGET_POSE_JSON.exists():
+        with TARGET_POSE_JSON.open("r", encoding="utf-8") as f:
+            target_data = json.load(f)
+
+        frame = target_data.get("frame", "arm_base_link")
+        if frame != "arm_base_link":
+            raise RuntimeError(
+                f"当前 4_demo 只支持 arm_base_link 目标，收到 frame={frame}"
+            )
+
+        target_position = np.asarray(target_data["position_xyz"], dtype=np.float32)
+        target_quaternion = np.asarray(target_data["quaternion_wxyz"], dtype=np.float32)
+
+        source_info = {
+            "source": str(TARGET_POSE_JSON),
+            "frame": frame,
+            "mode": "file",
+        }
+
+        return target_position, target_quaternion, source_info
+
+    target_position = current_position + DEFAULT_TARGET_OFFSET_BASE
     target_quaternion = current_quaternion.copy()
 
-    return target_position, target_quaternion
+    source_info = {
+        "source": "default_offset",
+        "frame": "arm_base_link",
+        "offset_xyz": DEFAULT_TARGET_OFFSET_BASE.tolist(),
+        "mode": "fallback",
+    }
+
+    return target_position, target_quaternion, source_info
 
 
 # 将目标pose转化为GoalToolPose
@@ -208,7 +253,7 @@ Pose:
 
 GoalToolPose:
     planner 的目标输入，可以包含多个 tool frame 和多个 goal。
-    对单 TCP pose 来说，只放 arm_eef_link 一个 frame。
+    对单 TCP pose 来说，只放 grasp_tcp_link 一个 frame。
 '''
 def make_goal_tool_pose(
     target_position: np.ndarray,
@@ -303,81 +348,6 @@ def plan_to_pose(
     return q_traj, plan_info
 
 
-# 四元数（wxyz顺序）转旋转矩阵
-def quat_wxyz_to_rotmat(quat):
-    w, x, y, z = normalize_quat(quat)
-    return np.array([
-        [1 - 2 * (y*y + z*z), 2 * (x*y - z*w), 2 * (x*z + y*w)],
-        [2 * (x*y + z*w), 1 - 2 * (x*x + z*z), 2 * (y*z - x*w)],
-        [2 * (x*z - y*w), 2 * (y*z + x*w), 1 - 2 * (x*x + y*y)],
-    ], dtype=float)
-
-
-# 位置向量和四元数转齐次变换矩阵
-def pose_to_matrix(position, quat_wxyz):
-    T = np.eye(4, dtype=float)
-    T[:3, :3] = quat_wxyz_to_rotmat(quat_wxyz)
-    T[:3, 3] = np.asarray(position, dtype=float)
-    return T
-
-
-# 旋转矩阵转四元数（wxyz顺序）
-def rotmat_to_quat_wxyz(R):
-    R = np.asarray(R, dtype=float)
-    tr = np.trace(R)
-
-    if tr > 0.0:
-        s = np.sqrt(tr + 1.0) * 2.0
-        w = 0.25 * s
-        x = (R[2, 1] - R[1, 2]) / s
-        y = (R[0, 2] - R[2, 0]) / s
-        z = (R[1, 0] - R[0, 1]) / s
-    else:
-        i = int(np.argmax(np.diag(R)))
-        if i == 0:
-            s = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2.0
-            w = (R[2, 1] - R[1, 2]) / s
-            x = 0.25 * s
-            y = (R[0, 1] + R[1, 0]) / s
-            z = (R[0, 2] + R[2, 0]) / s
-        elif i == 1:
-            s = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2.0
-            w = (R[0, 2] - R[2, 0]) / s
-            x = (R[0, 1] + R[1, 0]) / s
-            y = 0.25 * s
-            z = (R[1, 2] + R[2, 1]) / s
-        else:
-            s = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2.0
-            w = (R[1, 0] - R[0, 1]) / s
-            x = (R[0, 2] + R[2, 0]) / s
-            y = (R[1, 2] + R[2, 1]) / s
-            z = 0.25 * s
-
-    return normalize_quat([w, x, y, z])
-
-
-# 齐次变换矩阵位置向量和四元数（wxyz顺序）
-def matrix_to_pose(T):
-    pos = T[:3, 3].copy()
-    quat = rotmat_to_quat_wxyz(T[:3, :3])
-    return pos, quat
-
-
-# 归一化四元数
-def normalize_quat(q):
-    q = np.asarray(q, dtype=float)
-    return q / np.linalg.norm(q)
-
-
-# 将四元数误差转化为角度
-def quat_error_deg(q_a, q_b) -> float:
-    q_a = normalize_quat(q_a)
-    q_b = normalize_quat(q_b)
-    dot = abs(float(np.dot(q_a, q_b)))
-    dot = max(-1.0, min(1.0, dot))
-    return math.degrees(2.0 * math.acos(dot))
-
-
 # Forward Kinematics
 def run_fk(planner: MotionPlanner, q_arm: np.ndarray):
     joint_state = make_joint_state(q_arm, planner)
@@ -387,6 +357,81 @@ def run_fk(planner: MotionPlanner, q_arm: np.ndarray):
     pos = tool_pose.position.detach().cpu().numpy().reshape(-1, 3)[0]
     quat = tool_pose.quaternion.detach().cpu().numpy().reshape(-1, 4)[0]
     return pos, quat
+
+
+# S-curve重采样
+def smoothstep5(u: np.ndarray) -> np.ndarray:
+    """
+    五次 S 曲线。
+
+    特点：
+        起点速度 = 0
+        终点速度 = 0
+        起点加速度 = 0
+        终点加速度 = 0
+    """
+    return 10.0 * u**3 - 15.0 * u**4 + 6.0 * u**5
+
+
+def compute_path_coordinate(q_path: np.ndarray) -> np.ndarray:
+    """
+    计算 joint-space 路径累计长度，并归一化到 [0, 1]。
+    """
+    q_path = np.asarray(q_path, dtype=float)
+    step_dist = np.linalg.norm(np.diff(q_path, axis=0), axis=1)
+    path_s = np.concatenate([[0.0], np.cumsum(step_dist)])
+
+    if path_s[-1] < 1.0e-12:
+        return np.linspace(0.0, 1.0, len(q_path))
+
+    return path_s / path_s[-1]
+
+
+def estimate_duration(q_path: np.ndarray) -> float:
+    """
+    根据最大关节位移估计轨迹持续时间。
+    """
+    q_path = np.asarray(q_path, dtype=float)
+    q_delta = np.max(np.abs(q_path[-1] - q_path[0]))
+    duration = q_delta / MAX_JOINT_SPEED_FOR_TIMING
+    return max(MIN_TRAJECTORY_DURATION, float(duration))
+
+
+def retime_joint_path_scurve(
+    q_path: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    对 cuRobo 输出的 joint path 做 S 曲线时间参数化。
+
+    输入：
+        q_path: [N, 6]
+
+    输出：
+        time_from_start: [M]
+        q: [M, 6]
+        qd: [M, 6]
+        qdd: [M, 6]
+    """
+    q_path = np.asarray(q_path, dtype=float)
+
+    path_s = compute_path_coordinate(q_path)
+    duration = estimate_duration(q_path)
+
+    num_steps = int(np.ceil(duration / TRAJECTORY_DT)) + 1
+    time_from_start = np.linspace(0.0, duration, num_steps)
+
+    u = time_from_start / duration
+    s_query = smoothstep5(u)
+
+    q = np.zeros((num_steps, q_path.shape[1]), dtype=float)
+    for j in range(q_path.shape[1]):
+        q[:, j] = np.interp(s_query, path_s, q_path[:, j])
+
+    qd = np.gradient(q, time_from_start, axis=0)
+    qdd = np.gradient(qd, time_from_start, axis=0)
+
+    return time_from_start, q, qd, qdd
+
 
 
 # 基于FK计算每一个waypoint的TCP位姿
@@ -433,8 +478,12 @@ def check_final_error(planner, q_final, target_position, target_quaternion):
 # 保存最终trajectory json
 def save_trajectory(
     q_traj: np.ndarray,
+    qd_traj: np.ndarray,
+    qdd_traj: np.ndarray,
+    time_from_start: np.ndarray,
     target_position,
     target_quaternion,
+    target_source: dict,
     plan_info: dict,
     tcp_path: dict,
 ):
@@ -445,12 +494,18 @@ def save_trajectory(
         "plan_info": plan_info,
         "joint_names": EXPECTED_JOINT_NAMES,
         "tool_frame": EXPECTED_TOOL_FRAME,
+
         "target_tcp_pose_base": {
-            "position_xyz": target_position.tolist(),
-            "quaternion_wxyz": target_quaternion.tolist(),
+        "position_xyz": target_position.tolist(),
+        "quaternion_wxyz": target_quaternion.tolist(),
+        "source": target_source,
         },
         "trajectory": {
+            "time_from_start": time_from_start.tolist(),
+            "dt": float(TRAJECTORY_DT),
             "q": q_traj.tolist(),
+            "qd": qd_traj.tolist(),
+            "qdd": qdd_traj.tolist(),
             "num_waypoints": int(q_traj.shape[0]),
             "num_joints": int(q_traj.shape[1]),
         },
@@ -487,15 +542,24 @@ def main():
     # 构造规划输入：planner 的 current_state 和 goal_pose
     current_state = make_joint_state(q_start, planner)
 
-    target_pos, target_quat = make_target_pose(current_pos, current_quat)
+    target_pos, target_quat, target_source = load_target_pose_or_default(
+    current_pos,
+    current_quat,
+    )
+    print("target_source:", target_source)
     print("target_tcp_position:", target_pos)
     print("target_tcp_quat_wxyz:", target_quat)
 
     goal_pose = make_goal_tool_pose(target_pos, target_quat, planner)
 
     # 生成trajectory
-    q_traj, plan_info = plan_to_pose(planner, current_state, goal_pose)
-    print("trajectory shape:", q_traj.shape)
+    q_path_raw, plan_info = plan_to_pose(planner, current_state, goal_pose)
+    print("raw trajectory shape:", q_path_raw.shape)
+
+    time_from_start, q_traj, qd_traj, qdd_traj = retime_joint_path_scurve(q_path_raw)
+    print("retimed trajectory shape:", q_traj.shape)
+    print("trajectory duration:", float(time_from_start[-1]))
+    print("trajectory dt:", TRAJECTORY_DT)
     print("q_start_from_traj:", q_traj[0])
     print("q_final_from_traj:", q_traj[-1])
 
@@ -513,7 +577,17 @@ def main():
     )
 
     # 保存轨迹
-    save_trajectory(q_traj, target_pos, target_quat, plan_info, tcp_path)
+    save_trajectory(
+    q_traj,
+    qd_traj,
+    qdd_traj,
+    time_from_start,
+    target_pos,
+    target_quat,
+    target_source,
+    plan_info,
+    tcp_path,
+    )
 
     print("========== planning complete ==========")
     print("position error [m]:", pos_error)

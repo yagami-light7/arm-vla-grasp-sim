@@ -12,7 +12,7 @@
         --asset-path source/robot/go2_x5 \
         --output source/robot/go2_x5/curobo/go2_x5_arm.yml \
         --export-xrdf \
-        --tool-frames arm_eef_link \
+        --tool-frames grasp_tcp_link \
         --sphere-density 1.0 \
         --num-collision-samples 1000 \
         --compute-metrics \
@@ -55,7 +55,7 @@ DEFAULT_ARM_URDF = WORKSPACE / "source/robot/go2_x5/curobo/go2_x5_arm.urdf"
 DEFAULT_ASSET_PATH = WORKSPACE / "source/robot/go2_x5"
 DEFAULT_OUTPUT_YML = WORKSPACE / "source/robot/go2_x5/curobo/go2_x5_arm.yml"
 
-DEFAULT_TOOL_FRAME = "arm_eef_link"
+DEFAULT_TOOL_FRAME = "grasp_tcp_link"
 DEFAULT_SPHERE_DENSITY = 1.0
 DEFAULT_NUM_COLLISION_SAMPLES = 1000
 DEFAULT_SEED = 42
@@ -174,6 +174,37 @@ def apply_project_yaml_patches(yml_path: Path) -> None:
         print(f"  - {link_a} <-> {link_b}")
 
 
+def apply_project_xrdf_patches(xrdf_path: Path) -> None:
+    """
+    应用项目级 XRDF 补丁。
+
+    官方 CLI 会同时导出 YAML 和 XRDF。当前运行代码主要加载 YAML，
+    但 XRDF 是后续可视化/编辑/迁移时的重要配置，因此保持同一份
+    self-collision ignore 逻辑。
+    """
+    if not xrdf_path.exists():
+        print(f"[patch] XRDF 不存在，跳过: {xrdf_path}")
+        return
+
+    with xrdf_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    ignore = data.setdefault("self_collision", {}).setdefault("ignore", {})
+
+    for link_a, link_b in PROJECT_SELF_COLLISION_IGNORE_PATCHES:
+        ignore.setdefault(link_a, [])
+        ignore.setdefault(link_b, [])
+        _append_unique(ignore[link_a], link_b)
+        _append_unique(ignore[link_b], link_a)
+
+    with xrdf_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False)
+
+    print("[patch] 已应用项目级 XRDF self_collision.ignore 补丁：")
+    for link_a, link_b in PROJECT_SELF_COLLISION_IGNORE_PATCHES:
+        print(f"  - {link_a} <-> {link_b}")
+
+
 def parse_args() -> argparse.Namespace:
     """解析命令行参数。"""
     parser = argparse.ArgumentParser(
@@ -258,10 +289,12 @@ def main() -> None:
     print(f"PYTHONPATH={env.get('PYTHONPATH', '')}")
     print("============================================================")
 
+    output_xrdf = args.output_yml.with_suffix(".xrdf")
+
     subprocess.run(command, env=env, check=True)
     apply_project_yaml_patches(args.output_yml)
+    apply_project_xrdf_patches(output_xrdf)
 
-    output_xrdf = args.output_yml.with_suffix(".xrdf")
     print()
     print("========== Go2-X5 cuRobo Model Build Finished ==========")
     print(f"YAML: {args.output_yml}")

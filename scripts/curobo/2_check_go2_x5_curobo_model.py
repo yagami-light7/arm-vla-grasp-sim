@@ -11,7 +11,7 @@
     是否能被 cuRobo MotionPlanner 正确加载，并且是否符合当前项目约定：
 
         base_link   = arm_base_link
-        tool_frame  = arm_eef_link
+        tool_frame  = grasp_tcp_link
         joint_names = arm_joint1 ~ arm_joint6
 
 检查内容：
@@ -45,7 +45,7 @@ CUROBO_SOURCE_ROOT = Path("/home/light/workspace/curobo")
 ROBOT_YAML = WORKSPACE / "source/robot/go2_x5/curobo/go2_x5_arm.yml"
 
 EXPECTED_BASE_LINK = "arm_base_link"
-EXPECTED_TOOL_FRAME = "arm_eef_link"
+EXPECTED_TOOL_FRAME = "grasp_tcp_link"
 EXPECTED_JOINT_NAMES = [
     "arm_joint1",
     "arm_joint2",

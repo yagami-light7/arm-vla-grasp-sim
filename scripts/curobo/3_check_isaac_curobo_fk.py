@@ -13,7 +13,7 @@
     orientation error
 
 用途：
-    确认 Isaac Sim 中的 arm_joint1~6、arm_base_link、arm_eef_link
+    确认 Isaac Sim 中的 arm_joint1~6、arm_base_link、grasp_tcp_link
     和 cuRobo robot model 的定义一致。
 
 为什么这一步重要：
@@ -38,7 +38,6 @@ from __future__ import annotations
 from pathlib import Path
 import argparse
 import json
-import math
 import sys
 
 import numpy as np
@@ -46,13 +45,14 @@ import torch
 
 
 WORKSPACE = Path("/home/light/workspace/arm_vla")
+SCRIPTS_DIR = WORKSPACE / "scripts"
 CUROBO_SOURCE_ROOT = Path("/home/light/workspace/curobo")
 
 DEFAULT_STATE_JSON = Path("/tmp/go2_x5_isaac_state.json")
 DEFAULT_ROBOT_YAML = WORKSPACE / "source/robot/go2_x5/curobo/go2_x5_arm.yml"
 
 EXPECTED_BASE_LINK = "arm_base_link"
-EXPECTED_TOOL_FRAME = "arm_eef_link"
+EXPECTED_TOOL_FRAME = "grasp_tcp_link"
 EXPECTED_JOINT_NAMES = [
     "arm_joint1",
     "arm_joint2",
@@ -68,9 +68,13 @@ DEFAULT_ORIENTATION_TOLERANCE_DEG = 5.0
 
 if CUROBO_SOURCE_ROOT.exists():
     sys.path.insert(0, str(CUROBO_SOURCE_ROOT))
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
 from curobo.types import JointState
+
+from SE3 import normalize_quat_wxyz, quat_angle_error_deg
 
 
 def print_header(title: str) -> None:
@@ -78,28 +82,6 @@ def print_header(title: str) -> None:
     print("\n" + "=" * 80)
     print(title)
     print("=" * 80)
-
-
-def normalize_quat_wxyz(quat) -> np.ndarray:
-    """归一化 wxyz 四元数。"""
-    quat = np.asarray(quat, dtype=float)
-    norm = np.linalg.norm(quat)
-    if norm < 1.0e-12:
-        raise ValueError(f"四元数范数太小: {quat}")
-    return quat / norm
-
-
-def quat_angle_error_deg(q_a, q_b) -> float:
-    """
-    计算两个 wxyz 四元数的夹角误差，单位 degree。
-
-    q 和 -q 表示同一个旋转，所以使用 abs(dot)。
-    """
-    q_a = normalize_quat_wxyz(q_a)
-    q_b = normalize_quat_wxyz(q_b)
-    dot = abs(float(np.dot(q_a, q_b)))
-    dot = max(-1.0, min(1.0, dot))
-    return math.degrees(2.0 * math.acos(dot))
 
 
 def load_isaac_state(path: Path) -> dict:

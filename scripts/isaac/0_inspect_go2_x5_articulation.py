@@ -14,14 +14,14 @@
     3. 初始化 SingleArticulation，读取 Isaac 内部 DOF order。
     4. 确认 arm_joint1 ~ arm_joint6 在完整 DOF order 中的位置。
     5. 打印 q_full / dq_full，以及切片后的 q_arm / dq_arm。
-    6. 查找 arm_base_link、arm_link6、arm_eef_link 等关键 frame/link。
-    7. 打印 arm_eef_link 在 world 和 arm_base_link 下的位姿。
+    6. 查找 arm_base_link、arm_link6、grasp_tcp_link 等关键 frame/link。
+    7. 打印 grasp_tcp_link 在 world 和 arm_base_link 下的位姿。
 
 为什么要做这一步：
     cuRobo 的 Go2-X5 arm planner 只使用：
         arm_joint1 ~ arm_joint6
         base frame = arm_base_link
-        tool frame = arm_eef_link
+        tool frame = grasp_tcp_link
 
     但 Isaac Sim 中加载的是完整 Go2-X5 articulation，里面还包含狗腿关节和夹爪关节。
     所以在做轨迹生成/追踪之前，必须先确认 Isaac 的完整 DOF order，
@@ -72,9 +72,11 @@ EXPECTED_GRIPPER_JOINT_NAMES = [
 
 # 关键 link/frame 名称。
 BASE_LINK_NAME = "arm_base_link"
-TCP_LINK_NAME = "arm_eef_link"
+TCP_LINK_NAME = "grasp_tcp_link"
 TCP_FALLBACK_PARENT_LINK_NAME = "arm_link6"
-TCP_FALLBACK_OFFSET_XYZ = (0.08657, 0.0, 0.0)
+# 如果 Isaac stage 还没有重新导入 grasp_tcp_link，就用 arm_link6 + 固定偏移
+# 临时估计同一个 TCP。这个数值必须和 URDF 中 grasp_tcp_fixed_joint 一致。
+TCP_FALLBACK_OFFSET_XYZ = (0.1425699970126152, 0.0, 0.0)
 TCP_FALLBACK_OFFSET_RPY = (0.0, 0.0, 0.0)
 
 
@@ -365,7 +367,7 @@ def print_arm_state(robot, dof_names: list[str]) -> None:
 
 
 def rpy_to_matrix(rpy_xyz) -> Gf.Matrix4d:
-    """rpy 转 USD Matrix4d，用于 arm_eef_link fallback offset。"""
+    """rpy 转 USD Matrix4d，用于 grasp_tcp_link fallback offset。"""
     roll, pitch, yaw = [float(value) for value in rpy_xyz]
 
     rot_x = Gf.Rotation(Gf.Vec3d(1, 0, 0), math.degrees(roll))
@@ -404,7 +406,7 @@ def pose_text_from_matrix(matrix: Gf.Matrix4d) -> str:
 
 
 def print_frame_poses(stage, robot_root_path: str) -> None:
-    """打印 arm_base_link 与 arm_eef_link 的世界位姿和相对位姿。"""
+    """打印 arm_base_link 与 grasp_tcp_link 的世界位姿和相对位姿。"""
     found = find_prims_by_name_under(
         stage,
         robot_root_path,
@@ -419,7 +421,7 @@ def print_frame_poses(stage, robot_root_path: str) -> None:
     xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     base_world = xform_cache.GetLocalToWorldTransform(stage.GetPrimAtPath(base_path))
 
-    tcp_mode = "direct arm_eef_link prim"
+    tcp_mode = "direct grasp_tcp_link prim"
     tcp_paths = found[TCP_LINK_NAME]
     if tcp_paths:
         tcp_path = tcp_paths[0]
