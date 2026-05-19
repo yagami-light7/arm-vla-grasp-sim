@@ -48,24 +48,25 @@ OUTPUT_JSON = Path("/tmp/go2_x5_grasp_sequence_result.json")
 ARTICULATION_ROOT_PATH = "/World/go2_x5/root_joint"
 DEBUG_ROOT_PATH = "/World/debug_go2_x5_grasp_sequence"
 
-SIM_DT = 1.0 / 60.0
-SETTLE_TO_SEGMENT_START_DURATION = 0.5
-GRIPPER_MOVE_DURATION = 0.35
-GRIPPER_HOLD_DURATION = 1.5
-FINAL_HOLD_DURATION = 0.8
-PRE_CLOSE_HOLD_DURATION = 0.25
-GRIPPER_FINAL_ERROR_TOL = 0.002
-GRIPPER_EXTRA_HOLD_TIMEOUT = 3.0
+SIM_DT = 1.0 / 50.0
+SETTLE_TO_SEGMENT_START_DURATION = 0.10
+GRIPPER_MOVE_DURATION = 0.15
+GRIPPER_HOLD_DURATION = 0.20
+FINAL_HOLD_DURATION = 0.10
+PRE_CLOSE_HOLD_DURATION = 0.05
 GRIPPER_MIN_CLOSE_PROGRESS_FOR_LIFT = 0.05
 
 TRACK_LOG_EVERY_N_STEPS = 20
-DRAW_WAYPOINT_STRIDE = 25
+DRAW_WAYPOINT_STRIDE = 40
 
 # 每个 motion segment 执行完后，继续保持最终关节目标，等待真实 articulation 追上。
 # 这样 close_gripper 不会在 approach_to_grasp 尚未到位时提前执行。
-POST_MOTION_CONVERGENCE_TIMEOUT = 3.0
-POST_MOTION_JOINT_ERROR_TOL = 0.003
-STRICT_POST_MOTION_WAIT_SEGMENTS = {"approach_to_grasp"}
+POST_MOTION_CONVERGENCE_TIMEOUT = 0.20
+POST_MOTION_JOINT_ERROR_TOL = 0.012
+STRICT_POST_MOTION_WAIT_SEGMENTS = {
+    "move_to_pregrasp",
+    "approach_to_grasp",
+}
 
 # 物体中心或 bbox 顶部至少上升这么多，认为第一版 lift 有效果。
 OBJECT_LIFT_SUCCESS_THRESHOLD_M = 0.04
@@ -210,6 +211,27 @@ def smoothstep5(u):
     """五次 S 曲线，起终点速度/加速度为 0。"""
     u = np.clip(u, 0.0, 1.0)
     return 10.0 * u**3 - 15.0 * u**4 + 6.0 * u**5
+
+
+def compute_close_progress(q_start, q_final, q_target):
+    """
+    计算夹爪从打开状态向闭合目标实际走过的比例。
+
+    有物体时，夹爪被物体挡住后不会到达 q_target=[0, 0]。这时
+    final_error 变大是正常接触结果，不能作为失败条件；更有意义的是
+    夹爪是否发生了足够闭合，以及后续物体是否被 lift。
+    """
+    q_start = np.asarray(q_start, dtype=float)
+    q_final = np.asarray(q_final, dtype=float)
+    q_target = np.asarray(q_target, dtype=float)
+
+    total_close_distance = float(np.linalg.norm(q_start - q_target))
+    actual_close_distance = float(np.linalg.norm(q_start - q_final))
+
+    if total_close_distance < 1.0e-9:
+        return 1.0
+
+    return float(np.clip(actual_close_distance / total_close_distance, 0.0, 1.0))
 
 
 def sample_cubic_hermite(time_from_start, q, qd, t):
@@ -561,54 +583,15 @@ async def execute_gripper_segment(
     q_final = np.asarray(robot.get_joint_positions(), dtype=float)[gripper_indices]
     final_error = float(np.linalg.norm(q_final - q_target))
 
-    extra_hold_log = []
-    if name == "close_gripper" and final_error > GRIPPER_FINAL_ERROR_TOL:
-        print(
-            "[gripper:close_gripper] final_error still high, extra hold "
-            f"until <= {GRIPPER_FINAL_ERROR_TOL}"
-        )
-        extra_steps = int(GRIPPER_EXTRA_HOLD_TIMEOUT / SIM_DT)
-        for step in range(extra_steps):
-            q_full_now = np.asarray(robot.get_joint_positions(), dtype=float).copy()
-            apply_gripper_command_with_arm_hold(
-                robot,
-                q_target,
-                gripper_indices,
-                q_full_now,
-                arm_indices=arm_indices,
-                q_arm_hold=q_arm_hold,
-            )
-            world.step(render=True)
-            await omni.kit.app.get_app().next_update_async()
-
-            q_final = np.asarray(robot.get_joint_positions(), dtype=float)[gripper_indices]
-            final_error = float(np.linalg.norm(q_final - q_target))
-            extra_hold_log.append(final_error)
-
-            if step % TRACK_LOG_EVERY_N_STEPS == 0 or final_error <= GRIPPER_FINAL_ERROR_TOL:
-                print(
-                    f"[gripper:close_gripper:extra_hold] step={step:03d}, "
-                    f"q_actual={q_final}, error={final_error:.6f}"
-                )
-
-            if final_error <= GRIPPER_FINAL_ERROR_TOL:
-                break
-
     log["final_q_gripper"] = q_final.tolist()
     log["final_error_norm"] = final_error
     log["arm_hold_enabled"] = bool(hold_arm_during_gripper)
-    log["extra_hold_error_norm"] = extra_hold_log
 
     if name == "close_gripper":
-        close_denominator = float(np.linalg.norm(q_start - q_target))
-        if close_denominator > 1.0e-9:
-            close_progress = float(np.linalg.norm(q_start - q_final) / close_denominator)
-        else:
-            close_progress = 1.0
-
-        close_progress = float(np.clip(close_progress, 0.0, 1.0))
+        close_progress = compute_close_progress(q_start, q_final, q_target)
         log["close_progress"] = close_progress
         log["min_close_progress_for_lift"] = GRIPPER_MIN_CLOSE_PROGRESS_FOR_LIFT
+        log["close_success_rule"] = "contact-aware close progress, not final error to zero"
         print(
             "[gripper:close_gripper] close_progress="
             f"{close_progress:.3f}, required={GRIPPER_MIN_CLOSE_PROGRESS_FOR_LIFT:.3f}"
@@ -616,7 +599,7 @@ async def execute_gripper_segment(
 
         if close_progress < GRIPPER_MIN_CLOSE_PROGRESS_FOR_LIFT:
             raise RuntimeError(
-                "close_gripper 实际没有闭合到足够程度，停止进入 lift_object。"
+                "close_gripper 没有发生足够闭合，停止进入 lift_object。"
                 f" q_start={q_start}, q_final={q_final}, q_target={q_target}, "
                 f"close_progress={close_progress:.3f}"
             )

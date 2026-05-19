@@ -1,0 +1,18 @@
+{
+    "uid": "0896dc31d5154c97aa3f24e8ec1277aa",
+    "category": "orange",
+    "description": "Round, vibrant orange fruit with a dimpled surface, slightly irregular shape, and glossy finish.",
+    "material": "skin, pulp, water",
+    "dimensions": "0.1 * 0.1 * 0.1",
+    "mass": 0.15,
+    "placement": [
+        "OnFloor",
+        "OnObject",
+        "OnTable"
+    ],
+    "asset_type": "rigid",
+    "glb_size": 2.87,
+    "usd_size": 3.67,
+    "usd_material_softlink": false,
+    "source": "holodeck"
+}

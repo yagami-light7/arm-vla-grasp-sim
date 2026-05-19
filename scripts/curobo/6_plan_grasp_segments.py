@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Go2-X5 抓取任务分段轨迹规划。
+Go2-X5 抓取任务轨迹规划。
 
 用途：
     读取 Isaac 导出的当前机械臂状态和目标物体抓取 JSON，
-    用 cuRobo 依次规划：
+    用 cuRobo 先分段求解路径，再把 pregrasp 作为途经点合并成连续轨迹：
 
-        q_current -> pregrasp
-        pregrasp  -> grasp
+        open_gripper
+        q_current -> pregrasp -> grasp   # 输出为一条连续 motion，避免 pregrasp 处切段抖动
         close_gripper
         grasp     -> lift
 
-    本脚本只生成分段轨迹，不在 Isaac Sim 中执行。
+    本脚本只生成抓取计划，不在 Isaac Sim 中执行。
 
 输入：
     /tmp/go2_x5_isaac_state.json
@@ -61,7 +61,7 @@ EXPECTED_JOINT_NAMES = [
 ]
 
 JOINT_LIMIT_MARGIN = 1.0e-5
-TRAJECTORY_DT = 1.0 / 100.0
+TRAJECTORY_DT = 1.0 / 50
 
 # 如果 cuRobo success=False，但末端 pose 误差已经很小，可以保存调试结果。
 # 当前正式抓取先要求 success=True，避免把不可行轨迹送去执行。
@@ -70,20 +70,21 @@ POSE_ACCEPTANCE_POSITION_M = 5.0e-3
 POSE_ACCEPTANCE_ORIENTATION_RAD = 5.0e-2
 
 SEGMENT_TIMING = {
-    # 从当前姿态到预抓取点，可以稍快。
+    # 仅用于规划日志中的子路径名称；最终不会作为独立 motion 输出。
     "move_to_pregrasp": {
-        "min_duration": 2.0,
-        "max_joint_speed": 0.75,
+        "min_duration": 1.0,
+        "max_joint_speed": 1.0,
     },
-    # approach 是靠近物体的关键阶段，速度慢一点。
+    # 最终输出的连续 motion：q_current -> pregrasp -> grasp。
+    # 名称继续使用 approach_to_grasp，是为了兼容执行脚本中已有的严格到位等待逻辑。
     "approach_to_grasp": {
-        "min_duration": 2.0,
-        "max_joint_speed": 0.25,
+        "min_duration": 1.2,
+        "max_joint_speed": 0.8,
     },
-    # lift 抬起阶段也慢一点，后续夹住物体时更稳。
+    # lift 抬起阶段夹着物体，保持相对稳一点。
     "lift_object": {
-        "min_duration": 1.5,
-        "max_joint_speed": 0.45,
+        "min_duration": 0.5,
+        "max_joint_speed": 0.6,
     },
 }
 
@@ -308,6 +309,18 @@ def smoothstep5(u: np.ndarray) -> np.ndarray:
     return 10.0 * u**3 - 15.0 * u**4 + 6.0 * u**5
 
 
+def remove_near_duplicate_waypoints(q_path: np.ndarray, tol: float = 1.0e-9) -> np.ndarray:
+    """删除相邻重复 waypoint，避免路径累计长度中出现重复坐标。"""
+    q_path = np.asarray(q_path, dtype=float)
+    if q_path.shape[0] <= 2:
+        return q_path
+
+    step_dist = np.linalg.norm(np.diff(q_path, axis=0), axis=1)
+    keep = np.concatenate([[True], step_dist > tol])
+    keep[-1] = True
+    return q_path[keep]
+
+
 def compute_path_coordinate(q_path: np.ndarray) -> np.ndarray:
     """计算 joint-space 路径累计长度，并归一化到 [0, 1]。"""
     q_path = np.asarray(q_path, dtype=float)
@@ -321,10 +334,20 @@ def compute_path_coordinate(q_path: np.ndarray) -> np.ndarray:
 
 
 def estimate_duration(q_path: np.ndarray, segment_name: str) -> float:
-    """根据当前分段配置估计轨迹执行时长。"""
+    """根据当前分段配置估计轨迹执行时长。
+
+    这里使用每个关节沿整条路径的累计运动量，而不是只看首末点差值。
+    对合并后的 current -> pregrasp -> grasp 路径更稳，避免路径绕了一段但首末点差值较小导致 retime 过快。
+    """
     cfg = SEGMENT_TIMING[segment_name]
-    q_delta = float(np.max(np.abs(np.asarray(q_path[-1]) - np.asarray(q_path[0]))))
-    duration = q_delta / float(cfg["max_joint_speed"])
+    q_path = np.asarray(q_path, dtype=float)
+
+    if q_path.shape[0] < 2:
+        return float(cfg["min_duration"])
+
+    joint_travel = np.sum(np.abs(np.diff(q_path, axis=0)), axis=0)
+    max_joint_travel = float(np.max(joint_travel))
+    duration = max_joint_travel / float(cfg["max_joint_speed"])
     return max(float(cfg["min_duration"]), duration)
 
 
@@ -332,8 +355,8 @@ def retime_joint_path_scurve(
     q_path: np.ndarray,
     segment_name: str,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """对一个分段 joint path 做 S 曲线时间参数化。"""
-    q_path = np.asarray(q_path, dtype=float)
+    """对一个 joint path 做 S 曲线时间参数化。"""
+    q_path = remove_near_duplicate_waypoints(np.asarray(q_path, dtype=float))
     path_s = compute_path_coordinate(q_path)
     duration = estimate_duration(q_path, segment_name)
 
@@ -453,24 +476,18 @@ def plan_pose_path(
     return q_path, plan_info
 
 
-def build_motion_segment(
+def build_motion_segment_from_raw_path(
     planner: MotionPlanner,
-    q_start: np.ndarray,
+    q_path_raw: np.ndarray,
+    plan_info: dict,
     target_name: str,
     target_position: np.ndarray,
     target_quaternion: np.ndarray,
     segment_name: str,
     T_world_base: np.ndarray,
+    extra_fields: dict | None = None,
 ) -> tuple[dict, np.ndarray]:
-    """规划并封装一个 motion segment。"""
-    q_path_raw, plan_info = plan_pose_path(
-        planner=planner,
-        q_start=q_start,
-        target_position=target_position,
-        target_quaternion=target_quaternion,
-        segment_name=segment_name,
-    )
-
+    """把已经得到的 raw joint path 重新时间参数化并封装成 motion segment。"""
     time_from_start, q_traj, qd_traj, qdd_traj = retime_joint_path_scurve(
         q_path_raw,
         segment_name=segment_name,
@@ -514,7 +531,123 @@ def build_motion_segment(
         },
     }
 
+    if extra_fields:
+        segment.update(extra_fields)
+
     return segment, q_traj[-1].astype(np.float32)
+
+
+def build_motion_segment(
+    planner: MotionPlanner,
+    q_start: np.ndarray,
+    target_name: str,
+    target_position: np.ndarray,
+    target_quaternion: np.ndarray,
+    segment_name: str,
+    T_world_base: np.ndarray,
+) -> tuple[dict, np.ndarray]:
+    """规划并封装一个普通 motion segment。"""
+    q_path_raw, plan_info = plan_pose_path(
+        planner=planner,
+        q_start=q_start,
+        target_position=target_position,
+        target_quaternion=target_quaternion,
+        segment_name=segment_name,
+    )
+
+    return build_motion_segment_from_raw_path(
+        planner=planner,
+        q_path_raw=q_path_raw,
+        plan_info=plan_info,
+        target_name=target_name,
+        target_position=target_position,
+        target_quaternion=target_quaternion,
+        segment_name=segment_name,
+        T_world_base=T_world_base,
+    )
+
+
+def build_pregrasp_to_grasp_segment(
+    planner: MotionPlanner,
+    q_start: np.ndarray,
+    pregrasp_position: np.ndarray,
+    pregrasp_quaternion: np.ndarray,
+    grasp_position: np.ndarray,
+    grasp_quaternion: np.ndarray,
+    T_world_base: np.ndarray,
+) -> tuple[dict, np.ndarray]:
+    """规划 current -> pregrasp -> grasp，并输出为一条连续 motion。
+
+    关键点：pregrasp 只作为途经点，不再作为 Isaac 执行时的独立 motion segment。
+    这样执行脚本不会在 pregrasp 处调用 settle_arm_to_start，从根源上减少段间抖动。
+    """
+    q_path_to_pregrasp, pregrasp_info = plan_pose_path(
+        planner=planner,
+        q_start=q_start,
+        target_position=pregrasp_position,
+        target_quaternion=pregrasp_quaternion,
+        segment_name="move_to_pregrasp",
+    )
+
+    q_pregrasp = q_path_to_pregrasp[-1].astype(np.float32)
+
+    q_path_to_grasp, grasp_info = plan_pose_path(
+        planner=planner,
+        q_start=q_pregrasp,
+        target_position=grasp_position,
+        target_quaternion=grasp_quaternion,
+        segment_name="approach_to_grasp",
+    )
+
+    if q_path_to_grasp.shape[0] > 1:
+        q_path_merged = np.vstack([q_path_to_pregrasp, q_path_to_grasp[1:]])
+    else:
+        q_path_merged = q_path_to_pregrasp.copy()
+
+    plan_info = {
+        "planner_success": bool(
+            pregrasp_info["planner_success"] and grasp_info["planner_success"]
+        ),
+        "planner_position_error_m": grasp_info["planner_position_error_m"],
+        "planner_rotation_error_rad": grasp_info["planner_rotation_error_rad"],
+        "pose_converged": bool(
+            pregrasp_info["pose_converged"] and grasp_info["pose_converged"]
+        ),
+        "raw_num_waypoints": int(q_path_merged.shape[0]),
+        "merged_from": ["move_to_pregrasp", "approach_to_grasp"],
+        "sub_plans": {
+            "move_to_pregrasp": pregrasp_info,
+            "approach_to_grasp": grasp_info,
+        },
+    }
+
+    extra_fields = {
+        "merged_motion_segments": ["move_to_pregrasp", "approach_to_grasp"],
+        "via_targets": [
+            {
+                "name": "pregrasp",
+                "pose_base": {
+                    "position_xyz": pregrasp_position.tolist(),
+                    "quaternion_wxyz": pregrasp_quaternion.tolist(),
+                },
+            }
+        ],
+    }
+
+    # 这里故意保留 name="approach_to_grasp"：
+    # 1. 兼容执行脚本中 STRICT_POST_MOTION_WAIT_SEGMENTS={"approach_to_grasp"}
+    # 2. close_gripper 前仍会等待机械臂真正到达 grasp 位姿
+    return build_motion_segment_from_raw_path(
+        planner=planner,
+        q_path_raw=q_path_merged,
+        plan_info=plan_info,
+        target_name="grasp",
+        target_position=grasp_position,
+        target_quaternion=grasp_quaternion,
+        segment_name="approach_to_grasp",
+        T_world_base=T_world_base,
+        extra_fields=extra_fields,
+    )
 
 
 def make_gripper_segment(name: str, q_target: float, gripper_joint_names: list[str]) -> dict:
@@ -560,24 +693,16 @@ def main() -> None:
 
         segments.append(make_gripper_segment("open_gripper", gripper_open, gripper_joint_names))
 
-        segment, q_current = build_motion_segment(
+        # 关键修改：
+        # 仍然让 cuRobo 分别求 current -> pregrasp 和 pregrasp -> grasp，
+        # 但输出给 Isaac 的时候合并成一条连续 motion，避免 pregrasp 处切段抖动。
+        segment, q_current = build_pregrasp_to_grasp_segment(
             planner=planner,
             q_start=q_current,
-            target_name="pregrasp",
-            target_position=pregrasp_pos,
-            target_quaternion=pregrasp_quat,
-            segment_name="move_to_pregrasp",
-            T_world_base=T_world_base,
-        )
-        segments.append(segment)
-
-        segment, q_current = build_motion_segment(
-            planner=planner,
-            q_start=q_current,
-            target_name="grasp",
-            target_position=grasp_pos,
-            target_quaternion=grasp_quat,
-            segment_name="approach_to_grasp",
+            pregrasp_position=pregrasp_pos,
+            pregrasp_quaternion=pregrasp_quat,
+            grasp_position=grasp_pos,
+            grasp_quaternion=grasp_quat,
             T_world_base=T_world_base,
         )
         segments.append(segment)
@@ -606,7 +731,7 @@ def main() -> None:
     payload = {
         "schema_version": 1,
         "robot_name": "go2_x5",
-        "planner": "curobo.MotionPlanner.plan_pose segmented grasp",
+        "planner": "curobo.MotionPlanner.plan_pose merged pregrasp-grasp",
         "source_state_json": str(STATE_JSON),
         "source_target_json": str(TARGET_JSON),
         "joint_names": EXPECTED_JOINT_NAMES,
