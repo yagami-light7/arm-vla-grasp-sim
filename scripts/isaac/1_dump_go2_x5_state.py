@@ -93,6 +93,28 @@ TCP_FALLBACK_PARENT_LINK_NAME = "arm_link6"
 TCP_FALLBACK_OFFSET_XYZ = (0.1425699970126152, 0.0, 0.0)
 TCP_FALLBACK_OFFSET_RPY = (0.0, 0.0, 0.0)
 
+EXPORT_WORLD_COLLISION = True
+WORLD_COLLISION_PADDING_M = 0.02
+WORLD_COLLISION_MIN_SIZE_M = 0.01
+WORLD_COLLISION_MAX_OBSTACLES = 16
+WORLD_COLLISION_LOCAL_RADIUS_M = 1.25
+WORLD_COLLISION_MAX_EXTENT_M = 2.0
+WORLD_COLLISION_MAX_HEIGHT_M = 1.6
+WORLD_COLLISION_MAX_VOLUME_M3 = 2.5
+WORLD_COLLISION_EXCLUDE_PREFIXES = (
+    "/World/debug_",
+    "/World/Looks",
+    "/World/Render",
+)
+WORLD_COLLISION_EXCLUDE_NAME_KEYWORDS = (
+    "floorplan",
+    "wall",
+    "door",
+    "window",
+    "ceiling",
+    "wardrobe",
+)
+
 
 def get_stage():
     """获取当前 Isaac Sim GUI 已打开的 USD stage。"""
@@ -116,6 +138,40 @@ def parent_path(prim_path: str) -> str:
     if len(parts) <= 2:
         return "/"
     return "/".join(parts[:-1])
+
+
+def path_overlaps(path_a: str, path_b: str) -> bool:
+    """判断两个 USD path 是否存在父子或相等关系。"""
+    a = path_a.rstrip("/")
+    b = path_b.rstrip("/")
+    if not a or not b or a == "/" or b == "/":
+        return False
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
+
+def sanitize_obstacle_name(prim_path: str, index: int) -> str:
+    """把 USD path 转成 cuRobo obstacle name。"""
+    safe = prim_path.strip("/").replace("/", "_").replace(":", "_")
+    safe = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in safe)
+    return f"obs_{index:03d}_{safe[-80:]}"
+
+
+def distance_point_to_aabb_xy(point_xy, bbox_min, bbox_max) -> float:
+    """计算 XY 平面中点到 AABB 的距离；点在投影内部时为 0。"""
+    point_xy = np.asarray(point_xy, dtype=float)
+    min_xy = np.asarray(bbox_min[:2], dtype=float)
+    max_xy = np.asarray(bbox_max[:2], dtype=float)
+    delta = np.maximum(np.maximum(min_xy - point_xy, point_xy - max_xy), 0.0)
+    return float(np.linalg.norm(delta))
+
+
+def point_inside_aabb(point, bbox_min, bbox_max, margin: float = 0.0) -> bool:
+    """判断 point 是否在 AABB 内部。"""
+    point = np.asarray(point, dtype=float)
+    return bool(
+        np.all(point >= np.asarray(bbox_min, dtype=float) - margin)
+        and np.all(point <= np.asarray(bbox_max, dtype=float) + margin)
+    )
 
 
 def scan_articulation_roots(stage) -> list[str]:
@@ -224,6 +280,174 @@ def usd_world_pose_to_matrix(stage, prim_path: str) -> np.ndarray:
     position = np.array([translation[0], translation[1], translation[2]], dtype=float)
     quaternion = normalize_quat_wxyz([rotation.GetReal(), imaginary[0], imaginary[1], imaginary[2]])
     return pose_to_matrix(position, quaternion)
+
+
+def should_skip_collision_prim(prim_path: str, robot_root_path: str, selected_paths: list[str]) -> bool:
+    """过滤机器人、自身目标物体和调试 prim，避免把它们当成环境障碍物。"""
+    if path_overlaps(prim_path, robot_root_path):
+        return True
+    if any(prim_path.startswith(prefix) for prefix in WORLD_COLLISION_EXCLUDE_PREFIXES):
+        return True
+    prim_path_lower = prim_path.lower()
+    if any(keyword in prim_path_lower for keyword in WORLD_COLLISION_EXCLUDE_NAME_KEYWORDS):
+        return True
+    for selected_path in selected_paths:
+        if path_overlaps(prim_path, selected_path):
+            return True
+    return False
+
+
+def compute_selected_bbox_centers(stage, selected_paths: list[str]) -> list[np.ndarray]:
+    """读取当前选中目标的 bbox center，用于筛选操作区域附近障碍物。"""
+    centers = []
+    bbox_cache = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(),
+        [UsdGeom.Tokens.default_, UsdGeom.Tokens.render],
+        useExtentsHint=True,
+    )
+
+    for selected_path in selected_paths:
+        prim = stage.GetPrimAtPath(selected_path)
+        if not prim.IsValid():
+            continue
+        try:
+            bound = bbox_cache.ComputeWorldBound(prim)
+            aligned_box = bound.ComputeAlignedBox()
+            bbox_min = np.array(aligned_box.GetMin(), dtype=float)
+            bbox_max = np.array(aligned_box.GetMax(), dtype=float)
+        except Exception:
+            continue
+        if np.all(np.isfinite(bbox_min)) and np.all(np.isfinite(bbox_max)):
+            centers.append(0.5 * (bbox_min + bbox_max))
+
+    return centers
+
+
+def compute_world_collision_cuboids(
+    stage,
+    robot_root_path: str,
+    T_world_base: np.ndarray,
+    selected_paths: list[str],
+) -> list[dict]:
+    """
+    从 Isaac stage 中导出环境碰撞体。
+
+    第一版使用带 UsdPhysics.CollisionAPI prim 的 world AABB，转成 cuRobo
+    可直接使用的 cuboid。这样对桌子、台面、柜体、墙等障碍物足够稳健；
+    目标物体和机器人本体会被排除。
+    """
+    if not EXPORT_WORLD_COLLISION:
+        return []
+
+    bbox_cache = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(),
+        [UsdGeom.Tokens.default_, UsdGeom.Tokens.render],
+        useExtentsHint=True,
+    )
+    T_base_world = np.linalg.inv(T_world_base)
+    base_position_world = T_world_base[:3, 3].copy()
+    selected_centers = compute_selected_bbox_centers(stage, selected_paths)
+    skipped_counts = {
+        "name_or_path": 0,
+        "too_large": 0,
+        "outside_local_workspace": 0,
+        "contains_arm_base": 0,
+    }
+    obstacles = []
+
+    for prim in stage.TraverseAll():
+        if not prim.IsValid() or not prim.IsActive():
+            continue
+        try:
+            if not prim.HasAPI(UsdPhysics.CollisionAPI):
+                continue
+        except Exception:
+            continue
+
+        prim_path = str(prim.GetPath())
+        if should_skip_collision_prim(prim_path, robot_root_path, selected_paths):
+            skipped_counts["name_or_path"] += 1
+            continue
+
+        try:
+            bound = bbox_cache.ComputeWorldBound(prim)
+            aligned_box = bound.ComputeAlignedBox()
+            bbox_min = np.array(aligned_box.GetMin(), dtype=float)
+            bbox_max = np.array(aligned_box.GetMax(), dtype=float)
+        except Exception:
+            continue
+
+        if not np.all(np.isfinite(bbox_min)) or not np.all(np.isfinite(bbox_max)):
+            continue
+
+        size = bbox_max - bbox_min
+        if float(np.max(size)) < WORLD_COLLISION_MIN_SIZE_M:
+            continue
+        if (
+            float(np.max(size)) > WORLD_COLLISION_MAX_EXTENT_M
+            or float(size[2]) > WORLD_COLLISION_MAX_HEIGHT_M
+            or float(np.prod(size)) > WORLD_COLLISION_MAX_VOLUME_M3
+        ):
+            skipped_counts["too_large"] += 1
+            continue
+
+        local_reference_points = selected_centers if selected_centers else [base_position_world]
+        nearest_local_distance = min(
+            distance_point_to_aabb_xy(point[:2], bbox_min, bbox_max)
+            for point in local_reference_points
+        )
+        if nearest_local_distance > WORLD_COLLISION_LOCAL_RADIUS_M:
+            skipped_counts["outside_local_workspace"] += 1
+            continue
+
+        if point_inside_aabb(
+            base_position_world,
+            bbox_min,
+            bbox_max,
+            margin=WORLD_COLLISION_PADDING_M,
+        ):
+            skipped_counts["contains_arm_base"] += 1
+            continue
+
+        center_world = 0.5 * (bbox_min + bbox_max)
+        padded_size = np.maximum(
+            size + 2.0 * WORLD_COLLISION_PADDING_M,
+            WORLD_COLLISION_MIN_SIZE_M,
+        )
+
+        T_world_obstacle = np.eye(4, dtype=float)
+        T_world_obstacle[:3, 3] = center_world
+        T_base_obstacle = T_base_world @ T_world_obstacle
+
+        obstacles.append(
+            {
+                "name": sanitize_obstacle_name(prim_path, len(obstacles)),
+                "prim_path": prim_path,
+                "type": "cuboid_from_world_aabb",
+                "dims_xyz": padded_size.tolist(),
+                "raw_bbox_world": {
+                    "min_xyz": bbox_min.tolist(),
+                    "max_xyz": bbox_max.tolist(),
+                    "center_xyz": center_world.tolist(),
+                    "size_xyz": size.tolist(),
+                },
+                "pose_world": pose_dict_from_matrix(T_world_obstacle),
+                "pose_base": pose_dict_from_matrix(T_base_obstacle),
+                "padding_m": WORLD_COLLISION_PADDING_M,
+            }
+        )
+
+        if len(obstacles) >= WORLD_COLLISION_MAX_OBSTACLES:
+            break
+
+    print(
+        "[World Collision] skipped: "
+        f"name_or_path={skipped_counts['name_or_path']}, "
+        f"too_large={skipped_counts['too_large']}, "
+        f"outside_local_workspace={skipped_counts['outside_local_workspace']}, "
+        f"contains_arm_base={skipped_counts['contains_arm_base']}"
+    )
+    return obstacles
 
 
 def resolve_base_and_tcp_matrices(stage, robot_root_path: str) -> tuple[dict, dict[str, np.ndarray]]:
@@ -355,6 +579,13 @@ def build_output_json(
     dq_gripper = slice_by_index_map(dq_full, gripper_joint_names, gripper_index_map) if gripper_joint_names else np.array([])
 
     frame_paths, matrices = resolve_base_and_tcp_matrices(stage, robot_root_path)
+    selected_paths = selected_prim_paths()
+    world_collision_cuboids = compute_world_collision_cuboids(
+        stage=stage,
+        robot_root_path=robot_root_path,
+        T_world_base=matrices["T_world_base"],
+        selected_paths=selected_paths,
+    )
 
     return {
         "schema_version": 1,
@@ -390,6 +621,17 @@ def build_output_json(
             "world_tcp": pose_dict_from_matrix(matrices["T_world_tcp"]),
             "base_tcp": pose_dict_from_matrix(matrices["T_base_tcp"]),
         },
+        "world_collision": {
+            "enabled": EXPORT_WORLD_COLLISION,
+            "representation": "UsdPhysics.CollisionAPI world AABB exported as cuRobo cuboids in arm_base_link frame",
+            "padding_m": WORLD_COLLISION_PADDING_M,
+            "local_radius_m": WORLD_COLLISION_LOCAL_RADIUS_M,
+            "max_extent_m": WORLD_COLLISION_MAX_EXTENT_M,
+            "max_height_m": WORLD_COLLISION_MAX_HEIGHT_M,
+            "max_volume_m3": WORLD_COLLISION_MAX_VOLUME_M3,
+            "excluded_selected_prim_paths": selected_paths,
+            "cuboids_base": world_collision_cuboids,
+        },
     }
 
 
@@ -414,6 +656,17 @@ def print_summary(output: dict, output_path: Path) -> None:
     print("[Frame] tcp mode:", output["paths"]["tcp_mode"])
     print("[Frame] T_base_tcp position:", poses["base_tcp"]["position_xyz"])
     print("[Frame] T_base_tcp quat_wxyz:", poses["base_tcp"]["quaternion_wxyz"])
+    world_collision = output.get("world_collision", {})
+    cuboids = world_collision.get("cuboids_base", [])
+    print("[World Collision] cuboids:", len(cuboids))
+    for obstacle in cuboids[:8]:
+        print(
+            "  - "
+            f"{obstacle['name']}: path={obstacle['prim_path']}, "
+            f"dims={np.array2string(np.asarray(obstacle['dims_xyz']), precision=3)}"
+        )
+    if len(cuboids) > 8:
+        print(f"  ... {len(cuboids) - 8} more")
 
 
 async def dump_go2_x5_state():

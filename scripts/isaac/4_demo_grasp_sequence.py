@@ -52,16 +52,22 @@ DEBUG_ROOT_PATH = "/World/debug_go2_x5_grasp_sequence"
 
 SIM_DT = 1.0 / 50.0
 ARM_COMMAND_DT = 0.05
-GRIPPER_COMMAND_DT = 0.05
+GRIPPER_COMMAND_DT = SIM_DT
 SETTLE_TO_SEGMENT_START_DURATION = 0.10
-GRIPPER_MOVE_DURATION = 0.45
+GRIPPER_MOVE_DURATION = 0.70
 GRIPPER_HOLD_DURATION = 0.45
 FINAL_HOLD_DURATION = 0.20
 PRE_CLOSE_HOLD_DURATION = 0.10
-GRIPPER_MIN_CLOSE_PROGRESS_FOR_LIFT = 0.10
+GRIPPER_MIN_CLOSE_PROGRESS_FOR_LIFT = 0.05
 
 TRACK_LOG_EVERY_N_STEPS = 20
 DRAW_WAYPOINT_STRIDE = 40
+DRAW_WAYPOINT_RADIUS = 0.005
+
+RETURN_HOME_AFTER_LIFT = True
+RETURN_HOME_STRATEGY = "reverse_executed_motion"
+RETURN_HOME_MIN_DURATION = 1.5
+RETURN_HOME_MAX_JOINT_SPEED = 0.5
 
 # 每个 motion segment 执行完后，继续保持最终关节目标，等待真实 articulation 追上。
 # 这样 close_gripper 不会在 approach_to_grasp 尚未到位时提前执行。
@@ -74,6 +80,7 @@ STRICT_POST_MOTION_WAIT_SEGMENTS = {
 
 # 物体中心或 bbox 顶部至少上升这么多，认为第一版 lift 有效果。
 OBJECT_LIFT_SUCCESS_THRESHOLD_M = 0.04
+OBJECT_RETREAT_SUCCESS_THRESHOLD_M = 0.03
 
 
 def load_grasp_plan() -> dict:
@@ -372,6 +379,7 @@ def draw_motion_segments(stage, segments):
         "move_to_pregrasp": (0.1, 0.7, 1.0),
         "approach_to_grasp": (1.0, 0.7, 0.1),
         "lift_object": (0.1, 1.0, 0.3),
+        "retreat_object": (0.1, 1.0, 0.3),
     }
 
     for segment in segments:
@@ -393,7 +401,7 @@ def draw_motion_segments(stage, segments):
             if index % DRAW_WAYPOINT_STRIDE != 0 and index != len(tcp_world) - 1:
                 continue
             sphere = UsdGeom.Sphere.Define(stage, f"{DEBUG_ROOT_PATH}/{name}_wp_{index:04d}")
-            sphere.CreateRadiusAttr(0.01)
+            sphere.CreateRadiusAttr(DRAW_WAYPOINT_RADIUS)
             UsdGeom.Xformable(sphere.GetPrim()).AddTranslateOp().Set(Gf.Vec3d(*point))
             UsdGeom.Gprim(sphere.GetPrim()).CreateDisplayColorAttr([Gf.Vec3f(*color)])
 
@@ -491,6 +499,124 @@ async def execute_motion_segment(world, robot, arm_indices, segment):
             "skipped": True,
             "reason": "strict post-motion wait is only required before close_gripper",
         }
+    log["post_motion_wait"] = wait_log
+    log["motion_converged"] = bool(wait_log.get("converged", True))
+
+    return log
+
+
+def get_task_home_q_arm(segments):
+    """把本轮任务第一个 motion segment 的起点作为 home pose。"""
+    for segment in segments:
+        if segment.get("type") != "motion":
+            continue
+        q_traj = np.asarray(segment["trajectory"]["q"], dtype=float)
+        if q_traj.size > 0:
+            return q_traj[0].copy()
+    return None
+
+
+def make_reversed_motion_segment(segment):
+    """把已经规划过的 motion segment 反向，作为安全回程路径。"""
+    name = segment["name"]
+    trajectory = segment["trajectory"]
+
+    q = np.asarray(trajectory["q"], dtype=float)[::-1].copy()
+    qd = -np.asarray(trajectory.get("qd", np.zeros_like(q)), dtype=float)[::-1].copy()
+    qdd = np.asarray(trajectory.get("qdd", np.zeros_like(q)), dtype=float)[::-1].copy()
+    duration = float(trajectory["time_from_start"][-1])
+    time_from_start = np.linspace(0.0, duration, q.shape[0], dtype=float)
+
+    reversed_trajectory = {
+        "time_from_start": time_from_start.tolist(),
+        "q": q.tolist(),
+        "qd": qd.tolist(),
+        "qdd": qdd.tolist(),
+    }
+
+    return {
+        "name": f"return_home_reverse_{name}",
+        "type": "motion",
+        "trajectory": reversed_trajectory,
+        "return_home_source_segment": name,
+    }
+
+
+def make_reverse_return_home_segments(executed_segments):
+    """按执行过的 motion segment 反向回放到 home。"""
+    motion_segments = [
+        segment
+        for segment in executed_segments
+        if segment.get("type") == "motion"
+    ]
+    return [
+        make_reversed_motion_segment(segment)
+        for segment in reversed(motion_segments)
+    ]
+
+
+async def execute_return_home_motion(world, robot, arm_indices, q_home):
+    """抓取流程结束后，用关节空间 S 曲线回到任务开始时的 home pose。"""
+    name = "return_home"
+    q_home = np.asarray(q_home, dtype=float)
+    q_full_start = np.asarray(robot.get_joint_positions(), dtype=float).copy()
+    q_start = q_full_start[arm_indices].copy()
+
+    max_delta = float(np.max(np.abs(q_home - q_start)))
+    duration = max(
+        RETURN_HOME_MIN_DURATION,
+        max_delta / max(RETURN_HOME_MAX_JOINT_SPEED, 1.0e-6),
+    )
+    num_steps = int(np.ceil(duration / SIM_DT)) + 1
+    command_period_steps = max(1, int(round(ARM_COMMAND_DT / SIM_DT)))
+    q_target = q_start.copy()
+
+    log = {
+        "name": name,
+        "type": "motion",
+        "sim_dt": SIM_DT,
+        "command_dt": ARM_COMMAND_DT,
+        "duration_s": duration,
+        "target_home_q_arm": q_home.tolist(),
+        "time": [],
+        "target_q_arm": [],
+        "actual_q_arm": [],
+        "joint_error_norm": [],
+    }
+
+    print(f"[motion:{name}] duration={duration:.3f}s, sim_steps={num_steps}")
+
+    for step in range(num_steps):
+        t = min(step * SIM_DT, duration)
+        if step % command_period_steps == 0 or step == num_steps - 1:
+            u = t / duration if duration > 1.0e-9 else 1.0
+            s = smoothstep5(u)
+            q_target = (1.0 - s) * q_start + s * q_home
+
+        q_full_now = np.asarray(robot.get_joint_positions(), dtype=float).copy()
+        action = make_partial_action(q_target, arm_indices, q_full_now)
+        robot.apply_action(action)
+        world.step(render=True)
+        await omni.kit.app.get_app().next_update_async()
+
+        q_actual = np.asarray(robot.get_joint_positions(), dtype=float)[arm_indices]
+        error = float(np.linalg.norm(q_actual - q_target))
+
+        log["time"].append(float(t))
+        log["target_q_arm"].append(q_target.tolist())
+        log["actual_q_arm"].append(q_actual.tolist())
+        log["joint_error_norm"].append(error)
+
+        if step % TRACK_LOG_EVERY_N_STEPS == 0 or step == num_steps - 1:
+            print(f"[motion:{name}] t={t:.3f}/{duration:.3f}, joint_error={error:.6f}")
+
+    wait_log = await wait_until_arm_reaches_target(
+        world=world,
+        robot=robot,
+        arm_indices=arm_indices,
+        q_target=q_home,
+        label=name,
+    )
     log["post_motion_wait"] = wait_log
     log["motion_converged"] = bool(wait_log.get("converged", True))
 
@@ -733,10 +859,20 @@ async def main():
     plan = load_grasp_plan()
     segments = plan["segments"]
     object_path = plan.get("object_prim_path")
+    grasp_mode = plan.get("grasp_mode") or plan.get("summary", {}).get("grasp_mode")
+    has_lift_segment = any(
+        segment.get("type") == "motion" and segment.get("name") == "lift_object"
+        for segment in segments
+    )
+    has_planned_retreat = any(
+        segment.get("type") == "motion" and segment.get("name") == "retreat_object"
+        for segment in segments
+    )
 
     print("[input] grasp plan:", GRASP_PLAN_JSON)
     print("[object]", object_path)
     print("[segments]", [segment["name"] for segment in segments])
+    print("[grasp_mode]", grasp_mode)
 
     draw_motion_segments(stage, segments)
 
@@ -809,7 +945,7 @@ async def main():
             if segment["name"] == "close_gripper" and not gripper_log.get("close_success", True):
                 abort_reason = gripper_log.get(
                     "abort_reason",
-                    "close_gripper 未满足进入 lift_object 的闭合进度条件。",
+                    "close_gripper 未满足进入后续 motion 的闭合进度条件。",
                 )
                 print("[abort]", abort_reason)
                 break
@@ -819,6 +955,38 @@ async def main():
 
     await hold_final(world, robot, executed_segments, arm_indices)
 
+    object_bbox_after_primary_motion = compute_world_bbox(stage, object_path)
+    print("[object] bbox after primary motion:", object_bbox_after_primary_motion)
+
+    if abort_reason is None and RETURN_HOME_AFTER_LIFT and has_planned_retreat:
+        print("[motion:return_home] skipped: plan already contains retreat_object")
+    elif abort_reason is None and RETURN_HOME_AFTER_LIFT:
+        if RETURN_HOME_STRATEGY == "reverse_executed_motion":
+            return_segments = make_reverse_return_home_segments(executed_segments)
+            if not return_segments:
+                print("[motion:return_home] skipped: no executed motion segments found")
+            else:
+                print(
+                    "[motion:return_home] strategy=reverse_executed_motion, "
+                    f"segments={[segment['name'] for segment in return_segments]}"
+                )
+                for return_segment in return_segments:
+                    logs.append(
+                        await execute_motion_segment(
+                            world,
+                            robot,
+                            arm_indices,
+                            return_segment,
+                        )
+                    )
+        else:
+            q_home = get_task_home_q_arm(segments)
+            if q_home is None:
+                print("[motion:return_home] skipped: no motion segment start pose found")
+            else:
+                home_log = await execute_return_home_motion(world, robot, arm_indices, q_home)
+                logs.append(home_log)
+
     object_bbox_after = compute_world_bbox(stage, object_path)
     print("[object] bbox after:", object_bbox_after)
 
@@ -827,17 +995,48 @@ async def main():
     lift_delta_top_z = None
     lift_delta_center_z = None
     lift_success = None
-    if object_bbox_before is not None and object_bbox_after is not None:
-        lift_delta_top_z = float(object_bbox_after["top_z"] - object_bbox_before["top_z"])
-        lift_delta_center_z = float(object_bbox_after["center_z"] - object_bbox_before["center_z"])
+    object_center_displacement = None
+    object_retreat_success = None
+    task_success = None
+    if object_bbox_before is not None and object_bbox_after_primary_motion is not None:
+        lift_delta_top_z = float(
+            object_bbox_after_primary_motion["top_z"] - object_bbox_before["top_z"]
+        )
+        lift_delta_center_z = float(
+            object_bbox_after_primary_motion["center_z"] - object_bbox_before["center_z"]
+        )
         lift_success = lift_delta_center_z >= OBJECT_LIFT_SUCCESS_THRESHOLD_M
+        before_center = np.asarray(object_bbox_before["center_xyz"], dtype=float)
+        after_center = np.asarray(
+            object_bbox_after_primary_motion["center_xyz"],
+            dtype=float,
+        )
+        object_center_displacement = float(np.linalg.norm(after_center - before_center))
+        object_retreat_success = (
+            object_center_displacement >= OBJECT_RETREAT_SUCCESS_THRESHOLD_M
+        )
+
+    if abort_reason is None:
+        if grasp_mode == "side" and has_planned_retreat and not has_lift_segment:
+            task_success = object_retreat_success
+        else:
+            task_success = lift_success
+    else:
+        task_success = False
 
     summary.update(
         {
+            "grasp_mode": grasp_mode,
+            "has_lift_segment": has_lift_segment,
+            "has_planned_retreat": has_planned_retreat,
             "object_lift_delta_top_z_m": lift_delta_top_z,
             "object_lift_delta_center_z_m": lift_delta_center_z,
             "object_lift_success": lift_success,
             "object_lift_success_threshold_m": OBJECT_LIFT_SUCCESS_THRESHOLD_M,
+            "object_center_displacement_m": object_center_displacement,
+            "object_retreat_success": object_retreat_success,
+            "object_retreat_success_threshold_m": OBJECT_RETREAT_SUCCESS_THRESHOLD_M,
+            "task_success": task_success,
             "aborted": abort_reason is not None,
             "abort_reason": abort_reason,
         }
@@ -853,6 +1052,8 @@ async def main():
         "arm_joint_indices": dict(zip(plan["joint_names"], arm_indices)),
         "gripper_joint_indices": dict(zip(gripper_joint_names, gripper_indices)),
         "object_bbox_before": object_bbox_before,
+        "object_bbox_after_primary_motion": object_bbox_after_primary_motion,
+        "object_bbox_after_lift": object_bbox_after_primary_motion,
         "object_bbox_after": object_bbox_after,
         "execution_logs": logs,
         "summary": summary,

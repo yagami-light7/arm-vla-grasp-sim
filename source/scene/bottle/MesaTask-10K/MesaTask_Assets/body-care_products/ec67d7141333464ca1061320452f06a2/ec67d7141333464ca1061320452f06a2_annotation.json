@@ -1,0 +1,18 @@
+{
+    "uid": "ec67d7141333464ca1061320452f06a2",
+    "category": "body-care_products",
+    "description": "Cylindrical bottle, mint green color, narrow upper part, sleek silhouette, with a label.",
+    "material": "plastic, paper",
+    "dimensions": "0.08 * 0.08 * 0.22",
+    "mass": 0.25,
+    "placement": [
+        "OnFloor",
+        "OnObject",
+        "OnTable"
+    ],
+    "asset_type": "rigid",
+    "glb_size": 0.22,
+    "usd_size": 0.26,
+    "usd_material_softlink": false,
+    "source": "holodeck"
+}

@@ -56,7 +56,7 @@ PLANNER_SERVER_TIMEOUT_S = 30.0
 
 # 调试执行抖动/时序时，先禁用常驻 planner，确保每次都使用磁盘上最新的
 # scripts/curobo/6_plan_grasp_segments.py 参数。确认稳定后再改回 True。
-USE_PLANNER_SERVER = False
+USE_PLANNER_SERVER = True
 
 
 def add_workspace_to_sys_path():
@@ -288,11 +288,15 @@ def write_task_summary(start_time_s: float):
     plan = read_json(PLAN_JSON)
 
     execution_summary = execution.get("summary", {})
+    task_success = execution_summary.get(
+        "task_success",
+        execution_summary.get("object_lift_success", False),
+    )
 
     summary = {
         "schema_version": 1,
         "task": "pick_lift_once",
-        "success": bool(execution_summary.get("object_lift_success", False)),
+        "success": bool(task_success),
         "elapsed_wall_time_s": float(time.time() - start_time_s),
         "files": {
             "state_json": str(STATE_JSON),
@@ -313,9 +317,15 @@ def write_task_summary(start_time_s: float):
             ),
         },
         "execution": {
+            "task_success": task_success,
+            "grasp_mode": execution_summary.get("grasp_mode"),
             "object_lift_success": execution_summary.get("object_lift_success"),
+            "object_retreat_success": execution_summary.get("object_retreat_success"),
             "aborted": execution_summary.get("aborted"),
             "abort_reason": execution_summary.get("abort_reason"),
+            "object_center_displacement_m": execution_summary.get(
+                "object_center_displacement_m"
+            ),
             "object_lift_delta_center_z_m": execution_summary.get(
                 "object_lift_delta_center_z_m"
             ),
@@ -342,6 +352,11 @@ def write_task_summary(start_time_s: float):
     print("\n========== Task Summary ==========")
     print("[task] output:", TASK_RESULT_JSON)
     print("[task] success:", summary["success"])
+    print("[task] grasp mode:", summary["execution"]["grasp_mode"])
+    print(
+        "[task] object center displacement:",
+        summary["execution"]["object_center_displacement_m"],
+    )
     print(
         "[task] lift delta center z:",
         summary["execution"]["object_lift_delta_center_z_m"],

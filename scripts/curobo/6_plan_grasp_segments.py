@@ -74,6 +74,12 @@ POSE_ACCEPTANCE_ORIENTATION_RAD = 5.0e-2
 NUM_IK_SEEDS = 32
 NUM_TRAJOPT_SEEDS = 8
 PLAN_POSE_MAX_ATTEMPTS = 6
+WORLD_COLLISION_ENABLED = True
+WORLD_COLLISION_CACHE = {
+    "primitive": 64,
+    "mesh": 1,
+}
+WORLD_COLLISION_ACTIVATION_DISTANCE_M = 0.02
 
 # pregrasp 是避开物体的安全点，但目标物体被放高、或者固定底座后
 # arm_base_link 变低时，默认 10 cm 上方的 pregrasp 可能比 grasp 本身更难到达。
@@ -93,13 +99,18 @@ SEGMENT_TIMING = {
     # 最终输出的连续 motion：q_current -> pregrasp -> grasp。
     # 名称继续使用 approach_to_grasp，是为了兼容执行脚本中已有的严格到位等待逻辑。
     "approach_to_grasp": {
-        "min_duration": 4.0,
-        "max_joint_speed": 0.25,
+        "min_duration": 1.0,
+        "max_joint_speed": 1.0,
     },
     # lift 抬起阶段夹着物体，保持相对稳一点。
     "lift_object": {
-        "min_duration": 1.5,
-        "max_joint_speed": 0.25,
+        "min_duration": 1.0,
+        "max_joint_speed": 0.80,
+    },
+    # 侧向抓取后不做竖直 lift，而是沿 approach_to_grasp 原路退回 chosen pregrasp。
+    "retreat_object": {
+        "min_duration": 1.0,
+        "max_joint_speed": 0.80,
     },
 }
 
@@ -110,6 +121,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
+from curobo.scene import Cuboid, Scene
 from curobo.types import GoalToolPose, JointState, Pose
 
 from SE3 import matrix_to_pose, pose_to_matrix, quat_error_deg
@@ -204,6 +216,65 @@ def load_grasp_target() -> dict:
     return data
 
 
+def make_world_collision_scene(isaac_state: dict) -> Scene | None:
+    """把 Isaac 导出的环境 collision cuboids 转成 cuRobo Scene。"""
+    if not WORLD_COLLISION_ENABLED:
+        return None
+
+    world_collision = isaac_state.get("world_collision", {})
+    cuboid_entries = world_collision.get("cuboids_base", [])
+    cuboids = []
+
+    for entry in cuboid_entries:
+        pose_base = entry.get("pose_base", {})
+        position = pose_base.get("position_xyz")
+        quaternion = pose_base.get("quaternion_wxyz")
+        dims = entry.get("dims_xyz")
+        name = entry.get("name")
+
+        if not name or position is None or quaternion is None or dims is None:
+            continue
+
+        dims = np.asarray(dims, dtype=float)
+        if dims.shape != (3,) or np.any(dims <= 0.0):
+            continue
+
+        cuboids.append(
+            Cuboid(
+                name=str(name),
+                pose=[
+                    *np.asarray(position, dtype=float).tolist(),
+                    *np.asarray(quaternion, dtype=float).tolist(),
+                ],
+                dims=dims.tolist(),
+            )
+        )
+
+    if not cuboids:
+        print("[world collision] no exported cuboids; planning without environment obstacles.")
+        return None
+
+    print(f"[world collision] loaded cuboids: {len(cuboids)}")
+    for cuboid in cuboids[:8]:
+        print(f"  - {cuboid.name}: pose={cuboid.pose}, dims={cuboid.dims}")
+    if len(cuboids) > 8:
+        print(f"  ... {len(cuboids) - 8} more")
+
+    return Scene(cuboid=cuboids)
+
+
+def update_planner_world(planner: MotionPlanner, world_scene: Scene | None) -> None:
+    """把当前 Isaac 场景障碍物更新到 cuRobo planner。"""
+    with profile_block("planner.update_world_collision"):
+        try:
+            planner.clear_scene_cache()
+        except Exception:
+            pass
+        if world_scene is None:
+            return
+        planner.update_world(world_scene)
+
+
 def get_start_q_from_isaac_state(data: dict) -> np.ndarray:
     """读取 q_arm，并检查 joint order 是否和 cuRobo 一致。"""
     joint_names = list(data["planner_convention"]["active_joint_names"])
@@ -292,10 +363,12 @@ def create_planner() -> MotionPlanner:
         cfg = MotionPlannerCfg.create(
             robot=str(ROBOT_YAML),
             scene_model=None,
+            collision_cache=WORLD_COLLISION_CACHE if WORLD_COLLISION_ENABLED else None,
             self_collision_check=True,
             use_cuda_graph=False,
             num_ik_seeds=NUM_IK_SEEDS,
             num_trajopt_seeds=NUM_TRAJOPT_SEEDS,
+            optimizer_collision_activation_distance=WORLD_COLLISION_ACTIVATION_DISTANCE_M,
         )
 
     with profile_block("MotionPlanner.__init__"):
@@ -914,6 +987,8 @@ def build_pregrasp_to_grasp_segment(
     else:
         q_path_merged = q_path_to_pregrasp.copy()
 
+    return_home_position, return_home_quaternion = run_fk(planner, q_path_merged[0])
+
     plan_info = {
         "planner_success": bool(
             pregrasp_info["planner_success"] and grasp_info["planner_success"]
@@ -941,6 +1016,17 @@ def build_pregrasp_to_grasp_segment(
                 "quaternion_wxyz": chosen_pregrasp_quaternion.tolist(),
             },
             "source_motion": "reverse of selected approach_to_grasp raw path",
+            "pregrasp_fallback_label": chosen_pregrasp_label,
+            "orientation_fallback_label": chosen_orientation_label,
+        },
+        "reverse_full_approach_return": {
+            "description": "close_gripper 后沿合并后的 approach_to_grasp 完整反向路径退回本轮任务 home pose。",
+            "q_path_raw": q_path_merged[::-1].copy().tolist(),
+            "target_pose_base": {
+                "position_xyz": return_home_position.tolist(),
+                "quaternion_wxyz": return_home_quaternion.tolist(),
+            },
+            "source_motion": "reverse of merged current-to-pregrasp-to-grasp raw path",
             "pregrasp_fallback_label": chosen_pregrasp_label,
             "orientation_fallback_label": chosen_orientation_label,
         },
@@ -978,6 +1064,9 @@ def build_lift_segment_from_reverse_approach(
     planner: MotionPlanner,
     approach_segment: dict,
     T_world_base: np.ndarray,
+    segment_name: str = "lift_object",
+    target_name: str = "lift",
+    reverse_info_key: str = "reverse_approach_lift",
 ) -> tuple[dict, np.ndarray]:
     """用 approach_to_grasp 的反向路径生成 lift/retreat 段。
 
@@ -985,9 +1074,9 @@ def build_lift_segment_from_reverse_approach(
     的路径反向退出。这条路径已经被 cuRobo 验证过，且对 top-down 抓取等价于
     从 grasp 回到 pregrasp。
     """
-    reverse_info = approach_segment.get("reverse_approach_lift")
+    reverse_info = approach_segment.get(reverse_info_key)
     if not reverse_info:
-        raise RuntimeError("approach segment 缺少 reverse_approach_lift 字段。")
+        raise RuntimeError(f"approach segment 缺少 {reverse_info_key} 字段。")
 
     q_path_raw = np.asarray(reverse_info["q_path_raw"], dtype=np.float32)
     target_pose = reverse_info["target_pose_base"]
@@ -1000,9 +1089,9 @@ def build_lift_segment_from_reverse_approach(
         "planner_rotation_error_rad": 0.0,
         "pose_converged": True,
         "raw_num_waypoints": int(q_path_raw.shape[0]),
-        "generated_from": "reverse_approach_to_grasp",
+        "generated_from": reverse_info_key,
         "note": "No additional cuRobo plan_pose call; this reuses the already feasible approach path in reverse.",
-        "reverse_approach_lift": {
+        reverse_info_key: {
             "pregrasp_fallback_label": reverse_info.get("pregrasp_fallback_label"),
             "orientation_fallback_label": reverse_info.get("orientation_fallback_label"),
         },
@@ -1012,13 +1101,14 @@ def build_lift_segment_from_reverse_approach(
         planner=planner,
         q_path_raw=q_path_raw,
         plan_info=plan_info,
-        target_name="lift",
+        target_name=target_name,
         target_position=target_position,
         target_quaternion=target_quaternion,
-        segment_name="lift_object",
+        segment_name=segment_name,
         T_world_base=T_world_base,
         extra_fields={
-            "lift_strategy": "reverse_approach_path",
+            "retreat_strategy": "reverse_approach_path",
+            "reverse_info_key": reverse_info_key,
             "source_motion": reverse_info.get("source_motion"),
         },
     )
@@ -1059,6 +1149,7 @@ def plan_grasp_segments(
         joint_limits = load_joint_limits_from_urdf(ROBOT_URDF)  # 从 URDF 读取关节限位
         q_current = clip_q_to_joint_limits(q_start, joint_limits)   # 把 Isaac 的 q_current 裁剪回 joint limit
         T_world_base = np.asarray(isaac_state["poses"]["world_base"]["matrix_4x4"], dtype=float) # 获取 world_base 的变换矩阵 
+        world_scene = make_world_collision_scene(isaac_state)
 
         pregrasp_pos, pregrasp_quat = get_named_target_pose(target_data, "pregrasp")
         grasp_pos, grasp_quat = get_named_target_pose(target_data, "grasp")
@@ -1077,6 +1168,8 @@ def plan_grasp_segments(
         if planner is None:
             with profile_block("create_planner_total"):
                 planner = create_planner()
+
+        update_planner_world(planner, world_scene)
 
         segments.append(make_gripper_segment("open_gripper", gripper_open, gripper_joint_names))
 
@@ -1098,28 +1191,16 @@ def plan_grasp_segments(
         segments.append(make_gripper_segment("close_gripper", gripper_close, gripper_joint_names))
 
         if grasp_mode == "side":
-            try:
-                segment, q_current = build_motion_segment(
-                    planner=planner,
-                    q_start=q_current,
-                    target_name="lift",
-                    target_position=lift_pos,
-                    target_quaternion=lift_quat,
-                    segment_name="lift_object",
-                    T_world_base=T_world_base,
-                )
-                segment["lift_strategy"] = "planned_vertical_lift_for_side_grasp"
-            except Exception as exc:
-                print(
-                    "[lift fallback] side grasp vertical lift planning failed; "
-                    f"fallback to reverse approach path. reason={exc}"
-                )
-                segment, q_current = build_lift_segment_from_reverse_approach(
-                    planner=planner,
-                    approach_segment=approach_segment,
-                    T_world_base=T_world_base,
-                )
-                segment["plan_info"]["planned_vertical_lift_error"] = str(exc)
+            print("[side grasp] skip vertical lift; retreat by reversing approach path.")
+            segment, q_current = build_lift_segment_from_reverse_approach(
+                planner=planner,
+                approach_segment=approach_segment,
+                T_world_base=T_world_base,
+                segment_name="retreat_object",
+                target_name="home",
+                reverse_info_key="reverse_full_approach_return",
+            )
+            segment["retreat_strategy"] = "reverse_full_approach_path_for_side_grasp"
         else:
             segment, q_current = build_lift_segment_from_reverse_approach(
                 planner=planner,
@@ -1146,6 +1227,7 @@ def plan_grasp_segments(
         "joint_names": EXPECTED_JOINT_NAMES,
         "tool_frame": EXPECTED_TOOL_FRAME,
         "object_prim_path": target_data.get("source", {}).get("object_prim_path"),
+        "grasp_mode": grasp_mode,
         "segments": segments,
         "summary": {
             "num_segments": len(segments),
@@ -1153,6 +1235,7 @@ def plan_grasp_segments(
             "all_motion_segments_success": all_success,
             "total_motion_duration_s": float(total_motion_duration),
             "final_q_arm": q_current.tolist(),
+            "grasp_mode": grasp_mode,
         },
     }
 
