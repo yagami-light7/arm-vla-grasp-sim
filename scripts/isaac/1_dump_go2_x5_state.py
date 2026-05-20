@@ -446,4 +446,5 @@ async def main():
         raise
 
 
-asyncio.ensure_future(main())
+if __name__ == "__main__":
+    asyncio.ensure_future(main())

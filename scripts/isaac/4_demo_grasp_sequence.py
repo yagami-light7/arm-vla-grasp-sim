@@ -43,26 +43,30 @@ from isaacsim.core.utils.types import ArticulationAction
 
 
 GRASP_PLAN_JSON = Path("/tmp/go2_x5_grasp_plan.json")
+TARGET_JSON = Path("/tmp/go2_x5_target_tcp_pose.json")
+STATE_JSON = Path("/tmp/go2_x5_isaac_state.json")
 OUTPUT_JSON = Path("/tmp/go2_x5_grasp_sequence_result.json")
 
 ARTICULATION_ROOT_PATH = "/World/go2_x5/root_joint"
 DEBUG_ROOT_PATH = "/World/debug_go2_x5_grasp_sequence"
 
 SIM_DT = 1.0 / 50.0
+ARM_COMMAND_DT = 0.05
+GRIPPER_COMMAND_DT = 0.05
 SETTLE_TO_SEGMENT_START_DURATION = 0.10
-GRIPPER_MOVE_DURATION = 0.15
-GRIPPER_HOLD_DURATION = 0.20
-FINAL_HOLD_DURATION = 0.10
-PRE_CLOSE_HOLD_DURATION = 0.05
-GRIPPER_MIN_CLOSE_PROGRESS_FOR_LIFT = 0.05
+GRIPPER_MOVE_DURATION = 0.45
+GRIPPER_HOLD_DURATION = 0.45
+FINAL_HOLD_DURATION = 0.20
+PRE_CLOSE_HOLD_DURATION = 0.10
+GRIPPER_MIN_CLOSE_PROGRESS_FOR_LIFT = 0.10
 
 TRACK_LOG_EVERY_N_STEPS = 20
 DRAW_WAYPOINT_STRIDE = 40
 
 # 每个 motion segment 执行完后，继续保持最终关节目标，等待真实 articulation 追上。
 # 这样 close_gripper 不会在 approach_to_grasp 尚未到位时提前执行。
-POST_MOTION_CONVERGENCE_TIMEOUT = 0.20
-POST_MOTION_JOINT_ERROR_TOL = 0.012
+POST_MOTION_CONVERGENCE_TIMEOUT = 1.50
+POST_MOTION_JOINT_ERROR_TOL = 0.030
 STRICT_POST_MOTION_WAIT_SEGMENTS = {
     "move_to_pregrasp",
     "approach_to_grasp",
@@ -99,6 +103,17 @@ def get_stage():
     return stage
 
 
+def get_articulation_root_path() -> str:
+    """优先使用 dump state 中解析到的当前机器人 articulation root。"""
+    if STATE_JSON.exists():
+        data = json.loads(STATE_JSON.read_text(encoding="utf-8"))
+        path = data.get("paths", {}).get("articulation_root_path")
+        if path:
+            return str(path)
+
+    return ARTICULATION_ROOT_PATH
+
+
 async def init_robot():
     """进入 play 状态并初始化 Go2-X5 articulation。"""
     world = World.instance()
@@ -109,14 +124,17 @@ async def init_robot():
     await world.play_async()
     await omni.kit.app.get_app().next_update_async()
 
+    articulation_root_path = get_articulation_root_path()
+    print("[robot] articulation root:", articulation_root_path)
+
     robot = SingleArticulation(
-        prim_path=ARTICULATION_ROOT_PATH,
+        prim_path=articulation_root_path,
         name="go2_x5_grasp_sequence_robot",
     )
     robot.initialize()
 
     if not robot.is_valid():
-        raise RuntimeError(f"SingleArticulation 无效: {ARTICULATION_ROOT_PATH}")
+        raise RuntimeError(f"SingleArticulation 无效: {articulation_root_path}")
 
     return world, robot
 
@@ -299,6 +317,50 @@ def compute_world_bbox(stage, prim_path: str):
     }
 
 
+def print_grasp_target_diagnostics(object_bbox):
+    """打印计划 TCP 和物体 bbox 的相对关系，辅助判断是不是抓得太高/太偏。"""
+    if object_bbox is None:
+        return
+    if not TARGET_JSON.exists():
+        print(f"[diagnostic] target json 不存在，跳过 TCP/bbox 诊断: {TARGET_JSON}")
+        return
+
+    target = json.loads(TARGET_JSON.read_text(encoding="utf-8"))
+    grasp_pose = target.get("poses", {}).get("grasp", {})
+    grasp_world = grasp_pose.get("world", {})
+    grasp_pos = grasp_world.get("position_xyz")
+    if grasp_pos is None:
+        print("[diagnostic] target json 中没有 poses.grasp.world.position_xyz")
+        return
+
+    grasp_pos = np.asarray(grasp_pos, dtype=float)
+    bbox_center = np.asarray(object_bbox["center_xyz"], dtype=float)
+    bbox_top_z = float(object_bbox["top_z"])
+    bbox_min = np.asarray(object_bbox["min_xyz"], dtype=float)
+    bbox_max = np.asarray(object_bbox["max_xyz"], dtype=float)
+    bbox_size = bbox_max - bbox_min
+
+    delta = grasp_pos - bbox_center
+    xy_error = float(np.linalg.norm(delta[:2]))
+    tcp_depth_below_top = float(bbox_top_z - grasp_pos[2])
+
+    print("[diagnostic] planned grasp TCP world:", grasp_pos)
+    print("[diagnostic] object bbox center world:", bbox_center)
+    print("[diagnostic] object bbox size:", bbox_size)
+    print(
+        "[diagnostic] TCP relative to object center: "
+        f"delta_xyz={delta}, xy_error={xy_error:.4f}m, "
+        f"depth_below_top={tcp_depth_below_top:.4f}m"
+    )
+
+    if tcp_depth_below_top < 0.030:
+        print("[warning] grasp TCP 偏高，苹果/球体更建议接近 bbox 中心高度。")
+    if abs(float(delta[2])) > 0.020:
+        print("[warning] grasp TCP 与物体中心高度差超过 2cm，可能夹偏。")
+    if xy_error > 0.015:
+        print("[warning] grasp TCP 与物体中心 XY 偏差超过 1.5cm，可能夹不到物体。")
+
+
 def draw_motion_segments(stage, segments):
     """在 Isaac viewport 中画出完整抓取 TCP 路径。"""
     if stage.GetPrimAtPath(DEBUG_ROOT_PATH).IsValid():
@@ -375,10 +437,14 @@ async def execute_motion_segment(world, robot, arm_indices, segment):
 
     duration = float(time_from_start[-1])
     num_steps = int(np.ceil(duration / SIM_DT)) + 1
+    command_period_steps = max(1, int(round(ARM_COMMAND_DT / SIM_DT)))
+    q_target = q_traj[0].copy()
 
     log = {
         "name": name,
         "type": "motion",
+        "sim_dt": SIM_DT,
+        "command_dt": ARM_COMMAND_DT,
         "time": [],
         "target_q_arm": [],
         "actual_q_arm": [],
@@ -389,7 +455,8 @@ async def execute_motion_segment(world, robot, arm_indices, segment):
 
     for step in range(num_steps):
         t = min(step * SIM_DT, duration)
-        q_target = sample_cubic_hermite(time_from_start, q_traj, qd_traj, t)
+        if step % command_period_steps == 0 or step == num_steps - 1:
+            q_target = sample_cubic_hermite(time_from_start, q_traj, qd_traj, t)
 
         q_full_now = np.asarray(robot.get_joint_positions(), dtype=float).copy()
         action = make_partial_action(q_target, arm_indices, q_full_now)
@@ -425,6 +492,7 @@ async def execute_motion_segment(world, robot, arm_indices, segment):
             "reason": "strict post-motion wait is only required before close_gripper",
         }
     log["post_motion_wait"] = wait_log
+    log["motion_converged"] = bool(wait_log.get("converged", True))
 
     return log
 
@@ -514,11 +582,15 @@ async def execute_gripper_segment(
     q_start = q_full_start[gripper_indices].copy()
 
     num_steps = max(2, int(GRIPPER_MOVE_DURATION / SIM_DT))
+    command_period_steps = max(1, int(round(GRIPPER_COMMAND_DT / SIM_DT)))
+    q_cmd = q_start.copy()
 
     log = {
         "name": name,
         "type": "gripper",
         "target_position": q_target.tolist(),
+        "sim_dt": SIM_DT,
+        "command_dt": GRIPPER_COMMAND_DT,
         "time": [],
         "actual_q_gripper": [],
         "error_norm": [],
@@ -540,8 +612,9 @@ async def execute_gripper_segment(
 
     for step in range(num_steps):
         u = step / float(num_steps - 1)
-        s = smoothstep5(u)
-        q_cmd = (1.0 - s) * q_start + s * q_target
+        if step % command_period_steps == 0 or step == num_steps - 1:
+            s = smoothstep5(u)
+            q_cmd = (1.0 - s) * q_start + s * q_target
 
         q_full_now = np.asarray(robot.get_joint_positions(), dtype=float).copy()
         apply_gripper_command_with_arm_hold(
@@ -591,18 +664,20 @@ async def execute_gripper_segment(
         close_progress = compute_close_progress(q_start, q_final, q_target)
         log["close_progress"] = close_progress
         log["min_close_progress_for_lift"] = GRIPPER_MIN_CLOSE_PROGRESS_FOR_LIFT
+        log["close_success"] = close_progress >= GRIPPER_MIN_CLOSE_PROGRESS_FOR_LIFT
         log["close_success_rule"] = "contact-aware close progress, not final error to zero"
         print(
             "[gripper:close_gripper] close_progress="
             f"{close_progress:.3f}, required={GRIPPER_MIN_CLOSE_PROGRESS_FOR_LIFT:.3f}"
         )
 
-        if close_progress < GRIPPER_MIN_CLOSE_PROGRESS_FOR_LIFT:
-            raise RuntimeError(
-                "close_gripper 没有发生足够闭合，停止进入 lift_object。"
-                f" q_start={q_start}, q_final={q_final}, q_target={q_target}, "
-                f"close_progress={close_progress:.3f}"
+        if not log["close_success"]:
+            log["abort_reason"] = (
+                "close_gripper 没有发生足够闭合。"
+                f" q_start={q_start.tolist()}, q_final={q_final.tolist()}, "
+                f"q_target={q_target.tolist()}, close_progress={close_progress:.3f}"
             )
+            print("[gripper:close_gripper] close check failed:", log["abort_reason"])
 
     print(f"[gripper:{name}] final={q_final}, final_error={final_error:.6f}")
     return log
@@ -667,6 +742,7 @@ async def main():
 
     object_bbox_before = compute_world_bbox(stage, object_path)
     print("[object] bbox before:", object_bbox_before)
+    print_grasp_target_diagnostics(object_bbox_before)
 
     world, robot = await init_robot()
     await omni.kit.app.get_app().next_update_async()
@@ -687,11 +763,31 @@ async def main():
     print("[mapping] gripper:", dict(zip(gripper_joint_names, gripper_indices)))
 
     logs = []
+    executed_segments = []
     last_motion_q_final = None
+    abort_reason = None
     for segment in segments:
         if segment["type"] == "motion":
-            logs.append(await execute_motion_segment(world, robot, arm_indices, segment))
+            motion_log = await execute_motion_segment(world, robot, arm_indices, segment)
+            logs.append(motion_log)
+            executed_segments.append(segment)
             last_motion_q_final = np.asarray(segment["trajectory"]["q"][-1], dtype=float)
+
+            if (
+                segment["name"] in STRICT_POST_MOTION_WAIT_SEGMENTS
+                and not motion_log.get("motion_converged", False)
+            ):
+                final_error = None
+                wait_log = motion_log.get("post_motion_wait", {})
+                if wait_log.get("joint_error_norm"):
+                    final_error = wait_log["joint_error_norm"][-1]
+                abort_reason = (
+                    f"{segment['name']} 未在闭环等待内到位，跳过后续抓取。"
+                    f" final_joint_error={final_error}"
+                )
+                print("[abort]", abort_reason)
+                break
+
         elif segment["type"] == "gripper":
             q_arm_hold = None
             hold_indices = None
@@ -699,20 +795,29 @@ async def main():
                 q_arm_hold = last_motion_q_final
                 hold_indices = arm_indices
 
-            logs.append(
-                await execute_gripper_segment(
-                    world,
-                    robot,
-                    gripper_indices,
-                    segment,
-                    arm_indices=hold_indices,
-                    q_arm_hold=q_arm_hold,
-                )
+            gripper_log = await execute_gripper_segment(
+                world,
+                robot,
+                gripper_indices,
+                segment,
+                arm_indices=hold_indices,
+                q_arm_hold=q_arm_hold,
             )
+            logs.append(gripper_log)
+            executed_segments.append(segment)
+
+            if segment["name"] == "close_gripper" and not gripper_log.get("close_success", True):
+                abort_reason = gripper_log.get(
+                    "abort_reason",
+                    "close_gripper 未满足进入 lift_object 的闭合进度条件。",
+                )
+                print("[abort]", abort_reason)
+                break
+
         else:
             raise RuntimeError(f"未知 segment type: {segment['type']}")
 
-    await hold_final(world, robot, segments, arm_indices)
+    await hold_final(world, robot, executed_segments, arm_indices)
 
     object_bbox_after = compute_world_bbox(stage, object_path)
     print("[object] bbox after:", object_bbox_after)
@@ -733,6 +838,8 @@ async def main():
             "object_lift_delta_center_z_m": lift_delta_center_z,
             "object_lift_success": lift_success,
             "object_lift_success_threshold_m": OBJECT_LIFT_SUCCESS_THRESHOLD_M,
+            "aborted": abort_reason is not None,
+            "abort_reason": abort_reason,
         }
     )
 
@@ -749,6 +856,7 @@ async def main():
         "object_bbox_after": object_bbox_after,
         "execution_logs": logs,
         "summary": summary,
+        "abort_reason": abort_reason,
     }
 
     OUTPUT_JSON.write_text(
@@ -761,4 +869,5 @@ async def main():
     print("========== grasp sequence complete ==========")
 
 
-asyncio.ensure_future(main())
+if __name__ == "__main__":
+    asyncio.ensure_future(main())
