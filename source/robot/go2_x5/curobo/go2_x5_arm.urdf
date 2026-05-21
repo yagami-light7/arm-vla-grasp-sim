@@ -276,7 +276,7 @@
     <child link="arm_eef_link" />
   </joint>
   <joint name="grasp_tcp_fixed_joint" type="fixed">
-    <origin xyz="0.1425699970126152 0.0 0.0" rpy="0 0 0" />
+    <origin xyz="0.15757 0.0 0.0" rpy="0 0 0" />
     <parent link="arm_link6" />
     <child link="grasp_tcp_link" />
   </joint>

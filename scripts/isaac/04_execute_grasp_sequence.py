@@ -325,7 +325,7 @@ def compute_world_bbox(stage, prim_path: str):
 
 
 def print_grasp_target_diagnostics(object_bbox):
-    """打印计划 TCP 和物体 bbox 的相对关系，辅助判断是不是抓得太高/太偏。"""
+    """打印计划指尖 TCP、夹持中心和物体 bbox 的相对关系。"""
     if object_bbox is None:
         return
     if not TARGET_JSON.exists():
@@ -341,31 +341,51 @@ def print_grasp_target_diagnostics(object_bbox):
         return
 
     grasp_pos = np.asarray(grasp_pos, dtype=float)
+    source = target.get("source", {})
+    contact_world = source.get("world_grasp_contact_pose", {})
+    contact_pos = contact_world.get("position_xyz")
+    has_contact_pose = contact_pos is not None
+    if contact_pos is None:
+        contact_pos = grasp_pos
+        bbox_reference_label = "TCP"
+    else:
+        contact_pos = np.asarray(contact_pos, dtype=float)
+        bbox_reference_label = "contact center"
+
     bbox_center = np.asarray(object_bbox["center_xyz"], dtype=float)
     bbox_top_z = float(object_bbox["top_z"])
     bbox_min = np.asarray(object_bbox["min_xyz"], dtype=float)
     bbox_max = np.asarray(object_bbox["max_xyz"], dtype=float)
     bbox_size = bbox_max - bbox_min
 
-    delta = grasp_pos - bbox_center
+    delta = contact_pos - bbox_center
     xy_error = float(np.linalg.norm(delta[:2]))
-    tcp_depth_below_top = float(bbox_top_z - grasp_pos[2])
+    depth_below_top = float(bbox_top_z - contact_pos[2])
 
-    print("[diagnostic] planned grasp TCP world:", grasp_pos)
+    print("[diagnostic] planned grasp tip TCP world:", grasp_pos)
+    if has_contact_pose:
+        insertion_delta = grasp_pos - contact_pos
+        print("[diagnostic] planned grasp contact center world:", contact_pos)
+        print(
+            "[diagnostic] tip TCP beyond contact center: "
+            f"delta_xyz={insertion_delta}, "
+            "configured_insertion="
+            f"{source.get('tip_tcp_insertion_beyond_grasp_center_m')}m"
+        )
     print("[diagnostic] object bbox center world:", bbox_center)
     print("[diagnostic] object bbox size:", bbox_size)
     print(
-        "[diagnostic] TCP relative to object center: "
+        f"[diagnostic] grasp {bbox_reference_label} relative to object center: "
         f"delta_xyz={delta}, xy_error={xy_error:.4f}m, "
-        f"depth_below_top={tcp_depth_below_top:.4f}m"
+        f"depth_below_top={depth_below_top:.4f}m"
     )
 
-    if tcp_depth_below_top < 0.030:
-        print("[warning] grasp TCP 偏高，苹果/球体更建议接近 bbox 中心高度。")
+    if depth_below_top < 0.030:
+        print(f"[warning] grasp {bbox_reference_label} 偏高，苹果/球体更建议接近 bbox 中心高度。")
     if abs(float(delta[2])) > 0.020:
-        print("[warning] grasp TCP 与物体中心高度差超过 2cm，可能夹偏。")
+        print(f"[warning] grasp {bbox_reference_label} 与物体中心高度差超过 2cm，可能夹偏。")
     if xy_error > 0.015:
-        print("[warning] grasp TCP 与物体中心 XY 偏差超过 1.5cm，可能夹不到物体。")
+        print(f"[warning] grasp {bbox_reference_label} 与物体中心 XY 偏差超过 1.5cm，可能夹不到物体。")
 
 
 def draw_motion_segments(stage, segments):

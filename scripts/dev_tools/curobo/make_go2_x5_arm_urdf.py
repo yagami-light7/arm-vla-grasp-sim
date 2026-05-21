@@ -54,7 +54,7 @@ ARM_LINK_NAMES = [
     "arm_link8",
     # 保留原始末端参考帧，便于和旧配置/Isaac 导入结果对照。
     "arm_eef_link",
-    # 新的抓取 TCP，位于两指抓取中心附近，作为 cuRobo tool frame。
+    # 指尖 TCP，位于两指指尖中心，作为 cuRobo tool frame。
     "grasp_tcp_link",
 ]
 

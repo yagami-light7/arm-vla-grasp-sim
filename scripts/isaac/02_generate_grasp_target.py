@@ -47,8 +47,14 @@ ARM_BASE_LINK_PATH = "/World/go2_x5/arm_base_link"
 
 DEBUG_ROOT_PATH = "/World/debug_sim_grasp_target"
 
-# grasp_tcp_link 是两指之间的 TCP frame。
+# grasp_tcp_link 是两指指尖中心的 TCP frame。
 PREFERRED_GRASP_MODE = "side"  # 可选: "side", "top_down"
+
+# 当前 TCP 已定义在指尖。真正稳定夹持苹果时，物体中心应该进入两指内部，
+# 因此最终 grasp 目标把指尖 TCP 沿局部 +X 再送入一小段距离。
+# 这样 cuRobo 仍然用指尖 TCP 做路径规划和桌面 clearance 检查，
+# 但 close_gripper 前的有效夹持中心仍对齐原先的 bbox grasp 规则。
+TIP_TCP_INSERTION_BEYOND_GRASP_CENTER_M = 0.015
 
 # 对平行夹爪抓立方体，TCP 应该落到物体高度中部附近，而不是停在物体顶部上方。
 # 第一版使用 bbox 顶部向下一个深度。
@@ -56,15 +62,15 @@ PREFERRED_GRASP_MODE = "side"  # 可选: "side", "top_down"
 # 之前 0.025 m 会让 TCP 高于苹果中心约 1 cm，容易夹到上半部分但 lift 不起来。
 GRASP_DEPTH_BELOW_TOP_M = 0.035
 
-# 侧向抓取时，TCP 默认放在 bbox 中心高度。正值会让 TCP 稍微高于中心。
-SIDE_GRASP_CENTER_Z_OFFSET_M = 0.008
+# 侧向抓取时，有效夹持中心默认放在 bbox 中心高度。正值会让它稍微高于中心。
+SIDE_GRASP_CENTER_Z_OFFSET_M = 0.0075
 
 # 侧向抓取时，pregrasp 沿 TCP 局部 -X 退出，即从物体朝机械臂方向退开。
 SIDE_PREGRASP_OFFSET_M = 0.10
 
 # pregrasp 比 grasp 再高一点，后续 approach 会从 pregrasp 下降到 grasp。
 PREGRASP_OFFSET_M = 0.10
-
+    
 # lift 比 grasp 更高一点，后续 close gripper 后向上抬起物体。
 # 当前 Go2-X5 arm 在 top-down 姿态下从低位 grasp 继续抬太高会进入
 # cuRobo 难以求解的构型。第一版先回到 pregrasp 高度，保证流程可闭环。
@@ -177,7 +183,7 @@ def compute_world_bbox(stage, prim_path):
 
 
 def make_grasp_position_world(bbox_min, bbox_max, bbox_center):
-    """根据物体 bbox 生成 top-down grasp TCP 的 world 位置。"""
+    """根据物体 bbox 生成 top-down 有效夹持中心的 world 位置。"""
     return np.array([
         bbox_center[0],
         bbox_center[1],
@@ -186,7 +192,7 @@ def make_grasp_position_world(bbox_min, bbox_max, bbox_center):
 
 
 def make_side_grasp_position_world(bbox_center):
-    """根据物体 bbox 生成 side grasp TCP 的 world 位置。"""
+    """根据物体 bbox 生成 side 有效夹持中心的 world 位置。"""
     grasp_position = np.array(bbox_center, dtype=float).copy()
     grasp_position[2] += SIDE_GRASP_CENTER_Z_OFFSET_M
     return grasp_position
@@ -203,7 +209,7 @@ def world_point_to_base_position(T_world_base, point_world):
 
 
 def make_top_down_grasp_pose_base(T_world_base, bbox_min, bbox_max, bbox_center):
-    """生成 base frame 下的 top-down grasp pose。"""
+    """生成 base frame 下的 top-down 有效夹持中心 pose。"""
     grasp_position_world = make_grasp_position_world(
         bbox_min,
         bbox_max,
@@ -218,7 +224,7 @@ def make_top_down_grasp_pose_base(T_world_base, bbox_min, bbox_max, bbox_center)
 
 def make_side_grasp_pose_base(T_world_base, bbox_center):
     """
-    生成 base frame 下的侧向抓取 pose。
+    生成 base frame 下的侧向有效夹持中心 pose。
 
     约定：
         - grasp_tcp_link 局部 +X 是夹爪伸出/接近物体的方向。
@@ -279,6 +285,14 @@ def offset_pose_along_local_x(T_base_pose, offset_x_m):
     local_x_in_base = T_offset[:3, 0]
     T_offset[:3, 3] += local_x_in_base * float(offset_x_m)
     return T_offset
+
+
+def make_tip_tcp_grasp_pose(T_base_grasp_contact):
+    """把有效夹持中心 pose 转成最终要规划的指尖 TCP grasp pose。"""
+    return offset_pose_along_local_x(
+        T_base_grasp_contact,
+        TIP_TCP_INSERTION_BEYOND_GRASP_CENTER_M,
+    )
 
 
 def world_to_base_pose(T_world_base, T_world_target):
@@ -381,7 +395,14 @@ def create_marker(stage, path, position, color, radius=0.025):
     return sphere
 
 
-def draw_debug_markers(stage, grasp_pos_world, pregrasp_pos_world, lift_pos_world, bbox_center):
+def draw_debug_markers(
+    stage,
+    grasp_pos_world,
+    grasp_contact_pos_world,
+    pregrasp_pos_world,
+    lift_pos_world,
+    bbox_center,
+):
     if stage.GetPrimAtPath(DEBUG_ROOT_PATH).IsValid():
         stage.RemovePrim(DEBUG_ROOT_PATH)
 
@@ -400,6 +421,13 @@ def draw_debug_markers(stage, grasp_pos_world, pregrasp_pos_world, lift_pos_worl
         grasp_pos_world,
         color=(1.0, 0.1, 0.1),
         radius=0.025,
+    )
+    create_marker(
+        stage,
+        DEBUG_ROOT_PATH + "/grasp_contact_center",
+        grasp_contact_pos_world,
+        color=(1.0, 0.85, 0.1),
+        radius=0.018,
     )
     create_marker(
         stage,
@@ -432,9 +460,11 @@ def save_target_pose_json(
     object_path,
     T_base_pregrasp,
     T_base_grasp,
+    T_base_grasp_contact,
     T_base_lift,
     T_world_pregrasp,
     T_world_grasp,
+    T_world_grasp_contact,
     T_world_lift,
     bbox_min,
     bbox_max,
@@ -444,11 +474,18 @@ def save_target_pose_json(
 ):
     pregrasp_entry = make_named_pose_entry(T_base_pregrasp, T_world_pregrasp)
     grasp_entry = make_named_pose_entry(T_base_grasp, T_world_grasp)
+    grasp_contact_entry = make_named_pose_entry(
+        T_base_grasp_contact,
+        T_world_grasp_contact,
+    )
     lift_entry = make_named_pose_entry(T_base_lift, T_world_lift)
 
     # 兼容 dev_tools/curobo/demo_plan_to_pose.py：顶层 pose 仍然代表 grasp。
     grasp_pos_base, grasp_quat_base = matrix_to_pose(T_base_grasp)
     grasp_pos_world, grasp_quat_world = matrix_to_pose(T_world_grasp)
+    grasp_contact_pos_world, grasp_contact_quat_world = matrix_to_pose(
+        T_world_grasp_contact
+    )
     pregrasp_pos_world, pregrasp_quat_world = matrix_to_pose(T_world_pregrasp)
     lift_pos_world, lift_quat_world = matrix_to_pose(T_world_lift)
 
@@ -485,6 +522,11 @@ def save_target_pose_json(
                 "position_xyz": grasp_pos_world.tolist(),
                 "quaternion_wxyz": grasp_quat_world.tolist(),
             },
+            "world_grasp_contact_pose": {
+                "position_xyz": grasp_contact_pos_world.tolist(),
+                "quaternion_wxyz": grasp_contact_quat_world.tolist(),
+            },
+            "grasp_contact_pose": grasp_contact_entry,
             "world_pregrasp_pose": {
                 "position_xyz": pregrasp_pos_world.tolist(),
                 "quaternion_wxyz": pregrasp_quat_world.tolist(),
@@ -501,6 +543,9 @@ def save_target_pose_json(
             },
             "grasp_depth_below_top_m": GRASP_DEPTH_BELOW_TOP_M,
             "side_grasp_center_z_offset_m": SIDE_GRASP_CENTER_Z_OFFSET_M,
+            "tip_tcp_insertion_beyond_grasp_center_m": (
+                TIP_TCP_INSERTION_BEYOND_GRASP_CENTER_M
+            ),
             "side_pregrasp_offset_m": SIDE_PREGRASP_OFFSET_M,
             "pregrasp_offset_m": PREGRASP_OFFSET_M,
             "lift_offset_m": LIFT_OFFSET_M,
@@ -521,6 +566,7 @@ def save_target_pose_json(
     print("[output] target pose json:", OUTPUT_TARGET_JSON)
     print("[target default]: grasp")
     print("[grasp base position]:", grasp_pos_base)
+    print("[grasp contact center base position]:", grasp_contact_entry["position_xyz"])
     print("[grasp base quat_wxyz]:", grasp_quat_base)
     print("[pregrasp base position]:", pregrasp_entry["position_xyz"])
     print("[lift base position]:", lift_entry["position_xyz"])
@@ -550,18 +596,20 @@ async def main():
     print("[object] bbox size:", bbox_size)
 
     if PREFERRED_GRASP_MODE == "side":
-        T_base_grasp = make_side_grasp_pose_base(T_world_base, bbox_center)
+        T_base_grasp_contact = make_side_grasp_pose_base(T_world_base, bbox_center)
+        T_base_grasp = make_tip_tcp_grasp_pose(T_base_grasp_contact)
         T_base_pregrasp = offset_pose_along_local_x(
             T_base_grasp,
             -SIDE_PREGRASP_OFFSET_M,
         )
     elif PREFERRED_GRASP_MODE == "top_down":
-        T_base_grasp = make_top_down_grasp_pose_base(
+        T_base_grasp_contact = make_top_down_grasp_pose_base(
             T_world_base,
             bbox_min,
             bbox_max,
             bbox_center,
         )
+        T_base_grasp = make_tip_tcp_grasp_pose(T_base_grasp_contact)
         T_base_pregrasp = offset_pose_along_base_z(T_base_grasp, PREGRASP_OFFSET_M)
     else:
         raise RuntimeError(f"未知 PREFERRED_GRASP_MODE: {PREFERRED_GRASP_MODE}")
@@ -570,6 +618,10 @@ async def main():
 
     T_world_pregrasp = base_pose_to_world_pose(T_world_base, T_base_pregrasp)
     T_world_grasp = base_pose_to_world_pose(T_world_base, T_base_grasp)
+    T_world_grasp_contact = base_pose_to_world_pose(
+        T_world_base,
+        T_base_grasp_contact,
+    )
     T_world_lift = base_pose_to_world_pose(T_world_base, T_base_lift)
 
     workspace_diagnostics = make_target_workspace_diagnostics(
@@ -580,12 +632,14 @@ async def main():
     print_target_workspace_diagnostics(workspace_diagnostics)
 
     grasp_pos_world, _ = matrix_to_pose(T_world_grasp)
+    grasp_contact_pos_world, _ = matrix_to_pose(T_world_grasp_contact)
     pregrasp_pos_world, _ = matrix_to_pose(T_world_pregrasp)
     lift_pos_world, _ = matrix_to_pose(T_world_lift)
 
     draw_debug_markers(
         stage,
         grasp_pos_world,
+        grasp_contact_pos_world,
         pregrasp_pos_world,
         lift_pos_world,
         bbox_center,
@@ -595,9 +649,11 @@ async def main():
         object_path,
         T_base_pregrasp,
         T_base_grasp,
+        T_base_grasp_contact,
         T_base_lift,
         T_world_pregrasp,
         T_world_grasp,
+        T_world_grasp_contact,
         T_world_lift,
         bbox_min,
         bbox_max,

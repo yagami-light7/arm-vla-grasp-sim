@@ -76,7 +76,7 @@ TCP_LINK_NAME = "grasp_tcp_link"
 TCP_FALLBACK_PARENT_LINK_NAME = "arm_link6"
 # 如果 Isaac stage 还没有重新导入 grasp_tcp_link，就用 arm_link6 + 固定偏移
 # 临时估计同一个 TCP。这个数值必须和 URDF 中 grasp_tcp_fixed_joint 一致。
-TCP_FALLBACK_OFFSET_XYZ = (0.1425699970126152, 0.0, 0.0)
+TCP_FALLBACK_OFFSET_XYZ = (0.15757, 0.0, 0.0)
 TCP_FALLBACK_OFFSET_RPY = (0.0, 0.0, 0.0)
 
 

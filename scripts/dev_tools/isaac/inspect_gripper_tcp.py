@@ -1,9 +1,9 @@
 """
-检查 Go2-X5 夹爪真实抓取 TCP 位置。
+检查 Go2-X5 夹爪指尖 TCP 位置。
 
 用途：
-    当前 grasp_tcp_link 可能不在真实夹爪接触中心，导致 cuRobo 规划到位后
-    夹爪几何仍然和物体有偏移或碰撞。
+    当前 grasp_tcp_link 可能不在真实夹爪指尖中心，导致 TCP 轨迹 marker
+    和指爪最前端的扫掠范围不一致。
 
     本脚本读取 arm_link6、arm_link7、arm_link8、grasp_tcp_link 的 world pose / bbox，
     在 arm_link6 坐标系下估计几个候选 TCP offset，并在 Isaac viewport 中画出来。
@@ -18,7 +18,7 @@
     蓝色: arm_link6 origin
     红色: 当前 grasp_tcp_link
     黄色: 两个 finger bbox center 的中点
-    绿色: 推荐候选 grasp_tcp_link
+    绿色: 推荐指尖 grasp_tcp_link
     白色/灰色: 左右 finger bbox center
 """
 
@@ -34,14 +34,16 @@ import omni.usd
 from pxr import Gf, Usd, UsdGeom
 
 
-ROBOT_ROOT_PATH = "/World/go2_x5"
+# None 表示自动选第一个包含 arm_link6 的 Go2-X5 实例。
+# 多机器人场景可手动指定，例如 "/World/go2_x5_01"。
+ROBOT_ROOT_PATH = None
 
 WRIST_LINK_NAME = "arm_link6"
 LEFT_FINGER_LINK_NAME = "arm_link7"
 RIGHT_FINGER_LINK_NAME = "arm_link8"
 CURRENT_EEF_LINK_NAME = "grasp_tcp_link"
 CURRENT_EEF_FALLBACK_OFFSET_XYZ = np.array(
-    [0.1425699970126152, 0.0, 0.0],
+    [0.15757, 0.0, 0.0],
     dtype=float,
 )
 
@@ -51,9 +53,9 @@ NEW_TCP_FIXED_JOINT_NAME = "grasp_tcp_fixed_joint"
 DEBUG_ROOT_PATH = "/World/debug_gripper_tcp_inspection"
 OUTPUT_JSON = Path("/tmp/go2_x5_grasp_tcp_candidate.json")
 
-# 推荐 TCP 取 finger 前端往回一点，避免把 TCP 放在 mesh 最尖端。
-# 如果绿色 marker 明显太靠前/太靠后，先改这个值再重新运行脚本。
-FRONT_BACKOFF_M = 0.015
+# 主流程把 grasp_tcp_link 定义为 finger 前端中心点。
+# 这里保留 backoff 开关，便于后续做对比实验；默认值为 0 表示不回退。
+FRONT_BACKOFF_M = 0.0
 
 
 def get_stage():
@@ -83,6 +85,36 @@ def find_optional_prim_by_name(stage, root_path: str, prim_name: str) -> str | N
         return find_first_prim_by_name(stage, root_path, prim_name)
     except RuntimeError:
         return None
+
+
+def resolve_robot_root_path(stage) -> str:
+    """解析当前要检查的 Go2-X5 robot root。"""
+    if ROBOT_ROOT_PATH is not None:
+        root = stage.GetPrimAtPath(ROBOT_ROOT_PATH)
+        if not root.IsValid():
+            raise RuntimeError(f"指定的 robot root 不存在: {ROBOT_ROOT_PATH}")
+        return ROBOT_ROOT_PATH
+
+    candidates = []
+    for prim in stage.Traverse():
+        if prim.GetName() != WRIST_LINK_NAME:
+            continue
+
+        ancestor = prim.GetParent()
+        while ancestor.IsValid():
+            if ancestor.GetName().startswith("go2_x5"):
+                candidates.append(str(ancestor.GetPath()))
+                break
+            ancestor = ancestor.GetParent()
+
+    candidates = list(dict.fromkeys(candidates))
+    if not candidates:
+        raise RuntimeError("自动检测失败：找不到包含 arm_link6 的 Go2-X5 robot root。")
+
+    if len(candidates) > 1:
+        print("[warning] 检测到多个 Go2-X5 robot root，默认检查第一个:", candidates)
+
+    return candidates[0]
 
 
 def usd_world_pose_to_matrix(stage, prim_path: str) -> np.ndarray:
@@ -211,7 +243,7 @@ def choose_front_axis(current_eef_link6: np.ndarray, combined_min: np.ndarray, c
     """
     判断 finger 从 arm_link6 往哪个 x 方向伸出。
 
-    通常当前 grasp_tcp_link 在 x=0.08657 附近，finger 前端会在更大的 x。
+    通常 grasp_tcp_link 在 finger 前端附近，finger 前端会在更大的 x。
     如果 mesh 导入方向相反，这里会自动选择离当前 eef 更远的一侧。
     """
     distance_to_min_x = abs(float(current_eef_link6[0] - combined_min[0]))
@@ -375,11 +407,13 @@ async def main():
     print("========== Inspect Go2-X5 Gripper TCP ==========")
 
     stage = get_stage()
+    robot_root_path = resolve_robot_root_path(stage)
+    print("[robot root]", robot_root_path)
     paths = {
-        "link6": find_first_prim_by_name(stage, ROBOT_ROOT_PATH, WRIST_LINK_NAME),
-        "left_finger": find_first_prim_by_name(stage, ROBOT_ROOT_PATH, LEFT_FINGER_LINK_NAME),
-        "right_finger": find_first_prim_by_name(stage, ROBOT_ROOT_PATH, RIGHT_FINGER_LINK_NAME),
-        "eef": find_optional_prim_by_name(stage, ROBOT_ROOT_PATH, CURRENT_EEF_LINK_NAME),
+        "link6": find_first_prim_by_name(stage, robot_root_path, WRIST_LINK_NAME),
+        "left_finger": find_first_prim_by_name(stage, robot_root_path, LEFT_FINGER_LINK_NAME),
+        "right_finger": find_first_prim_by_name(stage, robot_root_path, RIGHT_FINGER_LINK_NAME),
+        "eef": find_optional_prim_by_name(stage, robot_root_path, CURRENT_EEF_LINK_NAME),
     }
 
     print("[paths]")
@@ -397,7 +431,7 @@ async def main():
     payload = {
         "schema_version": 1,
         "script": "scripts/dev_tools/isaac/inspect_gripper_tcp.py",
-        "robot_root_path": ROBOT_ROOT_PATH,
+        "robot_root_path": robot_root_path,
         "paths": paths,
         "frame": "arm_link6",
         "new_tcp_link_name": NEW_TCP_LINK_NAME,
@@ -408,8 +442,8 @@ async def main():
         "urdf_snippet": urdf_snippet,
         "candidates": numpy_to_list_dict(candidates),
         "notes": [
-            "绿色 marker 是推荐 grasp_tcp_link 位置。",
-            "如果绿色 marker 不在两指接触中心，请调整 FRONT_BACKOFF_M 或根据 JSON 手动修正 recommended_origin_xyz_in_arm_link6。",
+            "绿色 marker 是推荐指尖 grasp_tcp_link 位置。",
+            "如果绿色 marker 不在两指指尖中心，请调整 FRONT_BACKOFF_M 或根据 JSON 手动修正 recommended_origin_xyz_in_arm_link6。",
             "确认后，需要把 urdf_snippet 写入 full URDF，并重新生成 arm-only URDF 与 cuRobo YAML/XRDF。",
         ],
     }

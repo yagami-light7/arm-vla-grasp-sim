@@ -90,7 +90,7 @@ GRIPPER_JOINT_NAMES = [
 TCP_FALLBACK_PARENT_LINK_NAME = "arm_link6"
 # 如果 Isaac stage 还没有直接包含 grasp_tcp_link prim，则用这个固定变换
 # 从 arm_link6 推算 TCP。该数值必须和 URDF 的 grasp_tcp_fixed_joint 一致。
-TCP_FALLBACK_OFFSET_XYZ = (0.1425699970126152, 0.0, 0.0)
+TCP_FALLBACK_OFFSET_XYZ = (0.15757, 0.0, 0.0)
 TCP_FALLBACK_OFFSET_RPY = (0.0, 0.0, 0.0)
 
 EXPORT_WORLD_COLLISION = True
@@ -468,6 +468,25 @@ def resolve_base_and_tcp_matrices(stage, robot_root_path: str) -> tuple[dict, di
     if tcp_paths:
         tcp_path = tcp_paths[0]
         T_world_tcp = usd_world_pose_to_matrix(stage, tcp_path)
+        parent_paths = found[TCP_FALLBACK_PARENT_LINK_NAME]
+        if parent_paths:
+            T_world_parent = usd_world_pose_to_matrix(stage, parent_paths[0])
+            T_parent_tcp_direct = np.linalg.inv(T_world_parent) @ T_world_tcp
+            T_parent_tcp_expected = xyz_rpy_to_matrix(
+                TCP_FALLBACK_OFFSET_XYZ,
+                TCP_FALLBACK_OFFSET_RPY,
+            )
+            actual_offset = T_parent_tcp_direct[:3, 3]
+            expected_offset = T_parent_tcp_expected[:3, 3]
+            offset_error_m = float(np.linalg.norm(actual_offset - expected_offset))
+            if offset_error_m > 1.0e-3:
+                print(
+                    "[warning] stage 中 grasp_tcp_link 仍是旧 offset；"
+                    f"direct_xyz={actual_offset.tolist()}, "
+                    f"configured_tip_xyz={expected_offset.tolist()}, "
+                    f"delta={offset_error_m:.4f}m。"
+                    "请重新导入机器人或更新当前 USD 中的 grasp_tcp_link。"
+                )
     else:
         tcp_mode = "fallback_parent_link_plus_fixed_offset"
         parent_paths = found[TCP_FALLBACK_PARENT_LINK_NAME]
