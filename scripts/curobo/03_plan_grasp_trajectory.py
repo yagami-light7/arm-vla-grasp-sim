@@ -22,10 +22,10 @@ Go2-X5 抓取任务轨迹规划。
 输出：
     /tmp/go2_x5_grasp_plan.json
 
-和 4_demo_plan_to_pose.py 的关系：
-    4_demo_plan_to_pose.py 是单个 TCP pose 的 smoke test。
+和 dev_tools/curobo/demo_plan_to_pose.py 的关系：
+    demo_plan_to_pose.py 是单个 TCP pose 的 smoke test。
     本脚本是抓取流程使用的分段 planner。
-    后续正常抓取走本脚本；4_demo 保留用于单独调试某一个目标 pose。
+    后续正常抓取走本脚本；dev_tools demo 保留用于单独调试某一个目标 pose。
 """
 
 from __future__ import annotations
@@ -41,7 +41,6 @@ import torch
 
 
 WORKSPACE = Path("/home/light/workspace/arm_vla")
-SCRIPTS_DIR = WORKSPACE / "scripts"
 CUROBO_SOURCE_ROOT = Path("/home/light/workspace/curobo")
 
 STATE_JSON = Path("/tmp/go2_x5_isaac_state.json")
@@ -117,14 +116,14 @@ SEGMENT_TIMING = {
 
 if CUROBO_SOURCE_ROOT.exists():
     sys.path.insert(0, str(CUROBO_SOURCE_ROOT))
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
+if str(WORKSPACE) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE))
 
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
 from curobo.scene import Cuboid, Scene
 from curobo.types import GoalToolPose, JointState, Pose
 
-from SE3 import matrix_to_pose, pose_to_matrix, quat_error_deg
+from scripts.math.SE3 import matrix_to_pose, pose_to_matrix, quat_error_deg
 
 
 SCRIPT_START_TIME = time.perf_counter()
@@ -191,21 +190,21 @@ def load_isaac_state() -> dict:
     """读取 Isaac Sim 导出的机器人状态。"""
     return load_json(
         STATE_JSON,
-        "Isaac Script Editor: scripts/isaac/1_dump_go2_x5_state.py",
+        "Isaac Script Editor: scripts/isaac/01_export_go2_x5_state.py",
     )
 
 
 def load_grasp_target() -> dict:
-    """读取由 2_generate_sim_grasp_target.py 生成的抓取目标。"""
+    """读取由 02_generate_grasp_target.py 生成的抓取目标。"""
     data = load_json(
         TARGET_JSON,
-        "Isaac Script Editor: scripts/isaac/2_generate_sim_grasp_target.py",
+        "Isaac Script Editor: scripts/isaac/02_generate_grasp_target.py",
     )
 
     if "poses" not in data:
         raise RuntimeError(
             f"{TARGET_JSON} 还是旧格式，缺少 poses 字段。"
-            "请重新运行 scripts/isaac/2_generate_sim_grasp_target.py。"
+            "请重新运行 scripts/isaac/02_generate_grasp_target.py。"
         )
 
     required = ["pregrasp", "grasp", "lift"]

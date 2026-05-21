@@ -1,15 +1,15 @@
 """
-Go2-X5 第一版抓取序列执行 demo。
+Go2-X5 抓取序列执行 demo。
 
 用途：
-    在 Isaac Sim 中执行 scripts/curobo/6_plan_grasp_segments.py 生成的抓取计划。
+    在 Isaac Sim 中执行 scripts/curobo/03_plan_grasp_trajectory.py 生成的抓取计划。
 
 执行流程：
     open_gripper
     move_to_pregrasp
     approach_to_grasp
     close_gripper
-    lift_object
+    lift_object 或 retreat_object
     check_success
 
 运行位置：
@@ -87,7 +87,7 @@ def load_grasp_plan() -> dict:
     """读取分段抓取计划。"""
     if not GRASP_PLAN_JSON.exists():
         raise FileNotFoundError(
-            f"找不到 {GRASP_PLAN_JSON}。请先在终端运行 scripts/curobo/6_plan_grasp_segments.py"
+            f"找不到 {GRASP_PLAN_JSON}。请先在终端运行 scripts/curobo/03_plan_grasp_trajectory.py"
         )
 
     data = json.loads(GRASP_PLAN_JSON.read_text(encoding="utf-8"))
@@ -1044,7 +1044,7 @@ async def main():
 
     result = {
         "schema_version": 1,
-        "script": "scripts/isaac/4_demo_grasp_sequence.py",
+        "script": "scripts/isaac/04_execute_grasp_sequence.py",
         "source_plan": str(GRASP_PLAN_JSON),
         "object_prim_path": object_path,
         "arm_joint_names": plan["joint_names"],

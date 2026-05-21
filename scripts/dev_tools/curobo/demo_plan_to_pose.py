@@ -25,7 +25,6 @@ import numpy as np
 import torch
 
 WORKSPACE = Path("/home/light/workspace/arm_vla")
-SCRIPTS_DIR = WORKSPACE / "scripts"
 CUROBO_SOURCE_ROOT = Path("/home/light/workspace/curobo")
 
 STATE_JSON = Path("/tmp/go2_x5_isaac_state.json")   # curobo 读取当前isaacsim导出的机器人状态，用作规划
@@ -56,13 +55,13 @@ POSE_ACCEPTANCE_ORIENTATION_RAD = 5.0e-2
 
 if CUROBO_SOURCE_ROOT.exists():
     sys.path.insert(0, str(CUROBO_SOURCE_ROOT))
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
+if str(WORKSPACE) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE))
 
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
 from curobo.types import JointState, Pose, GoalToolPose
 
-from SE3 import matrix_to_pose, pose_to_matrix, quat_error_deg
+from scripts.math.SE3 import matrix_to_pose, pose_to_matrix, quat_error_deg
 
 
 TARGET_POSE_JSON = Path("/tmp/go2_x5_target_tcp_pose.json") # curobo 读取当前目标TCP_Pose，用作规划
@@ -81,7 +80,7 @@ def load_isaac_state(path:Path) -> dict:
     if not path.exists():
         raise FileNotFoundError(
             f"找不到 {path}，请先在 Isaac Sim Script Editor 运行 "
-            "scripts/isaac/1_dump_go2_x5_state.py"
+            "scripts/isaac/01_export_go2_x5_state.py"
         )
     
     with path.open("r", encoding="utf-8") as f:

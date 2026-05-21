@@ -244,7 +244,7 @@ async def main():
 
     result = {
         "schema_version": 1,
-        "script": "scripts/isaac/3_demo_gripper_control.py",
+        "script": "scripts/dev_tools/isaac/demo_gripper_control.py",
         "articulation_root_path": ARTICULATION_ROOT_PATH,
         "gripper_joint_names": GRIPPER_JOINT_NAMES,
         "gripper_joint_indices": dict(zip(GRIPPER_JOINT_NAMES, gripper_indices)),

@@ -396,7 +396,7 @@ async def main():
 
     payload = {
         "schema_version": 1,
-        "script": "scripts/isaac/5_inspect_gripper_tcp.py",
+        "script": "scripts/dev_tools/isaac/inspect_gripper_tcp.py",
         "robot_root_path": ROBOT_ROOT_PATH,
         "paths": paths,
         "frame": "arm_link6",

@@ -1,0 +1,315 @@
+# Go2-X5 Catch Pipeline
+
+当前阶段目标为实现Isaac Sim 中的 Go2-X5 固定底座抓取 demo，主要流程如下：
+
+```text
+Isaac Sim 当前 stage
+-> 导出机器人状态和局部环境碰撞体
+-> 根据当前选中的物体 bbox 生成抓取目标
+-> 外部 cuRobo Python 进程规划机械臂轨迹
+-> Isaac Sim 执行开夹爪、接近、抓取、回到home position
+```
+
+当前 demo 以 Go2-X5 上的 X5 六轴机械臂和双指夹爪为对象。cuRobo 侧使用
+arm-only 模型规划 `arm_joint1` 到 `arm_joint6`，Isaac Sim 侧继续执行完整
+Go2-X5 articulation，并按 joint name 把机械臂轨迹写回完整 DOF。
+
+## 当前进度
+
+已经完成：
+
+- 完整 Go2-X5 articulation 中机械臂、夹爪 DOF 映射和 TCP frame 对齐。
+- 从 Isaac Sim 导出当前 arm state、`T_world_base`、`T_base_tcp` 和局部环境碰撞体。
+- 从 Stage 当前选中的物体生成基于 bbox 的抓取目标，当前默认优先侧向抓取。
+- 用 cuRobo 规划 `pregrasp -> grasp` 轨迹，并把 Isaac 导出的附近碰撞体近似成 cuRobo cuboid scene。
+- 在 Isaac Sim 中执行夹爪开闭、轨迹跟踪、抓取后退回和结果判定。
+- cuRobo one-shot 子进程规划和可选常驻 planner server 两种运行方式。
+- 用当前苹果场景验证抓取闭环；夹爪能否真正抓起物体仍依赖 USD 中正确保存的 drive stiffness、damping、max force 和物体碰撞/刚体参数。
+
+当前还不是最终长期形态：
+
+- 目标物体需要在 Isaac Sim Stage 中手动选中，当前抓取目标来自仿真 bbox，不是视觉感知或 VLA 输出。
+- 当前只规划固定底座上的机械臂，不规划 Go2 行走和底盘协同。
+- 环境避障使用局部 collision AABB 的 cuboid 近似，不是完整 mesh-to-collision-world 转换。
+- 数据采集流水线、场景随机化、录制同步和数据标注还没有收敛成批量工具。
+- `tutorial/` 和 `mec_arm_*` 中保留了早期开发记录，最终 Go2-X5 demo 以本 README 和 `scripts/` 当前文件名为准。
+
+## 环境依赖
+
+### 运行分层
+
+这个项目同时依赖两个运行进程
+
+
+| 上下文                      | 职责                                                      | 关键依赖                                                   |
+| --------------------------- | --------------------------------------------------------- | ---------------------------------------------------------- |
+| Isaac Sim GUI Script Editor | 读取当前 USD stage、articulation、物体 bbox，执行关节控制 | Isaac Sim 5.1.x、`omni.usd`、`isaacsim.core`、`pxr`、NumPy |
+| 外部 cuRobo Python 进程     | FK、IK、MotionPlanner、环境碰撞规划                       | CUDA、PyTorch CUDA、cuRobo source checkout、NumPy          |
+
+规划没有直接放进 Isaac Sim 进程。当前脚本明确把 cuRobo 放到外部 Python 中，
+原因是 Isaac Sim 内部已经加载 `omni.warp`，而当前 cuRobo 环境使用另一套
+Warp/CUDA 组合。把 planner 留在外部进程可以避免进程内依赖冲突。
+
+### 当前代码默认路径
+
+主流程脚本目前按以下本机路径配置：
+
+```text
+workspace:         /home/light/workspace/arm_vla
+cuRobo source:     /home/light/workspace/curobo
+external python:   /data/conda_envs/isaacsim51_3dgs_grasp/bin/python
+```
+
+对应代码位置：
+
+- `scripts/isaac/05_run_pick_retreat_demo.py` 中的 `WORKSPACE` 和 `PYTHON`
+- `scripts/curobo/03_plan_grasp_trajectory.py` 中的 `WORKSPACE` 和 `CUROBO_SOURCE_ROOT`
+- `scripts/curobo/grasp_planner_server.py` 中的 `WORKSPACE`
+- `source/robot/go2_x5/curobo/go2_x5_arm.yml` 中的 robot asset absolute path
+
+如果仓库路径、conda env 或 cuRobo checkout 位置变化，先改这些路径，再调 demo。
+
+### cuRobo 侧最低要求
+
+外部规划环境需要满足：
+
+- 能从 `/home/light/workspace/curobo` 导入 `curobo`
+- `torch.cuda.is_available()` 为 `True`
+- 能加载 `source/robot/go2_x5/curobo/go2_x5_arm.yml`
+- 能读取 arm-only URDF 和 mesh assets
+- 能调用 `curobo.motion_planner.MotionPlanner`
+
+先用下面的检查脚本验证 cuRobo 机器人模型：
+
+```bash
+cd /home/light/workspace/arm_vla
+
+PYTHONPATH=/home/light/workspace/curobo:${PYTHONPATH:-} \
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python \
+  scripts/dev_tools/curobo/check_go2_x5_curobo_model.py
+```
+
+如果需要检查 Isaac 导出的关节状态和 cuRobo FK 是否对齐，先在 Isaac Sim
+中运行 `scripts/isaac/01_export_go2_x5_state.py`，再运行：
+
+```bash
+cd /home/light/workspace/arm_vla
+
+PYTHONPATH=/home/light/workspace/curobo:${PYTHONPATH:-} \
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python \
+  scripts/dev_tools/curobo/check_isaac_curobo_fk.py
+```
+
+## 文件结构与职责
+
+### 主流程脚本
+
+最终 demo 只依赖以下顺序链：
+
+
+| 顺序 | 文件                                         | 运行位置                | 职责                                                                                                                               |
+| ---- | -------------------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 01   | `scripts/isaac/01_export_go2_x5_state.py`    | Isaac Sim Script Editor | 自动解析当前 Go2-X5 articulation root，导出 arm/gripper DOF、TCP pose、附近环境 collision cuboids 到`/tmp/go2_x5_isaac_state.json` |
+| 02   | `scripts/isaac/02_generate_grasp_target.py`  | Isaac Sim Script Editor | 读取当前选中物体 bbox 和 step 01 的 base pose，生成 side/top-down grasp target 到`/tmp/go2_x5_target_tcp_pose.json`                |
+| 03   | `scripts/curobo/03_plan_grasp_trajectory.py` | 外部 Python             | 读取 state 和 target JSON，加载 cuRobo arm model，规划抓取轨迹到`/tmp/go2_x5_grasp_plan.json`                                      |
+| 04   | `scripts/isaac/04_execute_grasp_sequence.py` | Isaac Sim Script Editor | 在完整 articulation 上执行 grasp plan，控制机械臂和夹爪，输出`/tmp/go2_x5_grasp_sequence_result.json`                              |
+| 05   | `scripts/isaac/05_run_pick_retreat_demo.py`  | Isaac Sim Script Editor | 一键串联 step 01 到 step 04，优先使用常驻 planner，输出`/tmp/go2_x5_task_result.json`                                              |
+
+辅助主流程文件：
+
+
+| 文件                                     | 职责                                                                                               |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `scripts/curobo/grasp_planner_server.py` | 可选常驻 cuRobo planner service，监听 localhost，减少重复启动 Python 和初始化 MotionPlanner 的开销 |
+| `scripts/math/SE3.py`                    | Isaac 脚本和普通 Python 脚本共用的 SE(3)、四元数、pose 变换工具                                    |
+| `scripts/README.md`                      | 当前脚本编号链的短说明                                                                             |
+
+### 开发与诊断脚本
+
+最终 demo 不直接依赖这些脚本，它们保留在 `scripts/dev_tools/`：
+
+
+| 文件                                                     | 职责                                                              |
+| -------------------------------------------------------- | ----------------------------------------------------------------- |
+| `scripts/dev_tools/isaac/inspect_go2_x5_articulation.py` | 检查 articulation root、完整 DOF order、arm/gripper joint mapping |
+| `scripts/dev_tools/isaac/inspect_gripper_tcp.py`         | 检查夹爪和 TCP frame，导出 TCP 候选信息                           |
+| `scripts/dev_tools/isaac/demo_gripper_control.py`        | 单独测试双指夹爪开闭控制                                          |
+| `scripts/dev_tools/curobo/make_go2_x5_arm_urdf.py`       | 从完整 Go2-X5 URDF 派生 cuRobo arm-only URDF                      |
+| `scripts/dev_tools/curobo/build_go2_x5_curobo_model.py`  | 包装 cuRobo builder，生成 arm model yml/xrdf                      |
+| `scripts/dev_tools/curobo/check_go2_x5_curobo_model.py`  | 检查 cuRobo yml、joint names、tool frame、FK、collision spheres   |
+| `scripts/dev_tools/curobo/check_isaac_curobo_fk.py`      | 对比同一 q 下 Isaac TCP pose 和 cuRobo FK                         |
+| `scripts/dev_tools/curobo/demo_plan_to_pose.py`          | 单个 TCP target 的 cuRobo planning smoke test                     |
+| `scripts/dev_tools/curobo/demo_track_trajectory.py`      | 早期单条轨迹在 Isaac 中的跟踪 demo                                |
+
+### 机器人、场景与历史目录
+
+
+| 路径                                                                  | 职责                                                              |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `source/robot/go2_x5/urdf/go2_x5.urdf`                                | 完整 Go2-X5 原始 URDF                                             |
+| `source/robot/go2_x5/curobo/go2_x5_arm.urdf`                          | cuRobo 规划使用的 arm-only URDF                                   |
+| `source/robot/go2_x5/curobo/go2_x5_arm.yml`                           | 当前 cuRobo MotionPlanner 加载的机器人配置                        |
+| `source/robot/go2_x5/curobo/go2_x5_arm.xrdf`                          | 同一 arm model 的 XRDF 描述                                       |
+| `source/robot/go2_x5/meshes/`                                         | Go2-X5 和 X5 机械臂 mesh assets                                   |
+| `source/robot/go2_x5/urdf/go2_x5/`                                    | Isaac Sim 导入后的 Go2-X5 USD package 和 physics/sensor/base 配置 |
+| `source/scene/839920_go2_x5.usd`                                      | 当前主要 Isaac Sim 场景入口之一                                   |
+| `source/scene/apple/`、`source/scene/orange/`、`source/scene/bottle/` | 物体 USD、纹理和 annotation assets                                |
+| `tutorial/`                                                           | 早期建模、状态导出、cuRobo 路线记录                               |
+| `mec_arm_model/`、`mec_arm_sim/`                                      | 早期 MecArm 模型和实验脚本，不属于当前 Go2-X5 主 demo             |
+
+场景里的纹理、物体 annotation、STL/DAE mesh 属于数据资产，不在 README
+中逐个列出。下面列出仍然保留在仓库中的代码和说明文件。
+
+### 早期 MecArm 文件
+
+这些文件用于早期 MecArm 验证，不参与当前 Go2-X5 一键 demo：
+
+
+| 文件                                                                                 | 职责                                           |
+| ------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| `mec_arm_model/urdf/mec_arm.urdf`                                                    | MecArm URDF                                    |
+| `mec_arm_model/urdf/mec_arm.csv`                                                     | MecArm 关节/导出相关数据                       |
+| `mec_arm_model/meshes/`                                                              | MecArm mesh assets                             |
+| `mec_arm_model/config/`                                                              | MecArm 原始导出配置                            |
+| `mec_arm_model/launch/`、`mec_arm_model/CMakeLists.txt`、`mec_arm_model/package.xml` | ROS package 和展示启动文件                     |
+| `mec_arm_model/usd/`                                                                 | MecArm USD package                             |
+| `mec_arm_sim/scripts/phase1_check_articulation_script_editor.py`                     | Isaac Script Editor 中检查 MecArm articulation |
+| `mec_arm_sim/scripts/phase1_inspect_tcp_frame_script_editor.py`                      | Isaac Script Editor 中检查 MecArm TCP frame    |
+| `mec_arm_sim/scripts/curobo/check_curobo_install.py`                                 | 检查早期 MecArm cuRobo 环境可导入              |
+| `mec_arm_sim/scripts/curobo/check_robot_config.py`                                   | 检查 MecArm cuRobo robot config                |
+| `mec_arm_sim/scripts/curobo/check_generated_robot_model.py`                          | 检查 builder 生成的 MecArm robot model         |
+| `mec_arm_sim/scripts/curobo/dump_isaac_state.py`                                     | 导出 MecArm Isaac state                        |
+| `mec_arm_sim/scripts/curobo/run_curobo_plan_external.py`                             | 外部 Python 规划 MecArm TCP path               |
+| `mec_arm_sim/scripts/curobo/demo_plan_tcp_path_script_editor.py`                     | Isaac 中执行或展示 MecArm 规划路径             |
+| `mec_arm_sim/configs/curobo/`                                                        | MecArm yml/xrdf/URDF/world 等 cuRobo 配置      |
+
+### 教程文件
+
+
+| 文件                                         | 职责                                                        |
+| -------------------------------------------- | ----------------------------------------------------------- |
+| `tutorial/0-构建机器人模型.md`               | 记录从 URDF 构建 cuRobo robot model 的早期流程              |
+| `tutorial/1-从IsaacSim导出机械臂状态.md`     | 记录 Isaac state 导出和坐标系对齐思路                       |
+| `tutorial/2-cuRobo轨迹生成与追踪开发流程.md` | 记录 Go2-X5 轨迹规划/追踪的开发演进，部分脚本名早于当前重排 |
+
+## 运行完整 demo
+
+### 1. 准备 Isaac Sim 场景
+
+1. 在 Isaac Sim GUI 中打开目标 USD stage，例如 `source/scene/839920_go2_x5.usd`。
+2. 确认 stage 中存在 Go2-X5 articulation，当前主流程会扫描
+   `UsdPhysics.ArticulationRootAPI` 并自动解析 `/World/go2_x5.../root_joint`。
+3. 固定底座或保证底盘不会在抓取过程中漂移。
+4. 确认夹爪 drive 参数已经写入 USD。夹爪没有足够 stiffness/max force 时，
+   日志可能显示闭合，但物体不会被真正夹起。
+5. 确认目标物体有合理的 collider 和 rigid body 物理属性。
+6. 在 Stage 面板中选中要抓取的物体 prim。不要选中 debug target 或轨迹点 prim。
+
+### 2. 可选：启动常驻 planner
+
+常驻 planner 不是必须的。未启动时 step 05 会回退到 one-shot cuRobo
+子进程。常驻模式主要减少 planner 初始化开销；单次复杂规划本身仍需要时间。
+
+在普通终端运行：
+
+```bash
+cd /home/light/workspace/arm_vla
+
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python \
+  scripts/curobo/grasp_planner_server.py
+```
+
+默认监听：
+
+```text
+127.0.0.1:8765
+```
+
+### 3. 在 Isaac Sim Script Editor 运行一键 demo
+
+推荐直接执行磁盘文件，避免 Script Editor 中残留旧粘贴代码：
+
+```python
+exec(open(
+    "/home/light/workspace/arm_vla/scripts/isaac/05_run_pick_retreat_demo.py",
+    "r",
+    encoding="utf-8",
+).read())
+```
+
+step 05 会依次执行：
+
+```text
+01 export state
+02 generate grasp target
+03 plan grasp trajectory
+04 execute grasp sequence
+05 write task summary
+```
+
+主要输出文件：
+
+
+| 输出                                     | 含义                                                              |
+| ---------------------------------------- | ----------------------------------------------------------------- |
+| `/tmp/go2_x5_isaac_state.json`           | 当前 Isaac robot state、frame、local environment collision export |
+| `/tmp/go2_x5_target_tcp_pose.json`       | 抓取目标、pregrasp、grasp、retreat/lift 相关 pose                 |
+| `/tmp/go2_x5_grasp_plan.json`            | cuRobo 规划出的 segment 和 trajectory                             |
+| `/tmp/go2_x5_grasp_sequence_result.json` | Isaac 执行结果、跟踪误差、物体位移                                |
+| `/tmp/go2_x5_task_result.json`           | 一键任务汇总结果                                                  |
+
+成功时终端日志应同时看到：
+
+- state dump 成功识别当前 Go2-X5 articulation root
+- target JSON 中的 `grasp_mode` 已验证
+- cuRobo `all_motion_segments_success: true`
+- Isaac 执行 summary 中 task success 为真
+
+### 4. 分步运行
+
+调试时可以按编号拆开运行。
+
+Isaac Sim Script Editor：
+
+```python
+exec(open("/home/light/workspace/arm_vla/scripts/isaac/01_export_go2_x5_state.py", "r", encoding="utf-8").read())
+exec(open("/home/light/workspace/arm_vla/scripts/isaac/02_generate_grasp_target.py", "r", encoding="utf-8").read())
+```
+
+普通终端：
+
+```bash
+cd /home/light/workspace/arm_vla
+
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python \
+  scripts/curobo/03_plan_grasp_trajectory.py
+```
+
+Isaac Sim Script Editor：
+
+```python
+exec(open("/home/light/workspace/arm_vla/scripts/isaac/04_execute_grasp_sequence.py", "r", encoding="utf-8").read())
+```
+
+## 运行注意项
+
+- `01_export_go2_x5_state.py` 会把附近 collision prim 的 world AABB 转成局部 cuboid
+  障碍物给 cuRobo。过滤规则在脚本顶部配置；如果场景 obstacle 过大、过远或命名
+  被排除，它不会进入规划 world。
+- side grasp 当前优先用于桌面较高的场景。side grasp 关闭夹爪后默认沿接近轨迹
+  原路退出，不再额外执行一次竖直 lift。
+- cuRobo 规划成功不等于 Isaac 执行成功。关节跟踪误差、夹爪 drive、物体 collider、
+  桌面碰撞和仿真帧率都会影响最终抓取。
+- Isaac Movie Capture 会改变仿真负载。录制前先在不录制条件下确认轨迹跟踪误差
+  稳定，再固定录制配置和执行速度做采集。
+
+## 推荐排查顺序
+
+1. 先运行 `scripts/dev_tools/isaac/inspect_go2_x5_articulation.py`，确认 robot root、
+   articulation root 和 arm/gripper DOF mapping。
+2. 单独运行 `scripts/dev_tools/isaac/demo_gripper_control.py`，确认夹爪能稳定开闭且有足够夹持力。
+3. 运行 step 01 和 `check_isaac_curobo_fk.py`，确认 Isaac 和 cuRobo TCP 对齐。
+4. 查看 step 02 打印的 grasp target 是否在 `arm_base_link` 可达范围内。
+5. 查看 step 03 是否加载了期望数量的 world collision cuboids，并确认不是被过粗的
+   AABB 障碍物挡死。
+6. 查看 step 04 的 joint tracking error、gripper close progress 和物体 bbox 位移。

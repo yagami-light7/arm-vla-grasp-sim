@@ -2,9 +2,10 @@
 导出 Isaac Sim 当前 Go2-X5 机器人状态到 JSON。
 
 用途：
-    本脚本是 Go2-X5 + cuRobo 对齐流程的第二步。
-    上一步 scripts/isaac/0_inspect_go2_x5_articulation.py 负责人工检查；
-    本脚本负责把后续 cuRobo 脚本需要的数据写入 JSON。
+    本脚本是最终抓取 demo 的第 01 步。
+    如果需要先人工检查 articulation，可运行
+    scripts/dev_tools/isaac/inspect_go2_x5_articulation.py；
+    本脚本负责把后续抓取和 cuRobo 脚本需要的数据写入 JSON。
 
 运行位置：
     Isaac Sim 5.1.0 GUI -> Window -> Script Editor
@@ -50,11 +51,10 @@ from isaacsim.core.prims import SingleArticulation
 
 
 WORKSPACE = Path("/home/light/workspace/arm_vla")
-SCRIPTS_DIR = WORKSPACE / "scripts"
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
+if str(WORKSPACE) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE))
 
-from SE3 import (
+from scripts.math.SE3 import (
     matrix_to_pose,
     normalize_quat_wxyz,
     pose_dict_from_matrix,

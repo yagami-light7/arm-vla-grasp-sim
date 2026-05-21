@@ -45,17 +45,17 @@ PLAN_JSON = Path("/tmp/go2_x5_grasp_plan.json")
 EXEC_RESULT_JSON = Path("/tmp/go2_x5_grasp_sequence_result.json")
 TASK_RESULT_JSON = Path("/tmp/go2_x5_task_result.json")
 
-SCRIPT_DUMP_STATE = WORKSPACE / "scripts/isaac/1_dump_go2_x5_state.py"
-SCRIPT_GENERATE_TARGET = WORKSPACE / "scripts/isaac/2_generate_sim_grasp_target.py"
-SCRIPT_PLAN_SEGMENTS = WORKSPACE / "scripts/curobo/6_plan_grasp_segments.py"
-SCRIPT_EXECUTE_GRASP = WORKSPACE / "scripts/isaac/4_demo_grasp_sequence.py"
+SCRIPT_DUMP_STATE = WORKSPACE / "scripts/isaac/01_export_go2_x5_state.py"
+SCRIPT_GENERATE_TARGET = WORKSPACE / "scripts/isaac/02_generate_grasp_target.py"
+SCRIPT_PLAN_SEGMENTS = WORKSPACE / "scripts/curobo/03_plan_grasp_trajectory.py"
+SCRIPT_EXECUTE_GRASP = WORKSPACE / "scripts/isaac/04_execute_grasp_sequence.py"
 
 PLANNER_SERVER_HOST = "127.0.0.1"
 PLANNER_SERVER_PORT = 8765
 PLANNER_SERVER_TIMEOUT_S = 30.0
 
 # 调试执行抖动/时序时，先禁用常驻 planner，确保每次都使用磁盘上最新的
-# scripts/curobo/6_plan_grasp_segments.py 参数。确认稳定后再改回 True。
+# scripts/curobo/03_plan_grasp_trajectory.py 参数。确认稳定后再改回 True。
 USE_PLANNER_SERVER = True
 
 
@@ -94,7 +94,7 @@ def validate_target_after_generation():
         raise RuntimeError(
             "target JSON 不是新版侧向抓取格式。"
             f" source.grasp_mode={grasp_mode!r}。"
-            "请在 Script Editor 里用 exec(open(...6_task_pick_lift_once.py).read()) "
+            "请在 Script Editor 里用 exec(open(...05_run_pick_retreat_demo.py).read()) "
             "运行磁盘文件，避免继续执行旧的粘贴代码。"
         )
 

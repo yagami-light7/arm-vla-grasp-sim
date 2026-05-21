@@ -16,8 +16,8 @@
 
 后续流程：
     1. 运行本脚本生成 target pose
-    2. 单点调试：终端运行 scripts/curobo/4_demo_plan_to_pose.py
-    3. 抓取分段：后续由 scripts/curobo/6_plan_grasp_segments.py 读取 poses 字段
+    2. 单点调试：终端运行 scripts/dev_tools/curobo/demo_plan_to_pose.py
+    3. 抓取分段：后续由 scripts/curobo/03_plan_grasp_trajectory.py 读取 poses 字段
 """
 
 from __future__ import annotations
@@ -33,11 +33,10 @@ import omni.usd
 from pxr import UsdGeom, Gf
 
 WORKSPACE = Path("/home/light/workspace/arm_vla")
-SCRIPTS_DIR = WORKSPACE / "scripts"
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
+if str(WORKSPACE) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE))
 
-from SE3 import matrix_to_pose, pose_to_matrix, rotmat_to_quat_wxyz
+from scripts.math.SE3 import matrix_to_pose, pose_to_matrix, rotmat_to_quat_wxyz
 
 
 OUTPUT_TARGET_JSON = Path("/tmp/go2_x5_target_tcp_pose.json")
@@ -133,7 +132,7 @@ def get_arm_base_transform(stage):
     """
     获取 arm_base_link 的 world transform。
 
-    一键流程会先运行 1_dump_go2_x5_state.py，它会自动解析当前场景中的
+    一键流程会先运行 01_export_go2_x5_state.py，它会自动解析当前场景中的
     Go2-X5 实例路径，例如 /World/go2_x5 或 /World/go2_x5_01。
     因此这里优先使用 state JSON 中的 world_base，避免重新导入机器人后
     仍然使用硬编码 /World/go2_x5/arm_base_link。
@@ -447,7 +446,7 @@ def save_target_pose_json(
     grasp_entry = make_named_pose_entry(T_base_grasp, T_world_grasp)
     lift_entry = make_named_pose_entry(T_base_lift, T_world_lift)
 
-    # 兼容旧的 4_demo_plan_to_pose.py：顶层 pose 仍然代表 grasp。
+    # 兼容 dev_tools/curobo/demo_plan_to_pose.py：顶层 pose 仍然代表 grasp。
     grasp_pos_base, grasp_quat_base = matrix_to_pose(T_base_grasp)
     grasp_pos_world, grasp_quat_world = matrix_to_pose(T_world_grasp)
     pregrasp_pos_world, pregrasp_quat_world = matrix_to_pose(T_world_pregrasp)

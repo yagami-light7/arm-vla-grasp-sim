@@ -23,14 +23,14 @@
 
 运行：
     先在 Isaac Sim Script Editor 中运行：
-        scripts/isaac/1_dump_go2_x5_state.py
+        scripts/isaac/01_export_go2_x5_state.py
 
     再在普通终端运行：
         cd /home/light/workspace/arm_vla
 
         PYTHONPATH=/home/light/workspace/curobo:${PYTHONPATH:-} \
         /data/conda_envs/isaacsim51_3dgs_grasp/bin/python \
-          scripts/curobo/3_check_isaac_curobo_fk.py
+          scripts/dev_tools/curobo/check_isaac_curobo_fk.py
 """
 
 from __future__ import annotations
@@ -45,7 +45,6 @@ import torch
 
 
 WORKSPACE = Path("/home/light/workspace/arm_vla")
-SCRIPTS_DIR = WORKSPACE / "scripts"
 CUROBO_SOURCE_ROOT = Path("/home/light/workspace/curobo")
 
 DEFAULT_STATE_JSON = Path("/tmp/go2_x5_isaac_state.json")
@@ -68,13 +67,13 @@ DEFAULT_ORIENTATION_TOLERANCE_DEG = 5.0
 
 if CUROBO_SOURCE_ROOT.exists():
     sys.path.insert(0, str(CUROBO_SOURCE_ROOT))
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
+if str(WORKSPACE) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE))
 
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
 from curobo.types import JointState
 
-from SE3 import normalize_quat_wxyz, quat_angle_error_deg
+from scripts.math.SE3 import normalize_quat_wxyz, quat_angle_error_deg
 
 
 def print_header(title: str) -> None:
@@ -89,7 +88,7 @@ def load_isaac_state(path: Path) -> dict:
     if not path.exists():
         raise FileNotFoundError(
             f"Isaac state JSON 不存在: {path}\n"
-            "请先在 Isaac Sim Script Editor 中运行 scripts/isaac/1_dump_go2_x5_state.py"
+            "请先在 Isaac Sim Script Editor 中运行 scripts/isaac/01_export_go2_x5_state.py"
         )
 
     with path.open("r", encoding="utf-8") as f:

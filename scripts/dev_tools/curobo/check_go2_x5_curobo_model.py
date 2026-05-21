@@ -27,7 +27,7 @@
 
     PYTHONPATH=/home/light/workspace/curobo:${PYTHONPATH:-} \
     /data/conda_envs/isaacsim51_3dgs_grasp/bin/python \
-      scripts/curobo/2_check_go2_x5_curobo_model.py
+      scripts/dev_tools/curobo/check_go2_x5_curobo_model.py
 """
 
 from __future__ import annotations

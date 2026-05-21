@@ -40,7 +40,7 @@ from pathlib import Path
 
 
 WORKSPACE = Path("/home/light/workspace/arm_vla")
-PLAN_MODULE_PATH = WORKSPACE / "scripts/curobo/6_plan_grasp_segments.py"
+PLAN_MODULE_PATH = WORKSPACE / "scripts/curobo/03_plan_grasp_trajectory.py"
 
 DEFAULT_STATE_JSON = Path("/tmp/go2_x5_isaac_state.json")
 DEFAULT_TARGET_JSON = Path("/tmp/go2_x5_target_tcp_pose.json")
@@ -56,9 +56,13 @@ def log(*args) -> None:
 
 
 def load_plan_module():
-    """按路径加载 6_plan_grasp_segments.py，因为文件名以数字开头不能普通 import。"""
+    """按路径加载 03_plan_grasp_trajectory.py，因为文件名以数字开头不能普通 import。"""
     if not PLAN_MODULE_PATH.exists():
         raise RuntimeError(f"找不到 planner module: {PLAN_MODULE_PATH}")
+
+    workspace_str = str(WORKSPACE)
+    if workspace_str not in sys.path:
+        sys.path.insert(0, workspace_str)
 
     spec = importlib.util.spec_from_file_location(
         "go2_x5_grasp_segments_module",
