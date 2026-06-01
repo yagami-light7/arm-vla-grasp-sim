@@ -31,6 +31,7 @@ Go2-X5 抓取任务轨迹规划。
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -40,12 +41,12 @@ import numpy as np
 import torch
 
 
-WORKSPACE = Path("/home/light/workspace/arm_vla")
-CUROBO_SOURCE_ROOT = Path("/home/light/workspace/curobo")
+WORKSPACE = Path(os.environ.get("GO2_X5_WORKSPACE", "/home/light/workspace/arm_vla"))
+CUROBO_SOURCE_ROOT = Path(os.environ.get("GO2_X5_CUROBO_SOURCE_ROOT", "/home/light/workspace/curobo"))
 
-STATE_JSON = Path("/tmp/go2_x5_isaac_state.json")
-TARGET_JSON = Path("/tmp/go2_x5_target_tcp_pose.json")
-OUTPUT_JSON = Path("/tmp/go2_x5_grasp_plan.json")
+STATE_JSON = Path(os.environ.get("GO2_X5_STATE_JSON", "/tmp/go2_x5_isaac_state.json"))
+TARGET_JSON = Path(os.environ.get("GO2_X5_TARGET_JSON", "/tmp/go2_x5_target_tcp_pose.json"))
+OUTPUT_JSON = Path(os.environ.get("GO2_X5_PLAN_JSON", "/tmp/go2_x5_grasp_plan.json"))
 
 ROBOT_YAML = WORKSPACE / "source/robot/go2_x5/curobo/go2_x5_arm.yml"
 ROBOT_URDF = WORKSPACE / "source/robot/go2_x5/curobo/go2_x5_arm.urdf"

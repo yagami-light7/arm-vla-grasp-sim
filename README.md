@@ -1,4 +1,4 @@
-# Go2-X5 Catch Pipeline
+# Go2-X5 Navigation and Catch Pipeline
 
 当前阶段目标为实现Isaac Sim 中的 Go2-X5 固定底座抓取 demo，主要流程如下：
 
@@ -11,6 +11,50 @@ Isaac Sim 当前 stage
 ```
 
 当前 demo 以 Go2-X5 上的 X5 六轴机械臂和双指夹爪为对象。cuRobo 规划器使用仅包含机械臂的模型进行规划 `arm_joint1` 到 `arm_joint6`，Isaac Sim 仿真中则依旧执行完整Go2-X5 articulation。
+
+导航抓取集成采用两阶段运行：Isaac Lab + RSL-RL 负责导航到可抓取
+base pose，Isaac Sim GUI 负责恢复导航结果并调用现有抓取链路。cuRobo
+继续运行在外部 Python 进程，避免和 Isaac Sim 的 Warp/CUDA 依赖冲突。
+
+详细设计与数据格式：
+
+- `docs/nav_manip_integration_plan.md`
+- `docs/nav_pick_data_format.md`
+
+## 导航抓取快速入口
+
+先使用 Isaac Lab 导出导航地图：
+
+```bash
+/path/to/IsaacLab/isaaclab.sh -p scripts/navigation/export_nav_map.py \
+  --map source/scene/839920_go2_x5.usd \
+  --output-dir source/scene/nav_maps/839920
+```
+
+纯 Python 检查 A* 和 DWA：
+
+```bash
+python scripts/navigation/visualize_astar_dwa.py \
+  --map source/scene/nav_maps/839920/map.json \
+  --start X Y \
+  --goal X Y \
+  --inflate-radius 0.30
+```
+
+运行导航阶段：
+
+```bash
+python scripts/pipeline/run_nav_then_pick.py \
+  --task-json tasks/nav_pick_example.json \
+  --checkpoint /path/to/model_8500.pt \
+  --isaaclab-launcher /path/to/IsaacLab/isaaclab.sh \
+  --nav-only \
+  --head-camera
+```
+
+导航成功后，在 Isaac Sim Script Editor 中运行 coordinator 打印的 handoff
+命令。该命令读取 `/tmp/go2_x5_nav_result.json`，恢复底盘 pose，等待底盘
+稳定，然后调用新的 `GraspPipeline` 包装层。
 
 ## 一、当前进度
 

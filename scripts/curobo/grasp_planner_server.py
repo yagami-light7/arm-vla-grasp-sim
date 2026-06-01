@@ -39,7 +39,7 @@ import traceback
 from pathlib import Path
 
 
-WORKSPACE = Path("/home/light/workspace/arm_vla")
+WORKSPACE = Path(os.environ.get("GO2_X5_WORKSPACE", "/home/light/workspace/arm_vla"))
 PLAN_MODULE_PATH = WORKSPACE / "scripts/curobo/03_plan_grasp_trajectory.py"
 
 DEFAULT_STATE_JSON = Path("/tmp/go2_x5_isaac_state.json")

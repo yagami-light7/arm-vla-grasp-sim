@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -49,6 +50,7 @@ DEBUG_ROOT_PATH = "/World/debug_sim_grasp_target"
 
 # grasp_tcp_link 是两指指尖中心的 TCP frame。
 PREFERRED_GRASP_MODE = "side"  # 可选: "side", "top_down"
+OBJECT_PRIM_PATH_OVERRIDE = None
 
 # 当前 TCP 已定义在指尖。真正稳定夹持苹果时，物体中心应该进入两指内部，
 # 因此最终 grasp 目标把指尖 TCP 沿局部 +X 再送入一小段距离。
@@ -106,6 +108,10 @@ def get_stage():
     return stage
 
 def get_selected_object_path():
+    override = OBJECT_PRIM_PATH_OVERRIDE or os.environ.get("GO2_X5_OBJECT_PRIM_PATH")
+    if override:
+        return str(override)
+
     selected = list(omni.usd.get_context().get_selection().get_selected_prim_paths())
 
     if not selected:

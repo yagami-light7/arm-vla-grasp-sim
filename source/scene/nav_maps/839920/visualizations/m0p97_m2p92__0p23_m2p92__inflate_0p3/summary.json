@@ -1,0 +1,48 @@
+{
+  "map": "/home/light/workspace/arm_vla/source/scene/nav_maps/839920/map.json",
+  "inflate_radius_m": 0.3,
+  "lookahead_distance_m": 0.6,
+  "path_sample_spacing_m": 0.05,
+  "start_world": [
+    -0.975,
+    -2.925
+  ],
+  "goal_world": [
+    0.225,
+    -2.925
+  ],
+  "start_grid": [
+    217,
+    190
+  ],
+  "goal_grid": [
+    217,
+    214
+  ],
+  "astar": {
+    "cost": 24.0,
+    "expanded_nodes": 25,
+    "raw_path_points": 25,
+    "pruned_waypoints": 2
+  },
+  "dwa": {
+    "reference_waypoints": 2,
+    "tracking_points": 26,
+    "rollout_points": 61,
+    "rollout_reached_goal": true,
+    "rollout_final_distance_to_goal_m": 0.34592314672639574
+  },
+  "outputs": {
+    "astar_preview": "astar_preview.ppm",
+    "dwa_points_preview": "dwa_points_preview.ppm"
+  },
+  "legend": {
+    "dark": "inflated obstacles",
+    "red": "raw A* grid path",
+    "orange": "A* pruned waypoint path",
+    "cyan": "densified DWA tracking points",
+    "purple": "closed-loop DWA rollout",
+    "green": "start",
+    "blue": "goal"
+  }
+}
