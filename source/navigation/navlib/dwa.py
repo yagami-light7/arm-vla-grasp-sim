@@ -130,7 +130,15 @@ class DWAController:
             heading_error=heading_error,
         ):
             sampled_candidates += 1
-            trajectory = self._rollout(x=x, y=y, yaw=yaw, linear_velocity=linear_velocity, angular_velocity=angular_velocity)
+            trajectory = self._rollout(
+                x=x,
+                y=y,
+                yaw=yaw,
+                linear_velocity=linear_velocity,
+                angular_velocity=angular_velocity,
+                stop_xy=self.path_world[-1],
+                stop_tolerance=self.config.goal_tolerance,
+            )
             if trajectory.size == 0:
                 continue
 
@@ -251,9 +259,19 @@ class DWAController:
         yaw: float,
         linear_velocity: float,
         angular_velocity: float,
+        stop_xy: np.ndarray | None = None,
+        stop_tolerance: float = 0.0,
     ) -> np.ndarray:
+        """Predict a command trajectory, stopping once it reaches the goal.
+
+        A grasp base goal is often intentionally close to a table or wall.
+        Continuing collision checks past an already-reached goal incorrectly
+        rejects valid approach commands because their prediction horizon enters
+        the obstacle behind the goal.
+        """
+
         horizon = max(self.config.prediction_horizon, self.config.integration_dt)
-        dt = max(self.config.integration_dt, 1.0e-3)
+        dt = min(max(self.config.integration_dt, 1.0e-3), max(self.config.control_dt, 1.0e-3))
         steps = max(1, int(math.ceil(horizon / dt)))
         trajectory = np.zeros((steps, 3), dtype=np.float64)
 
@@ -265,6 +283,8 @@ class DWAController:
             sim_y += linear_velocity * math.sin(sim_yaw) * dt
             sim_yaw = _wrap_angle(sim_yaw + angular_velocity * dt)
             trajectory[i] = (sim_x, sim_y, sim_yaw)
+            if stop_xy is not None and math.hypot(sim_x - float(stop_xy[0]), sim_y - float(stop_xy[1])) <= stop_tolerance:
+                return trajectory[: i + 1]
         return trajectory
 
     def _trajectory_clearance(self, trajectory: np.ndarray) -> float:

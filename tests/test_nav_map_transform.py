@@ -32,7 +32,13 @@ class NavMapTransformTest(unittest.TestCase):
         inflated = OccupancyGridMap(occupancy, 0.1, (0.0, 0.0, 0.0)).inflate(0.1)
         self.assertTrue(inflated.is_occupied(2, 1))
         self.assertTrue(inflated.is_occupied(2, 3))
-        self.assertFalse(inflated.is_occupied(0, 0))
+        self.assertFalse(inflated.is_occupied(1, 1))
+
+    def test_inflate_keeps_clearance_from_map_boundary(self) -> None:
+        occupancy = np.zeros((5, 5), dtype=bool)
+        inflated = OccupancyGridMap(occupancy, 0.1, (0.0, 0.0, 0.0)).inflate(0.1)
+        self.assertTrue(inflated.is_occupied(0, 2))
+        self.assertFalse(inflated.is_occupied(1, 2))
 
 
 if __name__ == "__main__":

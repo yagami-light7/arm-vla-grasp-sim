@@ -21,11 +21,39 @@ from isaacsim.core.prims import SingleArticulation
 from pxr import UsdPhysics
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SCRIPT_FILE = globals().get("__file__")
+DEFAULT_PROJECT_ROOT = Path(SCRIPT_FILE).resolve().parents[2] if SCRIPT_FILE else Path.cwd()
+PROJECT_ROOT = Path(os.environ.get("GO2_X5_WORKSPACE", DEFAULT_PROJECT_ROOT)).expanduser().resolve()
+if not (PROJECT_ROOT / "source/data/__init__.py").exists():
+    raise RuntimeError(
+        f"Invalid GO2_X5_WORKSPACE: {PROJECT_ROOT}. "
+        "Set GO2_X5_WORKSPACE to the arm_vla repository root before running the handoff script."
+    )
 sys.path.insert(0, str(PROJECT_ROOT))
+
+# Isaac Sim extensions may import an unrelated top-level ``source`` package
+# before Script Editor runs this file. Remove that cached package so imports
+# resolve against this repository after the workspace path is inserted.
+loaded_source = sys.modules.get("source")
+expected_source_dir = (PROJECT_ROOT / "source").resolve()
+loaded_source_locations: list[Path] = []
+if loaded_source is not None:
+    loaded_source_file = getattr(loaded_source, "__file__", None)
+    if loaded_source_file:
+        loaded_source_locations.append(Path(loaded_source_file).resolve())
+    loaded_source_locations.extend(Path(path).resolve() for path in getattr(loaded_source, "__path__", []))
+source_matches_workspace = any(
+    location == expected_source_dir or expected_source_dir in location.parents or location in expected_source_dir.parents
+    for location in loaded_source_locations
+)
+if loaded_source is not None and not source_matches_workspace:
+    for module_name in [name for name in sys.modules if name == "source" or name.startswith("source.")]:
+        del sys.modules[module_name]
 
 from source.data import EpisodeRecorder, load_task
 from source.manipulation import GraspPipeline, GraspTask
+from source.navigation.adapters.frame_utils import world_to_map_local_xy, yaw_to_quat_wxyz
+from source.navigation.navlib import OccupancyGridMap
 
 
 PIPELINE_CONTEXT_JSON = Path(os.environ.get("GO2_X5_PIPELINE_CONTEXT", "/tmp/go2_x5_pipeline_context.json"))
@@ -34,6 +62,7 @@ DEFAULT_TASK_JSON = PROJECT_ROOT / "tasks/nav_pick_example.json"
 SETTLE_STEPS = int(os.environ.get("GO2_X5_PICK_SETTLE_STEPS", "120"))
 LINEAR_STABLE_TOLERANCE = 0.05
 ANGULAR_STABLE_TOLERANCE = 0.10
+HANDOFF_CLEARANCE_M = float(os.environ.get("GO2_X5_HANDOFF_CLEARANCE_M", "0.30"))
 
 
 def _read_json(path: Path) -> dict:
@@ -71,6 +100,54 @@ def _nav_result_path() -> Path:
     return Path(context.get("nav_result_json", NAV_RESULT_JSON)).expanduser().resolve()
 
 
+def _project_path(raw_path: str) -> Path:
+    path = Path(raw_path).expanduser()
+    return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+def _validate_handoff_pose(task, nav_result: dict) -> None:
+    """Reject unsafe base teleport targets before mutating the open stage."""
+
+    pose = nav_result["final_base_pose_world"]
+    x = float(pose["x"])
+    y = float(pose["y"])
+    context = _pipeline_context()
+    clearance_m = float(context.get("handoff_clearance_radius", HANDOFF_CLEARANCE_M))
+    goal_tolerance = float(context.get("goal_tolerance", 0.15))
+    map_path = _project_path(str(context.get("nav_map") or task.nav_map))
+    grid_map = OccupancyGridMap.from_meta_file(map_path)
+    clearance_map = grid_map.inflate(clearance_m)
+    row, col = grid_map.world_to_grid(x, y)
+    local_x, local_y = world_to_map_local_xy((x, y), grid_map.origin)
+    boundary_clearance = min(
+        local_x,
+        local_y,
+        grid_map.width * grid_map.resolution - local_x,
+        grid_map.height * grid_map.resolution - local_y,
+    )
+    errors = []
+    expected_goal = task.pick.base_goal
+    goal_distance = math.hypot(x - expected_goal.x, y - expected_goal.y)
+    reported_goal = nav_result.get("goal_xyyaw")
+    if reported_goal is not None and math.hypot(float(reported_goal[0]) - expected_goal.x, float(reported_goal[1]) - expected_goal.y) > 1.0e-3:
+        errors.append(f"nav result goal {reported_goal[:2]} does not match task goal {[expected_goal.x, expected_goal.y]}")
+    if goal_distance > goal_tolerance:
+        errors.append(f"final pose is {goal_distance:.3f} m from task goal, tolerance is {goal_tolerance:.3f} m")
+    if grid_map.is_occupied(row, col):
+        errors.append("raw map cell is occupied")
+    if clearance_map.is_occupied(row, col):
+        errors.append(f"cell lacks {clearance_m:.2f} m obstacle clearance")
+    if boundary_clearance < clearance_m:
+        errors.append(f"map-boundary clearance is only {boundary_clearance:.3f} m")
+    print(
+        f"[handoff] map check: xy=({x:.3f}, {y:.3f}) grid=({row}, {col}) "
+        f"goal_distance={goal_distance:.3f}m clearance={clearance_m:.2f}m "
+        f"boundary_clearance={boundary_clearance:.3f}m"
+    )
+    if errors:
+        raise RuntimeError(f"nav_collision: unsafe handoff pose ({x:.3f}, {y:.3f}): {'; '.join(errors)}")
+
+
 def _resolve_articulation_root(stage) -> str:
     roots = [
         str(prim.GetPath())
@@ -89,7 +166,11 @@ async def _initialize_robot() -> tuple[World, SingleArticulation]:
     stage = omni.usd.get_context().get_stage()
     if stage is None:
         raise RuntimeError("No USD stage is open in Isaac Sim.")
-    world = World.instance() or World()
+    world = World.instance()
+    if world is None:
+        world = World()
+    if world.get_physics_context() is None:
+        await world.initialize_simulation_context_async()
     await world.play_async()
     await omni.kit.app.get_app().next_update_async()
     articulation_path = _resolve_articulation_root(stage)
@@ -102,9 +183,21 @@ async def _initialize_robot() -> tuple[World, SingleArticulation]:
 
 async def _restore_and_settle(world: World, robot: SingleArticulation, nav_result: dict) -> None:
     pose = nav_result["final_base_pose_world"]
+    current_position, _ = robot.get_world_pose()
+    root_z = float(os.environ.get("GO2_X5_HANDOFF_ROOT_Z", current_position[2]))
+    upright_quaternion = yaw_to_quat_wxyz(float(pose["yaw"]))
+    print(
+        "[handoff] restoring planar root pose:",
+        {
+            "x": float(pose["x"]),
+            "y": float(pose["y"]),
+            "z": root_z,
+            "yaw": float(pose["yaw"]),
+        },
+    )
     robot.set_world_pose(
-        position=np.asarray([pose["x"], pose["y"], pose["z"]], dtype=float),
-        orientation=np.asarray(pose["quat_wxyz"], dtype=float),
+        position=np.asarray([pose["x"], pose["y"], root_z], dtype=float),
+        orientation=np.asarray(upright_quaternion, dtype=float),
     )
     robot.set_linear_velocity(np.zeros(3, dtype=float))
     robot.set_angular_velocity(np.zeros(3, dtype=float))
@@ -125,6 +218,7 @@ async def main() -> None:
         raise RuntimeError(f"navigation did not succeed: {nav_result.get('failure_reason')}")
     task_path = _task_json_path()
     task = load_task(task_path)
+    _validate_handoff_pose(task, nav_result)
     context = _pipeline_context()
     dataset_dir = Path(context.get("dataset_dir") or task.recording.dataset_dir).expanduser()
     if not dataset_dir.is_absolute():

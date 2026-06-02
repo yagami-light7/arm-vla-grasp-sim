@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import argparse
-import math
 import os
 from pathlib import Path
 
@@ -84,7 +83,7 @@ import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, os.fspath(REPO_ROOT))
-from source.navigation.navlib import OccupancyGridMap, render_plan_preview, write_ppm
+from source.navigation.navlib import rasterize_triangles_xy, render_plan_preview, write_ppm
 
 
 def _scene_path() -> Path:
@@ -189,73 +188,6 @@ def _collect_bounds(triangles: list[np.ndarray], padding: float) -> tuple[float,
     return min_x, max_x, min_y, max_y
 
 
-def _triangle_area_xy(triangle_xy: np.ndarray) -> float:
-    a = triangle_xy[1] - triangle_xy[0]
-    b = triangle_xy[2] - triangle_xy[0]
-    return abs(a[0] * b[1] - a[1] * b[0]) * 0.5
-
-
-def _rasterize_triangles(
-    triangles: list[np.ndarray],
-    *,
-    resolution: float,
-    bounds: tuple[float, float, float, float],
-) -> OccupancyGridMap:
-    min_x, max_x, min_y, max_y = bounds
-    width = max(1, int(math.ceil((max_x - min_x) / resolution)))
-    height = max(1, int(math.ceil((max_y - min_y) / resolution)))
-    occupancy = np.zeros((height, width), dtype=bool)
-
-    for triangle in triangles:
-        tri_xy = triangle[:, :2]
-        area = _triangle_area_xy(tri_xy)
-        if area < 1.0e-9:
-            continue
-
-        tri_min_x = float(np.min(tri_xy[:, 0]))
-        tri_max_x = float(np.max(tri_xy[:, 0]))
-        tri_min_y = float(np.min(tri_xy[:, 1]))
-        tri_max_y = float(np.max(tri_xy[:, 1]))
-
-        col_min = max(0, int(math.floor((tri_min_x - min_x) / resolution)))
-        col_max = min(width - 1, int(math.floor((tri_max_x - min_x) / resolution)))
-        row_top = max(0, int(math.floor((max_y - tri_max_y) / resolution)))
-        row_bottom = min(height - 1, int(math.floor((max_y - tri_min_y) / resolution)))
-        if row_top > row_bottom or col_min > col_max:
-            continue
-
-        cols = np.arange(col_min, col_max + 1, dtype=np.int32)
-        rows = np.arange(row_top, row_bottom + 1, dtype=np.int32)
-        if cols.size == 0 or rows.size == 0:
-            continue
-
-        xs = min_x + (cols.astype(np.float64) + 0.5) * resolution
-        ys = max_y - (rows.astype(np.float64) + 0.5) * resolution
-        sample_x, sample_y = np.meshgrid(xs, ys)
-        inside = _points_in_triangle(sample_x, sample_y, tri_xy)
-        occupancy[row_top : row_bottom + 1, col_min : col_max + 1] |= inside
-
-    return OccupancyGridMap(
-        occupancy=occupancy,
-        resolution=resolution,
-        origin=(min_x, min_y, 0.0),
-    )
-
-
-def _points_in_triangle(sample_x: np.ndarray, sample_y: np.ndarray, triangle_xy: np.ndarray) -> np.ndarray:
-    x1, y1 = triangle_xy[0]
-    x2, y2 = triangle_xy[1]
-    x3, y3 = triangle_xy[2]
-    denom = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
-    if abs(denom) < 1.0e-12:
-        return np.zeros_like(sample_x, dtype=bool)
-    a = ((y2 - y3) * (sample_x - x3) + (x3 - x2) * (sample_y - y3)) / denom
-    b = ((y3 - y1) * (sample_x - x3) + (x1 - x3) * (sample_y - y3)) / denom
-    c = 1.0 - a - b
-    eps = 1.0e-9
-    return (a >= -eps) & (b >= -eps) & (c >= -eps)
-
-
 def main():
     scene_path = _scene_path()
     stage = _open_stage(os.fspath(scene_path))
@@ -272,7 +204,7 @@ def main():
     print(f"[INFO] Projecting {len(triangles)} triangles to the XY plane.")
 
     bounds = _collect_bounds(triangles, padding=args_cli.padding)
-    nav_map = _rasterize_triangles(
+    nav_map = rasterize_triangles_xy(
         triangles,
         resolution=args_cli.resolution,
         bounds=bounds,

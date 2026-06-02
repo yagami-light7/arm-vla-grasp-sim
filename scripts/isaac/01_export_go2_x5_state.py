@@ -557,6 +557,7 @@ async def create_articulation_handle(articulation_root_path: str):
     world = World.instance()
     if world is None:
         world = World()
+    if world.get_physics_context() is None:
         await world.initialize_simulation_context_async()
 
     await world.play_async()

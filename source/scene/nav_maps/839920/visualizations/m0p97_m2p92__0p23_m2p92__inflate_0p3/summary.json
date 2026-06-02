@@ -12,12 +12,12 @@
     -2.925
   ],
   "start_grid": [
-    217,
-    190
+    215,
+    188
   ],
   "goal_grid": [
-    217,
-    214
+    215,
+    212
   ],
   "astar": {
     "cost": 24.0,
@@ -27,10 +27,10 @@
   },
   "dwa": {
     "reference_waypoints": 2,
-    "tracking_points": 26,
-    "rollout_points": 61,
-    "rollout_reached_goal": true,
-    "rollout_final_distance_to_goal_m": 0.34592314672639574
+    "tracking_points": 25,
+    "rollout_points": 1201,
+    "rollout_reached_goal": false,
+    "rollout_final_distance_to_goal_m": 1.1205839285685482
   },
   "outputs": {
     "astar_preview": "astar_preview.ppm",

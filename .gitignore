@@ -1,7 +1,8 @@
-mec_arm_sim/project_progress.json
+project_status.json
 .vscode/
 .agents/
 .codex/
+AGENTS.md
 tutorial/**/README.md
 episodes/
 *.pt

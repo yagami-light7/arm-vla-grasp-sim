@@ -126,6 +126,7 @@ async def init_robot():
     world = World.instance()
     if world is None:
         world = World()
+    if world.get_physics_context() is None:
         await world.initialize_simulation_context_async()
 
     await world.play_async()

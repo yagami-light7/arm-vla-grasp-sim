@@ -172,7 +172,9 @@ class OccupancyGridMap:
                 if dr * dr + dc * dc <= radius_cells * radius_cells:
                     offsets.append((dr, dc))
 
-        padded = np.pad(self.occupancy, radius_cells, mode="constant", constant_values=False)
+        # Unknown space beyond the raster is not navigable. Padding with occupied
+        # cells keeps a footprint-sized clearance from map boundaries.
+        padded = np.pad(self.occupancy, radius_cells, mode="constant", constant_values=True)
         inflated = self.occupancy.copy()
         for dr, dc in offsets:
             row_start = radius_cells + dr

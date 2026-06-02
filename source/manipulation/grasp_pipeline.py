@@ -24,6 +24,8 @@ from source.data.episode_recorder import EpisodeRecorder
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MAX_PREFLIGHT_GRASP_XY_RADIUS_M = 1.00
+MAX_PREFLIGHT_PREGRASP_RADIUS_3D_M = 1.20
 
 
 @dataclass(frozen=True)
@@ -88,7 +90,9 @@ class GraspPipeline:
         if task.grasp_mode != "auto":
             module.PREFERRED_GRASP_MODE = task.grasp_mode
         await self._call_async_main(module)
-        return self._read_json(task.target_json)
+        target = self._read_json(task.target_json)
+        self._validate_target_workspace(target)
+        return target
 
     def plan(self, task: GraspTask) -> dict[str, Any]:
         """Plan arm-only grasp segments with the external cuRobo runtime."""
@@ -191,6 +195,7 @@ class GraspPipeline:
                     row.update({f"arm_action_joint{index + 1}": value for index, value in enumerate(target)})
                     self.recorder.record("grasp", row)
                 elapsed += float(log.get("time", [0.0])[-1] if log.get("time") else 0.0)
+
             elif log.get("type") == "gripper":
                 target = log.get("target_position", [])
                 gripper_action = sum(target) / len(target) if target else ""
@@ -205,6 +210,21 @@ class GraspPipeline:
                         },
                     )
                 elapsed += float(log.get("time", [0.0])[-1] if log.get("time") else 0.0)
+
+    @staticmethod
+    def _validate_target_workspace(target: dict[str, Any]) -> None:
+        """Reject obviously mismatched nav-to-pick handoffs before invoking cuRobo."""
+
+        workspace = target.get("diagnostics", {}).get("target_workspace_base", {})
+        grasp = workspace.get("grasp", {})
+        pregrasp = workspace.get("pregrasp", {})
+        grasp_xy = float(grasp.get("xy_radius_m", 0.0))
+        pregrasp_radius = float(pregrasp.get("radius_3d_m", 0.0))
+        if grasp_xy > MAX_PREFLIGHT_GRASP_XY_RADIUS_M or pregrasp_radius > MAX_PREFLIGHT_PREGRASP_RADIUS_3D_M:
+            raise RuntimeError(
+                "grasp_target_unreachable: navigation base pose is not near the selected object: "
+                f"grasp_xy_radius={grasp_xy:.3f} m, pregrasp_radius_3d={pregrasp_radius:.3f} m"
+            )
 
     @staticmethod
     async def _call_async_main(module: types.ModuleType) -> None:

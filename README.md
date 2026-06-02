@@ -37,24 +37,78 @@ base pose，Isaac Sim GUI 负责恢复导航结果并调用现有抓取链路。
 python scripts/navigation/visualize_astar_dwa.py \
   --map source/scene/nav_maps/839920/map.json \
   --start X Y \
+  --start-yaw YAW \
   --goal X Y \
-  --inflate-radius 0.30
+  --inflate-radius 0.40 \
+  --local-clearance-radius 0.35
 ```
+
+`tasks/nav_smoke_example.json` 是室内安全短路径，只用于验证 locomotion。
+`tasks/nav_pick_example.json` 是苹果抓取候选任务。不要复用旧的
+`/tmp/go2_x5_nav_result.json`：handoff 会拒绝贴近障碍或地图边界的历史 pose。
 
 运行导航阶段：
 
 ```bash
+export GO2_X5_CHECKPOINT=/absolute/path/to/flat/model_8500.pt
+test -f "$GO2_X5_CHECKPOINT"
+
 python scripts/pipeline/run_nav_then_pick.py \
   --task-json tasks/nav_pick_example.json \
-  --checkpoint /path/to/model_8500.pt \
+  --task RobotLab-Isaac-Velocity-Flat-Go2-X5-Foundation-v0 \
+  --checkpoint "$GO2_X5_CHECKPOINT" \
   --isaaclab-launcher /path/to/IsaacLab/isaaclab.sh \
+  --inflate-radius 0.25 \
+  --local-clearance-radius 0.25 \
+  --prediction-horizon 0.90 \
   --nav-only \
   --head-camera
 ```
 
+`GO2_X5_CHECKPOINT` 必须指向 Go2-X5 RSL-RL locomotion checkpoint。文档中的
+`/absolute/path/to/...` 只是占位符，不能原样执行。其他任务的 `.pt` 文件，
+例如 cartpole checkpoint，动作和观测维度不匹配，也不能复用。
+
+`run_nav_only.py` 会生成一个临时 USDA wrapper，只把
+`/World/scene_collision` 引用为 terrain。默认不额外叠加地面，这与参考
+DWA 的 `play_nav_cs.py` 一致。只有确认 collision subtree 不包含可行走地面
+时，才使用 `--add-nav-ground --ground-height Z` 添加独立平面。
+使用 `--flat-terrain --debug-command 0.3 0 0` 可以单独验证 checkpoint、
+腿部 PD 和 locomotion policy。
+
+地图膨胀会把地图边界视为不可通行区域。导航 settle 后会再次检查目标距离，
+handoff 瞬移前也会检查任务 goal 是否匹配、占用栅格、`0.40 m` clearance
+和地图边界距离。
+地图导出会保守栅格化碰撞三角形的边线，避免垂直墙在俯视 XY 投影中退化为
+零面积后消失。修改地图导出逻辑或碰撞 USD 后，必须重新生成
+`occupancy.pgm` 和 `map.json`，再重新运行纯 Python 可视化与真实导航。
+真实导航若大部分时间持续收到前进命令但底盘位移不足，会自动以
+`nav_collision` 结束，不再因为偶发低速命令而无限原地踏步。调试日志中的
+`stall_window=(samples, max_displacement, forward_command_ratio)` 用于定位
+物理碰撞或 terrain 接触异常。DWA 候选轨迹进入目标容差后会停止向前预测，
+避免抓取 base goal 后方的桌子或墙错误拒绝本来可达的接近命令。日志中的
+`dwa=(clearance, feasible, collision_rej, target)` 和
+`contact=(foot, nonfoot)` 用于区分局部规划拒绝、足端接触和非足端碰撞。
+苹果任务包含狭窄转弯，使用 `--inflate-radius 0.25`、
+`--local-clearance-radius 0.25` 和 `--prediction-horizon 0.90`。DWA 内部预测采样
+周期不会大于 locomotion control dt，避免轨迹跨过中间占用栅格却未检查。
+handoff 只继承导航的 `x/y/yaw`，使用抓取场景中稳定的 root `z`，避免把
+行走 rollout 中的瞬时 roll/pitch 带入抓取场景。
+
 导航成功后，在 Isaac Sim Script Editor 中运行 coordinator 打印的 handoff
 命令。该命令读取 `/tmp/go2_x5_nav_result.json`，恢复底盘 pose，等待底盘
 稳定，然后调用新的 `GraspPipeline` 包装层。
+
+Script Editor 中应使用带文件名的 `compile(...)` 写法，确保 handoff
+脚本可以从 `__file__` 推导仓库根目录并导入 `source.data`：
+
+```python
+_script = "/home/light/workspace/arm_vla/scripts/isaac/run_pick_from_nav_result.py"
+exec(
+    compile(open(_script, "r", encoding="utf-8").read(), _script, "exec"),
+    {"__file__": _script, "__name__": "__main__"},
+)
+```
 
 ## 一、当前进度
 

@@ -32,18 +32,32 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--map", required=True, help="Path to a nav-map metadata file (.json/.yaml).")
     parser.add_argument("--start", type=float, nargs=2, required=True, metavar=("X", "Y"), help="Start point in world coordinates.")
+    parser.add_argument("--start-yaw", type=float, default=0.0, help="Initial base yaw in radians for the DWA rollout.")
     parser.add_argument("--goal", type=float, nargs=2, required=True, metavar=("X", "Y"), help="Goal point in world coordinates.")
     parser.add_argument(
         "--inflate-radius",
         type=float,
-        default=0.25,
+        default=0.40,
         help="Obstacle inflation radius in meters used for the A* planning map.",
+    )
+    parser.add_argument(
+        "--local-clearance-radius",
+        type=float,
+        default=0.35,
+        help="Obstacle inflation radius in meters used by the local DWA controller.",
     )
     parser.add_argument(
         "--lookahead-distance",
         type=float,
         default=0.6,
         help="DWA lookahead distance used when densifying/tracking the A* path.",
+    )
+    parser.add_argument("--prediction-horizon", type=float, default=1.8, help="DWA candidate rollout horizon in seconds.")
+    parser.add_argument("--goal-tolerance", type=float, default=0.15, help="Goal distance tolerance used by DWA.")
+    parser.add_argument(
+        "--snap-to-free",
+        action="store_true",
+        help="Allow diagnostic-only snapping of blocked endpoints to nearby free cells.",
     )
     parser.add_argument(
         "--path-sample-spacing",
@@ -156,23 +170,26 @@ def main():
 
     raw_map = OccupancyGridMap.from_meta_file(map_path)
     inflated_map = raw_map.inflate(args.inflate_radius)
+    local_map = raw_map.inflate(args.local_clearance_radius)
 
     planner = AStarPlanner(allow_diagonal=True, heuristic_weight=1.0)
     plan = planner.plan(
         inflated_map,
         start_xy=start_xy,
         goal_xy=goal_xy,
-        snap_to_free=True,
+        snap_to_free=args.snap_to_free,
         max_snap_distance_m=max(0.5, args.inflate_radius + inflated_map.resolution),
     )
 
     dwa_cfg = DWAConfig(
         control_dt=0.05,
         lookahead_distance=args.lookahead_distance,
+        prediction_horizon=args.prediction_horizon,
+        goal_tolerance=args.goal_tolerance,
         path_sample_spacing=args.path_sample_spacing,
     )
-    controller = DWAController(path_world=plan.path_world, grid_map=inflated_map, config=dwa_cfg)
-    rollout_pose = np.array([start_xy[0], start_xy[1], 0.0], dtype=np.float64)
+    controller = DWAController(path_world=plan.path_world, grid_map=local_map, config=dwa_cfg)
+    rollout_pose = np.array([start_xy[0], start_xy[1], float(args.start_yaw)], dtype=np.float64)
     rollout_velocity = (0.0, 0.0)
     rollout_points = [rollout_pose[:2].copy()]
     rollout_reached_goal = False
@@ -214,12 +231,19 @@ def main():
     summary = {
         "map": str(map_path),
         "inflate_radius_m": args.inflate_radius,
+        "local_clearance_radius_m": args.local_clearance_radius,
+        "start_yaw": args.start_yaw,
+        "goal_tolerance_m": args.goal_tolerance,
         "lookahead_distance_m": args.lookahead_distance,
+        "prediction_horizon_s": args.prediction_horizon,
         "path_sample_spacing_m": args.path_sample_spacing,
         "start_world": list(start_xy),
         "goal_world": list(goal_xy),
         "start_grid": list(plan.start_grid),
         "goal_grid": list(plan.goal_grid),
+        "snap_to_free": args.snap_to_free,
+        "planned_start_world": list(inflated_map.grid_to_world(*plan.start_grid)),
+        "planned_goal_world": list(inflated_map.grid_to_world(*plan.goal_grid)),
         "astar": {
             "cost": plan.cost,
             "expanded_nodes": plan.expanded_nodes,

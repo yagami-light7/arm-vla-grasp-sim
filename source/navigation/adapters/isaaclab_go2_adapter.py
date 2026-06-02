@@ -14,6 +14,11 @@ from .frame_utils import yaw_to_quat_wxyz
 
 ARM_JOINT_NAMES = [f"arm_joint{index}" for index in range(1, 7)]
 GRIPPER_JOINT_NAMES = ["arm_joint7", "arm_joint8"]
+DOG_JOINT_NAMES = [
+    f"{leg}_{joint}_joint"
+    for leg in ("FR", "FL", "RR", "RL")
+    for joint in ("hip", "thigh", "calf")
+]
 
 
 def _item(value: Any) -> float:
@@ -23,6 +28,13 @@ def _item(value: Any) -> float:
 def _quat_to_yaw(quat_wxyz: Any) -> float:
     w, x, y, z = (_item(value) for value in quat_wxyz)
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def _quat_to_roll_pitch(quat_wxyz: Any) -> tuple[float, float]:
+    w, x, y, z = (_item(value) for value in quat_wxyz)
+    roll = math.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
+    pitch = math.asin(max(-1.0, min(1.0, 2.0 * (w * y - z * x))))
+    return roll, pitch
 
 
 class Go2LocomotionAdapter:
@@ -38,10 +50,12 @@ class Go2LocomotionAdapter:
         if self.base_cmd_term is None:
             raise RuntimeError("Isaac Lab task is missing the base_velocity command term.")
         self.arm_term = self.runtime.command_manager._terms.get("arm_joint_pos")
+        self.dog_joint_ids, _ = self.robot.find_joints(DOG_JOINT_NAMES, preserve_order=True)
         self.arm_joint_ids, _ = self.robot.find_joints(ARM_JOINT_NAMES, preserve_order=True)
         self.gripper_joint_ids, _ = self.robot.find_joints(GRIPPER_JOINT_NAMES, preserve_order=True)
         self.ee_body_ids, _ = self.robot.find_bodies(["arm_link6"])
         self._command = (0.0, 0.0, 0.0)
+        self._last_actions = None
 
     def reset_to_pose(self, x: float, y: float, yaw: float) -> None:
         """Write a root pose and zero root velocity directly to simulation."""
@@ -109,8 +123,10 @@ class Go2LocomotionAdapter:
         if self.arm_term is not None:
             self.arm_term.command_buffer[:] = 0.0
 
+        self.observations = self.env.get_observations()
         with torch.inference_mode():
             actions = self.policy(self.observations)
+            self._last_actions = actions.detach()
             self.observations, _, _, _ = self.env.step(actions)
             if len(self.gripper_joint_ids) == 2:
                 closed = torch.zeros((1, 2), dtype=torch.float32, device=self.runtime.device)
@@ -159,6 +175,35 @@ class Go2LocomotionAdapter:
         if len(self.gripper_joint_ids) == 2:
             gripper_values = self.robot.data.joint_pos[0, self.gripper_joint_ids]
             values["gripper"] = sum(_item(value) for value in gripper_values) / 2.0
+        return values
+
+    def diagnostics(self) -> dict[str, float]:
+        """Return compact locomotion-policy diagnostics for smoke-test logs."""
+
+        roll, pitch = _quat_to_roll_pitch(self.robot.data.root_quat_w[0])
+        values = {
+            "base_z": _item(self.robot.data.root_pos_w[0][2]),
+            "base_roll": roll,
+            "base_pitch": pitch,
+            "measured_vx": self.get_base_velocity_full()[0],
+            "measured_wz": self.get_base_velocity_full()[2],
+            "command_seen_vx": _item(self.base_cmd_term.vel_command_b[0][0]),
+            "command_seen_wz": _item(self.base_cmd_term.vel_command_b[0][2]),
+        }
+        if self._last_actions is not None:
+            values["action_abs_max"] = _item(self._last_actions[0].abs().max())
+            if len(self.dog_joint_ids) == 12:
+                values["dog_action_abs_mean"] = _item(self._last_actions[0, :12].abs().mean())
+        try:
+            contact_sensor = self.runtime.scene.sensors["contact_forces"]
+            contact_forces = contact_sensor.data.net_forces_w[0].norm(dim=-1)
+            foot_ids = [index for index, name in enumerate(contact_sensor.body_names) if "foot" in name.lower()]
+            nonfoot_ids = [index for index, name in enumerate(contact_sensor.body_names) if "foot" not in name.lower()]
+            values["contact_force_max"] = _item(contact_forces.max())
+            values["foot_contact_force_max"] = _item(contact_forces[foot_ids].max()) if foot_ids else 0.0
+            values["nonfoot_contact_force_max"] = _item(contact_forces[nonfoot_ids].max()) if nonfoot_ids else 0.0
+        except (AttributeError, IndexError, KeyError, RuntimeError, TypeError):
+            pass
         return values
 
     def get_front_rgb(self) -> Any | None:

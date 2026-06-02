@@ -49,14 +49,18 @@ class NavPlanner:
         start_xy: tuple[float, float],
         goal_xy: tuple[float, float],
     ) -> list[tuple[float, float]]:
-        """Return a pruned world-frame A* path."""
+        """Return a pruned world-frame A* path for exact task endpoints.
+
+        Runtime navigation must not silently move a task endpoint to a nearby
+        cell. A snapped goal can look reachable in A* while still sending the
+        physical robot toward an unsafe nominal handoff pose.
+        """
 
         self.last_global_plan = self.astar.plan(
             self.global_map,
             start_xy=start_xy,
             goal_xy=goal_xy,
-            snap_to_free=True,
-            max_snap_distance_m=max(0.5, self.global_map.resolution),
+            snap_to_free=False,
         )
         self._controller = None
         self._controller_path = None

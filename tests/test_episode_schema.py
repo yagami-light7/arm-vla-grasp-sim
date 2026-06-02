@@ -66,6 +66,19 @@ class EpisodeSchemaTest(unittest.TestCase):
             payload = json.loads((Path(tmp_dir) / "4/5/summary.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["failure_reason"], "nav_timeout")
 
+    def test_rejects_grasp_target_far_from_navigation_base(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "grasp_target_unreachable"):
+            GraspPipeline._validate_target_workspace(
+                {
+                    "diagnostics": {
+                        "target_workspace_base": {
+                            "grasp": {"xy_radius_m": 4.6},
+                            "pregrasp": {"radius_3d_m": 4.7},
+                        }
+                    }
+                }
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
