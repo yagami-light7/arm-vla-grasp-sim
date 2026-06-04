@@ -7,9 +7,16 @@ import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
-from scripts.pipeline.run_nav_then_pick import _default_checkpoint_path, _nav_command, _validate_checkpoint
+from scripts.pipeline.run_nav_then_pick import (
+    _default_checkpoint_path,
+    _nav_command,
+    _pick_script_editor_command,
+    _standalone_pick_command,
+    _validate_checkpoint,
+)
 
 
 class PipelineCheckpointValidationTest(unittest.TestCase):
@@ -67,9 +74,11 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             dataset_dir=None,
             no_record=True,
             head_camera=False,
+            demo_visuals=False,
             load_visual_scene=True,
             visual_prim_path="/World/gauss",
             follow_camera=True,
+            follow_camera_mode="chase",
             follow_camera_distance=2.0,
             follow_camera_height=0.7,
             follow_camera_side=0.0,
@@ -90,6 +99,114 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
         self.assertIn("0.08", command)
         self.assertIn("--debug-print-every", command)
         self.assertIn("30", command)
+
+    def test_pick_script_editor_smoke_command_sets_env_flag(self) -> None:
+        smoke_command = _pick_script_editor_command(smoke_only=True)
+        full_command = _pick_script_editor_command(smoke_only=False)
+
+        self.assertIn('os.environ["GO2_X5_HANDOFF_FORCE_RECORD"] = "1"', smoke_command)
+        self.assertIn('os.environ["GO2_X5_HANDOFF_SMOKE_ONLY"] = "1"', smoke_command)
+        self.assertIn('os.environ["GO2_X5_HANDOFF_FORCE_RECORD"] = "1"', full_command)
+        self.assertIn('os.environ["GO2_X5_HANDOFF_SMOKE_ONLY"] = "0"', full_command)
+
+    def test_standalone_pick_command_is_headless_and_strict_by_default(self) -> None:
+        args = Namespace(
+            isaac_python="/opt/isaac/python",
+            task_json="tasks/nav_pick_example.json",
+            scene_usd=None,
+            nav_map=None,
+            nav_result="/tmp/go2_x5_nav_result.json",
+            terrain_prim_path="/World/scene_collision",
+            inflate_radius=0.25,
+            local_clearance_radius=0.20,
+            settle_steps=120,
+            dataset_dir=None,
+            use_planner_server=False,
+            handoff_smoke_only=False,
+            no_record=False,
+            allow_retreat_success=False,
+            legacy_side_retreat=False,
+            side_grasp_fallback_retreat=False,
+            grasp_headless=True,
+            demo_visuals=False,
+        )
+        task = SimpleNamespace(scene_usd="source/scene/839920_go2_x5.usd", nav_map="source/scene/nav_maps/839920/map.json")
+        command = _standalone_pick_command(args, task)
+
+        self.assertEqual(command[0], "/opt/isaac/python")
+        self.assertIn("--headless", command)
+        self.assertIn("--require-lift-success", command)
+        self.assertIn("--scene-usd", command)
+        self.assertIn("--nav-map", command)
+
+    def test_demo_visuals_uses_overhead_camera_and_visible_grasp(self) -> None:
+        args = Namespace(
+            isaaclab_launcher="/opt/IsaacLab/isaaclab.sh",
+            isaaclab_python="/unused/python",
+            task_json="tasks/nav_pick_example.json",
+            task="RobotLab-Isaac-Velocity-Flat-Go2-X5-Foundation-v0",
+            checkpoint="/tmp/model_8500.pt",
+            terrain_prim_path="/World/scene_collision",
+            ground_height=0.0,
+            nav_result="/tmp/go2_x5_nav_result.json",
+            max_nav_steps=5000,
+            settle_steps=120,
+            stall_window_steps=240,
+            stall_min_progress=0.05,
+            stall_min_forward_command=0.05,
+            stall_min_forward_ratio=0.25,
+            goal_tolerance=0.15,
+            goal_yaw_tolerance=0.15,
+            inflate_radius=0.25,
+            local_clearance_radius=0.20,
+            lookahead_distance=0.35,
+            prediction_horizon=0.90,
+            max_lin_vel=0.50,
+            max_ang_vel=1.00,
+            yaw_align_kp=2.0,
+            yaw_align_min_wz=0.55,
+            yaw_align_max_wz=1.00,
+            yaw_align_vx=0.08,
+            yaw_align_activation_yaw_error=0.0,
+            yaw_align_allow_reverse=False,
+            yaw_align_stall_window_steps=240,
+            yaw_align_min_progress=0.08,
+            yaw_settle_stable_steps=20,
+            debug_print_every=30,
+            scene_usd=None,
+            add_nav_ground=False,
+            nav_map=None,
+            dataset_dir=None,
+            no_record=False,
+            head_camera=False,
+            demo_visuals=True,
+            load_visual_scene=False,
+            visual_prim_path="/World/gauss",
+            follow_camera=True,
+            follow_camera_mode="chase",
+            follow_camera_distance=2.4,
+            follow_camera_height=0.8,
+            follow_camera_side=0.0,
+            flat_terrain=False,
+            disable_sky_light=False,
+            debug_command=None,
+            use_planner_server=False,
+            handoff_smoke_only=False,
+            allow_retreat_success=False,
+            legacy_side_retreat=False,
+            side_grasp_fallback_retreat=False,
+            grasp_headless=True,
+            isaac_python="/opt/isaac/python",
+        )
+        task = SimpleNamespace(scene_usd="source/scene/839920_go2_x5.usd", nav_map="source/scene/nav_maps/839920/map.json")
+
+        nav_command = _nav_command(args, task)
+        pick_command = _standalone_pick_command(args, task)
+
+        self.assertIn("--load-visual-scene", nav_command)
+        self.assertIn("--follow-camera-mode", nav_command)
+        self.assertIn("overhead", nav_command)
+        self.assertNotIn("--headless", pick_command)
 
 
 if __name__ == "__main__":

@@ -57,7 +57,7 @@ python scripts/navigation/visualize_astar_dwa.py \
 `run_nav_only.py` 会在创建环境前检查 `/World/scene_collision` 是否真正加载到
 mesh。若数据盘未挂载，它会提前报错；不要继续调试 DWA 路径。
 
-运行导航阶段。若已迁移 DWA checkpoint 到
+运行一键导航 + 抓取。若已迁移 DWA checkpoint 到
 `checkpoints/go2_x5/flat/model_8500.pt`，可以不传 `--checkpoint`；也可以用
 `GO2_X5_CHECKPOINT` 或显式 `--checkpoint` 覆盖。
 
@@ -69,18 +69,14 @@ test -f "$GO2_X5_CHECKPOINT"
   --task-json tasks/nav_pick_example.json \
   --task RobotLab-Isaac-Velocity-Flat-Go2-X5-Foundation-v0 \
   --checkpoint "$GO2_X5_CHECKPOINT" \
-  --isaaclab-launcher /path/to/IsaacLab/isaaclab.sh \
-  --inflate-radius 0.25 \
-  --local-clearance-radius 0.25 \
-  --lookahead-distance 0.35 \
-  --prediction-horizon 0.90 \
-  --max-lin-vel 0.50 \
-  --yaw-align-max-wz 1.00 \
-  --yaw-align-min-wz 0.55 \
-  --yaw-align-vx 0.08 \
-  --nav-only \
-  --head-camera
+  --isaaclab-launcher /home/light/workspace/IsaacLab/isaaclab.sh
 ```
+
+默认流程会先在 Isaac Lab 中从 `tasks/nav_pick_example.json` 的远起点
+`(-5.0, 0.0, 0.0)` 导航到苹果抓取 base goal，然后自动启动 headless Isaac
+Sim standalone 抓取 runner，读取 `/tmp/go2_x5_nav_result.json`，恢复底盘
+pose，调用外部 cuRobo one-shot planner，并写入 episode。若只想验证导航，
+传 `--nav-only`；若想回到 Script Editor 手动 handoff，传 `--manual-grasp`。
 
 `GO2_X5_CHECKPOINT` 必须指向 Go2-X5 RSL-RL locomotion checkpoint。当前本地
 默认路径是 `checkpoints/go2_x5/flat/model_8500.pt`。文档中的占位符不能原样
@@ -111,12 +107,15 @@ head-camera 调试；需要复现无光照设置时再传 `--disable-sky-light`�
 显示真实 3DGS 背景，可额外加：
 
 ```bash
---load-visual-scene --visual-prim-path /World/gauss
+--demo-visuals
 ```
 
-该开关只把指定 visual prim 挂到 `/World/nav_visual_scene`，不会替换
-`/World/scene_collision` 作为物理地形。3DGS 可视化会增加渲染开销；调路线和
-速度时建议先不用 `--head-camera`，并加 `--no-record`：
+`--demo-visuals` 会为导航阶段加载 `--visual-prim-path /World/gauss`，把 viewport
+相机切到高斜俯视，减少走廊墙体遮挡，并让后续 grasp standalone runner 以可视
+GUI 模式打开完整 USD。注意导航阶段仍不会加载 `/World/apple` 这类抓取物体，
+因为导航 runtime 只使用 collision terrain；苹果会在 grasp stage 打开完整
+`scene_usd` 时出现。3DGS 可视化会增加渲染开销；调路线和速度时建议先不用
+`--head-camera`，并加 `--no-record`：
 
 ```bash
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_nav_then_pick.py \
@@ -124,14 +123,6 @@ head-camera 调试；需要复现无光照设置时再传 `--disable-sky-light`�
   --task RobotLab-Isaac-Velocity-Flat-Go2-X5-Foundation-v0 \
   --checkpoint "$GO2_X5_CHECKPOINT" \
   --isaaclab-launcher /path/to/IsaacLab/isaaclab.sh \
-  --inflate-radius 0.25 \
-  --local-clearance-radius 0.20 \
-  --lookahead-distance 0.35 \
-  --prediction-horizon 0.90 \
-  --max-lin-vel 0.50 \
-  --yaw-align-max-wz 1.00 \
-  --yaw-align-min-wz 0.55 \
-  --yaw-align-vx 0.08 \
   --nav-only \
   --no-record
 ```
@@ -149,7 +140,7 @@ head-camera 调试；需要复现无光照设置时再传 `--disable-sky-light`�
 站立不转。
 
 地图膨胀会把地图边界视为不可通行区域。导航 settle 后会再次检查目标距离，
-handoff 瞬移前也会检查任务 goal 是否匹配、占用栅格、`0.40 m` clearance
+handoff 瞬移前也会检查任务 goal 是否匹配、占用栅格、`0.25 m` clearance
 和地图边界距离。
 地图导出会保守栅格化碰撞三角形的边线，避免垂直墙在俯视 XY 投影中退化为
 零面积后消失。修改地图导出逻辑或碰撞 USD 后，必须重新生成
@@ -161,16 +152,21 @@ handoff 瞬移前也会检查任务 goal 是否匹配、占用栅格、`0.40 m` 
 避免抓取 base goal 后方的桌子或墙错误拒绝本来可达的接近命令。日志中的
 `dwa=(clearance, feasible, collision_rej, target)` 和
 `contact=(foot, nonfoot)` 用于区分局部规划拒绝、足端接触和非足端碰撞。
-苹果任务包含狭窄转弯，使用 `--inflate-radius 0.25`、
-`--local-clearance-radius 0.25`、`--lookahead-distance 0.35` 和
+苹果任务包含狭窄转弯，默认使用 `--inflate-radius 0.25`、
+`--local-clearance-radius 0.20`、`--lookahead-distance 0.35` 和
 `--prediction-horizon 0.90`。DWA 内部预测采样周期不会大于 locomotion control dt，
 避免轨迹跨过中间占用栅格却未检查。
 handoff 只继承导航的 `x/y/yaw`，使用抓取场景中稳定的 root `z`，避免把
 行走 rollout 中的瞬时 roll/pitch 带入抓取场景。
 
-导航成功后，在 Isaac Sim Script Editor 中运行 coordinator 打印的 handoff
-命令。该命令读取 `/tmp/go2_x5_nav_result.json`，恢复底盘 pose，等待底盘
-稳定，然后调用新的 `GraspPipeline` 包装层。
+默认抓取阶段使用 headless standalone runner，因此不会产生 Script Editor 长任务
+期间常见的 GUI asyncio 噪声。抓取成功标准也已收紧：默认要求
+`object_lift_success=true` 才算 episode 成功；旧的 side retreat 位移成功只作为
+调试指标保留。需要临时回到旧标准时传 `--allow-retreat-success`。
+
+若使用 `--manual-grasp`，导航成功后可以在 Isaac Sim Script Editor 中运行
+coordinator 打印的 handoff 命令。该命令读取 `/tmp/go2_x5_nav_result.json`，
+恢复底盘 pose，等待底盘稳定，然后调用新的 `GraspPipeline` 包装层。
 
 Script Editor 中应使用带文件名的 `compile(...)` 写法，确保 handoff
 脚本可以从 `__file__` 推导仓库根目录并导入 `source.data`：

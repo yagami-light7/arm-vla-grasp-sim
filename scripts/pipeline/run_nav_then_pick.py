@@ -23,6 +23,7 @@ PIPELINE_CONTEXT_JSON = Path("/tmp/go2_x5_pipeline_context.json")
 DEFAULT_NAV_RESULT_JSON = Path("/tmp/go2_x5_nav_result.json")
 DEFAULT_LOCAL_CHECKPOINT = PROJECT_ROOT / "checkpoints/go2_x5/flat/model_8500.pt"
 LEGACY_TMP_CHECKPOINT = Path("/tmp/DWA-reference/flat/model_8500.pt")
+DEFAULT_ISAAC_PYTHON = "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python"
 
 
 def _project_path(raw_path: str) -> Path:
@@ -87,23 +88,44 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-dir", default=None)
     parser.add_argument("--isaaclab-python", default=sys.executable)
     parser.add_argument("--isaaclab-launcher", default=None, help="Optional Isaac Lab isaaclab.sh launcher; adds '-p'.")
+    parser.add_argument(
+        "--isaac-python",
+        default=os.environ.get("GO2_X5_ISAAC_PYTHON", DEFAULT_ISAAC_PYTHON),
+        help="Python executable used for the standalone Isaac Sim grasp runner.",
+    )
     parser.add_argument("--nav-result", default=str(DEFAULT_NAV_RESULT_JSON))
     parser.add_argument("--nav-only", action="store_true")
     parser.add_argument("--grasp-only", action="store_true")
+    parser.add_argument("--manual-grasp", action="store_true", help="Do not launch standalone grasp; print Script Editor commands.")
+    parser.add_argument(
+        "--handoff-smoke-only",
+        action="store_true",
+        help="In the Isaac Sim handoff script, restore the base pose and export state without planning or executing grasp.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-record", action="store_true")
     parser.add_argument("--use-planner-server", action="store_true")
+    parser.add_argument(
+        "--demo-visuals",
+        action="store_true",
+        help="Enable visual scene loading, overhead follow camera, and non-headless grasp for interactive demos.",
+    )
+    parser.add_argument("--grasp-headless", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--allow-retreat-success", action="store_true", help="Legacy debug mode: side retreat may count as pick success.")
+    parser.add_argument("--legacy-side-retreat", action="store_true", help="Plan side grasp retreat instead of vertical lift.")
+    parser.add_argument("--side-grasp-fallback-retreat", action="store_true", help="Fallback to side retreat if vertical lift planning fails.")
     parser.add_argument("--head-camera", action="store_true")
     parser.add_argument("--load-visual-scene", action="store_true")
     parser.add_argument("--visual-prim-path", default="/World/gauss")
     parser.add_argument("--follow-camera", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--follow-camera-mode", choices=("chase", "front", "overhead"), default="chase")
     parser.add_argument("--follow-camera-distance", type=float, default=2.4)
     parser.add_argument("--follow-camera-height", type=float, default=0.8)
     parser.add_argument("--follow-camera-side", type=float, default=0.0)
     parser.add_argument("--flat-terrain", action="store_true", help="Use the locomotion task's flat terrain for debugging.")
     parser.add_argument("--disable-sky-light", action="store_true", help="Disable the default Isaac Lab sky light.")
     parser.add_argument("--debug-command", type=float, nargs=3, default=None, metavar=("VX", "VY", "WZ"))
-    parser.add_argument("--max-nav-steps", type=int, default=3000)
+    parser.add_argument("--max-nav-steps", type=int, default=5000)
     parser.add_argument("--settle-steps", type=int, default=120)
     parser.add_argument("--stall-window-steps", type=int, default=240)
     parser.add_argument("--stall-min-progress", type=float, default=0.05)
@@ -111,10 +133,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--stall-min-forward-ratio", type=float, default=0.25)
     parser.add_argument("--goal-tolerance", type=float, default=0.15)
     parser.add_argument("--goal-yaw-tolerance", type=float, default=0.15)
-    parser.add_argument("--inflate-radius", type=float, default=0.40)
-    parser.add_argument("--local-clearance-radius", type=float, default=0.35)
+    parser.add_argument("--inflate-radius", type=float, default=0.25)
+    parser.add_argument("--local-clearance-radius", type=float, default=0.20)
     parser.add_argument("--lookahead-distance", type=float, default=0.35)
-    parser.add_argument("--prediction-horizon", type=float, default=1.80)
+    parser.add_argument("--prediction-horizon", type=float, default=0.90)
     parser.add_argument("--max-lin-vel", type=float, default=0.50)
     parser.add_argument("--max-ang-vel", type=float, default=1.00)
     parser.add_argument("--yaw-align-kp", type=float, default=2.0)
@@ -130,9 +152,17 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _pick_script_editor_command() -> str:
+def _pick_script_editor_command(*, smoke_only: bool = False) -> str:
     script = PROJECT_ROOT / "scripts/isaac/run_pick_from_nav_result.py"
+    env_line = (
+        'os.environ["GO2_X5_HANDOFF_SMOKE_ONLY"] = "1"\n'
+        if smoke_only
+        else 'os.environ["GO2_X5_HANDOFF_SMOKE_ONLY"] = "0"\n'
+    )
     return (
+        "import os\n"
+        'os.environ["GO2_X5_HANDOFF_FORCE_RECORD"] = "1"\n'
+        f"{env_line}"
         f'_script = "{script}"\n'
         'exec(compile(open(_script, "r", encoding="utf-8").read(), _script, "exec"), '
         '{"__file__": _script, "__name__": "__main__"})'
@@ -147,6 +177,7 @@ def _write_context(args: argparse.Namespace, task_json: Path, task) -> None:
                 "task_json": str(task_json),
                 "nav_result_json": str(Path(args.nav_result).expanduser().resolve()),
                 "nav_map": str(_project_path(args.nav_map or task.nav_map)),
+                "terrain_prim_path": args.terrain_prim_path,
                 "add_nav_ground": args.add_nav_ground,
                 "ground_height": args.ground_height,
                 "handoff_clearance_radius": max(args.inflate_radius, args.local_clearance_radius),
@@ -165,6 +196,10 @@ def _write_context(args: argparse.Namespace, task_json: Path, task) -> None:
                 "yaw_align_min_progress": args.yaw_align_min_progress,
                 "yaw_settle_stable_steps": args.yaw_settle_stable_steps,
                 "use_planner_server": args.use_planner_server,
+                "handoff_smoke_only": args.handoff_smoke_only,
+                "require_object_lift_success": not args.allow_retreat_success,
+                "legacy_side_retreat": args.legacy_side_retreat,
+                "side_grasp_fallback_retreat": args.side_grasp_fallback_retreat,
                 "settle_steps": args.settle_steps,
                 "dataset_dir": args.dataset_dir,
                 "load_visual_scene": args.load_visual_scene,
@@ -258,15 +293,24 @@ def _nav_command(args: argparse.Namespace, task) -> list[str]:
         command.append("--no-record")
     if args.head_camera:
         command.append("--head-camera")
-    if args.load_visual_scene:
+    if args.load_visual_scene or args.demo_visuals:
         command.extend(["--load-visual-scene", "--visual-prim-path", args.visual_prim_path])
+    follow_camera_mode = args.follow_camera_mode
+    follow_camera_distance = args.follow_camera_distance
+    follow_camera_height = args.follow_camera_height
+    if args.demo_visuals and args.follow_camera_mode == "chase":
+        follow_camera_mode = "overhead"
+        follow_camera_distance = 3.0
+        follow_camera_height = 3.2
     command.extend(
         [
             "--follow-camera" if args.follow_camera else "--no-follow-camera",
+            "--follow-camera-mode",
+            follow_camera_mode,
             "--follow-camera-distance",
-            str(args.follow_camera_distance),
+            str(follow_camera_distance),
             "--follow-camera-height",
-            str(args.follow_camera_height),
+            str(follow_camera_height),
             "--follow-camera-side",
             str(args.follow_camera_side),
         ]
@@ -279,6 +323,45 @@ def _nav_command(args: argparse.Namespace, task) -> list[str]:
         command.append("--yaw-align-allow-reverse")
     if args.debug_command:
         command.extend(["--debug-command", *(str(value) for value in args.debug_command)])
+    return command
+
+
+def _standalone_pick_command(args: argparse.Namespace, task, *, smoke_only: bool = False) -> list[str]:
+    script = PROJECT_ROOT / "scripts/isaac/run_pick_from_nav_result_standalone.py"
+    command = [
+        args.isaac_python,
+        str(script),
+        "--task-json",
+        str(_project_path(args.task_json)),
+        "--scene-usd",
+        str(_project_path(args.scene_usd or task.scene_usd)),
+        "--nav-map",
+        str(_project_path(args.nav_map or task.nav_map)),
+        "--nav-result",
+        str(Path(args.nav_result).expanduser().resolve()),
+        "--terrain-prim-path",
+        args.terrain_prim_path,
+        "--handoff-clearance-radius",
+        str(max(args.inflate_radius, args.local_clearance_radius)),
+        "--settle-steps",
+        str(args.settle_steps),
+    ]
+    if args.dataset_dir:
+        command.extend(["--dataset-dir", args.dataset_dir])
+    if args.use_planner_server:
+        command.append("--use-planner-server")
+    if smoke_only or args.handoff_smoke_only:
+        command.append("--handoff-smoke-only")
+    if args.no_record:
+        command.append("--no-record")
+    if not args.allow_retreat_success:
+        command.append("--require-lift-success")
+    if args.legacy_side_retreat:
+        command.append("--legacy-side-retreat")
+    if args.side_grasp_fallback_retreat:
+        command.append("--side-grasp-fallback-retreat")
+    if args.grasp_headless and not args.demo_visuals:
+        command.append("--headless")
     return command
 
 
@@ -338,8 +421,23 @@ def main() -> int:
         _dry_run(args, task)
         return 0
     if args.grasp_only:
-        print("[handoff] Run this command in Isaac Sim Script Editor:")
-        print(_pick_script_editor_command())
+        if args.manual_grasp:
+            if args.handoff_smoke_only:
+                print("[handoff] Run this smoke-check command in Isaac Sim Script Editor:")
+                print(_pick_script_editor_command(smoke_only=True))
+            else:
+                print("[handoff] Run this full-pick command in Isaac Sim Script Editor:")
+                print(_pick_script_editor_command(smoke_only=False))
+            return 0
+        command = _standalone_pick_command(args, task, smoke_only=args.handoff_smoke_only)
+        print("[pipeline] launching standalone grasp:")
+        print(" ".join(command))
+        subprocess.run(command, cwd=str(PROJECT_ROOT), check=True)
+        return 0
+
+    if args.manual_grasp and args.handoff_smoke_only:
+        print("[handoff] Run this smoke-check command in Isaac Sim Script Editor:")
+        print(_pick_script_editor_command(smoke_only=True))
         return 0
 
     # 验证 checkpoint 路径
@@ -360,12 +458,23 @@ def main() -> int:
         return 1
     if args.nav_only:
         print("[pipeline] navigation complete:", args.nav_result)
-        print("[handoff] Run this command in Isaac Sim Script Editor:")
-        print(_pick_script_editor_command())
+        print("[handoff] First run this smoke-check command in Isaac Sim Script Editor:")
+        print(_pick_script_editor_command(smoke_only=True))
+        print("[handoff] After smoke passes, run this full-pick command in Isaac Sim Script Editor:")
+        print(_pick_script_editor_command(smoke_only=False))
         return 0
 
-    print("[pipeline] navigation complete. Run this command in Isaac Sim Script Editor:")
-    print(_pick_script_editor_command())
+    if args.manual_grasp:
+        print("[pipeline] navigation complete. Run this smoke-check command in Isaac Sim Script Editor:")
+        print(_pick_script_editor_command(smoke_only=True))
+        print("[handoff] After smoke passes, run this full-pick command in Isaac Sim Script Editor:")
+        print(_pick_script_editor_command(smoke_only=False))
+        return 0
+
+    command = _standalone_pick_command(args, task, smoke_only=False)
+    print("[pipeline] navigation complete. launching standalone grasp:")
+    print(" ".join(command))
+    subprocess.run(command, cwd=str(PROJECT_ROOT), check=True)
     return 0
 
 

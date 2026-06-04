@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -81,6 +82,20 @@ STRICT_POST_MOTION_WAIT_SEGMENTS = {
 # 物体中心或 bbox 顶部至少上升这么多，认为第一版 lift 有效果。
 OBJECT_LIFT_SUCCESS_THRESHOLD_M = 0.04
 OBJECT_RETREAT_SUCCESS_THRESHOLD_M = 0.03
+
+
+def env_bool(name: str, default: bool) -> bool:
+    """Read a boolean environment flag."""
+
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+# VLA collection should not silently count a side drag as a successful pick.
+# Set GO2_X5_REQUIRE_OBJECT_LIFT_SUCCESS=0 only for legacy retreat debugging.
+REQUIRE_OBJECT_LIFT_SUCCESS = env_bool("GO2_X5_REQUIRE_OBJECT_LIFT_SUCCESS", True)
 
 
 def load_grasp_plan() -> dict:
@@ -1038,7 +1053,9 @@ async def main():
         )
 
     if abort_reason is None:
-        if grasp_mode == "side" and has_planned_retreat and not has_lift_segment:
+        if REQUIRE_OBJECT_LIFT_SUCCESS:
+            task_success = lift_success
+        elif grasp_mode == "side" and has_planned_retreat and not has_lift_segment:
             task_success = object_retreat_success
         else:
             task_success = lift_success
@@ -1057,6 +1074,7 @@ async def main():
             "object_center_displacement_m": object_center_displacement,
             "object_retreat_success": object_retreat_success,
             "object_retreat_success_threshold_m": OBJECT_RETREAT_SUCCESS_THRESHOLD_M,
+            "require_object_lift_success": REQUIRE_OBJECT_LIFT_SUCCESS,
             "task_success": task_success,
             "aborted": abort_reason is not None,
             "abort_reason": abort_reason,

@@ -10,6 +10,7 @@ import json
 import math
 import os
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -18,7 +19,7 @@ import omni.kit.app
 import omni.usd
 from isaacsim.core.api.world import World
 from isaacsim.core.prims import SingleArticulation
-from pxr import UsdPhysics
+from pxr import Usd, UsdGeom, UsdPhysics
 
 
 SCRIPT_FILE = globals().get("__file__")
@@ -63,12 +64,37 @@ SETTLE_STEPS = int(os.environ.get("GO2_X5_PICK_SETTLE_STEPS", "120"))
 LINEAR_STABLE_TOLERANCE = 0.05
 ANGULAR_STABLE_TOLERANCE = 0.10
 HANDOFF_CLEARANCE_M = float(os.environ.get("GO2_X5_HANDOFF_CLEARANCE_M", "0.30"))
+HANDOFF_REPORT_JSON = Path(os.environ.get("GO2_X5_HANDOFF_REPORT", "/tmp/go2_x5_handoff_report.json"))
+DEFAULT_TERRAIN_PRIM_PATH = "/World/scene_collision"
+
+
+class HandoffFailure(RuntimeError):
+    """Failure with a stable reason and optional report payload."""
+
+    def __init__(self, failure_reason: str, detail: str, report: dict | None = None):
+        super().__init__(f"{failure_reason}: {detail}")
+        self.failure_reason = failure_reason
+        self.report = report or {}
 
 
 def _read_json(path: Path) -> dict:
     if not path.exists():
         raise FileNotFoundError(path)
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_report(payload: dict) -> None:
+    payload = dict(payload)
+    payload.setdefault("updated_at", time.time())
+    HANDOFF_REPORT_JSON.parent.mkdir(parents=True, exist_ok=True)
+    HANDOFF_REPORT_JSON.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _env_bool(name: str) -> bool | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return raw.strip().lower() not in {"", "0", "false", "no", "off"}
 
 
 def _grasp_failure_reason(detail: str) -> str:
@@ -95,6 +121,31 @@ def _pipeline_context() -> dict:
     return _read_json(PIPELINE_CONTEXT_JSON) if PIPELINE_CONTEXT_JSON.exists() else {}
 
 
+def _handoff_smoke_only(context: dict) -> bool:
+    env_value = _env_bool("GO2_X5_HANDOFF_SMOKE_ONLY")
+    if env_value is not None:
+        return env_value
+    return bool(context.get("handoff_smoke_only", False))
+
+
+def _record_handoff_episode(context: dict) -> bool:
+    env_value = _env_bool("GO2_X5_HANDOFF_FORCE_RECORD")
+    if env_value is not None:
+        return env_value
+    return not bool(context.get("no_record", False))
+
+
+def _apply_grasp_policy_env(context: dict) -> None:
+    """Forward success-standard and side-grasp planning policy to loaded scripts."""
+
+    require_lift = bool(context.get("require_object_lift_success", True))
+    legacy_side_retreat = bool(context.get("legacy_side_retreat", False))
+    fallback_retreat = bool(context.get("side_grasp_fallback_retreat", False))
+    os.environ["GO2_X5_REQUIRE_OBJECT_LIFT_SUCCESS"] = "1" if require_lift else "0"
+    os.environ["GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT"] = "0" if legacy_side_retreat else "1"
+    os.environ["GO2_X5_SIDE_GRASP_FALLBACK_RETREAT"] = "1" if fallback_retreat else "0"
+
+
 def _nav_result_path() -> Path:
     context = _pipeline_context()
     return Path(context.get("nav_result_json", NAV_RESULT_JSON)).expanduser().resolve()
@@ -105,7 +156,7 @@ def _project_path(raw_path: str) -> Path:
     return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
 
 
-def _validate_handoff_pose(task, nav_result: dict) -> None:
+def _validate_handoff_pose(task, nav_result: dict) -> dict:
     """Reject unsafe base teleport targets before mutating the open stage."""
 
     pose = nav_result["final_base_pose_world"]
@@ -144,8 +195,70 @@ def _validate_handoff_pose(task, nav_result: dict) -> None:
         f"goal_distance={goal_distance:.3f}m clearance={clearance_m:.2f}m "
         f"boundary_clearance={boundary_clearance:.3f}m"
     )
+    report = {
+        "nav_xy": [x, y],
+        "grid_index": [int(row), int(col)],
+        "goal_distance_m": goal_distance,
+        "clearance_radius_m": clearance_m,
+        "boundary_clearance_m": boundary_clearance,
+        "raw_cell_occupied": bool(grid_map.is_occupied(row, col)),
+        "clearance_cell_occupied": bool(clearance_map.is_occupied(row, col)),
+        "map_json": str(map_path),
+    }
     if errors:
-        raise RuntimeError(f"nav_collision: unsafe handoff pose ({x:.3f}, {y:.3f}): {'; '.join(errors)}")
+        raise HandoffFailure(
+            "nav_collision",
+            f"unsafe handoff pose ({x:.3f}, {y:.3f}): {'; '.join(errors)}",
+            report,
+        )
+    return report
+
+
+def _count_meshes_under(stage, prim_path: str) -> int:
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        return 0
+    return sum(1 for child in Usd.PrimRange(prim) if child.IsA(UsdGeom.Mesh))
+
+
+def _validate_open_stage(task, context: dict) -> dict:
+    """Verify that the currently open Isaac Sim stage can run the handoff."""
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        raise HandoffFailure("stage_not_ready", "No USD stage is open in Isaac Sim.")
+
+    terrain_prim_path = str(context.get("terrain_prim_path", DEFAULT_TERRAIN_PRIM_PATH))
+    object_prim_path = task.pick.object_prim_path
+    checks = {
+        "terrain_prim_path": terrain_prim_path,
+        "terrain_prim_exists": stage.GetPrimAtPath(terrain_prim_path).IsValid(),
+        "terrain_mesh_count": _count_meshes_under(stage, terrain_prim_path),
+        "object_prim_path": object_prim_path,
+        "object_prim_exists": bool(object_prim_path and stage.GetPrimAtPath(object_prim_path).IsValid()),
+    }
+    errors = []
+    if not checks["terrain_prim_exists"]:
+        errors.append(f"terrain prim does not exist: {terrain_prim_path}")
+    elif checks["terrain_mesh_count"] <= 0:
+        errors.append(
+            f"terrain prim has no meshes: {terrain_prim_path}. "
+            "Check that external scene payloads such as /mnt/sage_data are mounted."
+        )
+    if object_prim_path and not checks["object_prim_exists"]:
+        errors.append(f"object prim does not exist: {object_prim_path}")
+    print(
+        "[handoff] stage check:",
+        {
+            "terrain": terrain_prim_path,
+            "terrain_meshes": checks["terrain_mesh_count"],
+            "object": object_prim_path,
+            "object_exists": checks["object_prim_exists"],
+        },
+    )
+    if errors:
+        raise HandoffFailure("stage_not_ready", "; ".join(errors), checks)
+    return checks
 
 
 def _resolve_articulation_root(stage) -> str:
@@ -181,7 +294,28 @@ async def _initialize_robot() -> tuple[World, SingleArticulation]:
     return world, robot
 
 
-async def _restore_and_settle(world: World, robot: SingleArticulation, nav_result: dict) -> None:
+def _quat_wxyz_to_yaw(quat_wxyz) -> float:
+    quat = np.asarray(quat_wxyz, dtype=float)
+    w, x, y, z = quat
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def _robot_root_report(robot: SingleArticulation) -> dict:
+    position, orientation = robot.get_world_pose()
+    linear = np.asarray(robot.get_linear_velocity(), dtype=float)
+    angular = np.asarray(robot.get_angular_velocity(), dtype=float)
+    return {
+        "position_xyz": np.asarray(position, dtype=float).tolist(),
+        "quaternion_wxyz": np.asarray(orientation, dtype=float).tolist(),
+        "yaw": _quat_wxyz_to_yaw(orientation),
+        "linear_velocity_xyz": linear.tolist(),
+        "angular_velocity_xyz": angular.tolist(),
+        "linear_speed_xy": float(math.hypot(float(linear[0]), float(linear[1]))),
+        "angular_speed_z": abs(float(angular[2])),
+    }
+
+
+async def _restore_and_settle(world: World, robot: SingleArticulation, nav_result: dict) -> dict:
     pose = nav_result["final_base_pose_world"]
     current_position, _ = robot.get_world_pose()
     root_z = float(os.environ.get("GO2_X5_HANDOFF_ROOT_Z", current_position[2]))
@@ -207,61 +341,187 @@ async def _restore_and_settle(world: World, robot: SingleArticulation, nav_resul
         await omni.kit.app.get_app().next_update_async()
     linear = np.asarray(robot.get_linear_velocity(), dtype=float)
     angular = np.asarray(robot.get_angular_velocity(), dtype=float)
-    if math.hypot(float(linear[0]), float(linear[1])) > LINEAR_STABLE_TOLERANCE or abs(float(angular[2])) > ANGULAR_STABLE_TOLERANCE:
-        raise RuntimeError(f"base_not_stable: linear={linear.tolist()} angular={angular.tolist()}")
+    root_report = _robot_root_report(robot)
+    root_position = root_report["position_xyz"]
+    root_yaw = float(root_report["yaw"])
+    nav_yaw = float(pose["yaw"])
+    report = {
+        "requested_root_pose": {
+            "x": float(pose["x"]),
+            "y": float(pose["y"]),
+            "z": root_z,
+            "yaw": nav_yaw,
+        },
+        "settled_root": root_report,
+        "settle_steps": settle_steps,
+        "xy_error_m": float(math.hypot(root_position[0] - float(pose["x"]), root_position[1] - float(pose["y"]))),
+        "yaw_error_rad": float(abs((root_yaw - nav_yaw + math.pi) % (2.0 * math.pi) - math.pi)),
+        "stable": bool(
+            math.hypot(float(linear[0]), float(linear[1])) <= LINEAR_STABLE_TOLERANCE
+            and abs(float(angular[2])) <= ANGULAR_STABLE_TOLERANCE
+        ),
+    }
+    if not report["stable"]:
+        raise HandoffFailure("base_not_stable", f"linear={linear.tolist()} angular={angular.tolist()}", report)
+    print(
+        "[handoff] settled root:",
+        {
+            "xy_error_m": round(report["xy_error_m"], 4),
+            "yaw_error_rad": round(report["yaw_error_rad"], 4),
+            "linear_speed_xy": round(root_report["linear_speed_xy"], 4),
+            "angular_speed_z": round(root_report["angular_speed_z"], 4),
+        },
+    )
+    return report
+
+
+def _state_export_report(state: dict, nav_result: dict) -> dict:
+    """Summarize exported arm-base state after handoff smoke."""
+
+    world_base = state.get("poses", {}).get("world_base", {})
+    matrix = np.asarray(world_base.get("matrix_4x4"), dtype=float)
+    if matrix.shape != (4, 4) or not np.all(np.isfinite(matrix)):
+        raise HandoffFailure("state_export_failed", "exported poses.world_base.matrix_4x4 is missing or invalid")
+    position = matrix[:3, 3]
+    yaw = math.atan2(float(matrix[1, 0]), float(matrix[0, 0]))
+    nav_pose = nav_result["final_base_pose_world"]
+    return {
+        "state_json": "/tmp/go2_x5_isaac_state.json",
+        "base_frame_path": state.get("paths", {}).get("base_frame_path"),
+        "arm_base_position_xyz": position.tolist(),
+        "arm_base_yaw": yaw,
+        "arm_base_to_nav_root_xy_m": float(
+            math.hypot(position[0] - float(nav_pose["x"]), position[1] - float(nav_pose["y"]))
+        ),
+        "arm_base_to_nav_root_yaw_error_rad": float(
+            abs((yaw - float(nav_pose["yaw"]) + math.pi) % (2.0 * math.pi) - math.pi)
+        ),
+        "world_collision_cuboids": len(state.get("world_collision", {}).get("cuboids_base", [])),
+    }
+
+
+def _summarize_target(target: dict) -> dict:
+    source = target.get("source", {})
+    diagnostics = target.get("diagnostics", {})
+    workspace = diagnostics.get("target_workspace_base", {})
+    return {
+        "target_json": "/tmp/go2_x5_target_tcp_pose.json",
+        "object_prim_path": target.get("object_prim_path")
+        or source.get("object_prim_path")
+        or diagnostics.get("object_prim_path"),
+        "grasp_mode": target.get("grasp_mode") or source.get("grasp_mode") or diagnostics.get("grasp_mode"),
+        "target_workspace_base": workspace,
+    }
 
 
 async def main() -> None:
     print("========== Go2-X5 Pick From Navigation Result ==========")
     nav_result = _read_json(_nav_result_path())
-    if not nav_result.get("success", False):
-        raise RuntimeError(f"navigation did not succeed: {nav_result.get('failure_reason')}")
     task_path = _task_json_path()
     task = load_task(task_path)
-    _validate_handoff_pose(task, nav_result)
+    raw_task = _read_json(task_path)
     context = _pipeline_context()
+    _apply_grasp_policy_env(context)
     dataset_dir = Path(context.get("dataset_dir") or task.recording.dataset_dir).expanduser()
     if not dataset_dir.is_absolute():
         dataset_dir = PROJECT_ROOT / dataset_dir
-    recorder = EpisodeRecorder(dataset_dir, task.task_id, task.episode_id, enabled=not bool(context.get("no_record", False)))
-    world, robot = await _initialize_robot()
-    await _restore_and_settle(world, robot, nav_result)
-
+    recorder = EpisodeRecorder(dataset_dir, task.task_id, task.episode_id, enabled=_record_handoff_episode(context))
+    recorder.save_task(raw_task)
+    summary: dict = {"navigation": nav_result, "task_json": str(task_path)}
+    handoff_report: dict = {}
     try:
-        result = await GraspPipeline(recorder=recorder).run(
-            GraspTask(
-                object_prim_path=task.pick.object_prim_path,
-                grasp_mode=task.pick.grasp_mode,
-                use_planner_server=bool(context.get("use_planner_server", True)),
+        if not nav_result.get("success", False):
+            raise HandoffFailure(
+                str(nav_result.get("failure_reason") or "nav_timeout"),
+                f"navigation did not succeed: {nav_result.get('failure_reason')}",
             )
+        handoff_report["map_check"] = _validate_handoff_pose(task, nav_result)
+        handoff_report["stage_check"] = _validate_open_stage(task, context)
+        world, robot = await _initialize_robot()
+        handoff_report["restore"] = await _restore_and_settle(world, robot, nav_result)
+        pipeline = GraspPipeline(recorder=recorder)
+        task_spec = GraspTask(
+            object_prim_path=task.pick.object_prim_path,
+            grasp_mode=task.pick.grasp_mode,
+            use_planner_server=bool(context.get("use_planner_server", True)),
         )
+        if _handoff_smoke_only(context):
+            state = await pipeline.export_state(task_spec)
+            handoff_report["state_export"] = _state_export_report(state, nav_result)
+            summary.update(
+                {
+                    "success": True,
+                    "failure_reason": "",
+                    "mode": "handoff_smoke_only",
+                    "handoff": handoff_report,
+                }
+            )
+            recorder.write_summary(summary)
+            _write_report(summary)
+            print("[handoff] smoke success:", HANDOFF_REPORT_JSON)
+            print("[handoff] state JSON:", task_spec.state_json)
+            return
+
+        state = await pipeline.export_state(task_spec)
+        handoff_report["state_export"] = _state_export_report(state, nav_result)
+        target = await pipeline.generate_target(task_spec)
+        handoff_report["target"] = _summarize_target(target)
+        plan = pipeline.plan(task_spec)
+        execution = await pipeline.execute(task_spec)
+        result = {
+            "success": bool(execution.get("summary", {}).get("task_success", False)),
+            "state": state,
+            "target": target,
+            "plan": plan,
+            "execution": execution,
+        }
     except Exception as exc:
-        failure_reason = _grasp_failure_reason(str(exc))
+        failure_reason = exc.failure_reason if isinstance(exc, HandoffFailure) else _grasp_failure_reason(str(exc))
+        if isinstance(exc, HandoffFailure) and exc.report:
+            handoff_report.setdefault("failure_report", exc.report)
         recorder.write_summary(
             {
                 "success": False,
                 "failure_reason": failure_reason,
                 "failure_detail": str(exc),
                 "navigation": nav_result,
+                "handoff": handoff_report,
+                "task_json": str(task_path),
+            }
+        )
+        _write_report(
+            {
+                "success": False,
+                "failure_reason": failure_reason,
+                "failure_detail": str(exc),
+                "navigation": nav_result,
+                "handoff": handoff_report,
+                "task_json": str(task_path),
             }
         )
         raise
     execution_summary = result["execution"].get("summary", {})
     success = bool(result["success"])
     failure_reason = "" if success else _grasp_failure_reason(str(execution_summary.get("abort_reason", "")))
-    recorder.write_summary(
+    summary.update(
         {
             "success": success,
             "failure_reason": failure_reason,
-            "navigation": nav_result,
+            "mode": "full_pick",
+            "handoff": handoff_report,
             "grasp": {
                 "success": success,
+                "plan_summary": result["plan"].get("summary", {}),
+                "target": handoff_report.get("target", {}),
                 "execution_summary": execution_summary,
             },
         }
     )
+    recorder.write_summary(summary)
+    _write_report(summary)
     print("[pick] success:", success)
     print("[pick] episode:", recorder.episode_dir)
+    print("[pick] handoff report:", HANDOFF_REPORT_JSON)
 
 
 async def guarded_main() -> None:

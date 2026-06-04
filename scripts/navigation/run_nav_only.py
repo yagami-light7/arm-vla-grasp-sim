@@ -37,18 +37,18 @@ parser.add_argument(
 parser.add_argument("--nav-map", default=None, help="Override task navigation map metadata.")
 parser.add_argument("--dataset-dir", default=None)
 parser.add_argument("--nav-result", default="/tmp/go2_x5_nav_result.json")
-parser.add_argument("--inflate-radius", type=float, default=0.40)
-parser.add_argument("--local-clearance-radius", type=float, default=0.35)
+parser.add_argument("--inflate-radius", type=float, default=0.25)
+parser.add_argument("--local-clearance-radius", type=float, default=0.20)
 parser.add_argument("--goal-tolerance", type=float, default=0.15)
 parser.add_argument("--goal-yaw-tolerance", type=float, default=0.15)
-parser.add_argument("--max-nav-steps", type=int, default=3000)
+parser.add_argument("--max-nav-steps", type=int, default=5000)
 parser.add_argument("--settle-steps", type=int, default=120)
 parser.add_argument("--stall-window-steps", type=int, default=240)
 parser.add_argument("--stall-min-progress", type=float, default=0.05)
 parser.add_argument("--stall-min-forward-command", type=float, default=0.05)
 parser.add_argument("--stall-min-forward-ratio", type=float, default=0.25)
 parser.add_argument("--lookahead-distance", type=float, default=0.35)
-parser.add_argument("--prediction-horizon", type=float, default=1.80)
+parser.add_argument("--prediction-horizon", type=float, default=0.90)
 parser.add_argument("--max-lin-vel", type=float, default=0.50)
 parser.add_argument("--max-ang-vel", type=float, default=1.00)
 parser.add_argument("--yaw-align-kp", type=float, default=2.0)
@@ -70,6 +70,7 @@ parser.add_argument(
 )
 parser.add_argument("--visual-prim-path", default="/World/gauss", help="Visual prim referenced when --load-visual-scene is set.")
 parser.add_argument("--follow-camera", action=argparse.BooleanOptionalAction, default=True)
+parser.add_argument("--follow-camera-mode", choices=("chase", "front", "overhead"), default="chase")
 parser.add_argument("--follow-camera-distance", type=float, default=2.4)
 parser.add_argument("--follow-camera-height", type=float, default=0.8)
 parser.add_argument("--follow-camera-side", type=float, default=0.0)
@@ -164,20 +165,33 @@ def _update_follow_camera(env) -> None:
         robot = runtime.scene["robot"]
         robot_pos = robot.data.root_pos_w[0]
         robot_quat = robot.data.root_quat_w[0]
-        offset = torch.tensor(
-            [
-                -float(args_cli.follow_camera_distance),
-                float(args_cli.follow_camera_side),
-                float(args_cli.follow_camera_height),
-            ],
-            dtype=torch.float32,
-            device=runtime.device,
-        )
-        eye = math_utils.transform_points(
-            offset.unsqueeze(0),
-            pos=robot_pos.unsqueeze(0),
-            quat=robot_quat.unsqueeze(0),
-        ).squeeze(0)
+        mode = args_cli.follow_camera_mode
+        if mode == "overhead":
+            eye = robot_pos + torch.tensor(
+                [
+                    -0.35 * float(args_cli.follow_camera_distance),
+                    float(args_cli.follow_camera_side),
+                    float(args_cli.follow_camera_height),
+                ],
+                dtype=torch.float32,
+                device=runtime.device,
+            )
+        else:
+            direction = 1.0 if mode == "front" else -1.0
+            offset = torch.tensor(
+                [
+                    direction * float(args_cli.follow_camera_distance),
+                    float(args_cli.follow_camera_side),
+                    float(args_cli.follow_camera_height),
+                ],
+                dtype=torch.float32,
+                device=runtime.device,
+            )
+            eye = math_utils.transform_points(
+                offset.unsqueeze(0),
+                pos=robot_pos.unsqueeze(0),
+                quat=robot_quat.unsqueeze(0),
+            ).squeeze(0)
         if not hasattr(_update_follow_camera, "_smooth_eye"):
             _update_follow_camera._smooth_eye = eye
         else:
