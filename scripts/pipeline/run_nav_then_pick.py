@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +21,8 @@ from source.navigation.navlib import DWAConfig
 
 PIPELINE_CONTEXT_JSON = Path("/tmp/go2_x5_pipeline_context.json")
 DEFAULT_NAV_RESULT_JSON = Path("/tmp/go2_x5_nav_result.json")
+DEFAULT_LOCAL_CHECKPOINT = PROJECT_ROOT / "checkpoints/go2_x5/flat/model_8500.pt"
+LEGACY_TMP_CHECKPOINT = Path("/tmp/DWA-reference/flat/model_8500.pt")
 
 
 def _project_path(raw_path: str) -> Path:
@@ -27,11 +30,26 @@ def _project_path(raw_path: str) -> Path:
     return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
 
 
+def _default_checkpoint_path() -> str | None:
+    """Return the best available local Go2-X5 checkpoint path."""
+
+    env_checkpoint = os.environ.get("GO2_X5_CHECKPOINT")
+    if env_checkpoint:
+        return env_checkpoint
+    for candidate in (DEFAULT_LOCAL_CHECKPOINT, LEGACY_TMP_CHECKPOINT):
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
 def _validate_checkpoint(raw_path: str | None) -> str:
     """Return an existing local checkpoint path before starting Isaac Lab."""
 
     if not raw_path:
-        raise ValueError("--checkpoint is required unless --dry-run or --grasp-only is used")
+        raise ValueError(
+            "--checkpoint is required unless --dry-run or --grasp-only is used. "
+            f"Set GO2_X5_CHECKPOINT or place model_8500.pt at {DEFAULT_LOCAL_CHECKPOINT}."
+        )
     if "://" in raw_path:
         return raw_path
     checkpoint = Path(raw_path).expanduser()
@@ -43,7 +61,8 @@ def _validate_checkpoint(raw_path: str | None) -> str:
         raise FileNotFoundError(
             f"Go2-X5 locomotion checkpoint does not exist: {checkpoint}\n"
             "Pass the real RSL-RL Go2-X5 checkpoint path. "
-            "Do not use the documentation placeholder '/你的实际路径/model_8500.pt'."
+            "Do not use the documentation placeholder '/你的实际路径/model_8500.pt'. "
+            f"Default local path: {DEFAULT_LOCAL_CHECKPOINT}"
         )
     return str(checkpoint)
 
@@ -52,7 +71,14 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-json", required=True)
     parser.add_argument("--task", default="RobotLab-Isaac-Velocity-Flat-Go2-X5-Foundation-v0")
-    parser.add_argument("--checkpoint", default=None)
+    parser.add_argument(
+        "--checkpoint",
+        default=_default_checkpoint_path(),
+        help=(
+            "Go2-X5 RSL-RL checkpoint. Defaults to GO2_X5_CHECKPOINT, then "
+            f"{DEFAULT_LOCAL_CHECKPOINT}, then {LEGACY_TMP_CHECKPOINT}."
+        ),
+    )
     parser.add_argument("--map", dest="scene_usd", default=None)
     parser.add_argument("--terrain-prim-path", default="/World/scene_collision")
     parser.add_argument("--ground-height", type=float, default=0.0)
@@ -68,7 +94,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--no-record", action="store_true")
     parser.add_argument("--use-planner-server", action="store_true")
     parser.add_argument("--head-camera", action="store_true")
+    parser.add_argument("--load-visual-scene", action="store_true")
+    parser.add_argument("--visual-prim-path", default="/World/gauss")
+    parser.add_argument("--follow-camera", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--follow-camera-distance", type=float, default=2.4)
+    parser.add_argument("--follow-camera-height", type=float, default=0.8)
+    parser.add_argument("--follow-camera-side", type=float, default=0.0)
     parser.add_argument("--flat-terrain", action="store_true", help="Use the locomotion task's flat terrain for debugging.")
+    parser.add_argument("--disable-sky-light", action="store_true", help="Disable the default Isaac Lab sky light.")
     parser.add_argument("--debug-command", type=float, nargs=3, default=None, metavar=("VX", "VY", "WZ"))
     parser.add_argument("--max-nav-steps", type=int, default=3000)
     parser.add_argument("--settle-steps", type=int, default=120)
@@ -80,7 +113,20 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--goal-yaw-tolerance", type=float, default=0.15)
     parser.add_argument("--inflate-radius", type=float, default=0.40)
     parser.add_argument("--local-clearance-radius", type=float, default=0.35)
+    parser.add_argument("--lookahead-distance", type=float, default=0.35)
     parser.add_argument("--prediction-horizon", type=float, default=1.80)
+    parser.add_argument("--max-lin-vel", type=float, default=0.50)
+    parser.add_argument("--max-ang-vel", type=float, default=1.00)
+    parser.add_argument("--yaw-align-kp", type=float, default=2.0)
+    parser.add_argument("--yaw-align-min-wz", type=float, default=0.55)
+    parser.add_argument("--yaw-align-max-wz", type=float, default=1.00)
+    parser.add_argument("--yaw-align-vx", type=float, default=0.08)
+    parser.add_argument("--yaw-align-activation-yaw-error", type=float, default=0.0)
+    parser.add_argument("--yaw-align-allow-reverse", action="store_true")
+    parser.add_argument("--yaw-align-stall-window-steps", type=int, default=240)
+    parser.add_argument("--yaw-align-min-progress", type=float, default=0.08)
+    parser.add_argument("--yaw-settle-stable-steps", type=int, default=20)
+    parser.add_argument("--debug-print-every", type=int, default=60)
     return parser.parse_args()
 
 
@@ -105,10 +151,28 @@ def _write_context(args: argparse.Namespace, task_json: Path, task) -> None:
                 "ground_height": args.ground_height,
                 "handoff_clearance_radius": max(args.inflate_radius, args.local_clearance_radius),
                 "goal_tolerance": args.goal_tolerance,
+                "lookahead_distance": args.lookahead_distance,
                 "prediction_horizon": args.prediction_horizon,
+                "max_lin_vel": args.max_lin_vel,
+                "max_ang_vel": args.max_ang_vel,
+                "yaw_align_kp": args.yaw_align_kp,
+                "yaw_align_min_wz": args.yaw_align_min_wz,
+                "yaw_align_max_wz": args.yaw_align_max_wz,
+                "yaw_align_vx": args.yaw_align_vx,
+                "yaw_align_activation_yaw_error": args.yaw_align_activation_yaw_error,
+                "yaw_align_allow_reverse": args.yaw_align_allow_reverse,
+                "yaw_align_stall_window_steps": args.yaw_align_stall_window_steps,
+                "yaw_align_min_progress": args.yaw_align_min_progress,
+                "yaw_settle_stable_steps": args.yaw_settle_stable_steps,
                 "use_planner_server": args.use_planner_server,
                 "settle_steps": args.settle_steps,
                 "dataset_dir": args.dataset_dir,
+                "load_visual_scene": args.load_visual_scene,
+                "visual_prim_path": args.visual_prim_path,
+                "follow_camera": args.follow_camera,
+                "follow_camera_distance": args.follow_camera_distance,
+                "follow_camera_height": args.follow_camera_height,
+                "follow_camera_side": args.follow_camera_side,
                 "no_record": args.no_record,
             },
             indent=2,
@@ -155,8 +219,32 @@ def _nav_command(args: argparse.Namespace, task) -> list[str]:
         str(args.inflate_radius),
         "--local-clearance-radius",
         str(args.local_clearance_radius),
+        "--lookahead-distance",
+        str(args.lookahead_distance),
         "--prediction-horizon",
         str(args.prediction_horizon),
+        "--max-lin-vel",
+        str(args.max_lin_vel),
+        "--max-ang-vel",
+        str(args.max_ang_vel),
+        "--yaw-align-kp",
+        str(args.yaw_align_kp),
+        "--yaw-align-min-wz",
+        str(args.yaw_align_min_wz),
+        "--yaw-align-max-wz",
+        str(args.yaw_align_max_wz),
+        "--yaw-align-vx",
+        str(args.yaw_align_vx),
+        "--yaw-align-activation-yaw-error",
+        str(args.yaw_align_activation_yaw_error),
+        "--yaw-align-stall-window-steps",
+        str(args.yaw_align_stall_window_steps),
+        "--yaw-align-min-progress",
+        str(args.yaw_align_min_progress),
+        "--yaw-settle-stable-steps",
+        str(args.yaw_settle_stable_steps),
+        "--debug-print-every",
+        str(args.debug_print_every),
     ]
     if args.scene_usd:
         command.extend(["--map", args.scene_usd])
@@ -170,8 +258,25 @@ def _nav_command(args: argparse.Namespace, task) -> list[str]:
         command.append("--no-record")
     if args.head_camera:
         command.append("--head-camera")
+    if args.load_visual_scene:
+        command.extend(["--load-visual-scene", "--visual-prim-path", args.visual_prim_path])
+    command.extend(
+        [
+            "--follow-camera" if args.follow_camera else "--no-follow-camera",
+            "--follow-camera-distance",
+            str(args.follow_camera_distance),
+            "--follow-camera-height",
+            str(args.follow_camera_height),
+            "--follow-camera-side",
+            str(args.follow_camera_side),
+        ]
+    )
     if args.flat_terrain:
         command.append("--flat-terrain")
+    if args.disable_sky_light:
+        command.append("--disable-sky-light")
+    if args.yaw_align_allow_reverse:
+        command.append("--yaw-align-allow-reverse")
     if args.debug_command:
         command.extend(["--debug-command", *(str(value) for value in args.debug_command)])
     return command
@@ -197,7 +302,19 @@ def _dry_run(args: argparse.Namespace, task) -> None:
         "nav_map": str(nav_map),
     }
     if nav_map.exists():
-        planner = NavPlanner(str(nav_map), args.inflate_radius, DWAConfig(control_dt=0.05))
+        planner = NavPlanner(
+            str(nav_map),
+            args.inflate_radius,
+            DWAConfig(
+                control_dt=0.05,
+                lookahead_distance=args.lookahead_distance,
+                prediction_horizon=args.prediction_horizon,
+                goal_tolerance=args.goal_tolerance,
+                max_linear_velocity=args.max_lin_vel,
+                max_angular_velocity=args.max_ang_vel,
+            ),
+            local_clearance_radius=args.local_clearance_radius,
+        )
         path_world = planner.plan_global_path((task.start.x, task.start.y), (task.pick.base_goal.x, task.pick.base_goal.y))
         plan_summary["global_path_world"] = path_world
     else:

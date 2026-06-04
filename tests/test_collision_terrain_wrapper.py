@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from source.navigation.adapters.terrain_utils import write_collision_terrain_wrapper
+from source.navigation.adapters.terrain_utils import write_collision_terrain_wrapper, write_visual_prim_wrapper
 
 
 class CollisionTerrainWrapperTest(unittest.TestCase):
@@ -18,6 +18,17 @@ class CollisionTerrainWrapperTest(unittest.TestCase):
             text = wrapper.read_text(encoding="utf-8")
             self.assertIn('defaultPrim = "scene_collision"', text)
             self.assertIn(f"@{scene_usd.resolve()}@</World/scene_collision>", text)
+            self.assertNotIn("</World/go2_x5>", text)
+
+    def test_visual_wrapper_references_only_requested_visual_subtree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            scene_usd = Path(tmp_dir) / "scene.usd"
+            scene_usd.touch()
+            wrapper = write_visual_prim_wrapper(scene_usd, "/World/gauss")
+            text = wrapper.read_text(encoding="utf-8")
+            self.assertIn('defaultPrim = "visual_scene"', text)
+            self.assertIn(f"@{scene_usd.resolve()}@</World/gauss>", text)
+            self.assertNotIn("</World/scene_collision>", text)
             self.assertNotIn("</World/go2_x5>", text)
 
 

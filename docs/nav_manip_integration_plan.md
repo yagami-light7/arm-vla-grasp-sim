@@ -93,20 +93,53 @@ Export a map from Isaac Lab:
 Run navigation on a GPU-enabled Isaac Lab host:
 
 ```bash
-export GO2_X5_CHECKPOINT=/absolute/path/to/flat/model_8500.pt
+export GO2_X5_CHECKPOINT=checkpoints/go2_x5/flat/model_8500.pt
 test -f "$GO2_X5_CHECKPOINT"
 
-python scripts/pipeline/run_nav_then_pick.py \
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_nav_then_pick.py \
   --task-json tasks/nav_pick_example.json \
   --task RobotLab-Isaac-Velocity-Flat-Go2-X5-Foundation-v0 \
   --checkpoint "$GO2_X5_CHECKPOINT" \
   --isaaclab-launcher /path/to/IsaacLab/isaaclab.sh \
+  --inflate-radius 0.25 \
+  --local-clearance-radius 0.25 \
+  --lookahead-distance 0.35 \
+  --prediction-horizon 0.90 \
+  --max-lin-vel 0.50 \
+  --yaw-align-max-wz 1.00 \
+  --yaw-align-min-wz 0.55 \
+  --yaw-align-vx 0.08 \
   --nav-only \
   --head-camera
 ```
 
 The checkpoint must be the Go2-X5 RSL-RL locomotion checkpoint. Do not pass a
-documentation placeholder or a `.pt` file trained for another task.
+documentation placeholder or a `.pt` file trained for another task. The local
+default lookup order is `GO2_X5_CHECKPOINT`, then
+`checkpoints/go2_x5/flat/model_8500.pt`, then the legacy
+`/tmp/DWA-reference/flat/model_8500.pt` path.
+
+By default the Isaac Lab navigation runtime loads only the collision terrain,
+so the GUI scene appears as gray collision geometry. This is expected and keeps
+locomotion debugging light. For demo visualization, add:
+
+```bash
+--load-visual-scene --visual-prim-path /World/gauss
+```
+
+The visual wrapper is loaded at `/World/nav_visual_scene` and does not replace
+the collision terrain used for physics. Rendering 3DGS visuals, saving
+`--head-camera` frames, and writing episode data all slow wall-clock playback.
+For route tuning, use `--no-record` and omit `--head-camera`; for demos, enable
+the visual wrapper after the route is stable.
+
+Terminal yaw alignment uses stronger configurable yaw commands plus a small
+forward gait-activation command. The runner also performs yaw-hold settling
+instead of immediately releasing to a zero command, which reduces yaw rebound
+before writing the navigation handoff JSON.
+The gait-activation command remains active until yaw enters the tolerance; in
+GPU replay, disabling it around `0.25 rad` caused the policy to stand still
+with `command_seen_wz` nonzero but `measured_wz` near zero.
 
 After navigation succeeds, run the printed command in Isaac Sim Script Editor.
 
@@ -115,7 +148,10 @@ second ground plane by default, matching the reference DWA `play_nav_cs.py`
 runtime. If a collision subtree genuinely lacks a walkable floor, use
 `--add-nav-ground --ground-height Z`. Use
 `--flat-terrain --debug-command 0.3 0 0` to isolate locomotion-policy
-validation from indoor collision loading.
+validation from indoor collision loading. For the 839920 scene, `/mnt/sage_data`
+must be mounted because `/World/scene_collision` payloads live under that mount.
+The navigation runner preflights the collision prim and fails early if it
+contains no mesh geometry.
 
 The occupancy-grid inflation treats unknown space beyond the raster as occupied.
 Map export conservatively rasterizes triangle edges before filling triangle

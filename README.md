@@ -47,34 +47,106 @@ python scripts/navigation/visualize_astar_dwa.py \
 `tasks/nav_pick_example.json` 是苹果抓取候选任务。不要复用旧的
 `/tmp/go2_x5_nav_result.json`：handoff 会拒绝贴近障碍或地图边界的历史 pose。
 
-运行导航阶段：
+运行真实室内导航前必须挂载 SAGE-3D 数据盘。当前 839920 场景依赖：
+
+```text
+/mnt/sage_data/sage3d/single_scene/839920/collision/839920/839920_collision.usd
+/mnt/sage_data/sage3d/single_scene/839920/usdz/839920.usdz
+```
+
+`run_nav_only.py` 会在创建环境前检查 `/World/scene_collision` 是否真正加载到
+mesh。若数据盘未挂载，它会提前报错；不要继续调试 DWA 路径。
+
+运行导航阶段。若已迁移 DWA checkpoint 到
+`checkpoints/go2_x5/flat/model_8500.pt`，可以不传 `--checkpoint`；也可以用
+`GO2_X5_CHECKPOINT` 或显式 `--checkpoint` 覆盖。
 
 ```bash
-export GO2_X5_CHECKPOINT=/absolute/path/to/flat/model_8500.pt
+export GO2_X5_CHECKPOINT=checkpoints/go2_x5/flat/model_8500.pt
 test -f "$GO2_X5_CHECKPOINT"
 
-python scripts/pipeline/run_nav_then_pick.py \
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_nav_then_pick.py \
   --task-json tasks/nav_pick_example.json \
   --task RobotLab-Isaac-Velocity-Flat-Go2-X5-Foundation-v0 \
   --checkpoint "$GO2_X5_CHECKPOINT" \
   --isaaclab-launcher /path/to/IsaacLab/isaaclab.sh \
   --inflate-radius 0.25 \
   --local-clearance-radius 0.25 \
+  --lookahead-distance 0.35 \
   --prediction-horizon 0.90 \
+  --max-lin-vel 0.50 \
+  --yaw-align-max-wz 1.00 \
+  --yaw-align-min-wz 0.55 \
+  --yaw-align-vx 0.08 \
   --nav-only \
   --head-camera
 ```
 
-`GO2_X5_CHECKPOINT` 必须指向 Go2-X5 RSL-RL locomotion checkpoint。文档中的
-`/absolute/path/to/...` 只是占位符，不能原样执行。其他任务的 `.pt` 文件，
-例如 cartpole checkpoint，动作和观测维度不匹配，也不能复用。
+`GO2_X5_CHECKPOINT` 必须指向 Go2-X5 RSL-RL locomotion checkpoint。当前本地
+默认路径是 `checkpoints/go2_x5/flat/model_8500.pt`。文档中的占位符不能原样
+执行；其他任务的 `.pt` 文件，例如 cartpole checkpoint，动作和观测维度不匹配，
+也不能复用。checkpoint 文件被 `*.pt` 忽略，不要提交到 git。
+
+Isaac Lab 导航窗口的 GUI 视角和 Isaac Sim 抓取 Script Editor 不同，不会自动
+聚焦机器人。导航脚本默认开启 `--follow-camera`，把 viewport camera 放在
+机器狗后上方；`--head-camera` 只是机器人前视传感器，用于保存图片数据，不会
+改变 GUI 视角。若需要调远或关闭 GUI 跟随，可使用：
+
+```bash
+--follow-camera-distance 2.0 --follow-camera-height 0.7
+# 或
+--no-follow-camera
+```
 
 `run_nav_only.py` 会生成一个临时 USDA wrapper，只把
 `/World/scene_collision` 引用为 terrain。默认不额外叠加地面，这与参考
 DWA 的 `play_nav_cs.py` 一致。只有确认 collision subtree 不包含可行走地面
 时，才使用 `--add-nav-ground --ground-height Z` 添加独立平面。
 使用 `--flat-terrain --debug-command 0.3 0 0` 可以单独验证 checkpoint、
-腿部 PD 和 locomotion policy。
+腿部 PD 和 locomotion policy。默认保留 Isaac Lab sky light，便于可视化和
+head-camera 调试；需要复现无光照设置时再传 `--disable-sky-light`。
+
+导航阶段默认只加载 collision terrain，因此 GUI 里会看到灰色碰撞场景。这是
+为了让 locomotion 调试和 episode 采集更轻量。若要像 cuRobo 抓取窗口那样
+显示真实 3DGS 背景，可额外加：
+
+```bash
+--load-visual-scene --visual-prim-path /World/gauss
+```
+
+该开关只把指定 visual prim 挂到 `/World/nav_visual_scene`，不会替换
+`/World/scene_collision` 作为物理地形。3DGS 可视化会增加渲染开销；调路线和
+速度时建议先不用 `--head-camera`，并加 `--no-record`：
+
+```bash
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_nav_then_pick.py \
+  --task-json tasks/nav_pick_example.json \
+  --task RobotLab-Isaac-Velocity-Flat-Go2-X5-Foundation-v0 \
+  --checkpoint "$GO2_X5_CHECKPOINT" \
+  --isaaclab-launcher /path/to/IsaacLab/isaaclab.sh \
+  --inflate-radius 0.25 \
+  --local-clearance-radius 0.20 \
+  --lookahead-distance 0.35 \
+  --prediction-horizon 0.90 \
+  --max-lin-vel 0.50 \
+  --yaw-align-max-wz 1.00 \
+  --yaw-align-min-wz 0.55 \
+  --yaw-align-vx 0.08 \
+  --nav-only \
+  --no-record
+```
+
+这里的 `--max-lin-vel` 是 DWA 给 locomotion policy 的速度上限。真实 GUI
+运行慢通常有两层原因：一是仿真内策略实际速度会因窄通道 clearance 降速；
+二是墙钟时间会被 GUI、camera sensor、图片编码和 CSV 写盘拖慢。若只想验证
+路径是否能跑通，先关闭 `--head-camera` 和记录；需要演示效果时再打开
+`--load-visual-scene` 和相机采集。
+终点 yaw 对齐阶段使用 `--yaw-align-max-wz` 和 `--yaw-align-min-wz` 控制旋转
+命令强度，并用很小的 `--yaw-align-vx` 激活步态。进入目标位置容差后，脚本会
+继续做 yaw-hold settle，避免纯零速度 settle 让 yaw 回弹。
+`--yaw-align-activation-yaw-error` 默认是 `0.0`，表示只要 yaw 还没有进入容差，
+就持续保留这条小前进命令；否则 Go2-X5 policy 容易在最后 `0.2 rad` 左右变成
+站立不转。
 
 地图膨胀会把地图边界视为不可通行区域。导航 settle 后会再次检查目标距离，
 handoff 瞬移前也会检查任务 goal 是否匹配、占用栅格、`0.40 m` clearance
@@ -90,8 +162,9 @@ handoff 瞬移前也会检查任务 goal 是否匹配、占用栅格、`0.40 m` 
 `dwa=(clearance, feasible, collision_rej, target)` 和
 `contact=(foot, nonfoot)` 用于区分局部规划拒绝、足端接触和非足端碰撞。
 苹果任务包含狭窄转弯，使用 `--inflate-radius 0.25`、
-`--local-clearance-radius 0.25` 和 `--prediction-horizon 0.90`。DWA 内部预测采样
-周期不会大于 locomotion control dt，避免轨迹跨过中间占用栅格却未检查。
+`--local-clearance-radius 0.25`、`--lookahead-distance 0.35` 和
+`--prediction-horizon 0.90`。DWA 内部预测采样周期不会大于 locomotion control dt，
+避免轨迹跨过中间占用栅格却未检查。
 handoff 只继承导航的 `x/y/yaw`，使用抓取场景中稳定的 root `z`，避免把
 行走 rollout 中的瞬时 roll/pitch 带入抓取场景。
 
