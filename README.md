@@ -86,10 +86,16 @@ pose，调用外部 cuRobo one-shot planner，并写入 episode。若只想验�
 Isaac Lab 导航窗口的 GUI 视角和 Isaac Sim 抓取 Script Editor 不同，不会自动
 聚焦机器人。导航脚本默认开启 `--follow-camera`，把 viewport camera 放在
 机器狗后上方；`--head-camera` 只是机器人前视传感器，用于保存图片数据，不会
-改变 GUI 视角。若需要调远或关闭 GUI 跟随，可使用：
+改变 GUI 视角。若需要调远、关闭 GUI 跟随，或只设置一次固定总览视角，可使用：
 
 ```bash
 --follow-camera-distance 2.0 --follow-camera-height 0.7
+# 或
+--follow-camera-mode fixed \
+  --fixed-camera-preset start \
+  --fixed-camera-close-distance 2.2 \
+  --fixed-camera-close-height 1.35 \
+  --fixed-camera-close-side -0.75
 # 或
 --no-follow-camera
 ```
@@ -111,10 +117,17 @@ head-camera 调试；需要复现无光照设置时再传 `--disable-sky-light`�
 ```
 
 `--demo-visuals` 会为导航阶段加载 `--visual-prim-path /World/gauss`，把 viewport
-相机切到高斜俯视，减少走廊墙体遮挡，并让后续 grasp standalone runner 以可视
-GUI 模式打开完整 USD。注意导航阶段仍不会加载 `/World/apple` 这类抓取物体，
-因为导航 runtime 只使用 collision terrain；苹果会在 grasp stage 打开完整
-`scene_usd` 时出现。3DGS 可视化会增加渲染开销；调路线和速度时建议先不用
+相机设置到固定总览位姿，减少走廊墙体遮挡，并让后续 grasp standalone runner
+以可视 GUI 模式打开完整 USD。固定相机只在启动后设置一次，之后可以在 Isaac Sim
+窗口中自由拖动视角；若显式使用 `--follow-camera-mode chase/front/overhead`，
+脚本会每步继续更新相机。导航的 3DGS overlay 默认使用
+`--visual-load-mode reference`，通过 Isaac Lab scene 配置加载可视层，避免在
+PhysX tensor view 创建后修改 stage。若需要检查完整 SAGE root-level 渲染设置，
+可显式传 `--visual-load-mode sublayer`；该模式会在 Isaac Lab 创建环境前预加载
+完整 scene sublayer。苹果会在 grasp stage 打开完整 `scene_usd` 时出现。
+`--demo-visuals` 默认使用靠近起点机器狗的固定机位；若想看完整路径，可传
+`--fixed-camera-preset route`。
+3DGS 可视化会增加渲染开销；调路线和速度时建议先不用
 `--head-camera`，并加 `--no-record`：
 
 ```bash
@@ -125,6 +138,25 @@ GUI 模式打开完整 USD。注意导航阶段仍不会加载 `/World/apple` �
   --isaaclab-launcher /path/to/IsaacLab/isaaclab.sh \
   --nav-only \
   --no-record
+```
+
+如果仿真里的机器狗本身走得慢，而不是 GUI FPS 慢，可以打开更激进的 DWA 速度
+profile：
+
+```bash
+--brisk-nav
+```
+
+`--brisk-nav` 会把 DWA 巡航速度上限提高到至少 `0.70m/s`，提高 active forward
+velocity、速度打分和线加速度上限；靠近抓取 base goal 时仍会降速。若需要手动
+调速度，可使用：
+
+```bash
+--max-lin-vel 0.70 \
+--min-active-lin-vel 0.45 \
+--speed-bias 0.80 \
+--max-linear-accel 3.5 \
+--close-goal-speed-limit 0.30
 ```
 
 这里的 `--max-lin-vel` 是 DWA 给 locomotion policy 的速度上限。真实 GUI

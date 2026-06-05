@@ -58,6 +58,12 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             prediction_horizon=0.90,
             max_lin_vel=0.50,
             max_ang_vel=1.00,
+            brisk_nav=True,
+            min_active_lin_vel=0.30,
+            near_goal_min_active_lin_vel=0.22,
+            close_goal_speed_limit=0.22,
+            speed_bias=0.35,
+            max_linear_accel=2.5,
             yaw_align_kp=2.0,
             yaw_align_min_wz=0.55,
             yaw_align_max_wz=1.00,
@@ -76,21 +82,33 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             head_camera=False,
             demo_visuals=False,
             load_visual_scene=True,
+            visual_load_mode="sublayer",
             visual_prim_path="/World/gauss",
             follow_camera=True,
             follow_camera_mode="chase",
             follow_camera_distance=2.0,
             follow_camera_height=0.7,
             follow_camera_side=0.0,
+            fixed_camera_preset="start",
+            fixed_camera_close_distance=2.2,
+            fixed_camera_close_height=1.35,
+            fixed_camera_close_side=-0.75,
+            fixed_camera_eye=None,
+            fixed_camera_lookat=None,
             flat_terrain=False,
             disable_sky_light=False,
             debug_command=None,
         )
         command = _nav_command(args, task=None)
         self.assertIn("--load-visual-scene", command)
+        self.assertIn("--visual-load-mode", command)
+        self.assertIn("sublayer", command)
         self.assertIn("/World/gauss", command)
         self.assertIn("--max-lin-vel", command)
         self.assertIn("0.5", command)
+        self.assertIn("--brisk-nav", command)
+        self.assertIn("--min-active-lin-vel", command)
+        self.assertIn("0.3", command)
         self.assertIn("--yaw-align-max-wz", command)
         self.assertIn("1.0", command)
         self.assertIn("--yaw-align-min-wz", command)
@@ -139,7 +157,7 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
         self.assertIn("--scene-usd", command)
         self.assertIn("--nav-map", command)
 
-    def test_demo_visuals_uses_overhead_camera_and_visible_grasp(self) -> None:
+    def test_demo_visuals_uses_fixed_camera_and_visible_grasp(self) -> None:
         args = Namespace(
             isaaclab_launcher="/opt/IsaacLab/isaaclab.sh",
             isaaclab_python="/unused/python",
@@ -163,6 +181,12 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             prediction_horizon=0.90,
             max_lin_vel=0.50,
             max_ang_vel=1.00,
+            brisk_nav=False,
+            min_active_lin_vel=0.30,
+            near_goal_min_active_lin_vel=0.22,
+            close_goal_speed_limit=0.22,
+            speed_bias=0.35,
+            max_linear_accel=2.5,
             yaw_align_kp=2.0,
             yaw_align_min_wz=0.55,
             yaw_align_max_wz=1.00,
@@ -181,12 +205,19 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             head_camera=False,
             demo_visuals=True,
             load_visual_scene=False,
+            visual_load_mode="reference",
             visual_prim_path="/World/gauss",
             follow_camera=True,
             follow_camera_mode="chase",
             follow_camera_distance=2.4,
             follow_camera_height=0.8,
             follow_camera_side=0.0,
+            fixed_camera_preset="start",
+            fixed_camera_close_distance=2.2,
+            fixed_camera_close_height=1.35,
+            fixed_camera_close_side=-0.75,
+            fixed_camera_eye=[-4.0, -3.5, 5.0],
+            fixed_camera_lookat=[-1.8, 0.5, 0.35],
             flat_terrain=False,
             disable_sky_light=False,
             debug_command=None,
@@ -204,8 +235,18 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
         pick_command = _standalone_pick_command(args, task)
 
         self.assertIn("--load-visual-scene", nav_command)
+        self.assertIn("--visual-load-mode", nav_command)
+        self.assertIn("reference", nav_command)
         self.assertIn("--follow-camera-mode", nav_command)
-        self.assertIn("overhead", nav_command)
+        self.assertIn("fixed", nav_command)
+        self.assertIn("--fixed-camera-preset", nav_command)
+        self.assertIn("start", nav_command)
+        self.assertIn("--fixed-camera-close-distance", nav_command)
+        self.assertIn("2.2", nav_command)
+        self.assertIn("--fixed-camera-eye", nav_command)
+        self.assertIn("-4.0", nav_command)
+        self.assertIn("--fixed-camera-lookat", nav_command)
+        self.assertIn("0.35", nav_command)
         self.assertNotIn("--headless", pick_command)
 
 

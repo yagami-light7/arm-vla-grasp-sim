@@ -128,10 +128,19 @@ locomotion debugging light. For demo visualization, add:
 ```
 
 The visual wrapper is loaded at `/World/nav_visual_scene` and does not replace
-the collision terrain used for physics. Rendering 3DGS visuals, saving
+the collision terrain used for physics. The default `--visual-load-mode
+reference` keeps visual loading inside Isaac Lab scene configuration, which is
+the stable mode for navigation. The optional `--visual-load-mode sublayer`
+preloads a complete SAGE scene layer before Isaac Lab creates PhysX tensor
+views so root-level render settings such as `/Render` can be inspected without
+invalidating reset-time joint writes. The navigation terrain is imported
+separately at `/World/nav_collision`. Rendering 3DGS visuals, saving
 `--head-camera` frames, and writing episode data all slow wall-clock playback.
 For route tuning, use `--no-record` and omit `--head-camera`; for demos, enable
-the visual wrapper after the route is stable.
+the visual wrapper after the route is stable. Fixed viewport placement supports
+`--fixed-camera-preset start`, `goal`, and `route`; the interactive demo default
+is the closer `start` view. Use `--brisk-nav` when the robot itself is moving
+too slowly on open route sections.
 
 Terminal yaw alignment uses stronger configurable yaw commands plus a small
 forward gait-activation command. The runner also performs yaw-hold settling

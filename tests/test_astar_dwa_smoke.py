@@ -57,6 +57,22 @@ class AStarDwaSmokeTest(unittest.TestCase):
         self.assertGreaterEqual(float(command[0]), 0.30)
         self.assertEqual(debug.collision_rejections, 0)
 
+    def test_dwa_respects_close_goal_speed_limit(self) -> None:
+        grid = OccupancyGridMap(np.zeros((80, 80), dtype=bool), 0.05, (-1.0, -1.0, 0.0))
+        config = DWAConfig(
+            control_dt=0.05,
+            goal_tolerance=0.05,
+            close_goal_distance=0.45,
+            close_goal_speed_limit=0.20,
+            max_linear_velocity=0.70,
+            max_linear_accel=10.0,
+        )
+        controller = DWAController([(0.0, 0.0), (1.0, 0.0)], grid, config)
+        command, debug = controller.compute_command((0.70, 0.0, 0.0), (0.60, 0.0))
+
+        self.assertFalse(debug.reached_goal)
+        self.assertLessEqual(float(command[0]), 0.2001)
+
     def test_dwa_rollout_sampling_does_not_skip_control_intervals(self) -> None:
         grid = OccupancyGridMap(np.zeros((80, 80), dtype=bool), 0.05, (-1.0, -1.0, 0.0))
         config = DWAConfig(control_dt=0.05, integration_dt=0.10, prediction_horizon=0.20)

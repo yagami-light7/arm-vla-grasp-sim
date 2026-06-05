@@ -70,7 +70,7 @@ def _validate_checkpoint(raw_path: str | None) -> str:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--task-json", required=True)
+    parser.add_argument("--task-json", default="tasks/nav_pick_example.json")
     parser.add_argument("--task", default="RobotLab-Isaac-Velocity-Flat-Go2-X5-Foundation-v0")
     parser.add_argument(
         "--checkpoint",
@@ -108,7 +108,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--demo-visuals",
         action="store_true",
-        help="Enable visual scene loading, overhead follow camera, and non-headless grasp for interactive demos.",
+        help="Enable visual scene loading, a fixed overview camera, and non-headless grasp for interactive demos.",
     )
     parser.add_argument("--grasp-headless", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--allow-retreat-success", action="store_true", help="Legacy debug mode: side retreat may count as pick success.")
@@ -116,12 +116,38 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--side-grasp-fallback-retreat", action="store_true", help="Fallback to side retreat if vertical lift planning fails.")
     parser.add_argument("--head-camera", action="store_true")
     parser.add_argument("--load-visual-scene", action="store_true")
+    parser.add_argument("--visual-load-mode", choices=("sublayer", "reference"), default="reference")
     parser.add_argument("--visual-prim-path", default="/World/gauss")
     parser.add_argument("--follow-camera", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--follow-camera-mode", choices=("chase", "front", "overhead"), default="chase")
+    parser.add_argument("--follow-camera-mode", choices=("chase", "front", "overhead", "fixed"), default="chase")
     parser.add_argument("--follow-camera-distance", type=float, default=2.4)
     parser.add_argument("--follow-camera-height", type=float, default=0.8)
     parser.add_argument("--follow-camera-side", type=float, default=0.0)
+    parser.add_argument(
+        "--fixed-camera-preset",
+        choices=("start", "goal", "route"),
+        default="start",
+        help="Automatic fixed-camera placement when explicit eye/lookat are not provided.",
+    )
+    parser.add_argument("--fixed-camera-close-distance", type=float, default=2.2)
+    parser.add_argument("--fixed-camera-close-height", type=float, default=1.35)
+    parser.add_argument("--fixed-camera-close-side", type=float, default=-0.75)
+    parser.add_argument(
+        "--fixed-camera-eye",
+        type=float,
+        nargs=3,
+        default=None,
+        metavar=("X", "Y", "Z"),
+        help="World-space camera eye used once when --follow-camera-mode fixed is selected.",
+    )
+    parser.add_argument(
+        "--fixed-camera-lookat",
+        type=float,
+        nargs=3,
+        default=None,
+        metavar=("X", "Y", "Z"),
+        help="World-space camera target used once when --follow-camera-mode fixed is selected.",
+    )
     parser.add_argument("--flat-terrain", action="store_true", help="Use the locomotion task's flat terrain for debugging.")
     parser.add_argument("--disable-sky-light", action="store_true", help="Disable the default Isaac Lab sky light.")
     parser.add_argument("--debug-command", type=float, nargs=3, default=None, metavar=("VX", "VY", "WZ"))
@@ -139,6 +165,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--prediction-horizon", type=float, default=0.90)
     parser.add_argument("--max-lin-vel", type=float, default=0.50)
     parser.add_argument("--max-ang-vel", type=float, default=1.00)
+    parser.add_argument("--brisk-nav", action="store_true", help="Use a more aggressive DWA speed profile for open routes.")
+    parser.add_argument("--min-active-lin-vel", type=float, default=0.30)
+    parser.add_argument("--near-goal-min-active-lin-vel", type=float, default=0.22)
+    parser.add_argument("--close-goal-speed-limit", type=float, default=0.22)
+    parser.add_argument("--speed-bias", type=float, default=0.35)
+    parser.add_argument("--max-linear-accel", type=float, default=2.5)
     parser.add_argument("--yaw-align-kp", type=float, default=2.0)
     parser.add_argument("--yaw-align-min-wz", type=float, default=0.55)
     parser.add_argument("--yaw-align-max-wz", type=float, default=1.00)
@@ -186,6 +218,12 @@ def _write_context(args: argparse.Namespace, task_json: Path, task) -> None:
                 "prediction_horizon": args.prediction_horizon,
                 "max_lin_vel": args.max_lin_vel,
                 "max_ang_vel": args.max_ang_vel,
+                "brisk_nav": args.brisk_nav,
+                "min_active_lin_vel": args.min_active_lin_vel,
+                "near_goal_min_active_lin_vel": args.near_goal_min_active_lin_vel,
+                "close_goal_speed_limit": args.close_goal_speed_limit,
+                "speed_bias": args.speed_bias,
+                "max_linear_accel": args.max_linear_accel,
                 "yaw_align_kp": args.yaw_align_kp,
                 "yaw_align_min_wz": args.yaw_align_min_wz,
                 "yaw_align_max_wz": args.yaw_align_max_wz,
@@ -203,11 +241,19 @@ def _write_context(args: argparse.Namespace, task_json: Path, task) -> None:
                 "settle_steps": args.settle_steps,
                 "dataset_dir": args.dataset_dir,
                 "load_visual_scene": args.load_visual_scene,
+                "visual_load_mode": args.visual_load_mode,
                 "visual_prim_path": args.visual_prim_path,
                 "follow_camera": args.follow_camera,
+                "follow_camera_mode": args.follow_camera_mode,
                 "follow_camera_distance": args.follow_camera_distance,
                 "follow_camera_height": args.follow_camera_height,
                 "follow_camera_side": args.follow_camera_side,
+                "fixed_camera_preset": args.fixed_camera_preset,
+                "fixed_camera_close_distance": args.fixed_camera_close_distance,
+                "fixed_camera_close_height": args.fixed_camera_close_height,
+                "fixed_camera_close_side": args.fixed_camera_close_side,
+                "fixed_camera_eye": args.fixed_camera_eye,
+                "fixed_camera_lookat": args.fixed_camera_lookat,
                 "no_record": args.no_record,
             },
             indent=2,
@@ -262,6 +308,16 @@ def _nav_command(args: argparse.Namespace, task) -> list[str]:
         str(args.max_lin_vel),
         "--max-ang-vel",
         str(args.max_ang_vel),
+        "--min-active-lin-vel",
+        str(args.min_active_lin_vel),
+        "--near-goal-min-active-lin-vel",
+        str(args.near_goal_min_active_lin_vel),
+        "--close-goal-speed-limit",
+        str(args.close_goal_speed_limit),
+        "--speed-bias",
+        str(args.speed_bias),
+        "--max-linear-accel",
+        str(args.max_linear_accel),
         "--yaw-align-kp",
         str(args.yaw_align_kp),
         "--yaw-align-min-wz",
@@ -294,14 +350,22 @@ def _nav_command(args: argparse.Namespace, task) -> list[str]:
     if args.head_camera:
         command.append("--head-camera")
     if args.load_visual_scene or args.demo_visuals:
-        command.extend(["--load-visual-scene", "--visual-prim-path", args.visual_prim_path])
+        command.extend(
+            [
+                "--load-visual-scene",
+                "--visual-load-mode",
+                args.visual_load_mode,
+                "--visual-prim-path",
+                args.visual_prim_path,
+            ]
+        )
+    if args.brisk_nav:
+        command.append("--brisk-nav")
     follow_camera_mode = args.follow_camera_mode
     follow_camera_distance = args.follow_camera_distance
     follow_camera_height = args.follow_camera_height
     if args.demo_visuals and args.follow_camera_mode == "chase":
-        follow_camera_mode = "overhead"
-        follow_camera_distance = 3.0
-        follow_camera_height = 3.2
+        follow_camera_mode = "fixed"
     command.extend(
         [
             "--follow-camera" if args.follow_camera else "--no-follow-camera",
@@ -313,8 +377,20 @@ def _nav_command(args: argparse.Namespace, task) -> list[str]:
             str(follow_camera_height),
             "--follow-camera-side",
             str(args.follow_camera_side),
+            "--fixed-camera-preset",
+            args.fixed_camera_preset,
+            "--fixed-camera-close-distance",
+            str(args.fixed_camera_close_distance),
+            "--fixed-camera-close-height",
+            str(args.fixed_camera_close_height),
+            "--fixed-camera-close-side",
+            str(args.fixed_camera_close_side),
         ]
     )
+    if args.fixed_camera_eye is not None:
+        command.extend(["--fixed-camera-eye", *(str(value) for value in args.fixed_camera_eye)])
+    if args.fixed_camera_lookat is not None:
+        command.extend(["--fixed-camera-lookat", *(str(value) for value in args.fixed_camera_lookat)])
     if args.flat_terrain:
         command.append("--flat-terrain")
     if args.disable_sky_light:
@@ -365,6 +441,38 @@ def _standalone_pick_command(args: argparse.Namespace, task, *, smoke_only: bool
     return command
 
 
+def _dwa_config_from_args(args: argparse.Namespace, control_dt: float) -> DWAConfig:
+    """Build the dry-run DWA config from pipeline CLI args."""
+
+    if args.brisk_nav:
+        max_linear_velocity = max(args.max_lin_vel, 0.70)
+        min_active_linear_velocity = max(args.min_active_lin_vel, 0.45)
+        near_goal_min_active_linear_velocity = max(args.near_goal_min_active_lin_vel, 0.28)
+        close_goal_speed_limit = max(args.close_goal_speed_limit, 0.30)
+        speed_bias = max(args.speed_bias, 0.80)
+        max_linear_accel = max(args.max_linear_accel, 3.5)
+    else:
+        max_linear_velocity = args.max_lin_vel
+        min_active_linear_velocity = args.min_active_lin_vel
+        near_goal_min_active_linear_velocity = args.near_goal_min_active_lin_vel
+        close_goal_speed_limit = args.close_goal_speed_limit
+        speed_bias = args.speed_bias
+        max_linear_accel = args.max_linear_accel
+    return DWAConfig(
+        control_dt=control_dt,
+        lookahead_distance=args.lookahead_distance,
+        prediction_horizon=args.prediction_horizon,
+        goal_tolerance=args.goal_tolerance,
+        max_linear_velocity=max_linear_velocity,
+        max_angular_velocity=args.max_ang_vel,
+        min_active_linear_velocity=min_active_linear_velocity,
+        near_goal_min_active_linear_velocity=near_goal_min_active_linear_velocity,
+        close_goal_speed_limit=close_goal_speed_limit,
+        speed_bias=speed_bias,
+        max_linear_accel=max_linear_accel,
+    )
+
+
 def _dry_run(args: argparse.Namespace, task) -> None:
     nav_map = _project_path(args.nav_map or task.nav_map)
     plan_summary: dict[str, object] = {
@@ -388,14 +496,7 @@ def _dry_run(args: argparse.Namespace, task) -> None:
         planner = NavPlanner(
             str(nav_map),
             args.inflate_radius,
-            DWAConfig(
-                control_dt=0.05,
-                lookahead_distance=args.lookahead_distance,
-                prediction_horizon=args.prediction_horizon,
-                goal_tolerance=args.goal_tolerance,
-                max_linear_velocity=args.max_lin_vel,
-                max_angular_velocity=args.max_ang_vel,
-            ),
+            _dwa_config_from_args(args, control_dt=0.05),
             local_clearance_radius=args.local_clearance_radius,
         )
         path_world = planner.plan_global_path((task.start.x, task.start.y), (task.pick.base_goal.x, task.pick.base_goal.y))

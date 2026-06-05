@@ -215,8 +215,16 @@ class DWAController:
         heading_error: float,
     ) -> list[tuple[float, float]]:
         dt = max(self.config.control_dt, 1.0e-3)
+        linear_cap = self.config.max_linear_velocity
+        min_active_linear_velocity = self.config.min_active_linear_velocity
+        if distance_to_goal <= self.config.close_goal_distance:
+            linear_cap = min(linear_cap, self.config.close_goal_speed_limit)
+            min_active_linear_velocity = min(min_active_linear_velocity, linear_cap)
+        elif distance_to_goal <= self.config.goal_tracking_distance:
+            min_active_linear_velocity = self.config.near_goal_min_active_linear_velocity
+            min_active_linear_velocity = min(min_active_linear_velocity, linear_cap)
         linear_lower = max(self.config.min_linear_velocity, current_vx - self.config.max_linear_accel * dt)
-        linear_upper = min(self.config.max_linear_velocity, current_vx + self.config.max_linear_accel * dt)
+        linear_upper = min(linear_cap, current_vx + self.config.max_linear_accel * dt)
         angular_lower = max(-self.config.max_angular_velocity, current_wz - self.config.max_angular_accel * dt)
         angular_upper = min(self.config.max_angular_velocity, current_wz + self.config.max_angular_accel * dt)
 
@@ -230,9 +238,9 @@ class DWAController:
                 dtype=np.float64,
             )
             linear_values = np.concatenate(
-                [linear_values, np.array([self.config.min_active_linear_velocity], dtype=np.float64)]
+                [linear_values, np.array([min_active_linear_velocity], dtype=np.float64)]
             )
-            linear_values = np.clip(linear_values, self.config.min_linear_velocity, self.config.max_linear_velocity)
+            linear_values = np.clip(linear_values, self.config.min_linear_velocity, linear_cap)
             linear_values = np.unique(np.round(np.concatenate([linear_values, np.array([0.0])]), decimals=4))
 
         angular_values = np.linspace(

@@ -51,6 +51,12 @@ parser.add_argument("--lookahead-distance", type=float, default=0.35)
 parser.add_argument("--prediction-horizon", type=float, default=0.90)
 parser.add_argument("--max-lin-vel", type=float, default=0.50)
 parser.add_argument("--max-ang-vel", type=float, default=1.00)
+parser.add_argument("--brisk-nav", action="store_true", help="Use a more aggressive DWA speed profile for open routes.")
+parser.add_argument("--min-active-lin-vel", type=float, default=0.30)
+parser.add_argument("--near-goal-min-active-lin-vel", type=float, default=0.22)
+parser.add_argument("--close-goal-speed-limit", type=float, default=0.22)
+parser.add_argument("--speed-bias", type=float, default=0.35)
+parser.add_argument("--max-linear-accel", type=float, default=2.5)
 parser.add_argument("--yaw-align-kp", type=float, default=2.0)
 parser.add_argument("--yaw-align-min-wz", type=float, default=0.55)
 parser.add_argument("--yaw-align-max-wz", type=float, default=1.00)
@@ -68,12 +74,46 @@ parser.add_argument(
     action="store_true",
     help="Load a visual-only scene prim into the Isaac Lab viewport for debugging/demo.",
 )
+parser.add_argument(
+    "--visual-load-mode",
+    choices=("sublayer", "reference"),
+    default="reference",
+    help=(
+        "Use the stable referenced visual asset by default, or preload a full-scene "
+        "sublayer for SAGE visuals before Isaac Lab creates PhysX tensor views."
+    ),
+)
 parser.add_argument("--visual-prim-path", default="/World/gauss", help="Visual prim referenced when --load-visual-scene is set.")
 parser.add_argument("--follow-camera", action=argparse.BooleanOptionalAction, default=True)
-parser.add_argument("--follow-camera-mode", choices=("chase", "front", "overhead"), default="chase")
+parser.add_argument("--follow-camera-mode", choices=("chase", "front", "overhead", "fixed"), default="chase")
 parser.add_argument("--follow-camera-distance", type=float, default=2.4)
 parser.add_argument("--follow-camera-height", type=float, default=0.8)
 parser.add_argument("--follow-camera-side", type=float, default=0.0)
+parser.add_argument(
+    "--fixed-camera-preset",
+    choices=("start", "goal", "route"),
+    default="start",
+    help="Automatic fixed-camera placement when explicit eye/lookat are not provided.",
+)
+parser.add_argument("--fixed-camera-close-distance", type=float, default=2.2)
+parser.add_argument("--fixed-camera-close-height", type=float, default=1.35)
+parser.add_argument("--fixed-camera-close-side", type=float, default=-0.75)
+parser.add_argument(
+    "--fixed-camera-eye",
+    type=float,
+    nargs=3,
+    default=None,
+    metavar=("X", "Y", "Z"),
+    help="World-space viewport camera eye used once when --follow-camera-mode fixed is selected.",
+)
+parser.add_argument(
+    "--fixed-camera-lookat",
+    type=float,
+    nargs=3,
+    default=None,
+    metavar=("X", "Y", "Z"),
+    help="World-space viewport camera target used once when --follow-camera-mode fixed is selected.",
+)
 parser.add_argument("--no-record", action="store_true")
 parser.add_argument("--real-time", action="store_true")
 parser.add_argument("--flat-terrain", action="store_true", help="Keep the task's flat terrain for locomotion debugging.")
@@ -102,14 +142,18 @@ from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
 from isaaclab_tasks.utils.hydra import hydra_task_config
-from pxr import Usd, UsdGeom, UsdPhysics
+from pxr import Tf, Usd, UsdGeom, UsdPhysics
 
 import robot_lab.tasks  # noqa: F401
 from source.data import EpisodeRecorder, load_task
 from source.navigation.adapters.frame_utils import wrap_yaw
 from source.navigation.adapters.isaaclab_go2_adapter import Go2LocomotionAdapter
 from source.navigation.adapters.stall_detector import NavigationStallDetector
-from source.navigation.adapters.terrain_utils import write_collision_terrain_wrapper, write_visual_prim_wrapper
+from source.navigation.adapters.terrain_utils import (
+    write_collision_terrain_wrapper,
+    write_visual_prim_wrapper,
+    write_visual_sublayer_wrapper,
+)
 from source.navigation.adapters.yaw_align import (
     YawAlignConfig,
     YawAlignStallDetector,
@@ -141,6 +185,71 @@ def _write_nav_result(nav_result_path: Path, recorder: EpisodeRecorder, result: 
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
+def _dwa_config_from_args(control_dt: float) -> DWAConfig:
+    """Build DWA config, optionally applying the brisk navigation profile."""
+
+    if args_cli.brisk_nav:
+        max_linear_velocity = max(args_cli.max_lin_vel, 0.70)
+        min_active_linear_velocity = max(args_cli.min_active_lin_vel, 0.45)
+        near_goal_min_active_linear_velocity = max(args_cli.near_goal_min_active_lin_vel, 0.28)
+        close_goal_speed_limit = max(args_cli.close_goal_speed_limit, 0.30)
+        speed_bias = max(args_cli.speed_bias, 0.80)
+        max_linear_accel = max(args_cli.max_linear_accel, 3.5)
+    else:
+        max_linear_velocity = args_cli.max_lin_vel
+        min_active_linear_velocity = args_cli.min_active_lin_vel
+        near_goal_min_active_linear_velocity = args_cli.near_goal_min_active_lin_vel
+        close_goal_speed_limit = args_cli.close_goal_speed_limit
+        speed_bias = args_cli.speed_bias
+        max_linear_accel = args_cli.max_linear_accel
+    return DWAConfig(
+        control_dt=control_dt,
+        lookahead_distance=args_cli.lookahead_distance,
+        prediction_horizon=args_cli.prediction_horizon,
+        goal_tolerance=args_cli.goal_tolerance,
+        max_linear_velocity=max_linear_velocity,
+        max_angular_velocity=args_cli.max_ang_vel,
+        min_active_linear_velocity=min_active_linear_velocity,
+        near_goal_min_active_linear_velocity=near_goal_min_active_linear_velocity,
+        close_goal_speed_limit=close_goal_speed_limit,
+        speed_bias=speed_bias,
+        max_linear_accel=max_linear_accel,
+    )
+
+
+def _load_visual_scene_sublayer(scene_usd: Path, visual_exclude_prim_paths: list[str] | tuple[str, ...]) -> bool:
+    """Add the complete SAGE scene as a display-only sublayer before env creation.
+
+    This must run before Isaac Lab creates the environment. Appending a sublayer
+    after PhysX tensor views exist invalidates the simulation view and breaks the
+    first reset when joint positions are written.
+    """
+
+    try:
+        import omni.usd
+    except ImportError as exc:
+        raise RuntimeError("Cannot load full-scene visual sublayer because omni.usd is unavailable.") from exc
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        print("[WARN] Cannot load full-scene visual sublayer before an Isaac stage exists.")
+        return False
+    wrapper = write_visual_sublayer_wrapper(
+        scene_usd,
+        args_cli.visual_prim_path,
+        excluded_prim_paths=visual_exclude_prim_paths,
+    )
+    root_layer = stage.GetRootLayer()
+    wrapper_path = str(wrapper)
+    if wrapper_path not in root_layer.subLayerPaths:
+        root_layer.subLayerPaths.append(wrapper_path)
+    print(
+        f"[INFO] Navigation visual sublayer: {wrapper} -> {scene_usd} "
+        f"with visible prim {args_cli.visual_prim_path}"
+    )
+    return True
+
+
 def _jpeg_bytes(rgb_tensor) -> bytes | None:
     if rgb_tensor is None:
         return None
@@ -149,8 +258,58 @@ def _jpeg_bytes(rgb_tensor) -> bytes | None:
     return stream.getvalue()
 
 
+def _configure_default_fixed_camera(task) -> None:
+    """Choose a fixed camera from the task when explicit coordinates are unset."""
+
+    if hasattr(_update_follow_camera, "_fixed_camera_applied"):
+        delattr(_update_follow_camera, "_fixed_camera_applied")
+    if args_cli.fixed_camera_eye is not None and args_cli.fixed_camera_lookat is not None:
+        return
+    start_x = float(task.start.x)
+    start_y = float(task.start.y)
+    goal_x = float(task.pick.base_goal.x)
+    goal_y = float(task.pick.base_goal.y)
+    preset = args_cli.fixed_camera_preset
+    if preset == "route":
+        center_x = 0.5 * (start_x + goal_x)
+        center_y = 0.5 * (start_y + goal_y)
+        span = max(math.hypot(goal_x - start_x, goal_y - start_y), 1.0)
+        height = min(max(0.60 * span + 2.5, 3.5), 7.0)
+        eye = [
+            center_x - max(0.35 * span, 1.8),
+            center_y - max(0.65 * span, 3.0),
+            height,
+        ]
+        lookat = [center_x, center_y, 0.35]
+    else:
+        if preset == "goal":
+            focus_x = goal_x
+            focus_y = goal_y
+            yaw = float(task.pick.base_goal.yaw)
+        else:
+            focus_x = start_x
+            focus_y = start_y
+            yaw = float(task.start.yaw)
+        forward_x = math.cos(yaw)
+        forward_y = math.sin(yaw)
+        left_x = -math.sin(yaw)
+        left_y = math.cos(yaw)
+        distance = float(args_cli.fixed_camera_close_distance)
+        side = float(args_cli.fixed_camera_close_side)
+        eye = [
+            focus_x - forward_x * distance + left_x * side,
+            focus_y - forward_y * distance + left_y * side,
+            float(args_cli.fixed_camera_close_height),
+        ]
+        lookat = [focus_x + 0.35 * forward_x, focus_y + 0.35 * forward_y, 0.45]
+    if args_cli.fixed_camera_eye is None:
+        args_cli.fixed_camera_eye = eye
+    if args_cli.fixed_camera_lookat is None:
+        args_cli.fixed_camera_lookat = lookat
+
+
 def _update_follow_camera(env) -> None:
-    """Keep the Isaac Lab viewport camera near the robot for GUI debugging."""
+    """Update the Isaac Lab viewport camera for GUI debugging."""
 
     if not args_cli.follow_camera:
         return
@@ -162,10 +321,25 @@ def _update_follow_camera(env) -> None:
         controller = getattr(runtime, "viewport_camera_controller", None)
         if controller is None:
             return
+        mode = args_cli.follow_camera_mode
+        if mode == "fixed":
+            if getattr(_update_follow_camera, "_fixed_camera_applied", False):
+                return
+            if args_cli.fixed_camera_eye is None or args_cli.fixed_camera_lookat is None:
+                return
+            eye = torch.tensor(args_cli.fixed_camera_eye, dtype=torch.float32, device=runtime.device)
+            lookat = torch.tensor(args_cli.fixed_camera_lookat, dtype=torch.float32, device=runtime.device)
+            controller.set_view_env_index(env_index=0)
+            controller.update_view_location(
+                eye=eye.detach().cpu().numpy(),
+                lookat=lookat.detach().cpu().numpy(),
+            )
+            _update_follow_camera._fixed_camera_applied = True
+            return
+
         robot = runtime.scene["robot"]
         robot_pos = robot.data.root_pos_w[0]
         robot_quat = robot.data.root_quat_w[0]
-        mode = args_cli.follow_camera_mode
         if mode == "overhead":
             eye = robot_pos + torch.tensor(
                 [
@@ -221,12 +395,36 @@ def _set_material_ranges(env_cfg) -> None:
     event.params["restitution_range"] = (0.0, 0.0)
 
 
+def _open_scene_stage(scene_usd: Path) -> Usd.Stage:
+    """Open a scene USD with actionable diagnostics for missing/truncated files."""
+
+    if not scene_usd.exists():
+        raise RuntimeError(f"Scene USD does not exist: {scene_usd}")
+    size_bytes = scene_usd.stat().st_size
+    if size_bytes <= 0:
+        raise RuntimeError(
+            f"Scene USD is empty: {scene_usd}. "
+            "Regenerate or restore the scene before running navigation."
+        )
+    try:
+        stage = Usd.Stage.Open(str(scene_usd))
+    except Tf.ErrorException as exc:
+        raise RuntimeError(
+            f"Failed to open scene USD: {scene_usd} ({size_bytes} bytes). "
+            "Check that the file is a valid USD and that external SAGE assets are mounted."
+        ) from exc
+    if stage is None:
+        raise RuntimeError(
+            f"Failed to open scene USD: {scene_usd} ({size_bytes} bytes). "
+            "Check that the file is a valid USD and that external SAGE assets are mounted."
+        )
+    return stage
+
+
 def _validate_scene_collision(scene_usd: Path, prim_path: str) -> None:
     """Fail fast if the scene collision payload is missing or empty."""
 
-    stage = Usd.Stage.Open(str(scene_usd))
-    if stage is None:
-        raise RuntimeError(f"Failed to open scene USD: {scene_usd}")
+    stage = _open_scene_stage(scene_usd)
     prim = stage.GetPrimAtPath(prim_path)
     if not prim.IsValid():
         raise RuntimeError(f"Scene collision prim does not exist: {prim_path} in {scene_usd}")
@@ -253,9 +451,7 @@ def _validate_scene_collision(scene_usd: Path, prim_path: str) -> None:
 def _validate_scene_prim(scene_usd: Path, prim_path: str, label: str) -> None:
     """Fail fast if an optional scene prim path is not present."""
 
-    stage = Usd.Stage.Open(str(scene_usd))
-    if stage is None:
-        raise RuntimeError(f"Failed to open scene USD: {scene_usd}")
+    stage = _open_scene_stage(scene_usd)
     prim = stage.GetPrimAtPath(prim_path)
     if not prim.IsValid():
         raise RuntimeError(f"Scene {label} prim does not exist: {prim_path} in {scene_usd}")
@@ -267,6 +463,7 @@ def _configure_env(
     *,
     scene_usd: Path,
     start_pose: tuple[float, float, float],
+    visual_exclude_prim_paths: list[str] | tuple[str, ...] = (),
 ) -> None:
     env_cfg.scene.num_envs = 1
     if args_cli.device is not None:
@@ -275,7 +472,7 @@ def _configure_env(
         terrain_usd = write_collision_terrain_wrapper(scene_usd, args_cli.terrain_prim_path)
         print(f"[INFO] Navigation terrain wrapper: {terrain_usd} -> {scene_usd}<{args_cli.terrain_prim_path}>")
         env_cfg.scene.terrain = TerrainImporterCfg(
-            prim_path="/World/scene_collision",
+            prim_path="/World/nav_collision",
             terrain_type="usd",
             usd_path=str(terrain_usd),
             debug_vis=False,
@@ -286,9 +483,16 @@ def _configure_env(
                 init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, args_cli.ground_height)),
                 spawn=sim_utils.GroundPlaneCfg(),
             )
-    if args_cli.load_visual_scene:
-        visual_usd = write_visual_prim_wrapper(scene_usd, args_cli.visual_prim_path)
-        print(f"[INFO] Navigation visual wrapper: {visual_usd} -> {scene_usd}<{args_cli.visual_prim_path}>")
+    if args_cli.load_visual_scene and args_cli.visual_load_mode == "reference":
+        visual_usd = write_visual_prim_wrapper(
+            scene_usd,
+            args_cli.visual_prim_path,
+            excluded_prim_paths=visual_exclude_prim_paths,
+        )
+        print(
+            f"[INFO] Navigation visual wrapper: {visual_usd} -> {scene_usd} "
+            f"with visible prim {args_cli.visual_prim_path}"
+        )
         env_cfg.scene.visual_scene = AssetBaseCfg(
             prim_path="/World/nav_visual_scene",
             spawn=sim_utils.UsdFileCfg(usd_path=str(visual_usd)),
@@ -430,6 +634,7 @@ def _settle_with_yaw_hold(
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg) -> None:
     task_path = _project_path(args_cli.task_json)
     task = load_task(task_path)
+    _configure_default_fixed_camera(task)
     raw_task = json.loads(task_path.read_text(encoding="utf-8"))
     scene_usd = _project_path(args_cli.scene_usd or task.scene_usd)
     nav_map = _project_path(args_cli.nav_map or task.nav_map)
@@ -440,7 +645,24 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         _validate_scene_collision(scene_usd, args_cli.terrain_prim_path)
     if args_cli.load_visual_scene:
         _validate_scene_prim(scene_usd, args_cli.visual_prim_path, "visual")
-    _configure_env(env_cfg, scene_usd=scene_usd, start_pose=(task.start.x, task.start.y, task.start.yaw))
+    visual_exclude_prim_paths = [
+        args_cli.terrain_prim_path,
+        "/World/go2_x5",
+        "/World/mec_arm_6dof",
+    ]
+    object_prim_path = getattr(task.pick, "object_prim_path", None)
+    if object_prim_path:
+        visual_exclude_prim_paths.append(object_prim_path)
+    if args_cli.load_visual_scene and args_cli.visual_load_mode == "sublayer":
+        if not _load_visual_scene_sublayer(scene_usd, visual_exclude_prim_paths):
+            print("[WARN] Falling back to stable visual reference mode.")
+            args_cli.visual_load_mode = "reference"
+    _configure_env(
+        env_cfg,
+        scene_usd=scene_usd,
+        start_pose=(task.start.x, task.start.y, task.start.yaw),
+        visual_exclude_prim_paths=visual_exclude_prim_paths,
+    )
     agent_cfg = isaaclab_cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     env_cfg.seed = agent_cfg.seed
     checkpoint = retrieve_file_path(args_cli.checkpoint)
@@ -466,13 +688,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     adapter.settle(args_cli.settle_steps)
     _update_follow_camera(env)
     settled_pose = adapter.get_base_pose()
-    dwa_cfg = DWAConfig(
-        control_dt=dt,
-        lookahead_distance=args_cli.lookahead_distance,
-        prediction_horizon=args_cli.prediction_horizon,
-        goal_tolerance=args_cli.goal_tolerance,
-        max_linear_velocity=args_cli.max_lin_vel,
-        max_angular_velocity=args_cli.max_ang_vel,
+    dwa_cfg = _dwa_config_from_args(control_dt=dt)
+    print(
+        "[INFO] DWA speed config: "
+        f"brisk={args_cli.brisk_nav} max_vx={dwa_cfg.max_linear_velocity:.2f} "
+        f"min_active_vx={dwa_cfg.min_active_linear_velocity:.2f} "
+        f"close_goal_vx={dwa_cfg.close_goal_speed_limit:.2f} "
+        f"speed_bias={dwa_cfg.speed_bias:.2f} max_accel={dwa_cfg.max_linear_accel:.2f}"
     )
     planner = NavPlanner(
         str(nav_map),

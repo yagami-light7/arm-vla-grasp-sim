@@ -6,7 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from source.navigation.adapters.terrain_utils import write_collision_terrain_wrapper, write_visual_prim_wrapper
+from source.navigation.adapters.terrain_utils import (
+    write_collision_terrain_wrapper,
+    write_visual_prim_wrapper,
+    write_visual_sublayer_wrapper,
+)
 
 
 class CollisionTerrainWrapperTest(unittest.TestCase):
@@ -24,12 +28,37 @@ class CollisionTerrainWrapperTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             scene_usd = Path(tmp_dir) / "scene.usd"
             scene_usd.touch()
-            wrapper = write_visual_prim_wrapper(scene_usd, "/World/gauss")
+            wrapper = write_visual_prim_wrapper(
+                scene_usd,
+                "/World/gauss",
+                excluded_prim_paths=("/World/scene_collision", "/World/go2_x5"),
+            )
             text = wrapper.read_text(encoding="utf-8")
             self.assertIn('defaultPrim = "visual_scene"', text)
-            self.assertIn(f"@{scene_usd.resolve()}@</World/gauss>", text)
-            self.assertNotIn("</World/scene_collision>", text)
+            self.assertIn(f"@{scene_usd.resolve()}@", text)
+            self.assertNotIn(f"@{scene_usd.resolve()}@</World/gauss>", text)
+            self.assertIn('over "scene_collision"', text)
+            self.assertIn('over "go2_x5"', text)
+            self.assertIn("active = false", text)
             self.assertNotIn("</World/go2_x5>", text)
+
+    def test_visual_sublayer_wrapper_preserves_complete_scene_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            scene_usd = Path(tmp_dir) / "scene.usd"
+            scene_usd.touch()
+            wrapper = write_visual_sublayer_wrapper(
+                scene_usd,
+                "/World/gauss",
+                excluded_prim_paths=("/World/scene_collision", "/World/go2_x5"),
+            )
+            text = wrapper.read_text(encoding="utf-8")
+            self.assertIn('defaultPrim = "World"', text)
+            self.assertIn("subLayers = [", text)
+            self.assertIn(f"@{scene_usd.resolve()}@", text)
+            self.assertNotIn("prepend references", text)
+            self.assertIn('over "scene_collision"', text)
+            self.assertIn('over "go2_x5"', text)
+            self.assertIn("active = false", text)
 
 
 if __name__ == "__main__":
