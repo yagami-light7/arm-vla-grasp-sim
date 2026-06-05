@@ -75,6 +75,16 @@ parser.add_argument(
     help="Load a visual-only scene prim into the Isaac Lab viewport for debugging/demo.",
 )
 parser.add_argument(
+    "--hide-nav-collision-visual",
+    action=argparse.BooleanOptionalAction,
+    default=None,
+    help=(
+        "Hide /World/nav_collision/terrain in the viewport while keeping the "
+        "navigation collision prim active for physics. Defaults to enabled when "
+        "--load-visual-scene is used."
+    ),
+)
+parser.add_argument(
     "--visual-load-mode",
     choices=("sublayer", "reference"),
     default="reference",
@@ -381,6 +391,35 @@ def _update_follow_camera(env) -> None:
         return
 
 
+def _hide_nav_collision_visual() -> None:
+    """Hide navigation collision geometry in the viewport while keeping physics active."""
+
+    try:
+        import omni.usd
+
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            print("[WARN] Cannot hide navigation collision visual: no active USD stage.")
+            return
+
+        hidden_any = False
+        for prim_path in ("/World/nav_collision/terrain", "/World/nav_collision"):
+            prim = stage.GetPrimAtPath(prim_path)
+            if not prim.IsValid():
+                continue
+            if not prim.IsA(UsdGeom.Imageable):
+                continue
+
+            UsdGeom.Imageable(prim).MakeInvisible()
+            print(f"[INFO] Hid navigation collision visual: {prim_path}")
+            hidden_any = True
+
+        if not hidden_any:
+            print("[WARN] No navigation collision visual prim found to hide.")
+    except Exception as exc:
+        print(f"[WARN] Failed to hide navigation collision visual: {exc}")
+
+
 def _disable_event(env_cfg, name: str) -> None:
     if hasattr(env_cfg.events, name):
         setattr(env_cfg.events, name, None)
@@ -667,6 +706,20 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.seed = agent_cfg.seed
     checkpoint = retrieve_file_path(args_cli.checkpoint)
     env = gym.make(args_cli.task, cfg=env_cfg)
+
+    hide_nav_collision_visual_arg = getattr(args_cli, "hide_nav_collision_visual", None)
+    hide_nav_collision_visual = (
+        hide_nav_collision_visual_arg
+        if hide_nav_collision_visual_arg is not None
+        else args_cli.load_visual_scene
+    )
+
+    if hide_nav_collision_visual:
+        _hide_nav_collision_visual()
+    
+    if hide_nav_collision_visual:
+        _hide_nav_collision_visual()
+
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)

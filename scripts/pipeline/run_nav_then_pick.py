@@ -115,8 +115,30 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--legacy-side-retreat", action="store_true", help="Plan side grasp retreat instead of vertical lift.")
     parser.add_argument("--side-grasp-fallback-retreat", action="store_true", help="Fallback to side retreat if vertical lift planning fails.")
     parser.add_argument("--head-camera", action="store_true")
-    parser.add_argument("--load-visual-scene", action="store_true")
-    parser.add_argument("--visual-load-mode", choices=("sublayer", "reference"), default="reference")
+    parser.add_argument(
+    "--load-visual-scene",
+    action="store_true",
+    help="Load a visual-only scene prim into the Isaac Lab viewport for debugging/demo.",
+    )
+    parser.add_argument(
+        "--hide-nav-collision-visual",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Hide /World/nav_collision/terrain in the viewport while keeping the "
+            "navigation collision prim active for physics. Defaults to enabled when "
+            "--load-visual-scene is used."
+        ),
+    )
+    parser.add_argument(
+        "--visual-load-mode",
+        choices=("sublayer", "reference"),
+        default="sublayer",
+        help=(
+            "Use the stable referenced visual asset by default, or preload a full-scene "
+            "sublayer for SAGE visuals before Isaac Lab creates PhysX tensor views."
+        ),
+    )
     parser.add_argument("--visual-prim-path", default="/World/gauss")
     parser.add_argument("--follow-camera", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--follow-camera-mode", choices=("chase", "front", "overhead", "fixed"), default="chase")
