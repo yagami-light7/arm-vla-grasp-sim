@@ -65,14 +65,24 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             speed_bias=0.35,
             max_linear_accel=2.5,
             yaw_align_kp=2.0,
-            yaw_align_min_wz=0.55,
+            yaw_align_min_wz=0.75,
             yaw_align_max_wz=1.00,
-            yaw_align_vx=0.08,
+            yaw_align_vx=0.16,
+            yaw_align_max_vx=0.35,
+            yaw_align_position_kp=0.8,
+            yaw_align_max_vy=0.18,
+            yaw_align_lateral_kp=0.8,
+            yaw_align_lateral_deadband=0.03,
+            yaw_align_start_distance=0.65,
             yaw_align_activation_yaw_error=0.0,
             yaw_align_allow_reverse=False,
             yaw_align_stall_window_steps=240,
             yaw_align_min_progress=0.08,
             yaw_settle_stable_steps=20,
+            yaw_settle_kp=0.8,
+            yaw_settle_min_wz=0.0,
+            yaw_settle_max_wz=0.35,
+            yaw_settle_realign_margin=0.08,
             debug_print_every=30,
             scene_usd=None,
             add_nav_ground=False,
@@ -86,6 +96,7 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             visual_prim_path="/World/gauss",
             follow_camera=True,
             follow_camera_mode="chase",
+            viewport_camera_prim="/World/camera_main",
             follow_camera_distance=2.0,
             follow_camera_height=0.7,
             follow_camera_side=0.0,
@@ -95,6 +106,12 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             fixed_camera_close_side=-0.75,
             fixed_camera_eye=None,
             fixed_camera_lookat=None,
+            hide_nav_collision_visual=True,
+            save_replay_trajectory=True,
+            replay_sample_every=2,
+            replay_output="/tmp/replay.jsonl",
+            replay_trajectory_name="trajectory.jsonl",
+            replay_include_initial_settle=True,
             flat_terrain=False,
             disable_sky_light=False,
             debug_command=None,
@@ -112,11 +129,33 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
         self.assertIn("--yaw-align-max-wz", command)
         self.assertIn("1.0", command)
         self.assertIn("--yaw-align-min-wz", command)
-        self.assertIn("0.55", command)
+        self.assertIn("0.75", command)
         self.assertIn("--yaw-align-vx", command)
-        self.assertIn("0.08", command)
+        self.assertIn("0.16", command)
+        self.assertIn("--yaw-align-max-vx", command)
+        self.assertIn("0.35", command)
+        self.assertIn("--yaw-align-position-kp", command)
+        self.assertIn("0.8", command)
+        self.assertIn("--yaw-align-max-vy", command)
+        self.assertIn("0.18", command)
+        self.assertIn("--yaw-align-lateral-kp", command)
+        self.assertIn("--yaw-align-lateral-deadband", command)
+        self.assertIn("--yaw-align-start-distance", command)
+        self.assertIn("0.65", command)
+        self.assertIn("--yaw-settle-max-wz", command)
+        self.assertIn("0.35", command)
+        self.assertIn("--yaw-settle-realign-margin", command)
         self.assertIn("--debug-print-every", command)
         self.assertIn("30", command)
+        self.assertIn("--viewport-camera-prim", command)
+        self.assertIn("/World/camera_main", command)
+        self.assertIn("--hide-nav-collision-visual", command)
+        self.assertIn("--save-replay-trajectory", command)
+        self.assertIn("--replay-sample-every", command)
+        self.assertIn("2", command)
+        self.assertIn("--replay-output", command)
+        self.assertIn("/tmp/replay.jsonl", command)
+        self.assertIn("--replay-include-initial-settle", command)
 
     def test_pick_script_editor_smoke_command_sets_env_flag(self) -> None:
         smoke_command = _pick_script_editor_command(smoke_only=True)
@@ -188,14 +227,24 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             speed_bias=0.35,
             max_linear_accel=2.5,
             yaw_align_kp=2.0,
-            yaw_align_min_wz=0.55,
+            yaw_align_min_wz=0.75,
             yaw_align_max_wz=1.00,
-            yaw_align_vx=0.08,
+            yaw_align_vx=0.16,
+            yaw_align_max_vx=0.35,
+            yaw_align_position_kp=0.8,
+            yaw_align_max_vy=0.18,
+            yaw_align_lateral_kp=0.8,
+            yaw_align_lateral_deadband=0.03,
+            yaw_align_start_distance=0.65,
             yaw_align_activation_yaw_error=0.0,
             yaw_align_allow_reverse=False,
             yaw_align_stall_window_steps=240,
             yaw_align_min_progress=0.08,
             yaw_settle_stable_steps=20,
+            yaw_settle_kp=0.8,
+            yaw_settle_min_wz=0.0,
+            yaw_settle_max_wz=0.35,
+            yaw_settle_realign_margin=0.08,
             debug_print_every=30,
             scene_usd=None,
             add_nav_ground=False,
@@ -209,6 +258,7 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             visual_prim_path="/World/gauss",
             follow_camera=True,
             follow_camera_mode="chase",
+            viewport_camera_prim="/World/camera_main",
             follow_camera_distance=2.4,
             follow_camera_height=0.8,
             follow_camera_side=0.0,
@@ -218,6 +268,12 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             fixed_camera_close_side=-0.75,
             fixed_camera_eye=[-4.0, -3.5, 5.0],
             fixed_camera_lookat=[-1.8, 0.5, 0.35],
+            hide_nav_collision_visual=None,
+            save_replay_trajectory=False,
+            replay_sample_every=1,
+            replay_output=None,
+            replay_trajectory_name="trajectory.jsonl",
+            replay_include_initial_settle=False,
             flat_terrain=False,
             disable_sky_light=False,
             debug_command=None,
@@ -239,6 +295,8 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
         self.assertIn("reference", nav_command)
         self.assertIn("--follow-camera-mode", nav_command)
         self.assertIn("fixed", nav_command)
+        self.assertIn("--viewport-camera-prim", nav_command)
+        self.assertIn("/World/camera_main", nav_command)
         self.assertIn("--fixed-camera-preset", nav_command)
         self.assertIn("start", nav_command)
         self.assertIn("--fixed-camera-close-distance", nav_command)

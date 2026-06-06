@@ -14,7 +14,7 @@ class YawAlignConfig:
     kp: float = 2.0
     min_wz: float = 0.55
     max_wz: float = 1.00
-    activation_vx: float = 0.08
+    activation_vx: float = 0.16
     activation_yaw_error: float = 0.0
     allow_reverse: bool = False
 
@@ -35,10 +35,21 @@ def body_goal_forward_projection(
 ) -> float:
     """Return goal displacement projected onto the robot body x axis."""
 
+    return body_goal_components(robot_pose_xyyaw, goal_xy)[0]
+
+
+def body_goal_components(
+    robot_pose_xyyaw: tuple[float, float, float],
+    goal_xy: tuple[float, float],
+) -> tuple[float, float]:
+    """Return goal displacement in the robot body frame as ``x, y``."""
+
     x, y, yaw = robot_pose_xyyaw
     dx = goal_xy[0] - x
     dy = goal_xy[1] - y
-    return math.cos(yaw) * dx + math.sin(yaw) * dy
+    body_x = math.cos(yaw) * dx + math.sin(yaw) * dy
+    body_y = -math.sin(yaw) * dx + math.cos(yaw) * dy
+    return body_x, body_y
 
 
 def compute_yaw_align_command(

@@ -116,9 +116,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--side-grasp-fallback-retreat", action="store_true", help="Fallback to side retreat if vertical lift planning fails.")
     parser.add_argument("--head-camera", action="store_true")
     parser.add_argument(
-    "--load-visual-scene",
-    action="store_true",
-    help="Load a visual-only scene prim into the Isaac Lab viewport for debugging/demo.",
+        "--load-visual-scene",
+        action="store_true",
+        help="Load a visual-only scene prim into the Isaac Lab viewport for debugging/demo.",
     )
     parser.add_argument(
         "--hide-nav-collision-visual",
@@ -141,7 +141,8 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--visual-prim-path", default="/World/gauss")
     parser.add_argument("--follow-camera", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--follow-camera-mode", choices=("chase", "front", "overhead", "fixed"), default="chase")
+    parser.add_argument("--follow-camera-mode", choices=("chase", "front", "overhead", "fixed", "stage"), default="chase")
+    parser.add_argument("--viewport-camera-prim", default="/World/camera_main")
     parser.add_argument("--follow-camera-distance", type=float, default=2.4)
     parser.add_argument("--follow-camera-height", type=float, default=0.8)
     parser.add_argument("--follow-camera-side", type=float, default=0.0)
@@ -194,14 +195,33 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--speed-bias", type=float, default=0.35)
     parser.add_argument("--max-linear-accel", type=float, default=2.5)
     parser.add_argument("--yaw-align-kp", type=float, default=2.0)
-    parser.add_argument("--yaw-align-min-wz", type=float, default=0.55)
+    parser.add_argument("--yaw-align-min-wz", type=float, default=0.75)
     parser.add_argument("--yaw-align-max-wz", type=float, default=1.00)
-    parser.add_argument("--yaw-align-vx", type=float, default=0.08)
+    parser.add_argument("--yaw-align-vx", type=float, default=0.16)
+    parser.add_argument("--yaw-align-max-vx", type=float, default=0.35)
+    parser.add_argument("--yaw-align-position-kp", type=float, default=0.8)
+    parser.add_argument("--yaw-align-max-vy", type=float, default=0.18)
+    parser.add_argument("--yaw-align-lateral-kp", type=float, default=0.8)
+    parser.add_argument("--yaw-align-lateral-deadband", type=float, default=0.03)
+    parser.add_argument("--yaw-align-start-distance", type=float, default=0.65)
     parser.add_argument("--yaw-align-activation-yaw-error", type=float, default=0.0)
     parser.add_argument("--yaw-align-allow-reverse", action="store_true")
     parser.add_argument("--yaw-align-stall-window-steps", type=int, default=240)
     parser.add_argument("--yaw-align-min-progress", type=float, default=0.08)
     parser.add_argument("--yaw-settle-stable-steps", type=int, default=20)
+    parser.add_argument("--yaw-settle-kp", type=float, default=0.8)
+    parser.add_argument("--yaw-settle-min-wz", type=float, default=0.0)
+    parser.add_argument("--yaw-settle-max-wz", type=float, default=0.35)
+    parser.add_argument("--yaw-settle-realign-margin", type=float, default=0.08)
+    parser.add_argument("--save-replay-trajectory", action="store_true")
+    parser.add_argument("--replay-sample-every", type=int, default=1)
+    parser.add_argument("--replay-output", default=None)
+    parser.add_argument("--replay-trajectory-name", default="trajectory.jsonl")
+    parser.add_argument(
+        "--replay-include-initial-settle",
+        action="store_true",
+        help="Include the pre-navigation zero-command settle segment in the replay trajectory.",
+    )
     parser.add_argument("--debug-print-every", type=int, default=60)
     return parser.parse_args()
 
@@ -250,11 +270,26 @@ def _write_context(args: argparse.Namespace, task_json: Path, task) -> None:
                 "yaw_align_min_wz": args.yaw_align_min_wz,
                 "yaw_align_max_wz": args.yaw_align_max_wz,
                 "yaw_align_vx": args.yaw_align_vx,
+                "yaw_align_max_vx": args.yaw_align_max_vx,
+                "yaw_align_position_kp": args.yaw_align_position_kp,
+                "yaw_align_max_vy": args.yaw_align_max_vy,
+                "yaw_align_lateral_kp": args.yaw_align_lateral_kp,
+                "yaw_align_lateral_deadband": args.yaw_align_lateral_deadband,
+                "yaw_align_start_distance": args.yaw_align_start_distance,
                 "yaw_align_activation_yaw_error": args.yaw_align_activation_yaw_error,
                 "yaw_align_allow_reverse": args.yaw_align_allow_reverse,
                 "yaw_align_stall_window_steps": args.yaw_align_stall_window_steps,
                 "yaw_align_min_progress": args.yaw_align_min_progress,
                 "yaw_settle_stable_steps": args.yaw_settle_stable_steps,
+                "yaw_settle_kp": args.yaw_settle_kp,
+                "yaw_settle_min_wz": args.yaw_settle_min_wz,
+                "yaw_settle_max_wz": args.yaw_settle_max_wz,
+                "yaw_settle_realign_margin": args.yaw_settle_realign_margin,
+                "save_replay_trajectory": args.save_replay_trajectory,
+                "replay_sample_every": args.replay_sample_every,
+                "replay_output": args.replay_output,
+                "replay_trajectory_name": args.replay_trajectory_name,
+                "replay_include_initial_settle": args.replay_include_initial_settle,
                 "use_planner_server": args.use_planner_server,
                 "handoff_smoke_only": args.handoff_smoke_only,
                 "require_object_lift_success": not args.allow_retreat_success,
@@ -267,6 +302,7 @@ def _write_context(args: argparse.Namespace, task_json: Path, task) -> None:
                 "visual_prim_path": args.visual_prim_path,
                 "follow_camera": args.follow_camera,
                 "follow_camera_mode": args.follow_camera_mode,
+                "viewport_camera_prim": args.viewport_camera_prim,
                 "follow_camera_distance": args.follow_camera_distance,
                 "follow_camera_height": args.follow_camera_height,
                 "follow_camera_side": args.follow_camera_side,
@@ -348,6 +384,18 @@ def _nav_command(args: argparse.Namespace, task) -> list[str]:
         str(args.yaw_align_max_wz),
         "--yaw-align-vx",
         str(args.yaw_align_vx),
+        "--yaw-align-max-vx",
+        str(args.yaw_align_max_vx),
+        "--yaw-align-position-kp",
+        str(args.yaw_align_position_kp),
+        "--yaw-align-max-vy",
+        str(args.yaw_align_max_vy),
+        "--yaw-align-lateral-kp",
+        str(args.yaw_align_lateral_kp),
+        "--yaw-align-lateral-deadband",
+        str(args.yaw_align_lateral_deadband),
+        "--yaw-align-start-distance",
+        str(args.yaw_align_start_distance),
         "--yaw-align-activation-yaw-error",
         str(args.yaw_align_activation_yaw_error),
         "--yaw-align-stall-window-steps",
@@ -356,6 +404,14 @@ def _nav_command(args: argparse.Namespace, task) -> list[str]:
         str(args.yaw_align_min_progress),
         "--yaw-settle-stable-steps",
         str(args.yaw_settle_stable_steps),
+        "--yaw-settle-kp",
+        str(args.yaw_settle_kp),
+        "--yaw-settle-min-wz",
+        str(args.yaw_settle_min_wz),
+        "--yaw-settle-max-wz",
+        str(args.yaw_settle_max_wz),
+        "--yaw-settle-realign-margin",
+        str(args.yaw_settle_realign_margin),
         "--debug-print-every",
         str(args.debug_print_every),
     ]
@@ -371,6 +427,14 @@ def _nav_command(args: argparse.Namespace, task) -> list[str]:
         command.append("--no-record")
     if args.head_camera:
         command.append("--head-camera")
+    if args.save_replay_trajectory:
+        command.append("--save-replay-trajectory")
+        command.extend(["--replay-sample-every", str(args.replay_sample_every)])
+        command.extend(["--replay-trajectory-name", args.replay_trajectory_name])
+        if args.replay_output:
+            command.extend(["--replay-output", args.replay_output])
+        if args.replay_include_initial_settle:
+            command.append("--replay-include-initial-settle")
     if args.load_visual_scene or args.demo_visuals:
         command.extend(
             [
@@ -381,6 +445,8 @@ def _nav_command(args: argparse.Namespace, task) -> list[str]:
                 args.visual_prim_path,
             ]
         )
+    if args.hide_nav_collision_visual is not None:
+        command.append("--hide-nav-collision-visual" if args.hide_nav_collision_visual else "--no-hide-nav-collision-visual")
     if args.brisk_nav:
         command.append("--brisk-nav")
     follow_camera_mode = args.follow_camera_mode
@@ -393,6 +459,8 @@ def _nav_command(args: argparse.Namespace, task) -> list[str]:
             "--follow-camera" if args.follow_camera else "--no-follow-camera",
             "--follow-camera-mode",
             follow_camera_mode,
+            "--viewport-camera-prim",
+            args.viewport_camera_prim,
             "--follow-camera-distance",
             str(follow_camera_distance),
             "--follow-camera-height",
@@ -467,12 +535,12 @@ def _dwa_config_from_args(args: argparse.Namespace, control_dt: float) -> DWACon
     """Build the dry-run DWA config from pipeline CLI args."""
 
     if args.brisk_nav:
-        max_linear_velocity = max(args.max_lin_vel, 0.70)
-        min_active_linear_velocity = max(args.min_active_lin_vel, 0.45)
-        near_goal_min_active_linear_velocity = max(args.near_goal_min_active_lin_vel, 0.28)
-        close_goal_speed_limit = max(args.close_goal_speed_limit, 0.30)
-        speed_bias = max(args.speed_bias, 0.80)
-        max_linear_accel = max(args.max_linear_accel, 3.5)
+        max_linear_velocity = max(args.max_lin_vel, 0.80)
+        min_active_linear_velocity = max(args.min_active_lin_vel, 0.55)
+        near_goal_min_active_linear_velocity = max(args.near_goal_min_active_lin_vel, 0.38)
+        close_goal_speed_limit = max(args.close_goal_speed_limit, 0.35)
+        speed_bias = max(args.speed_bias, 1.10)
+        max_linear_accel = max(args.max_linear_accel, 4.5)
     else:
         max_linear_velocity = args.max_lin_vel
         min_active_linear_velocity = args.min_active_lin_vel

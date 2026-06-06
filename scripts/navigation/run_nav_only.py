@@ -58,17 +58,45 @@ parser.add_argument("--close-goal-speed-limit", type=float, default=0.22)
 parser.add_argument("--speed-bias", type=float, default=0.35)
 parser.add_argument("--max-linear-accel", type=float, default=2.5)
 parser.add_argument("--yaw-align-kp", type=float, default=2.0)
-parser.add_argument("--yaw-align-min-wz", type=float, default=0.55)
+parser.add_argument("--yaw-align-min-wz", type=float, default=0.75)
 parser.add_argument("--yaw-align-max-wz", type=float, default=1.00)
-parser.add_argument("--yaw-align-vx", type=float, default=0.08)
+parser.add_argument("--yaw-align-vx", type=float, default=0.16)
+parser.add_argument("--yaw-align-max-vx", type=float, default=0.35)
+parser.add_argument("--yaw-align-position-kp", type=float, default=0.8)
+parser.add_argument("--yaw-align-max-vy", type=float, default=0.18)
+parser.add_argument("--yaw-align-lateral-kp", type=float, default=0.8)
+parser.add_argument("--yaw-align-lateral-deadband", type=float, default=0.03)
+parser.add_argument(
+    "--yaw-align-start-distance",
+    type=float,
+    default=0.65,
+    help="Start terminal pose alignment before reaching the position tolerance.",
+)
 parser.add_argument("--yaw-align-activation-yaw-error", type=float, default=0.0)
 parser.add_argument("--yaw-align-allow-reverse", action="store_true")
 parser.add_argument("--yaw-align-stall-window-steps", type=int, default=240)
 parser.add_argument("--yaw-align-min-progress", type=float, default=0.08)
 parser.add_argument("--yaw-settle-stable-steps", type=int, default=20)
+parser.add_argument("--yaw-settle-kp", type=float, default=0.8)
+parser.add_argument("--yaw-settle-min-wz", type=float, default=0.0)
+parser.add_argument("--yaw-settle-max-wz", type=float, default=0.35)
+parser.add_argument("--yaw-settle-realign-margin", type=float, default=0.08)
 parser.add_argument("--head-camera", action="store_true")
 parser.add_argument("--head-camera-height", type=int, default=480)
 parser.add_argument("--head-camera-width", type=int, default=640)
+parser.add_argument("--save-replay-trajectory", action="store_true", help="Save root and joint states for offline replay.")
+parser.add_argument("--replay-sample-every", type=int, default=1, help="Save one replay frame every N simulation steps.")
+parser.add_argument("--replay-output", default=None, help="Explicit replay JSONL output path.")
+parser.add_argument(
+    "--replay-include-initial-settle",
+    action="store_true",
+    help="Include the pre-navigation zero-command settle segment in the replay trajectory.",
+)
+parser.add_argument(
+    "--replay-trajectory-name",
+    default="trajectory.jsonl",
+    help="Replay file name under <episode_dir>/replay when --replay-output is omitted.",
+)
 parser.add_argument(
     "--load-visual-scene",
     action="store_true",
@@ -95,7 +123,12 @@ parser.add_argument(
 )
 parser.add_argument("--visual-prim-path", default="/World/gauss", help="Visual prim referenced when --load-visual-scene is set.")
 parser.add_argument("--follow-camera", action=argparse.BooleanOptionalAction, default=True)
-parser.add_argument("--follow-camera-mode", choices=("chase", "front", "overhead", "fixed"), default="chase")
+parser.add_argument("--follow-camera-mode", choices=("chase", "front", "overhead", "fixed", "stage"), default="chase")
+parser.add_argument(
+    "--viewport-camera-prim",
+    default="/World/Camera_main",
+    help="USD Camera prim used when --follow-camera-mode stage is selected.",
+)
 parser.add_argument("--follow-camera-distance", type=float, default=2.4)
 parser.add_argument("--follow-camera-height", type=float, default=0.8)
 parser.add_argument("--follow-camera-side", type=float, default=0.0)
@@ -167,6 +200,7 @@ from source.navigation.adapters.terrain_utils import (
 from source.navigation.adapters.yaw_align import (
     YawAlignConfig,
     YawAlignStallDetector,
+    body_goal_components,
     body_goal_forward_projection,
     compute_yaw_align_command,
 )
@@ -195,16 +229,81 @@ def _write_nav_result(nav_result_path: Path, recorder: EpisodeRecorder, result: 
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
+def _tensor_list(value) -> list:
+    """Convert a scalar/tensor-like value to a JSON-serializable list."""
+
+    if hasattr(value, "detach"):
+        value = value.detach().cpu()
+    if hasattr(value, "tolist"):
+        converted = value.tolist()
+        return converted if isinstance(converted, list) else [converted]
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+def _capture_replay_frame(env, *, timestamp: float, step: int, phase: str, command: tuple[float, float, float]) -> dict:
+    """Capture one complete robot state frame for offline replay."""
+
+    runtime = env.unwrapped
+    robot = runtime.scene["robot"]
+    return {
+        "schema_version": 1,
+        "timestamp": float(timestamp),
+        "step": int(step),
+        "phase": str(phase),
+        "command": [float(command[0]), float(command[1]), float(command[2])],
+        "root_pos_w": _tensor_list(robot.data.root_pos_w[0]),
+        "root_quat_w": _tensor_list(robot.data.root_quat_w[0]),
+        "root_lin_vel_w": _tensor_list(robot.data.root_lin_vel_w[0]),
+        "root_ang_vel_w": _tensor_list(robot.data.root_ang_vel_w[0]),
+        "joint_names": list(robot.joint_names),
+        "joint_pos": _tensor_list(robot.data.joint_pos[0]),
+        "joint_vel": _tensor_list(robot.data.joint_vel[0]),
+    }
+
+
+class ReplayTrajectoryRecorder:
+    """Buffer navigation states and write them as JSONL for offline replay."""
+
+    def __init__(self, *, enabled: bool, output_path: Path | None, sample_every: int):
+        self.enabled = bool(enabled)
+        self.output_path = output_path
+        self.sample_every = max(1, int(sample_every))
+        self.frames: list[dict] = []
+
+    @property
+    def frame_count(self) -> int:
+        return len(self.frames)
+
+    def capture(self, env, *, timestamp: float, step: int, phase: str, command: tuple[float, float, float]) -> None:
+        if not self.enabled or step % self.sample_every != 0:
+            return
+        self.frames.append(_capture_replay_frame(env, timestamp=timestamp, step=step, phase=phase, command=command))
+
+    def write(self) -> None:
+        if not self.enabled:
+            return
+        if self.output_path is None:
+            raise RuntimeError("Replay trajectory recorder is enabled but output_path is None.")
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.output_path.open("w", encoding="utf-8") as stream:
+            for frame in self.frames:
+                stream.write(json.dumps(frame, ensure_ascii=False, separators=(",", ":")))
+                stream.write("\n")
+        print(f"[INFO] Wrote replay trajectory: {self.output_path} frames={self.frame_count}")
+
+
 def _dwa_config_from_args(control_dt: float) -> DWAConfig:
     """Build DWA config, optionally applying the brisk navigation profile."""
 
     if args_cli.brisk_nav:
-        max_linear_velocity = max(args_cli.max_lin_vel, 0.70)
-        min_active_linear_velocity = max(args_cli.min_active_lin_vel, 0.45)
-        near_goal_min_active_linear_velocity = max(args_cli.near_goal_min_active_lin_vel, 0.28)
-        close_goal_speed_limit = max(args_cli.close_goal_speed_limit, 0.30)
-        speed_bias = max(args_cli.speed_bias, 0.80)
-        max_linear_accel = max(args_cli.max_linear_accel, 3.5)
+        max_linear_velocity = max(args_cli.max_lin_vel, 0.80)
+        min_active_linear_velocity = max(args_cli.min_active_lin_vel, 0.55)
+        near_goal_min_active_linear_velocity = max(args_cli.near_goal_min_active_lin_vel, 0.38)
+        close_goal_speed_limit = max(args_cli.close_goal_speed_limit, 0.35)
+        speed_bias = max(args_cli.speed_bias, 1.10)
+        max_linear_accel = max(args_cli.max_linear_accel, 4.5)
     else:
         max_linear_velocity = args_cli.max_lin_vel
         min_active_linear_velocity = args_cli.min_active_lin_vel
@@ -332,6 +431,12 @@ def _update_follow_camera(env) -> None:
         if controller is None:
             return
         mode = args_cli.follow_camera_mode
+        if mode == "stage":
+            if getattr(_update_follow_camera, "_stage_camera_applied", False):
+                return
+            if _set_viewport_stage_camera(args_cli.viewport_camera_prim):
+                _update_follow_camera._stage_camera_applied = True
+            return
         if mode == "fixed":
             if getattr(_update_follow_camera, "_fixed_camera_applied", False):
                 return
@@ -391,6 +496,63 @@ def _update_follow_camera(env) -> None:
         return
 
 
+def _candidate_stage_camera_paths(camera_prim_path: str) -> list[str]:
+    """Return camera prim path candidates for sublayer and referenced visual modes."""
+
+    candidates = [camera_prim_path]
+    if camera_prim_path == "/World/camera_main":
+        candidates.append("/World/Camera_main")
+    if camera_prim_path.startswith("/World/"):
+        for candidate in tuple(candidates):
+            candidates.append("/World/nav_visual_scene/" + candidate.removeprefix("/World/"))
+    return list(dict.fromkeys(candidates))
+
+
+def _set_viewport_stage_camera(camera_prim_path: str) -> bool:
+    """Switch the active viewport to a USD camera prim authored in the stage."""
+
+    try:
+        import omni.usd
+        from omni.kit.viewport.utility import get_active_viewport
+        from pxr import Sdf
+
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            print("[WARN] Cannot set stage camera: no active USD stage.")
+            return False
+
+        selected_path = None
+        for candidate in _candidate_stage_camera_paths(camera_prim_path):
+            prim = stage.GetPrimAtPath(candidate)
+            if prim.IsValid() and prim.IsA(UsdGeom.Camera):
+                selected_path = candidate
+                break
+        if selected_path is None:
+            print(
+                "[WARN] Cannot set stage camera: no valid Camera prim found. "
+                f"tried={_candidate_stage_camera_paths(camera_prim_path)}"
+            )
+            return False
+
+        viewport = get_active_viewport()
+        if viewport is None:
+            print("[WARN] Cannot set stage camera: no active viewport.")
+            return False
+        sdf_path = Sdf.Path(selected_path)
+        try:
+            viewport.camera_path = sdf_path
+        except Exception:
+            if hasattr(viewport, "set_active_camera"):
+                viewport.set_active_camera(sdf_path)
+            else:
+                raise
+        print(f"[INFO] Viewport camera set to stage camera: {selected_path}")
+        return True
+    except Exception as exc:
+        print(f"[WARN] Failed to set stage camera {camera_prim_path}: {exc}")
+        return False
+
+
 def _hide_nav_collision_visual() -> None:
     """Hide navigation collision geometry in the viewport while keeping physics active."""
 
@@ -406,8 +568,10 @@ def _hide_nav_collision_visual() -> None:
         for prim_path in ("/World/nav_collision/terrain", "/World/nav_collision"):
             prim = stage.GetPrimAtPath(prim_path)
             if not prim.IsValid():
+                print(f"[WARN] Navigation collision visual prim not found: {prim_path}")
                 continue
             if not prim.IsA(UsdGeom.Imageable):
+                print(f"[WARN] Navigation collision visual prim is not imageable: {prim_path}")
                 continue
 
             UsdGeom.Imageable(prim).MakeInvisible()
@@ -610,6 +774,19 @@ def _yaw_align_config() -> YawAlignConfig:
     )
 
 
+def _yaw_settle_config() -> YawAlignConfig:
+    """Build a low-gain yaw correction config for terminal base settling."""
+
+    return YawAlignConfig(
+        kp=args_cli.yaw_settle_kp,
+        min_wz=args_cli.yaw_settle_min_wz,
+        max_wz=args_cli.yaw_settle_max_wz,
+        activation_vx=0.0,
+        activation_yaw_error=0.0,
+        allow_reverse=False,
+    )
+
+
 def _yaw_align_command(
     pose: tuple[float, float, float],
     goal,
@@ -624,31 +801,80 @@ def _yaw_align_command(
     )
 
 
+def _terminal_pose_command(
+    pose: tuple[float, float, float],
+    goal,
+    config: YawAlignConfig,
+) -> tuple[float, float, float]:
+    """Drive the base toward the final pose without handing control back to DWA."""
+
+    body_goal_x, body_goal_y = body_goal_components(pose, (goal.x, goal.y))
+    yaw_error = wrap_yaw(goal.yaw - pose[2])
+    distance = math.hypot(goal.x - pose[0], goal.y - pose[1])
+
+    if distance <= args_cli.goal_tolerance or abs(body_goal_x) <= args_cli.yaw_align_lateral_deadband:
+        vx = 0.0
+    elif body_goal_x < -1.0e-3:
+        vx = -args_cli.yaw_align_vx if args_cli.yaw_align_allow_reverse else 0.0
+    else:
+        position_vx = args_cli.yaw_align_position_kp * body_goal_x
+        vx = min(args_cli.yaw_align_max_vx, max(0.0, position_vx))
+        if abs(body_goal_x) >= abs(body_goal_y) and 0.0 < vx < args_cli.yaw_align_vx:
+            vx = min(args_cli.yaw_align_max_vx, args_cli.yaw_align_vx)
+
+    if distance <= args_cli.goal_tolerance or abs(body_goal_y) <= args_cli.yaw_align_lateral_deadband:
+        vy = 0.0
+    else:
+        position_vy = args_cli.yaw_align_lateral_kp * body_goal_y
+        vy = max(-args_cli.yaw_align_max_vy, min(args_cli.yaw_align_max_vy, position_vy))
+
+    if abs(yaw_error) <= args_cli.goal_yaw_tolerance:
+        wz = 0.0
+    else:
+        wz_abs = min(config.max_wz, max(config.kp * abs(yaw_error), config.min_wz))
+        wz = math.copysign(wz_abs, yaw_error)
+    return vx, vy, wz
+
+
 def _settle_with_yaw_hold(
     *,
     adapter: Go2LocomotionAdapter,
     recorder: EpisodeRecorder,
+    replay_recorder: ReplayTrajectoryRecorder,
     task,
     goal,
     dt: float,
     start_step: int,
-    config: YawAlignConfig,
-) -> tuple[bool, int]:
+    replay_step_start: int,
+) -> tuple[bool, int, int]:
     """Settle the base while keeping the terminal yaw inside tolerance."""
 
     stable_count = 0
     steps = max(0, args_cli.settle_steps)
     required_stable_steps = max(1, args_cli.yaw_settle_stable_steps)
+    settle_config = _yaw_settle_config()
+    realign_tolerance = args_cli.goal_yaw_tolerance + max(0.0, args_cli.yaw_settle_realign_margin)
+    replay_step = replay_step_start
     for settle_step in range(steps):
         pose = adapter.get_base_pose()
         yaw_error = wrap_yaw(goal.yaw - pose[2])
-        if abs(yaw_error) <= args_cli.goal_yaw_tolerance:
+        abs_yaw_error = abs(yaw_error)
+        braking_near_goal = not adapter.is_stable() and abs_yaw_error <= realign_tolerance
+        if abs_yaw_error <= args_cli.goal_yaw_tolerance or braking_near_goal:
             command = (0.0, 0.0, 0.0)
         else:
-            command = _yaw_align_command(pose, goal, config)
+            command = _yaw_align_command(pose, goal, settle_config)
         adapter.apply_base_command(*command)
         adapter.step()
         _update_follow_camera(adapter.env)
+        replay_recorder.capture(
+            adapter.env,
+            timestamp=replay_step * dt,
+            step=replay_step,
+            phase="settle",
+            command=command,
+        )
+        replay_step += 1
 
         pose_after = adapter.get_base_pose()
         yaw_error_after = wrap_yaw(goal.yaw - pose_after[2])
@@ -656,7 +882,7 @@ def _settle_with_yaw_hold(
         if stable and abs(yaw_error_after) <= args_cli.goal_yaw_tolerance:
             stable_count += 1
             if stable_count >= required_stable_steps:
-                return True, settle_step + 1
+                return True, settle_step + 1, replay_step
         else:
             stable_count = 0
 
@@ -666,7 +892,37 @@ def _settle_with_yaw_hold(
                 adapter.snapshot(timestamp=(start_step + settle_step) * dt, phase="yaw_align"),
                 front_image=_jpeg_bytes(adapter.get_front_rgb()),
             )
-    return False, steps
+    return False, steps, replay_step
+
+
+def _settle_zero_command(
+    *,
+    adapter: Go2LocomotionAdapter,
+    replay_recorder: ReplayTrajectoryRecorder,
+    dt: float,
+    replay_step_start: int,
+    steps: int,
+    phase: str,
+    capture: bool = True,
+) -> int:
+    """Hold zero command and optionally capture replay frames."""
+
+    replay_step = replay_step_start
+    command = (0.0, 0.0, 0.0)
+    adapter.apply_base_command(*command)
+    for _ in range(max(0, steps)):
+        adapter.step()
+        _update_follow_camera(adapter.env)
+        if capture:
+            replay_recorder.capture(
+                adapter.env,
+                timestamp=replay_step * dt,
+                step=replay_step,
+                phase=phase,
+                command=command,
+            )
+        replay_step += 1
+    return replay_step
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)
@@ -716,9 +972,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     if hide_nav_collision_visual:
         _hide_nav_collision_visual()
-    
-    if hide_nav_collision_visual:
-        _hide_nav_collision_visual()
 
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
@@ -735,10 +988,29 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     adapter = Go2LocomotionAdapter(env, policy, env.get_observations())
     recorder = EpisodeRecorder(dataset_dir, task.task_id, task.episode_id, enabled=not args_cli.no_record)
     recorder.save_task(raw_task)
+    replay_output_path = (
+        Path(args_cli.replay_output).expanduser().resolve()
+        if args_cli.replay_output
+        else recorder.episode_dir / "replay" / args_cli.replay_trajectory_name
+    )
+    replay_recorder = ReplayTrajectoryRecorder(
+        enabled=args_cli.save_replay_trajectory,
+        output_path=replay_output_path,
+        sample_every=args_cli.replay_sample_every,
+    )
 
     dt = float(env.unwrapped.step_dt)
+    replay_step = 0
     _update_follow_camera(env)
-    adapter.settle(args_cli.settle_steps)
+    replay_step = _settle_zero_command(
+        adapter=adapter,
+        replay_recorder=replay_recorder,
+        dt=dt,
+        replay_step_start=replay_step,
+        steps=args_cli.settle_steps,
+        phase="settle",
+        capture=args_cli.replay_include_initial_settle,
+    )
     _update_follow_camera(env)
     settled_pose = adapter.get_base_pose()
     dwa_cfg = _dwa_config_from_args(control_dt=dt)
@@ -772,6 +1044,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "episode_dir": str(recorder.episode_dir),
             "elapsed_wall_time_s": 0.0,
         }
+        if replay_recorder.enabled:
+            replay_recorder.write()
+            result["replay_trajectory_path"] = str(replay_recorder.output_path)
+            result["replay_frame_count"] = replay_recorder.frame_count
         _write_nav_result(nav_result_path, recorder, result)
         env.close()
         return
@@ -817,29 +1093,37 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         distance = math.hypot(pose[0] - goal.x, pose[1] - goal.y)
         yaw_error = wrap_yaw(goal.yaw - pose[2])
         planner_debug = None
-        if distance <= args_cli.goal_tolerance:
+        terminal_yaw_distance = max(args_cli.goal_tolerance, args_cli.yaw_align_start_distance)
+        needs_terminal_yaw = abs(yaw_error) > args_cli.goal_yaw_tolerance
+        terminal_pose_active = distance <= terminal_yaw_distance
+        if distance <= args_cli.goal_tolerance and not needs_terminal_yaw:
+            success = True
+            break
+        if terminal_pose_active:
             if final_phase != "yaw_align":
                 yaw_stall_detector.reset()
             final_phase = "yaw_align"
-            if abs(yaw_error) <= args_cli.goal_yaw_tolerance:
-                success = True
-                break
-            command = _yaw_align_command(pose, goal, yaw_align_config)
-            yaw_stalled, yaw_stall_diagnostics = yaw_stall_detector.update(abs(yaw_error))
-            if yaw_stalled:
-                failure_reason = "yaw_align_failed"
-                yaw_align_stall_detected = True
-                print(
-                    f"[nav] yaw align stalled: error_reduction={yaw_stall_diagnostics.error_reduction:.3f}rad "
-                    f"within {yaw_stall_diagnostics.sample_count} steps; "
-                    f"current_abs_error={yaw_stall_diagnostics.current_abs_error:.3f}rad"
-                )
-                break
+            command = _terminal_pose_command(pose, goal, yaw_align_config)
+            if needs_terminal_yaw:
+                yaw_stalled, yaw_stall_diagnostics = yaw_stall_detector.update(abs(yaw_error))
+                if yaw_stalled and distance <= args_cli.goal_tolerance:
+                    failure_reason = "yaw_align_failed"
+                    yaw_align_stall_detected = True
+                    print(
+                        f"[nav] yaw align stalled: error_reduction={yaw_stall_diagnostics.error_reduction:.3f}rad "
+                        f"within {yaw_stall_diagnostics.sample_count} steps; "
+                        f"current_abs_error={yaw_stall_diagnostics.current_abs_error:.3f}rad"
+                    )
+                    break
+            else:
+                yaw_stall_detector.reset()
         elif args_cli.debug_command is not None:
             yaw_stall_detector.reset()
+            final_phase = "nav"
             command = tuple(float(value) for value in args_cli.debug_command)
         else:
             yaw_stall_detector.reset()
+            final_phase = "nav"
             vx, vy, wz, planner_debug = planner.compute_command_with_debug(pose, speed, path_world)
             command = (vx, vy, wz)
         if final_phase == "nav":
@@ -857,6 +1141,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         adapter.apply_base_command(*command)
         adapter.step()
         _update_follow_camera(env)
+        replay_recorder.capture(
+            env,
+            timestamp=replay_step * dt,
+            step=replay_step,
+            phase=final_phase,
+            command=command,
+        )
+        replay_step += 1
         if step % task.recording.save_every_n_steps == 0:
             recorder.record(final_phase, adapter.snapshot(timestamp=step * dt, phase=final_phase), front_image=_jpeg_bytes(adapter.get_front_rgb()))
         if args_cli.debug_print_every > 0 and step % args_cli.debug_print_every == 0:
@@ -872,14 +1164,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             print(
                 f"[nav] step={step} phase={final_phase} pose=({pose[0]:.3f}, {pose[1]:.3f}, {pose[2]:.3f}) "
                 f"goal_dist={distance:.3f} yaw_error={yaw_error:.3f} cmd={command} "
-                f"measured_vx={diagnostics['measured_vx']:.3f} measured_wz={diagnostics['measured_wz']:.3f} "
+                f"measured_v=({diagnostics['measured_vx']:.3f}, {diagnostics['measured_vy']:.3f}) "
+                f"measured_wz={diagnostics['measured_wz']:.3f} "
                 f"base_z={diagnostics['base_z']:.3f} "
                 f"roll_pitch=({diagnostics['base_roll']:.3f}, {diagnostics['base_pitch']:.3f}) "
                 f"contact=(foot={diagnostics.get('foot_contact_force_max', 0.0):.1f}, "
                 f"nonfoot={diagnostics.get('nonfoot_contact_force_max', 0.0):.1f}) "
                 f"action_abs_max={diagnostics.get('action_abs_max', 0.0):.3f} "
                 f"dog_action_abs_mean={diagnostics.get('dog_action_abs_mean', 0.0):.3f} "
-                f"command_seen=({diagnostics['command_seen_vx']:.3f}, {diagnostics['command_seen_wz']:.3f}) "
+                f"command_seen=({diagnostics['command_seen_vx']:.3f}, "
+                f"{diagnostics['command_seen_vy']:.3f}, {diagnostics['command_seen_wz']:.3f}) "
                 f"stall_window=({stall_diagnostics.sample_count}, "
                 f"{stall_diagnostics.max_displacement_m:.3f}, {stall_diagnostics.forward_command_ratio:.3f}) "
                 f"yaw_window=({yaw_stall_diagnostics.sample_count}, "
@@ -895,17 +1189,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     yaw_settle_success = False
     yaw_settle_steps = 0
     if success:
-        yaw_settle_success, yaw_settle_steps = _settle_with_yaw_hold(
+        yaw_settle_success, yaw_settle_steps, replay_step = _settle_with_yaw_hold(
             adapter=adapter,
             recorder=recorder,
+            replay_recorder=replay_recorder,
             task=task,
             goal=goal,
             dt=dt,
             start_step=last_nav_step + 1,
-            config=yaw_align_config,
+            replay_step_start=replay_step,
         )
     else:
-        adapter.settle(args_cli.settle_steps)
+        replay_step = _settle_zero_command(
+            adapter=adapter,
+            replay_recorder=replay_recorder,
+            dt=dt,
+            replay_step_start=replay_step,
+            steps=args_cli.settle_steps,
+            phase="settle",
+        )
         yaw_settle_steps = args_cli.settle_steps
     stable = adapter.is_stable()
     final_vx, final_vy, final_wz = adapter.get_base_velocity_full()
@@ -953,6 +1255,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         "episode_dir": str(recorder.episode_dir),
         "elapsed_wall_time_s": time.time() - started_at,
     }
+    if replay_recorder.enabled:
+        replay_recorder.write()
+        result["replay_trajectory_path"] = str(replay_recorder.output_path)
+        result["replay_frame_count"] = replay_recorder.frame_count
     _write_nav_result(nav_result_path, recorder, result)
     env.close()
 

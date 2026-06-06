@@ -186,8 +186,10 @@ class Go2LocomotionAdapter:
             "base_roll": roll,
             "base_pitch": pitch,
             "measured_vx": self.get_base_velocity_full()[0],
+            "measured_vy": self.get_base_velocity_full()[1],
             "measured_wz": self.get_base_velocity_full()[2],
             "command_seen_vx": _item(self.base_cmd_term.vel_command_b[0][0]),
+            "command_seen_vy": _item(self.base_cmd_term.vel_command_b[0][1]),
             "command_seen_wz": _item(self.base_cmd_term.vel_command_b[0][2]),
         }
         if self._last_actions is not None:
