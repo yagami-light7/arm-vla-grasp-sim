@@ -73,15 +73,30 @@ class AStarDwaSmokeTest(unittest.TestCase):
         self.assertFalse(debug.reached_goal)
         self.assertLessEqual(float(command[0]), 0.2001)
 
-    def test_dwa_rollout_sampling_does_not_skip_control_intervals(self) -> None:
+    def test_dwa_rollout_uses_configured_integration_dt(self) -> None:
         grid = OccupancyGridMap(np.zeros((80, 80), dtype=bool), 0.05, (-1.0, -1.0, 0.0))
         config = DWAConfig(control_dt=0.05, integration_dt=0.10, prediction_horizon=0.20)
         controller = DWAController([(0.0, 0.0), (1.0, 0.0)], grid, config)
 
         trajectory = controller._rollout(x=0.0, y=0.0, yaw=0.0, linear_velocity=0.5, angular_velocity=0.0)
 
-        self.assertEqual(len(trajectory), 4)
-        self.assertAlmostEqual(float(trajectory[0][0]), 0.025)
+        self.assertEqual(len(trajectory), 2)
+        self.assertAlmostEqual(float(trajectory[0][0]), 0.05)
+
+    def test_path_distance_window_limits_scoring_work(self) -> None:
+        grid = OccupancyGridMap(np.zeros((80, 200), dtype=bool), 0.05, (-1.0, -1.0, 0.0))
+        path = [(index * 0.05, 0.0) for index in range(120)]
+        config = DWAConfig(control_dt=0.05, path_distance_window=10)
+        controller = DWAController(path, grid, config)
+        controller.target_index = 40
+        target_point = controller.path_world[controller.target_index]
+
+        distances = controller._path_distances(
+            np.array([[target_point[0], target_point[1]], [target_point[0] + 0.45, target_point[1]]], dtype=np.float64)
+        )
+
+        self.assertEqual(distances.shape, (2,))
+        self.assertLess(float(distances[0]), 0.1)
 
     def test_nav_planner_loads_map_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -24,11 +24,18 @@ DEFAULT_NAV_RESULT_JSON = Path("/tmp/go2_x5_nav_result.json")
 DEFAULT_LOCAL_CHECKPOINT = PROJECT_ROOT / "checkpoints/go2_x5/flat/model_8500.pt"
 LEGACY_TMP_CHECKPOINT = Path("/tmp/DWA-reference/flat/model_8500.pt")
 DEFAULT_ISAAC_PYTHON = "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python"
+RAW_CLI_ARGS = sys.argv[1:].copy()
 
 
 def _project_path(raw_path: str) -> Path:
     path = Path(raw_path).expanduser()
     return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+def _cli_arg_supplied(flag: str) -> bool:
+    """Return whether a command-line flag was explicitly supplied."""
+
+    return any(arg == flag or arg.startswith(f"{flag}=") for arg in RAW_CLI_ARGS)
 
 
 def _default_checkpoint_path() -> str | None:
@@ -189,6 +196,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-lin-vel", type=float, default=0.50)
     parser.add_argument("--max-ang-vel", type=float, default=1.00)
     parser.add_argument("--brisk-nav", action="store_true", help="Use a more aggressive DWA speed profile for open routes.")
+    parser.add_argument("--fast-dwa", action="store_true", help="Use a lower-cost DWA compute preset.")
+    parser.add_argument("--dwa-linear-samples", type=int, default=None)
+    parser.add_argument("--dwa-angular-samples", type=int, default=None)
+    parser.add_argument("--dwa-integration-dt", type=float, default=None)
+    parser.add_argument("--dwa-path-sample-spacing", type=float, default=None)
+    parser.add_argument("--dwa-path-distance-window", type=int, default=None)
     parser.add_argument("--min-active-lin-vel", type=float, default=0.30)
     parser.add_argument("--near-goal-min-active-lin-vel", type=float, default=0.22)
     parser.add_argument("--close-goal-speed-limit", type=float, default=0.22)
@@ -223,6 +236,8 @@ def _parse_args() -> argparse.Namespace:
         help="Include the pre-navigation zero-command settle segment in the replay trajectory.",
     )
     parser.add_argument("--debug-print-every", type=int, default=60)
+    parser.add_argument("--profile-dwa", action="store_true")
+    parser.add_argument("--profile-print-every", type=int, default=60)
     return parser.parse_args()
 
 
@@ -261,6 +276,12 @@ def _write_context(args: argparse.Namespace, task_json: Path, task) -> None:
                 "max_lin_vel": args.max_lin_vel,
                 "max_ang_vel": args.max_ang_vel,
                 "brisk_nav": args.brisk_nav,
+                "fast_dwa": args.fast_dwa,
+                "dwa_linear_samples": args.dwa_linear_samples,
+                "dwa_angular_samples": args.dwa_angular_samples,
+                "dwa_integration_dt": args.dwa_integration_dt,
+                "dwa_path_sample_spacing": args.dwa_path_sample_spacing,
+                "dwa_path_distance_window": args.dwa_path_distance_window,
                 "min_active_lin_vel": args.min_active_lin_vel,
                 "near_goal_min_active_lin_vel": args.near_goal_min_active_lin_vel,
                 "close_goal_speed_limit": args.close_goal_speed_limit,
@@ -290,6 +311,8 @@ def _write_context(args: argparse.Namespace, task_json: Path, task) -> None:
                 "replay_output": args.replay_output,
                 "replay_trajectory_name": args.replay_trajectory_name,
                 "replay_include_initial_settle": args.replay_include_initial_settle,
+                "profile_dwa": args.profile_dwa,
+                "profile_print_every": args.profile_print_every,
                 "use_planner_server": args.use_planner_server,
                 "handoff_smoke_only": args.handoff_smoke_only,
                 "require_object_lift_success": not args.allow_retreat_success,
@@ -320,9 +343,18 @@ def _write_context(args: argparse.Namespace, task_json: Path, task) -> None:
     )
 
 
+def _effective_dwa_scalar(args: argparse.Namespace, name: str, fast_value: float) -> float:
+    """Apply fast-DWA scalar defaults unless the user explicitly supplied a value."""
+
+    flag = "--" + name.replace("_", "-")
+    return fast_value if args.fast_dwa and not _cli_arg_supplied(flag) else getattr(args, name)
+
+
 def _nav_command(args: argparse.Namespace, task) -> list[str]:
     script = PROJECT_ROOT / "scripts/navigation/run_nav_only.py"
     prefix = [args.isaaclab_launcher, "-p"] if args.isaaclab_launcher else [args.isaaclab_python]
+    lookahead_distance = _effective_dwa_scalar(args, "lookahead_distance", 0.30)
+    prediction_horizon = _effective_dwa_scalar(args, "prediction_horizon", 0.45)
     command = [
         *prefix,
         str(script),
@@ -359,9 +391,9 @@ def _nav_command(args: argparse.Namespace, task) -> list[str]:
         "--local-clearance-radius",
         str(args.local_clearance_radius),
         "--lookahead-distance",
-        str(args.lookahead_distance),
+        str(lookahead_distance),
         "--prediction-horizon",
-        str(args.prediction_horizon),
+        str(prediction_horizon),
         "--max-lin-vel",
         str(args.max_lin_vel),
         "--max-ang-vel",
@@ -449,6 +481,21 @@ def _nav_command(args: argparse.Namespace, task) -> list[str]:
         command.append("--hide-nav-collision-visual" if args.hide_nav_collision_visual else "--no-hide-nav-collision-visual")
     if args.brisk_nav:
         command.append("--brisk-nav")
+    if args.fast_dwa:
+        command.append("--fast-dwa")
+    if args.dwa_linear_samples is not None:
+        command.extend(["--dwa-linear-samples", str(args.dwa_linear_samples)])
+    if args.dwa_angular_samples is not None:
+        command.extend(["--dwa-angular-samples", str(args.dwa_angular_samples)])
+    if args.dwa_integration_dt is not None:
+        command.extend(["--dwa-integration-dt", str(args.dwa_integration_dt)])
+    if args.dwa_path_sample_spacing is not None:
+        command.extend(["--dwa-path-sample-spacing", str(args.dwa_path_sample_spacing)])
+    if args.dwa_path_distance_window is not None:
+        command.extend(["--dwa-path-distance-window", str(args.dwa_path_distance_window)])
+    if args.profile_dwa:
+        command.append("--profile-dwa")
+        command.extend(["--profile-print-every", str(args.profile_print_every)])
     follow_camera_mode = args.follow_camera_mode
     follow_camera_distance = args.follow_camera_distance
     follow_camera_height = args.follow_camera_height
@@ -534,6 +581,7 @@ def _standalone_pick_command(args: argparse.Namespace, task, *, smoke_only: bool
 def _dwa_config_from_args(args: argparse.Namespace, control_dt: float) -> DWAConfig:
     """Build the dry-run DWA config from pipeline CLI args."""
 
+    fast_dwa = bool(args.fast_dwa)
     if args.brisk_nav:
         max_linear_velocity = max(args.max_lin_vel, 0.80)
         min_active_linear_velocity = max(args.min_active_lin_vel, 0.55)
@@ -548,10 +596,48 @@ def _dwa_config_from_args(args: argparse.Namespace, control_dt: float) -> DWACon
         close_goal_speed_limit = args.close_goal_speed_limit
         speed_bias = args.speed_bias
         max_linear_accel = args.max_linear_accel
+
+    prediction_horizon = _effective_dwa_scalar(args, "prediction_horizon", 0.45)
+    lookahead_distance = _effective_dwa_scalar(args, "lookahead_distance", 0.30)
+    linear_samples = args.dwa_linear_samples
+    angular_samples = args.dwa_angular_samples
+    integration_dt = args.dwa_integration_dt
+    path_sample_spacing = args.dwa_path_sample_spacing
+    path_distance_window = args.dwa_path_distance_window
+    if fast_dwa:
+        linear_samples = 3 if linear_samples is None else linear_samples
+        angular_samples = 7 if angular_samples is None else angular_samples
+        integration_dt = 0.05 if integration_dt is None else integration_dt
+        path_sample_spacing = 0.08 if path_sample_spacing is None else path_sample_spacing
+        path_distance_window = 80 if path_distance_window is None else path_distance_window
+
+    if linear_samples is not None and linear_samples < 2:
+        raise ValueError("--dwa-linear-samples must be >= 2.")
+    if angular_samples is not None and angular_samples < 3:
+        raise ValueError("--dwa-angular-samples must be >= 3.")
+    if integration_dt is not None and integration_dt <= 0.0:
+        raise ValueError("--dwa-integration-dt must be > 0.")
+    if path_sample_spacing is not None and path_sample_spacing <= 0.0:
+        raise ValueError("--dwa-path-sample-spacing must be > 0.")
+    if path_distance_window is not None and path_distance_window < 1:
+        raise ValueError("--dwa-path-distance-window must be >= 1.")
+
+    config_kwargs = {}
+    if linear_samples is not None:
+        config_kwargs["linear_samples"] = linear_samples
+    if angular_samples is not None:
+        config_kwargs["angular_samples"] = angular_samples
+    if integration_dt is not None:
+        config_kwargs["integration_dt"] = integration_dt
+    if path_sample_spacing is not None:
+        config_kwargs["path_sample_spacing"] = path_sample_spacing
+    if path_distance_window is not None:
+        config_kwargs["path_distance_window"] = path_distance_window
+
     return DWAConfig(
         control_dt=control_dt,
-        lookahead_distance=args.lookahead_distance,
-        prediction_horizon=args.prediction_horizon,
+        lookahead_distance=lookahead_distance,
+        prediction_horizon=prediction_horizon,
         goal_tolerance=args.goal_tolerance,
         max_linear_velocity=max_linear_velocity,
         max_angular_velocity=args.max_ang_vel,
@@ -560,6 +646,7 @@ def _dwa_config_from_args(args: argparse.Namespace, control_dt: float) -> DWACon
         close_goal_speed_limit=close_goal_speed_limit,
         speed_bias=speed_bias,
         max_linear_accel=max_linear_accel,
+        **config_kwargs,
     )
 
 

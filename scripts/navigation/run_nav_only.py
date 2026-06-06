@@ -52,6 +52,12 @@ parser.add_argument("--prediction-horizon", type=float, default=0.90)
 parser.add_argument("--max-lin-vel", type=float, default=0.50)
 parser.add_argument("--max-ang-vel", type=float, default=1.00)
 parser.add_argument("--brisk-nav", action="store_true", help="Use a more aggressive DWA speed profile for open routes.")
+parser.add_argument("--fast-dwa", action="store_true", help="Use a lower-cost DWA compute preset.")
+parser.add_argument("--dwa-linear-samples", type=int, default=None)
+parser.add_argument("--dwa-angular-samples", type=int, default=None)
+parser.add_argument("--dwa-integration-dt", type=float, default=None)
+parser.add_argument("--dwa-path-sample-spacing", type=float, default=None)
+parser.add_argument("--dwa-path-distance-window", type=int, default=None)
 parser.add_argument("--min-active-lin-vel", type=float, default=0.30)
 parser.add_argument("--near-goal-min-active-lin-vel", type=float, default=0.22)
 parser.add_argument("--close-goal-speed-limit", type=float, default=0.22)
@@ -163,8 +169,11 @@ parser.add_argument("--flat-terrain", action="store_true", help="Keep the task's
 parser.add_argument("--disable-sky-light", action="store_true", help="Disable the default Isaac Lab sky light.")
 parser.add_argument("--debug-command", type=float, nargs=3, default=None, metavar=("VX", "VY", "WZ"))
 parser.add_argument("--debug-print-every", type=int, default=60)
+parser.add_argument("--profile-dwa", action="store_true", help="Print DWA and control-loop timing statistics.")
+parser.add_argument("--profile-print-every", type=int, default=60)
 isaaclab_cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
+RAW_CLI_ARGS = sys.argv[1:].copy()
 args_cli, hydra_args = parser.parse_known_args()
 if args_cli.head_camera:
     args_cli.enable_cameras = True
@@ -294,9 +303,32 @@ class ReplayTrajectoryRecorder:
         print(f"[INFO] Wrote replay trajectory: {self.output_path} frames={self.frame_count}")
 
 
+def _cli_arg_supplied(flag: str) -> bool:
+    """Return whether a command-line flag was explicitly supplied before Hydra parsing."""
+
+    return any(arg == flag or arg.startswith(f"{flag}=") for arg in RAW_CLI_ARGS)
+
+
+def _require_min_int(name: str, value: int | None, minimum: int) -> int | None:
+    if value is None:
+        return None
+    if value < minimum:
+        raise ValueError(f"{name} must be >= {minimum}; got {value}.")
+    return int(value)
+
+
+def _require_positive_float(name: str, value: float | None) -> float | None:
+    if value is None:
+        return None
+    if value <= 0.0:
+        raise ValueError(f"{name} must be > 0; got {value}.")
+    return float(value)
+
+
 def _dwa_config_from_args(control_dt: float) -> DWAConfig:
     """Build DWA config, optionally applying the brisk navigation profile."""
 
+    fast_dwa = bool(args_cli.fast_dwa)
     if args_cli.brisk_nav:
         max_linear_velocity = max(args_cli.max_lin_vel, 0.80)
         min_active_linear_velocity = max(args_cli.min_active_lin_vel, 0.55)
@@ -311,10 +343,63 @@ def _dwa_config_from_args(control_dt: float) -> DWAConfig:
         close_goal_speed_limit = args_cli.close_goal_speed_limit
         speed_bias = args_cli.speed_bias
         max_linear_accel = args_cli.max_linear_accel
+
+    prediction_horizon = args_cli.prediction_horizon
+    lookahead_distance = args_cli.lookahead_distance
+    linear_samples = _require_min_int("--dwa-linear-samples", args_cli.dwa_linear_samples, 2)
+    angular_samples = _require_min_int("--dwa-angular-samples", args_cli.dwa_angular_samples, 3)
+    integration_dt = _require_positive_float("--dwa-integration-dt", args_cli.dwa_integration_dt)
+    path_sample_spacing = _require_positive_float("--dwa-path-sample-spacing", args_cli.dwa_path_sample_spacing)
+    path_distance_window = _require_min_int("--dwa-path-distance-window", args_cli.dwa_path_distance_window, 1)
+
+    if fast_dwa:
+        if not _cli_arg_supplied("--prediction-horizon"):
+            prediction_horizon = 0.45
+        if not _cli_arg_supplied("--lookahead-distance"):
+            lookahead_distance = 0.30
+        if linear_samples is None:
+            linear_samples = 3
+        if angular_samples is None:
+            angular_samples = 7
+        if integration_dt is None:
+            integration_dt = 0.05
+        if path_sample_spacing is None:
+            path_sample_spacing = 0.08
+        if path_distance_window is None:
+            path_distance_window = 80
+
+    config_kwargs = {}
+    if linear_samples is not None:
+        config_kwargs["linear_samples"] = linear_samples
+    if angular_samples is not None:
+        config_kwargs["angular_samples"] = angular_samples
+    if integration_dt is not None:
+        config_kwargs["integration_dt"] = integration_dt
+    if path_sample_spacing is not None:
+        config_kwargs["path_sample_spacing"] = path_sample_spacing
+    if path_distance_window is not None:
+        config_kwargs["path_distance_window"] = path_distance_window
+
+    effective_linear_samples = linear_samples if linear_samples is not None else DWAConfig.linear_samples
+    effective_angular_samples = angular_samples if angular_samples is not None else DWAConfig.angular_samples
+    effective_integration_dt = integration_dt if integration_dt is not None else DWAConfig.integration_dt
+    effective_path_sample_spacing = path_sample_spacing if path_sample_spacing is not None else DWAConfig.path_sample_spacing
+    effective_path_distance_window = (
+        path_distance_window if path_distance_window is not None else DWAConfig.path_distance_window
+    )
+    print(
+        "[INFO] DWA compute config: "
+        f"fast={fast_dwa} linear_samples={effective_linear_samples} "
+        f"angular_samples={effective_angular_samples} integration_dt={effective_integration_dt:.3f} "
+        f"horizon={prediction_horizon:.3f} lookahead={lookahead_distance:.3f} "
+        f"path_sample_spacing={effective_path_sample_spacing:.3f} "
+        f"path_window={effective_path_distance_window}"
+    )
+
     return DWAConfig(
         control_dt=control_dt,
-        lookahead_distance=args_cli.lookahead_distance,
-        prediction_horizon=args_cli.prediction_horizon,
+        lookahead_distance=lookahead_distance,
+        prediction_horizon=prediction_horizon,
         goal_tolerance=args_cli.goal_tolerance,
         max_linear_velocity=max_linear_velocity,
         max_angular_velocity=args_cli.max_ang_vel,
@@ -323,6 +408,7 @@ def _dwa_config_from_args(control_dt: float) -> DWAConfig:
         close_goal_speed_limit=close_goal_speed_limit,
         speed_bias=speed_bias,
         max_linear_accel=max_linear_accel,
+        **config_kwargs,
     )
 
 
@@ -1086,7 +1172,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     )
     stall_diagnostics = stall_detector.diagnostics()
     last_nav_step = 0
+    profile_enabled = bool(args_cli.profile_dwa)
+    profile_print_every = max(1, int(args_cli.profile_print_every))
+    profile_start_time = time.perf_counter()
+    profile_total_steps = 0
+    profile_window_count = 0
+    profile_dwa_ms = 0.0
+    profile_sim_step_ms = 0.0
+    profile_camera_ms = 0.0
+    profile_record_ms = 0.0
+    profile_loop_ms = 0.0
     for step in range(args_cli.max_nav_steps):
+        loop_start = time.perf_counter() if profile_enabled else 0.0
+        dwa_ms = 0.0
+        sim_step_ms = 0.0
+        camera_ms = 0.0
+        record_ms = 0.0
         last_nav_step = step
         pose = adapter.get_base_pose()
         speed = adapter.get_base_velocity()
@@ -1124,7 +1225,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         else:
             yaw_stall_detector.reset()
             final_phase = "nav"
+            dwa_start = time.perf_counter() if profile_enabled else 0.0
             vx, vy, wz, planner_debug = planner.compute_command_with_debug(pose, speed, path_world)
+            if profile_enabled:
+                dwa_ms = (time.perf_counter() - dwa_start) * 1000.0
             command = (vx, vy, wz)
         if final_phase == "nav":
             stalled, stall_diagnostics = stall_detector.update(pose[0], pose[1], float(command[0]))
@@ -1139,8 +1243,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         else:
             stall_detector.reset()
         adapter.apply_base_command(*command)
+        sim_step_start = time.perf_counter() if profile_enabled else 0.0
         adapter.step()
+        if profile_enabled:
+            sim_step_ms = (time.perf_counter() - sim_step_start) * 1000.0
+        camera_start = time.perf_counter() if profile_enabled else 0.0
         _update_follow_camera(env)
+        if profile_enabled:
+            camera_ms = (time.perf_counter() - camera_start) * 1000.0
+        record_start = time.perf_counter() if profile_enabled else 0.0
         replay_recorder.capture(
             env,
             timestamp=replay_step * dt,
@@ -1151,6 +1262,35 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         replay_step += 1
         if step % task.recording.save_every_n_steps == 0:
             recorder.record(final_phase, adapter.snapshot(timestamp=step * dt, phase=final_phase), front_image=_jpeg_bytes(adapter.get_front_rgb()))
+        if profile_enabled:
+            record_ms = (time.perf_counter() - record_start) * 1000.0
+            loop_ms = (time.perf_counter() - loop_start) * 1000.0
+            profile_total_steps += 1
+            profile_window_count += 1
+            profile_dwa_ms += dwa_ms
+            profile_sim_step_ms += sim_step_ms
+            profile_camera_ms += camera_ms
+            profile_record_ms += record_ms
+            profile_loop_ms += loop_ms
+            if profile_window_count >= profile_print_every:
+                wall_time = max(time.perf_counter() - profile_start_time, 1.0e-9)
+                simulated_time = profile_total_steps * dt
+                rt_factor = simulated_time / wall_time
+                print(
+                    f"[profile] step={step} "
+                    f"avg_dwa_ms={profile_dwa_ms / profile_window_count:.3f} "
+                    f"avg_sim_step_ms={profile_sim_step_ms / profile_window_count:.3f} "
+                    f"avg_camera_ms={profile_camera_ms / profile_window_count:.3f} "
+                    f"avg_record_ms={profile_record_ms / profile_window_count:.3f} "
+                    f"avg_loop_ms={profile_loop_ms / profile_window_count:.3f} "
+                    f"rt_factor={rt_factor:.3f}"
+                )
+                profile_window_count = 0
+                profile_dwa_ms = 0.0
+                profile_sim_step_ms = 0.0
+                profile_camera_ms = 0.0
+                profile_record_ms = 0.0
+                profile_loop_ms = 0.0
         if args_cli.debug_print_every > 0 and step % args_cli.debug_print_every == 0:
             diagnostics = adapter.diagnostics()
             planner_detail = ""

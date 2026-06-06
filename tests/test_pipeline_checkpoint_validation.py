@@ -59,6 +59,12 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             max_lin_vel=0.50,
             max_ang_vel=1.00,
             brisk_nav=True,
+            fast_dwa=True,
+            dwa_linear_samples=3,
+            dwa_angular_samples=7,
+            dwa_integration_dt=0.05,
+            dwa_path_sample_spacing=0.08,
+            dwa_path_distance_window=80,
             min_active_lin_vel=0.30,
             near_goal_min_active_lin_vel=0.22,
             close_goal_speed_limit=0.22,
@@ -112,6 +118,8 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             replay_output="/tmp/replay.jsonl",
             replay_trajectory_name="trajectory.jsonl",
             replay_include_initial_settle=True,
+            profile_dwa=True,
+            profile_print_every=60,
             flat_terrain=False,
             disable_sky_light=False,
             debug_command=None,
@@ -124,6 +132,17 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
         self.assertIn("--max-lin-vel", command)
         self.assertIn("0.5", command)
         self.assertIn("--brisk-nav", command)
+        self.assertIn("--fast-dwa", command)
+        self.assertIn("--dwa-linear-samples", command)
+        self.assertIn("3", command)
+        self.assertIn("--dwa-angular-samples", command)
+        self.assertIn("7", command)
+        self.assertIn("--dwa-integration-dt", command)
+        self.assertIn("0.05", command)
+        self.assertIn("--dwa-path-sample-spacing", command)
+        self.assertIn("0.08", command)
+        self.assertIn("--dwa-path-distance-window", command)
+        self.assertIn("80", command)
         self.assertIn("--min-active-lin-vel", command)
         self.assertIn("0.3", command)
         self.assertIn("--yaw-align-max-wz", command)
@@ -156,6 +175,8 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
         self.assertIn("--replay-output", command)
         self.assertIn("/tmp/replay.jsonl", command)
         self.assertIn("--replay-include-initial-settle", command)
+        self.assertIn("--profile-dwa", command)
+        self.assertIn("--profile-print-every", command)
 
     def test_pick_script_editor_smoke_command_sets_env_flag(self) -> None:
         smoke_command = _pick_script_editor_command(smoke_only=True)
@@ -221,6 +242,12 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             max_lin_vel=0.50,
             max_ang_vel=1.00,
             brisk_nav=False,
+            fast_dwa=False,
+            dwa_linear_samples=None,
+            dwa_angular_samples=None,
+            dwa_integration_dt=None,
+            dwa_path_sample_spacing=None,
+            dwa_path_distance_window=None,
             min_active_lin_vel=0.30,
             near_goal_min_active_lin_vel=0.22,
             close_goal_speed_limit=0.22,
@@ -274,6 +301,8 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             replay_output=None,
             replay_trajectory_name="trajectory.jsonl",
             replay_include_initial_settle=False,
+            profile_dwa=False,
+            profile_print_every=60,
             flat_terrain=False,
             disable_sky_light=False,
             debug_command=None,

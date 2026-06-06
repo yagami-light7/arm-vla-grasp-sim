@@ -42,6 +42,7 @@ class DWAConfig:
     near_goal_force_forward_heading_angle: float = 0.45
     path_sample_spacing: float = 0.05
     path_deviation_limit: float = 0.18
+    path_distance_window: int = 80
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,7 @@ class DWAController:
         self.grid_map = grid_map
         self.config = config
         self.target_index = 1
+        self.grid_map.obstacle_distance_map()
 
     def compute_command(
         self,
@@ -278,8 +280,8 @@ class DWAController:
         the obstacle behind the goal.
         """
 
-        horizon = max(self.config.prediction_horizon, self.config.integration_dt)
-        dt = min(max(self.config.integration_dt, 1.0e-3), max(self.config.control_dt, 1.0e-3))
+        dt = max(self.config.integration_dt, 1.0e-3)
+        horizon = max(self.config.prediction_horizon, dt)
         steps = max(1, int(math.ceil(horizon / dt)))
         trajectory = np.zeros((steps, 3), dtype=np.float64)
 
@@ -306,9 +308,14 @@ class DWAController:
 
     def _clearance_at(self, x: float, y: float) -> float:
         row, col = self.grid_map.world_to_grid(x, y)
+        distance = self.grid_map.distance_to_obstacle(row, col)
+        if distance is not None:
+            return min(float(distance), self.config.obstacle_distance_cap)
+        return self._clearance_at_slow(row, col)
+
+    def _clearance_at_slow(self, row: int, col: int) -> float:
         if self.grid_map.is_occupied(row, col):
             return 0.0
-
         cap_cells = max(1, int(math.ceil(self.config.obstacle_distance_cap / self.grid_map.resolution)))
         row_min = max(0, row - cap_cells)
         row_max = min(self.grid_map.height - 1, row + cap_cells)
@@ -378,7 +385,11 @@ class DWAController:
         }
 
     def _path_distances(self, positions: np.ndarray) -> np.ndarray:
-        path_slice = self.path_world[max(0, self.target_index - 2) :]
+        window_start = max(0, self.target_index - 5)
+        window_end = min(len(self.path_world), self.target_index + max(1, int(self.config.path_distance_window)))
+        if window_end <= window_start:
+            window_end = len(self.path_world)
+        path_slice = self.path_world[window_start:window_end]
         deltas = positions[:, None, :] - path_slice[None, :, :]
         return np.min(np.linalg.norm(deltas, axis=2), axis=1)
 

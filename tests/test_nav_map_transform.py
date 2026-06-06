@@ -26,6 +26,20 @@ class NavMapTransformTest(unittest.TestCase):
         self.assertTrue(grid.is_occupied(-1, 0))
         self.assertTrue(grid.is_occupied(2, 0))
 
+    def test_obstacle_distance_transform_matches_grid_distance(self) -> None:
+        try:
+            import scipy.ndimage  # noqa: F401
+        except ImportError:
+            self.skipTest("SciPy is not installed.")
+
+        occupancy = np.zeros((7, 7), dtype=bool)
+        occupancy[3, 3] = True
+        grid = OccupancyGridMap(occupancy, 0.1, (0.0, 0.0, 0.0))
+
+        self.assertEqual(grid.distance_to_obstacle(3, 3), 0.0)
+        self.assertAlmostEqual(grid.distance_to_obstacle(3, 5), 0.2, places=6)
+        self.assertAlmostEqual(grid.distance_to_obstacle(1, 1), math.sqrt(8) * 0.1, places=6)
+
     def test_inflate_marks_neighbor_cells(self) -> None:
         occupancy = np.zeros((5, 5), dtype=bool)
         occupancy[2, 2] = True

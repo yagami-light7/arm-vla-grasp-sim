@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import math
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -131,6 +132,48 @@ class OccupancyGridMap:
         if not self.in_bounds(row, col):
             return True
         return bool(self.occupancy[row, col])
+
+    def obstacle_distance_map(self) -> np.ndarray | None:
+        """Return a cached obstacle distance transform in meters.
+
+        The distance transform is computed once per map instance. It returns
+        ``None`` when SciPy is unavailable, allowing callers to fall back to a
+        slower local occupancy scan.
+        """
+
+        if hasattr(self, "_obstacle_distance_map_m"):
+            return getattr(self, "_obstacle_distance_map_m")
+        try:
+            from scipy.ndimage import distance_transform_edt
+        except ImportError:
+            if not getattr(OccupancyGridMap, "_distance_transform_warning_emitted", False):
+                warnings.warn(
+                    "scipy.ndimage.distance_transform_edt is unavailable; "
+                    "DWA clearance checks will use the slower local-window scan.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                setattr(OccupancyGridMap, "_distance_transform_warning_emitted", True)
+            object.__setattr__(self, "_obstacle_distance_map_m", None)
+            return None
+
+        distances = distance_transform_edt(~self.occupancy).astype(np.float32, copy=False)
+        distances *= float(self.resolution)
+        distances[self.occupancy] = 0.0
+        object.__setattr__(self, "_obstacle_distance_map_m", distances)
+        return distances
+
+    def distance_to_obstacle(self, row: int, col: int) -> float | None:
+        """Return obstacle clearance in meters, or ``None`` if unavailable."""
+
+        if not self.in_bounds(row, col):
+            return 0.0
+        if self.is_occupied(row, col):
+            return 0.0
+        distance_map = self.obstacle_distance_map()
+        if distance_map is None:
+            return None
+        return float(distance_map[row, col])
 
     def world_to_grid(self, x: float, y: float) -> tuple[int, int]:
         """Convert a world-frame position to a row/col index.
