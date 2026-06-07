@@ -20,6 +20,43 @@ class YawAlignConfig:
 
 
 @dataclass(frozen=True)
+class TerminalPoseConfig:
+    """Tunable final-pose controller parameters.
+
+    The locomotion policy tracks small translational commands more reliably
+    than a pure in-place high-rate yaw command.  This controller therefore
+    keeps a small gait command available near the goal and ramps yaw speed down
+    as the final heading error becomes small.
+    """
+
+    position_tolerance: float = 0.08
+    position_acceptance_tolerance: float = 0.18
+    yaw_tolerance: float = 0.08
+    position_kp: float = 0.8
+    max_vx: float = 0.35
+    min_vx: float = 0.16
+    allow_reverse: bool = True
+    lateral_kp: float = 0.8
+    lateral_deadband: float = 0.03
+    max_vy: float = 0.18
+    min_vy: float = 0.0
+    yaw_kp: float = 2.0
+    yaw_min_wz: float = 0.40
+    yaw_max_wz: float = 0.65
+    yaw_slowdown_error: float = 0.65
+    yaw_slowdown_min_wz: float = 0.20
+    yaw_slowdown_max_wz: float = 0.45
+    large_yaw_error: float = 1.0
+    large_yaw_position_scale: float = 0.45
+    gait_activation_vx: float = 0.04
+    recovery_yaw_max_wz: float = 0.35
+    recovery_gait_vx: float = 0.08
+    yaw_polish_gait_vx: float = 0.08
+    yaw_polish_min_wz: float = 0.45
+    yaw_polish_max_wz: float = 0.55
+
+
+@dataclass(frozen=True)
 class YawAlignDiagnostics:
     """Progress diagnostics for yaw-alignment stall detection."""
 
@@ -75,6 +112,129 @@ def compute_yaw_align_command(
         else:
             vx = config.activation_vx
     return vx, 0.0, wz
+
+
+def compute_terminal_pose_command(
+    *,
+    body_goal_x: float,
+    body_goal_y: float,
+    yaw_error: float,
+    distance_to_goal: float,
+    config: TerminalPoseConfig,
+    recovery: bool = False,
+) -> tuple[float, float, float]:
+    """Return a body-frame command for final XY + yaw convergence."""
+
+    abs_yaw_error = abs(yaw_error)
+    position_scale = 1.0
+    if abs_yaw_error >= config.large_yaw_error:
+        position_scale = max(0.0, min(1.0, config.large_yaw_position_scale))
+
+    inside_position_acceptance = distance_to_goal <= max(config.position_tolerance, config.position_acceptance_tolerance)
+
+    inside_large_yaw_arc = inside_position_acceptance and abs_yaw_error >= config.large_yaw_error
+
+    if inside_large_yaw_arc:
+        vx = _axis_velocity(
+            error=body_goal_x,
+            kp=config.position_kp,
+            max_abs=config.max_vx,
+            min_abs=config.min_vx,
+            deadband=config.lateral_deadband,
+            allow_negative=config.allow_reverse,
+            scale=1.0,
+        )
+        vy = _axis_velocity(
+            error=body_goal_y,
+            kp=config.lateral_kp,
+            max_abs=config.max_vy,
+            min_abs=config.min_vy,
+            deadband=config.lateral_deadband,
+            allow_negative=True,
+            scale=1.0,
+        )
+        if abs(vx) < 1.0e-6 and abs(vy) < 1.0e-6:
+            vx = max(config.min_vx, config.yaw_polish_gait_vx)
+    elif distance_to_goal <= config.position_tolerance or inside_position_acceptance:
+        vx = 0.0
+        vy = 0.0
+    else:
+        vx = _axis_velocity(
+            error=body_goal_x,
+            kp=config.position_kp,
+            max_abs=config.max_vx,
+            min_abs=config.min_vx,
+            deadband=config.lateral_deadband,
+            allow_negative=config.allow_reverse,
+            scale=position_scale,
+        )
+        vy = _axis_velocity(
+            error=body_goal_y,
+            kp=config.lateral_kp,
+            max_abs=config.max_vy,
+            min_abs=config.min_vy,
+            deadband=config.lateral_deadband,
+            allow_negative=True,
+            scale=position_scale,
+        )
+
+    if abs_yaw_error > config.yaw_tolerance and abs(vx) < 1.0e-6 and abs(vy) < 1.0e-6:
+        if inside_position_acceptance:
+            activation_vx = config.yaw_polish_gait_vx
+        else:
+            activation_vx = config.recovery_gait_vx if recovery else config.gait_activation_vx
+        if activation_vx > 0.0:
+            if inside_position_acceptance:
+                vx = activation_vx
+            elif body_goal_x < -config.lateral_deadband:
+                vx = -activation_vx if config.allow_reverse else 0.0
+            elif body_goal_x > config.lateral_deadband:
+                vx = activation_vx
+            else:
+                vx = activation_vx
+
+    if abs_yaw_error <= config.yaw_tolerance:
+        wz = 0.0
+    else:
+        max_wz = config.yaw_max_wz
+        min_wz = config.yaw_min_wz
+        if inside_position_acceptance:
+            max_wz = min(max_wz, config.yaw_polish_max_wz)
+            min_wz = min(max_wz, max(min_wz, config.yaw_polish_min_wz))
+        elif abs_yaw_error <= config.yaw_slowdown_error:
+            max_wz = min(max_wz, config.yaw_slowdown_max_wz)
+            min_wz = min(min_wz, config.yaw_slowdown_min_wz)
+        if recovery:
+            max_wz = min(max_wz, config.recovery_yaw_max_wz)
+            min_wz = min(min_wz, max_wz)
+        wz_abs = min(max_wz, max(config.yaw_kp * abs_yaw_error, min_wz))
+        wz = math.copysign(wz_abs, yaw_error)
+    return vx, vy, wz
+
+
+def _axis_velocity(
+    *,
+    error: float,
+    kp: float,
+    max_abs: float,
+    min_abs: float,
+    deadband: float,
+    allow_negative: bool,
+    scale: float,
+) -> float:
+    """Proportional axis command with optional minimum active gait speed."""
+
+    if abs(error) <= deadband:
+        return 0.0
+    if error < 0.0 and not allow_negative:
+        return 0.0
+    value = kp * error * scale
+    max_abs = max(0.0, max_abs)
+    value = max(-max_abs, min(max_abs, value))
+    min_abs = min(max(0.0, min_abs), max_abs)
+    if min_abs > 0.0 and 0.0 < abs(value) < min_abs:
+        value = math.copysign(min_abs, value)
+    return value
 
 
 class YawAlignStallDetector:

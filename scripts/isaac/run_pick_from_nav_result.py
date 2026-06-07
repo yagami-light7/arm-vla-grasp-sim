@@ -19,7 +19,7 @@ import omni.kit.app
 import omni.usd
 from isaacsim.core.api.world import World
 from isaacsim.core.prims import SingleArticulation
-from pxr import Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
 
 SCRIPT_FILE = globals().get("__file__")
@@ -110,6 +110,27 @@ def _grasp_failure_reason(detail: str) -> str:
     return "object_not_lifted"
 
 
+def _execution_failure_reason(execution_summary: dict) -> str:
+    """Classify grasp execution failures without confusing side-retreat demos with lift failures."""
+
+    abort_reason = execution_summary.get("abort_reason")
+    if abort_reason:
+        return _grasp_failure_reason(str(abort_reason))
+
+    grasp_mode = str(execution_summary.get("grasp_mode", ""))
+    side_retreat_only = (
+        grasp_mode == "side"
+        and bool(execution_summary.get("has_planned_retreat", False))
+        and not bool(execution_summary.get("has_lift_segment", False))
+        and not bool(execution_summary.get("require_object_lift_success", True))
+    )
+    if side_retreat_only and not bool(execution_summary.get("object_retreat_success", False)):
+        return "object_not_grasped"
+    if not bool(execution_summary.get("object_lift_success", False)):
+        return "object_not_lifted"
+    return "object_not_lifted"
+
+
 def _task_json_path() -> Path:
     if PIPELINE_CONTEXT_JSON.exists():
         context = _read_json(PIPELINE_CONTEXT_JSON)
@@ -158,6 +179,43 @@ def _project_path(raw_path: str) -> Path:
     return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
 
 
+def _optional_float(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _effective_handoff_goal_tolerance(context: dict, nav_result: dict) -> tuple[float, str]:
+    """Use the same final-position acceptance that navigation used when available."""
+
+    explicit = _optional_float(context.get("handoff_goal_tolerance"))
+    if explicit is not None:
+        return explicit, "context.handoff_goal_tolerance"
+
+    candidates: list[tuple[float, str]] = []
+    nav_acceptance = _optional_float(nav_result.get("position_acceptance_tolerance"))
+    if nav_acceptance is not None:
+        candidates.append((nav_acceptance, "nav_result.position_acceptance_tolerance"))
+
+    nav_goal_tolerance = _optional_float(nav_result.get("goal_tolerance"))
+    nav_goal_margin = _optional_float(nav_result.get("final_goal_tolerance_margin")) or 0.0
+    if nav_goal_tolerance is not None:
+        candidates.append((nav_goal_tolerance + max(0.0, nav_goal_margin), "nav_result.goal_tolerance+margin"))
+
+    context_goal_tolerance = _optional_float(context.get("goal_tolerance"))
+    context_goal_margin = _optional_float(context.get("final_goal_tolerance_margin")) or 0.0
+    if context_goal_tolerance is not None:
+        candidates.append((context_goal_tolerance + max(0.0, context_goal_margin), "context.goal_tolerance+margin"))
+        candidates.append((context_goal_tolerance, "context.goal_tolerance"))
+
+    if not candidates:
+        return 0.15, "default"
+    return max(candidates, key=lambda item: item[0])
+
+
 def _validate_handoff_pose(task, nav_result: dict) -> dict:
     """Reject unsafe base teleport targets before mutating the open stage."""
 
@@ -166,7 +224,7 @@ def _validate_handoff_pose(task, nav_result: dict) -> dict:
     y = float(pose["y"])
     context = _pipeline_context()
     clearance_m = float(context.get("handoff_clearance_radius", HANDOFF_CLEARANCE_M))
-    goal_tolerance = float(context.get("goal_tolerance", 0.15))
+    goal_tolerance, goal_tolerance_source = _effective_handoff_goal_tolerance(context, nav_result)
     map_path = _project_path(str(context.get("nav_map") or task.nav_map))
     grid_map = OccupancyGridMap.from_meta_file(map_path)
     clearance_map = grid_map.inflate(clearance_m)
@@ -184,6 +242,8 @@ def _validate_handoff_pose(task, nav_result: dict) -> dict:
     reported_goal = nav_result.get("goal_xyyaw")
     if reported_goal is not None and math.hypot(float(reported_goal[0]) - expected_goal.x, float(reported_goal[1]) - expected_goal.y) > 1.0e-3:
         errors.append(f"nav result goal {reported_goal[:2]} does not match task goal {[expected_goal.x, expected_goal.y]}")
+    if nav_result.get("final_position_reached") is False:
+        errors.append("navigation result reports final_position_reached=false")
     if goal_distance > goal_tolerance:
         errors.append(f"final pose is {goal_distance:.3f} m from task goal, tolerance is {goal_tolerance:.3f} m")
     if grid_map.is_occupied(row, col):
@@ -194,13 +254,17 @@ def _validate_handoff_pose(task, nav_result: dict) -> dict:
         errors.append(f"map-boundary clearance is only {boundary_clearance:.3f} m")
     print(
         f"[handoff] map check: xy=({x:.3f}, {y:.3f}) grid=({row}, {col}) "
-        f"goal_distance={goal_distance:.3f}m clearance={clearance_m:.2f}m "
+        f"goal_distance={goal_distance:.3f}m tolerance={goal_tolerance:.3f}m "
+        f"clearance={clearance_m:.2f}m "
         f"boundary_clearance={boundary_clearance:.3f}m"
     )
     report = {
         "nav_xy": [x, y],
         "grid_index": [int(row), int(col)],
         "goal_distance_m": goal_distance,
+        "goal_tolerance_m": goal_tolerance,
+        "goal_tolerance_source": goal_tolerance_source,
+        "nav_final_position_reached": nav_result.get("final_position_reached"),
         "clearance_radius_m": clearance_m,
         "boundary_clearance_m": boundary_clearance,
         "raw_cell_occupied": bool(grid_map.is_occupied(row, col)),
@@ -261,6 +325,172 @@ def _validate_open_stage(task, context: dict) -> dict:
     if errors:
         raise HandoffFailure("stage_not_ready", "; ".join(errors), checks)
     return checks
+
+
+def _rpy_to_quat_wxyz(roll: float, pitch: float, yaw: float) -> tuple[float, float, float, float]:
+    """Convert roll/pitch/yaw radians to a wxyz quaternion."""
+
+    cr = math.cos(0.5 * float(roll))
+    sr = math.sin(0.5 * float(roll))
+    cp = math.cos(0.5 * float(pitch))
+    sp = math.sin(0.5 * float(pitch))
+    cy = math.cos(0.5 * float(yaw))
+    sy = math.sin(0.5 * float(yaw))
+    return (
+        cr * cp * cy + sr * sp * sy,
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+    )
+
+
+def _zero_rigid_body_velocities(prim) -> int:
+    """Clear authored rigid-body velocities on prim and children when present."""
+
+    zeroed = 0
+    for child in Usd.PrimRange(prim):
+        if not child.HasAPI(UsdPhysics.RigidBodyAPI):
+            continue
+        rigid_body = UsdPhysics.RigidBodyAPI(child)
+        try:
+            rigid_body.GetVelocityAttr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            rigid_body.GetAngularVelocityAttr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            zeroed += 1
+        except Exception as exc:
+            print(f"[WARN] Failed to clear rigid body velocity for {child.GetPath()}: {exc}")
+    return zeroed
+
+
+def _get_or_add_xform_op(xformable: UsdGeom.Xformable, op_type) -> UsdGeom.XformOp:
+    """Return the canonical xform op, reusing existing precision when authored."""
+
+    prim = xformable.GetPrim()
+    attr_name_by_type = {
+        UsdGeom.XformOp.TypeTranslate: "xformOp:translate",
+        UsdGeom.XformOp.TypeOrient: "xformOp:orient",
+    }
+    attr_name = attr_name_by_type[op_type]
+    attr = prim.GetAttribute(attr_name)
+    if attr.IsValid():
+        return UsdGeom.XformOp(attr)
+    if op_type == UsdGeom.XformOp.TypeTranslate:
+        return xformable.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble)
+    if op_type == UsdGeom.XformOp.TypeOrient:
+        return xformable.AddOrientOp(UsdGeom.XformOp.PrecisionFloat)
+    raise ValueError(f"unsupported xform op type: {op_type}")
+
+
+def _set_translate_op(op: UsdGeom.XformOp, xyz: tuple[float, float, float]) -> None:
+    precision = op.GetPrecision()
+    if precision == UsdGeom.XformOp.PrecisionDouble:
+        op.Set(Gf.Vec3d(*xyz))
+    else:
+        op.Set(Gf.Vec3f(*xyz))
+
+
+def _set_orient_op(op: UsdGeom.XformOp, quat_wxyz: tuple[float, float, float, float]) -> None:
+    w, x, y, z = quat_wxyz
+    precision = op.GetPrecision()
+    if precision == UsdGeom.XformOp.PrecisionDouble:
+        op.Set(Gf.Quatd(w, Gf.Vec3d(x, y, z)))
+    else:
+        op.Set(Gf.Quatf(w, Gf.Vec3f(x, y, z)))
+
+
+def _show_only_task_object(task) -> dict:
+    """Hide apple/orange/bottle distractors while keeping the task object visible."""
+
+    object_prim_path = task.pick.object_prim_path
+    if not object_prim_path:
+        return {"applied": False, "reason": "object_prim_path_missing"}
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        raise HandoffFailure("stage_not_ready", "No USD stage is open in Isaac Sim.")
+
+    object_prefix = object_prim_path.rstrip("/") + "/"
+    hidden_paths: list[str] = []
+    shown_paths: list[str] = []
+    keywords = ("apple", "orange", "bottle")
+    for prim in stage.Traverse():
+        prim_path = str(prim.GetPath())
+        lower_path = prim_path.lower()
+        if not any(keyword in lower_path for keyword in keywords):
+            continue
+        if prim_path == object_prim_path or prim_path.startswith(object_prefix):
+            if prim.IsA(UsdGeom.Imageable):
+                UsdGeom.Imageable(prim).MakeVisible()
+                shown_paths.append(prim_path)
+            continue
+        if prim.IsA(UsdGeom.Imageable):
+            UsdGeom.Imageable(prim).MakeInvisible()
+            hidden_paths.append(prim_path)
+
+    print(
+        "[randomize] object visibility:",
+        {
+            "keep": object_prim_path,
+            "shown": len(shown_paths),
+            "hidden": len(hidden_paths),
+        },
+    )
+    return {
+        "applied": True,
+        "kept_object_prim_path": object_prim_path,
+        "shown_paths": shown_paths,
+        "hidden_paths": hidden_paths,
+    }
+
+
+def _apply_object_pose_from_task(task) -> dict:
+    """Apply task.pick.object_pose_world to the open stage when provided."""
+
+    pose = getattr(task.pick, "object_pose_world", None)
+    if pose is None:
+        return {"applied": False, "reason": "object_pose_world_missing"}
+    object_prim_path = task.pick.object_prim_path
+    if not object_prim_path:
+        raise HandoffFailure("stage_not_ready", "pick.object_prim_path is required when object_pose_world is set.")
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        raise HandoffFailure("stage_not_ready", "No USD stage is open in Isaac Sim.")
+    prim = stage.GetPrimAtPath(object_prim_path)
+    if not prim.IsValid():
+        raise HandoffFailure("stage_not_ready", f"object prim does not exist: {object_prim_path}")
+    if not prim.IsA(UsdGeom.Xformable):
+        raise HandoffFailure("stage_not_ready", f"object prim is not xformable: {object_prim_path}")
+
+    quat = _rpy_to_quat_wxyz(pose.roll, pose.pitch, pose.yaw)
+    xformable = UsdGeom.Xformable(prim)
+    translate_op = _get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeTranslate)
+    orient_op = _get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeOrient)
+    _set_translate_op(translate_op, (pose.x, pose.y, pose.z))
+    _set_orient_op(orient_op, quat)
+    # Preserve authored scale/rotate/transform ops from the scene USD. Randomized
+    # tasks should only update object pose, not discard asset sizing or physics
+    # alignment encoded in the original xform stack.
+    zeroed_count = _zero_rigid_body_velocities(prim)
+    report = {
+        "applied": True,
+        "object_prim_path": object_prim_path,
+        "pose_world": pose.to_dict(),
+        "quaternion_wxyz": [float(value) for value in quat],
+        "xform_op_order": [op.GetOpName() for op in xformable.GetOrderedXformOps()],
+        "rigid_body_velocity_zeroed_count": zeroed_count,
+    }
+    print(
+        "[randomize] applied object pose:",
+        object_prim_path,
+        {
+            "x": round(pose.x, 4),
+            "y": round(pose.y, 4),
+            "z": round(pose.z, 4),
+            "roll": round(pose.roll, 4),
+            "pitch": round(pose.pitch, 4),
+            "yaw": round(pose.yaw, 4),
+        },
+    )
+    return report
 
 
 def _resolve_articulation_root(stage) -> str:
@@ -439,6 +669,8 @@ async def main() -> None:
             )
         handoff_report["map_check"] = _validate_handoff_pose(task, nav_result)
         handoff_report["stage_check"] = _validate_open_stage(task, context)
+        handoff_report["object_visibility"] = _show_only_task_object(task)
+        handoff_report["object_pose"] = _apply_object_pose_from_task(task)
         world, robot = await _initialize_robot()
         handoff_report["restore"] = await _restore_and_settle(world, robot, nav_result)
         pipeline = GraspPipeline(recorder=recorder)
@@ -504,7 +736,7 @@ async def main() -> None:
         raise
     execution_summary = result["execution"].get("summary", {})
     success = bool(result["success"])
-    failure_reason = "" if success else _grasp_failure_reason(str(execution_summary.get("abort_reason", "")))
+    failure_reason = "" if success else _execution_failure_reason(execution_summary)
     summary.update(
         {
             "success": success,

@@ -153,7 +153,9 @@ def _write_context(args: argparse.Namespace, task_json: Path, raw_task: dict) ->
     nav_map = args.nav_map or raw_task["nav_map"]
     scene_usd = args.scene_usd or raw_task["scene_usd"]
     context_path = Path(args.pipeline_context).expanduser().resolve()
+    context = _read_json_if_exists(context_path) or {}
     context = {
+        **context,
         "schema_version": 1,
         "task_json": str(task_json),
         "scene_usd": str(_project_path(scene_usd)),
@@ -193,6 +195,21 @@ def _open_stage(scene_usd: Path, load_updates: int) -> None:
     if usd_context.get_stage() is None:
         raise RuntimeError(f"stage did not load: {scene_usd}")
     print(f"[standalone] opened stage: {scene_usd}")
+
+
+def _prepare_randomized_task_stage(task_json: Path) -> dict:
+    """Apply randomized object visibility and pose before replay/grasp."""
+
+    from source.data import load_task
+    from scripts.isaac.run_pick_from_nav_result import _apply_object_pose_from_task, _show_only_task_object
+
+    task = load_task(task_json)
+    report = {
+        "object_visibility": _show_only_task_object(task),
+        "object_pose": _apply_object_pose_from_task(task),
+    }
+    print("[standalone] prepared randomized task stage:", report)
+    return report
 
 
 def _candidate_stage_camera_paths(camera_prim_path: str) -> list[str]:
@@ -424,10 +441,45 @@ async def _replay_navigation_trajectory_async(path: Path, *, real_time: bool, sp
 
 
 def _run_replay_task(replay_trajectory: Path, *, real_time: bool, speed: float, timeout_s: float) -> None:
-    future = _schedule_kit_coroutine(
-        _replay_navigation_trajectory_async(replay_trajectory, real_time=real_time, speed=speed)
+    import numpy as np
+    from isaacsim.core.utils.types import ArticulationAction
+
+    frames = _read_replay_trajectory(replay_trajectory)
+    future = _schedule_kit_coroutine(_initialize_replay_robot())
+    world, robot = _drive_future_to_completion(future, timeout_s=timeout_s, label="navigation replay initialization")
+    print(
+        f"[standalone] replaying navigation trajectory: {replay_trajectory} "
+        f"frames={len(frames)} real_time={real_time} speed={speed}"
     )
-    _drive_future_to_completion(future, timeout_s=timeout_s, label="navigation replay")
+
+    previous_frame = None
+    playback_speed = max(float(speed), 1.0e-6)
+    for frame in frames:
+        position = np.asarray(frame["root_pos_w"], dtype=float)
+        orientation = np.asarray(frame["root_quat_w"], dtype=float)
+        robot.set_world_pose(position=position, orientation=orientation)
+        robot.set_linear_velocity(np.asarray(frame["root_lin_vel_w"], dtype=float))
+        robot.set_angular_velocity(np.asarray(frame["root_ang_vel_w"], dtype=float))
+
+        joint_positions = _map_replay_joint_positions(robot, frame)
+        if joint_positions is not None:
+            robot.apply_action(ArticulationAction(joint_positions=np.asarray(joint_positions, dtype=float)))
+
+        world.step(render=True)
+        simulation_app.update()
+
+        if real_time:
+            if previous_frame is None:
+                delay = 0.0
+            else:
+                delay = max(
+                    0.0,
+                    float(frame.get("timestamp", 0.0)) - float(previous_frame.get("timestamp", 0.0)),
+                ) / playback_speed
+            if delay > 0.0:
+                time.sleep(delay)
+        previous_frame = frame
+    print("[standalone] navigation replay complete")
 
 
 def _run_handoff_task(timeout_s: float) -> None:
@@ -484,6 +536,7 @@ def main() -> int:
     )
     try:
         _open_stage(scene_usd, args_cli.stage_load_updates)
+        _prepare_randomized_task_stage(task_json)
         _write_standalone_report(
             args_cli,
             {

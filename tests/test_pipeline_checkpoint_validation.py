@@ -56,10 +56,14 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             yaw_align_max_vx=0.35,
             yaw_align_position_kp=0.8,
             yaw_align_max_vy=0.18,
+            yaw_align_min_vy=0.0,
             yaw_align_lateral_kp=0.8,
             yaw_align_lateral_deadband=0.03,
             yaw_align_min_wz=0.75,
             yaw_align_max_wz=1.00,
+            terminal_yaw_polish_vx=0.04,
+            terminal_yaw_polish_min_wz=0.40,
+            terminal_yaw_polish_max_wz=0.45,
             settle_steps=120,
             yaw_settle_stable_steps=20,
             yaw_settle_max_wz=0.35,
@@ -76,11 +80,15 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
         self.assertEqual(args.goal_tolerance, 0.15)
         self.assertEqual(args.terminal_position_tolerance, 0.08)
         self.assertEqual(args.final_goal_tolerance_margin, 0.03)
+        self.assertEqual(args.final_yaw_tolerance_margin, 0.07)
         self.assertEqual(args.yaw_align_vx, 0.35)
         self.assertEqual(args.yaw_align_max_vx, 0.60)
         self.assertEqual(args.yaw_align_lateral_kp, 0.9)
         self.assertEqual(args.yaw_align_lateral_deadband, 0.015)
         self.assertEqual(args.yaw_align_max_wz, 0.60)
+        self.assertEqual(args.terminal_yaw_polish_vx, 0.08)
+        self.assertEqual(args.terminal_yaw_polish_min_wz, 0.45)
+        self.assertEqual(args.terminal_yaw_polish_max_wz, 0.55)
         self.assertEqual(args.yaw_settle_stable_steps, 15)
         self.assertEqual(args.yaw_settle_max_wz, 0.25)
         self.assertTrue(args.brisk_nav)
@@ -162,6 +170,7 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             yaw_align_max_vx=0.35,
             yaw_align_position_kp=0.8,
             yaw_align_max_vy=0.18,
+            yaw_align_min_vy=0.0,
             yaw_align_lateral_kp=0.8,
             yaw_align_lateral_deadband=0.03,
             yaw_align_start_distance=0.65,
@@ -174,6 +183,21 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             yaw_settle_min_wz=0.0,
             yaw_settle_max_wz=0.35,
             yaw_settle_realign_margin=0.08,
+            base_stable_linear_tolerance=0.06,
+            base_stable_angular_tolerance=0.20,
+            terminal_allow_reverse=True,
+            terminal_yaw_slowdown_error=0.65,
+            terminal_yaw_slowdown_min_wz=0.20,
+            terminal_yaw_slowdown_max_wz=0.45,
+            terminal_large_yaw_error=1.0,
+            terminal_large_yaw_position_scale=0.45,
+            terminal_gait_vx=0.04,
+            terminal_recovery_steps=90,
+            terminal_recovery_yaw_max_wz=0.35,
+            terminal_recovery_gait_vx=0.08,
+            terminal_yaw_polish_vx=0.08,
+            terminal_yaw_polish_min_wz=0.45,
+            terminal_yaw_polish_max_wz=0.55,
             debug_print_every=30,
             scene_usd=None,
             add_nav_ground=False,
@@ -472,6 +496,7 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             yaw_align_max_vx=0.35,
             yaw_align_position_kp=0.8,
             yaw_align_max_vy=0.18,
+            yaw_align_min_vy=0.0,
             yaw_align_lateral_kp=0.8,
             yaw_align_lateral_deadband=0.03,
             yaw_align_start_distance=0.65,
@@ -484,6 +509,21 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             yaw_settle_min_wz=0.0,
             yaw_settle_max_wz=0.35,
             yaw_settle_realign_margin=0.08,
+            base_stable_linear_tolerance=0.06,
+            base_stable_angular_tolerance=0.20,
+            terminal_allow_reverse=True,
+            terminal_yaw_slowdown_error=0.65,
+            terminal_yaw_slowdown_min_wz=0.20,
+            terminal_yaw_slowdown_max_wz=0.45,
+            terminal_large_yaw_error=1.0,
+            terminal_large_yaw_position_scale=0.45,
+            terminal_gait_vx=0.04,
+            terminal_recovery_steps=90,
+            terminal_recovery_yaw_max_wz=0.35,
+            terminal_recovery_gait_vx=0.08,
+            terminal_yaw_polish_vx=0.08,
+            terminal_yaw_polish_min_wz=0.45,
+            terminal_yaw_polish_max_wz=0.55,
             debug_print_every=30,
             scene_usd=None,
             add_nav_ground=False,

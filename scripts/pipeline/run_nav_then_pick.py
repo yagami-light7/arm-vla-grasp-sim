@@ -267,25 +267,41 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--close-goal-speed-limit", type=float, default=0.22)
     parser.add_argument("--speed-bias", type=float, default=0.35)
     parser.add_argument("--max-linear-accel", type=float, default=2.5)
-    parser.add_argument("--yaw-align-kp", type=float, default=2.0)
-    parser.add_argument("--yaw-align-min-wz", type=float, default=0.75)
+    parser.add_argument("--yaw-align-kp", type=float, default=1.2)
+    parser.add_argument("--yaw-align-min-wz", type=float, default=0.40)
     parser.add_argument("--yaw-align-max-wz", type=float, default=1.00)
-    parser.add_argument("--yaw-align-vx", type=float, default=0.16)
+    parser.add_argument("--yaw-align-vx", type=float, default=0.15)
     parser.add_argument("--yaw-align-max-vx", type=float, default=0.35)
-    parser.add_argument("--yaw-align-position-kp", type=float, default=0.8)
-    parser.add_argument("--yaw-align-max-vy", type=float, default=0.18)
-    parser.add_argument("--yaw-align-lateral-kp", type=float, default=0.8)
+    parser.add_argument("--yaw-align-position-kp", type=float, default=0.1)
+    parser.add_argument("--yaw-align-max-vy", type=float, default=0.35)
+    parser.add_argument("--yaw-align-min-vy", type=float, default=0.15)
+    parser.add_argument("--yaw-align-lateral-kp", type=float, default=0.9)
     parser.add_argument("--yaw-align-lateral-deadband", type=float, default=0.03)
-    parser.add_argument("--yaw-align-start-distance", type=float, default=0.65)
+    parser.add_argument("--yaw-align-start-distance", type=float, default=0.70)
     parser.add_argument("--yaw-align-activation-yaw-error", type=float, default=0.0)
     parser.add_argument("--yaw-align-allow-reverse", action="store_true")
-    parser.add_argument("--yaw-align-stall-window-steps", type=int, default=240)
+    parser.add_argument("--yaw-align-stall-window-steps", type=int, default=120)
     parser.add_argument("--yaw-align-min-progress", type=float, default=0.08)
-    parser.add_argument("--yaw-settle-stable-steps", type=int, default=20)
+    parser.add_argument("--yaw-settle-stable-steps", type=int, default=15)
     parser.add_argument("--yaw-settle-kp", type=float, default=0.8)
-    parser.add_argument("--yaw-settle-min-wz", type=float, default=0.0)
-    parser.add_argument("--yaw-settle-max-wz", type=float, default=0.35)
+    parser.add_argument("--yaw-settle-min-wz", type=float, default=0.40)
+    parser.add_argument("--yaw-settle-max-wz", type=float, default=0.60)
     parser.add_argument("--yaw-settle-realign-margin", type=float, default=0.08)
+    parser.add_argument("--base-stable-linear-tolerance", type=float, default=0.06)
+    parser.add_argument("--base-stable-angular-tolerance", type=float, default=0.20)
+    parser.add_argument("--terminal-allow-reverse", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--terminal-yaw-slowdown-error", type=float, default=0.65)
+    parser.add_argument("--terminal-yaw-slowdown-min-wz", type=float, default=0.20)
+    parser.add_argument("--terminal-yaw-slowdown-max-wz", type=float, default=0.45)
+    parser.add_argument("--terminal-large-yaw-error", type=float, default=1.00)
+    parser.add_argument("--terminal-large-yaw-position-scale", type=float, default=0.45)
+    parser.add_argument("--terminal-gait-vx", type=float, default=0.04)
+    parser.add_argument("--terminal-recovery-steps", type=int, default=90)
+    parser.add_argument("--terminal-recovery-yaw-max-wz", type=float, default=0.35)
+    parser.add_argument("--terminal-recovery-gait-vx", type=float, default=0.08)
+    parser.add_argument("--terminal-yaw-polish-vx", type=float, default=0.08)
+    parser.add_argument("--terminal-yaw-polish-min-wz", type=float, default=0.45)
+    parser.add_argument("--terminal-yaw-polish-max-wz", type=float, default=0.55)
     parser.add_argument("--save-replay-trajectory", action="store_true")
     parser.add_argument("--replay-sample-every", type=int, default=1)
     parser.add_argument("--replay-output", default=None)
@@ -328,11 +344,11 @@ def _apply_preset_defaults(args: argparse.Namespace) -> None:
     _set_if_not_supplied(args, "lookahead_distance", 0.30)
     _set_if_not_supplied(args, "prediction_horizon", 0.45)
     _set_if_not_supplied(args, "goal_tolerance", 0.15)
-    _set_if_not_supplied(args, "goal_yaw_tolerance", 0.15)
+    _set_if_not_supplied(args, "goal_yaw_tolerance", 0.20)
     _set_if_not_supplied(args, "terminal_position_tolerance", 0.08)
     _set_if_not_supplied(args, "terminal_yaw_tolerance", 0.08)
     _set_if_not_supplied(args, "final_goal_tolerance_margin", 0.03)
-    _set_if_not_supplied(args, "final_yaw_tolerance_margin", 0.03)
+    _set_if_not_supplied(args, "final_yaw_tolerance_margin", 0.07)
     _set_if_not_supplied(args, "yaw_align_start_distance", 0.50)
     _set_if_not_supplied(args, "yaw_align_vx", 0.35)
     _set_if_not_supplied(args, "yaw_align_max_vx", 0.60)
@@ -340,8 +356,14 @@ def _apply_preset_defaults(args: argparse.Namespace) -> None:
     _set_if_not_supplied(args, "yaw_align_max_vy", 0.35)
     _set_if_not_supplied(args, "yaw_align_lateral_kp", 0.9)
     _set_if_not_supplied(args, "yaw_align_lateral_deadband", 0.015)
+    _set_if_not_supplied(args, "yaw_align_kp", 1.2)
     _set_if_not_supplied(args, "yaw_align_min_wz", 0.40)
     _set_if_not_supplied(args, "yaw_align_max_wz", 0.60)
+    _set_if_not_supplied(args, "terminal_yaw_slowdown_max_wz", 0.42)
+    _set_if_not_supplied(args, "terminal_recovery_yaw_max_wz", 0.32)
+    _set_if_not_supplied(args, "terminal_yaw_polish_vx", 0.08)
+    _set_if_not_supplied(args, "terminal_yaw_polish_min_wz", 0.45)
+    _set_if_not_supplied(args, "terminal_yaw_polish_max_wz", 0.55)
     _set_if_not_supplied(args, "settle_steps", 120)
     _set_if_not_supplied(args, "yaw_settle_stable_steps", 15)
     _set_if_not_supplied(args, "yaw_settle_max_wz", 0.25)
@@ -476,6 +498,7 @@ def _write_context(args: argparse.Namespace, task_json: Path, task) -> None:
                 "yaw_align_max_vx": args.yaw_align_max_vx,
                 "yaw_align_position_kp": args.yaw_align_position_kp,
                 "yaw_align_max_vy": args.yaw_align_max_vy,
+                "yaw_align_min_vy": args.yaw_align_min_vy,
                 "yaw_align_lateral_kp": args.yaw_align_lateral_kp,
                 "yaw_align_lateral_deadband": args.yaw_align_lateral_deadband,
                 "yaw_align_start_distance": args.yaw_align_start_distance,
@@ -488,6 +511,21 @@ def _write_context(args: argparse.Namespace, task_json: Path, task) -> None:
                 "yaw_settle_min_wz": args.yaw_settle_min_wz,
                 "yaw_settle_max_wz": args.yaw_settle_max_wz,
                 "yaw_settle_realign_margin": args.yaw_settle_realign_margin,
+                "base_stable_linear_tolerance": args.base_stable_linear_tolerance,
+                "base_stable_angular_tolerance": args.base_stable_angular_tolerance,
+                "terminal_allow_reverse": args.terminal_allow_reverse,
+                "terminal_yaw_slowdown_error": args.terminal_yaw_slowdown_error,
+                "terminal_yaw_slowdown_min_wz": args.terminal_yaw_slowdown_min_wz,
+                "terminal_yaw_slowdown_max_wz": args.terminal_yaw_slowdown_max_wz,
+                "terminal_large_yaw_error": args.terminal_large_yaw_error,
+                "terminal_large_yaw_position_scale": args.terminal_large_yaw_position_scale,
+                "terminal_gait_vx": args.terminal_gait_vx,
+                "terminal_recovery_steps": args.terminal_recovery_steps,
+                "terminal_recovery_yaw_max_wz": args.terminal_recovery_yaw_max_wz,
+                "terminal_recovery_gait_vx": args.terminal_recovery_gait_vx,
+                "terminal_yaw_polish_vx": args.terminal_yaw_polish_vx,
+                "terminal_yaw_polish_min_wz": args.terminal_yaw_polish_min_wz,
+                "terminal_yaw_polish_max_wz": args.terminal_yaw_polish_max_wz,
                 "save_replay_trajectory": args.save_replay_trajectory,
                 "replay_sample_every": args.replay_sample_every,
                 "replay_output": args.replay_output,
@@ -622,6 +660,8 @@ def _nav_command(args: argparse.Namespace, task) -> list[str]:
         str(args.yaw_align_position_kp),
         "--yaw-align-max-vy",
         str(args.yaw_align_max_vy),
+        "--yaw-align-min-vy",
+        str(args.yaw_align_min_vy),
         "--yaw-align-lateral-kp",
         str(args.yaw_align_lateral_kp),
         "--yaw-align-lateral-deadband",
@@ -644,6 +684,35 @@ def _nav_command(args: argparse.Namespace, task) -> list[str]:
         str(args.yaw_settle_max_wz),
         "--yaw-settle-realign-margin",
         str(args.yaw_settle_realign_margin),
+        "--base-stable-linear-tolerance",
+        str(args.base_stable_linear_tolerance),
+        "--base-stable-angular-tolerance",
+        str(args.base_stable_angular_tolerance),
+        "--terminal-allow-reverse" if args.terminal_allow_reverse else "--no-terminal-allow-reverse",
+        "--terminal-yaw-slowdown-error",
+        str(args.terminal_yaw_slowdown_error),
+        "--terminal-yaw-slowdown-min-wz",
+        str(args.terminal_yaw_slowdown_min_wz),
+        "--terminal-yaw-slowdown-max-wz",
+        str(args.terminal_yaw_slowdown_max_wz),
+        "--terminal-large-yaw-error",
+        str(args.terminal_large_yaw_error),
+        "--terminal-large-yaw-position-scale",
+        str(args.terminal_large_yaw_position_scale),
+        "--terminal-gait-vx",
+        str(args.terminal_gait_vx),
+        "--terminal-recovery-steps",
+        str(args.terminal_recovery_steps),
+        "--terminal-recovery-yaw-max-wz",
+        str(args.terminal_recovery_yaw_max_wz),
+        "--terminal-recovery-gait-vx",
+        str(args.terminal_recovery_gait_vx),
+        "--terminal-yaw-polish-vx",
+        str(args.terminal_yaw_polish_vx),
+        "--terminal-yaw-polish-min-wz",
+        str(args.terminal_yaw_polish_min_wz),
+        "--terminal-yaw-polish-max-wz",
+        str(args.terminal_yaw_polish_max_wz),
         "--debug-print-every",
         str(args.debug_print_every),
     ]

@@ -25,18 +25,54 @@ class Pose2D:
 
 
 @dataclass(frozen=True)
+class ObjectPoseWorld:
+    """World-frame object pose used by randomized pick tasks."""
+
+    x: float
+    y: float
+    z: float
+    yaw: float
+    roll: float = 0.0
+    pitch: float = 0.0
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ObjectPoseWorld":
+        return cls(
+            x=float(data["x"]),
+            y=float(data["y"]),
+            z=float(data["z"]),
+            yaw=float(data.get("yaw", 0.0)),
+            roll=float(data.get("roll", 0.0)),
+            pitch=float(data.get("pitch", 0.0)),
+        )
+
+    def to_dict(self) -> dict[str, float]:
+        return {
+            "x": self.x,
+            "y": self.y,
+            "z": self.z,
+            "yaw": self.yaw,
+            "roll": self.roll,
+            "pitch": self.pitch,
+        }
+
+
+@dataclass(frozen=True)
 class PickConfig:
     """Navigation goal and object selection for the pick phase."""
 
     base_goal: Pose2D
     object_prim_path: str | None = None
+    object_pose_world: ObjectPoseWorld | None = None
     grasp_mode: str = "auto"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PickConfig":
+        object_pose_data = data.get("object_pose_world")
         return cls(
             base_goal=Pose2D.from_dict(data["base_goal"]),
             object_prim_path=data.get("object_prim_path"),
+            object_pose_world=ObjectPoseWorld.from_dict(object_pose_data) if object_pose_data is not None else None,
             grasp_mode=str(data.get("grasp_mode", "auto")),
         )
 
@@ -93,6 +129,7 @@ class NavPickTask:
     pick: PickConfig
     place: PlaceConfig = field(default_factory=PlaceConfig)
     recording: RecordingConfig = field(default_factory=RecordingConfig)
+    randomization: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "NavPickTask":
@@ -106,6 +143,7 @@ class NavPickTask:
             pick=PickConfig.from_dict(data["pick"]),
             place=PlaceConfig.from_dict(data.get("place")),
             recording=RecordingConfig.from_dict(data.get("recording")),
+            randomization=dict(data.get("randomization") or {}),
         )
 
 

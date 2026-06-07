@@ -87,13 +87,14 @@ parser.add_argument("--near-goal-min-active-lin-vel", type=float, default=0.22)
 parser.add_argument("--close-goal-speed-limit", type=float, default=0.22)
 parser.add_argument("--speed-bias", type=float, default=0.35)
 parser.add_argument("--max-linear-accel", type=float, default=2.5)
-parser.add_argument("--yaw-align-kp", type=float, default=2.0)
-parser.add_argument("--yaw-align-min-wz", type=float, default=0.75)
-parser.add_argument("--yaw-align-max-wz", type=float, default=1.00)
+parser.add_argument("--yaw-align-kp", type=float, default=1.2)
+parser.add_argument("--yaw-align-min-wz", type=float, default=0.40)
+parser.add_argument("--yaw-align-max-wz", type=float, default=0.65)
 parser.add_argument("--yaw-align-vx", type=float, default=0.16)
 parser.add_argument("--yaw-align-max-vx", type=float, default=0.35)
 parser.add_argument("--yaw-align-position-kp", type=float, default=0.8)
 parser.add_argument("--yaw-align-max-vy", type=float, default=0.18)
+parser.add_argument("--yaw-align-min-vy", type=float, default=0.0)
 parser.add_argument("--yaw-align-lateral-kp", type=float, default=0.8)
 parser.add_argument("--yaw-align-lateral-deadband", type=float, default=0.03)
 parser.add_argument(
@@ -111,6 +112,21 @@ parser.add_argument("--yaw-settle-kp", type=float, default=0.8)
 parser.add_argument("--yaw-settle-min-wz", type=float, default=0.0)
 parser.add_argument("--yaw-settle-max-wz", type=float, default=0.35)
 parser.add_argument("--yaw-settle-realign-margin", type=float, default=0.08)
+parser.add_argument("--base-stable-linear-tolerance", type=float, default=0.06)
+parser.add_argument("--base-stable-angular-tolerance", type=float, default=0.20)
+parser.add_argument("--terminal-allow-reverse", action=argparse.BooleanOptionalAction, default=True)
+parser.add_argument("--terminal-yaw-slowdown-error", type=float, default=0.65)
+parser.add_argument("--terminal-yaw-slowdown-min-wz", type=float, default=0.20)
+parser.add_argument("--terminal-yaw-slowdown-max-wz", type=float, default=0.45)
+parser.add_argument("--terminal-large-yaw-error", type=float, default=1.00)
+parser.add_argument("--terminal-large-yaw-position-scale", type=float, default=0.45)
+parser.add_argument("--terminal-gait-vx", type=float, default=0.04)
+parser.add_argument("--terminal-recovery-steps", type=int, default=90)
+parser.add_argument("--terminal-recovery-yaw-max-wz", type=float, default=0.35)
+parser.add_argument("--terminal-recovery-gait-vx", type=float, default=0.08)
+parser.add_argument("--terminal-yaw-polish-vx", type=float, default=0.08)
+parser.add_argument("--terminal-yaw-polish-min-wz", type=float, default=0.45)
+parser.add_argument("--terminal-yaw-polish-max-wz", type=float, default=0.55)
 parser.add_argument("--head-camera", action="store_true")
 parser.add_argument("--head-camera-height", type=int, default=480)
 parser.add_argument("--head-camera-width", type=int, default=640)
@@ -231,11 +247,13 @@ from source.navigation.adapters.terrain_utils import (
     write_visual_sublayer_wrapper,
 )
 from source.navigation.adapters.yaw_align import (
+    TerminalPoseConfig,
     YawAlignConfig,
     YawAlignStallDetector,
     body_goal_components,
     body_goal_forward_projection,
     compute_yaw_align_command,
+    compute_terminal_pose_command,
 )
 from source.navigation.navlib import DWAConfig
 from source.navigation import NavPlanner
@@ -897,6 +915,39 @@ def _yaw_settle_config() -> YawAlignConfig:
     )
 
 
+def _terminal_pose_config(config: YawAlignConfig) -> TerminalPoseConfig:
+    """Build the final-pose controller config from CLI args and yaw config."""
+
+    position_acceptance_tolerance = args_cli.goal_tolerance + max(0.0, args_cli.final_goal_tolerance_margin)
+    return TerminalPoseConfig(
+        position_tolerance=args_cli.terminal_position_tolerance,
+        position_acceptance_tolerance=position_acceptance_tolerance,
+        yaw_tolerance=args_cli.terminal_yaw_tolerance,
+        position_kp=args_cli.yaw_align_position_kp,
+        max_vx=args_cli.yaw_align_max_vx,
+        min_vx=args_cli.yaw_align_vx,
+        allow_reverse=args_cli.terminal_allow_reverse or args_cli.yaw_align_allow_reverse,
+        lateral_kp=args_cli.yaw_align_lateral_kp,
+        lateral_deadband=args_cli.yaw_align_lateral_deadband,
+        max_vy=args_cli.yaw_align_max_vy,
+        min_vy=args_cli.yaw_align_min_vy,
+        yaw_kp=config.kp,
+        yaw_min_wz=config.min_wz,
+        yaw_max_wz=config.max_wz,
+        yaw_slowdown_error=args_cli.terminal_yaw_slowdown_error,
+        yaw_slowdown_min_wz=args_cli.terminal_yaw_slowdown_min_wz,
+        yaw_slowdown_max_wz=args_cli.terminal_yaw_slowdown_max_wz,
+        large_yaw_error=args_cli.terminal_large_yaw_error,
+        large_yaw_position_scale=args_cli.terminal_large_yaw_position_scale,
+        gait_activation_vx=args_cli.terminal_gait_vx,
+        recovery_yaw_max_wz=args_cli.terminal_recovery_yaw_max_wz,
+        recovery_gait_vx=args_cli.terminal_recovery_gait_vx,
+        yaw_polish_gait_vx=args_cli.terminal_yaw_polish_vx,
+        yaw_polish_min_wz=args_cli.terminal_yaw_polish_min_wz,
+        yaw_polish_max_wz=args_cli.terminal_yaw_polish_max_wz,
+    )
+
+
 def _yaw_align_command(
     pose: tuple[float, float, float],
     goal,
@@ -915,39 +966,22 @@ def _terminal_pose_command(
     pose: tuple[float, float, float],
     goal,
     config: YawAlignConfig,
+    *,
+    recovery: bool = False,
 ) -> tuple[float, float, float]:
     """Drive the base toward the final pose without handing control back to DWA."""
 
     body_goal_x, body_goal_y = body_goal_components(pose, (goal.x, goal.y))
     yaw_error = wrap_yaw(goal.yaw - pose[2])
     distance = math.hypot(goal.x - pose[0], goal.y - pose[1])
-
-    if distance <= args_cli.terminal_position_tolerance:
-        vx = 0.0
-        vy = 0.0
-    else:
-        if abs(body_goal_x) <= args_cli.yaw_align_lateral_deadband:
-            vx = 0.0
-        elif body_goal_x < -1.0e-3:
-            vx = -args_cli.yaw_align_vx if args_cli.yaw_align_allow_reverse else 0.0
-        else:
-            position_vx = args_cli.yaw_align_position_kp * body_goal_x
-            vx = min(args_cli.yaw_align_max_vx, max(0.0, position_vx))
-            if abs(body_goal_x) >= abs(body_goal_y) and 0.0 < vx < args_cli.yaw_align_vx:
-                vx = min(args_cli.yaw_align_max_vx, args_cli.yaw_align_vx)
-
-        if abs(body_goal_y) <= args_cli.yaw_align_lateral_deadband:
-            vy = 0.0
-        else:
-            position_vy = args_cli.yaw_align_lateral_kp * body_goal_y
-            vy = max(-args_cli.yaw_align_max_vy, min(args_cli.yaw_align_max_vy, position_vy))
-
-    if abs(yaw_error) <= args_cli.terminal_yaw_tolerance:
-        wz = 0.0
-    else:
-        wz_abs = min(config.max_wz, max(config.kp * abs(yaw_error), config.min_wz))
-        wz = math.copysign(wz_abs, yaw_error)
-    return vx, vy, wz
+    return compute_terminal_pose_command(
+        body_goal_x=body_goal_x,
+        body_goal_y=body_goal_y,
+        yaw_error=yaw_error,
+        distance_to_goal=distance,
+        config=_terminal_pose_config(config),
+        recovery=recovery,
+    )
 
 
 def _settle_with_yaw_hold(
@@ -967,17 +1001,26 @@ def _settle_with_yaw_hold(
     steps = max(0, args_cli.settle_steps)
     required_stable_steps = max(1, args_cli.yaw_settle_stable_steps)
     settle_config = _yaw_settle_config()
+    position_acceptance_tolerance = args_cli.goal_tolerance + max(0.0, args_cli.final_goal_tolerance_margin)
+    yaw_acceptance_tolerance = args_cli.goal_yaw_tolerance + max(0.0, args_cli.final_yaw_tolerance_margin)
     replay_step = replay_step_start
     for settle_step in range(steps):
         pose = adapter.get_base_pose()
         distance = math.hypot(goal.x - pose[0], goal.y - pose[1])
         yaw_error = wrap_yaw(goal.yaw - pose[2])
-        stable_now = adapter.is_stable()
+        stable_now = adapter.is_stable(
+            linear_tolerance=args_cli.base_stable_linear_tolerance,
+            angular_tolerance=args_cli.base_stable_angular_tolerance,
+        )
+        inside_acceptance = (
+            distance <= position_acceptance_tolerance
+            and abs(yaw_error) <= yaw_acceptance_tolerance
+        )
         inside_terminal_deadband = (
             distance <= args_cli.terminal_position_tolerance
             and abs(yaw_error) <= args_cli.terminal_yaw_tolerance
         )
-        if inside_terminal_deadband and stable_now:
+        if inside_acceptance or (inside_terminal_deadband and stable_now):
             command = (0.0, 0.0, 0.0)
         else:
             command = _terminal_pose_command(pose, goal, settle_config)
@@ -996,11 +1039,14 @@ def _settle_with_yaw_hold(
         pose_after = adapter.get_base_pose()
         distance_after = math.hypot(goal.x - pose_after[0], goal.y - pose_after[1])
         yaw_error_after = wrap_yaw(goal.yaw - pose_after[2])
-        stable = adapter.is_stable()
+        stable = adapter.is_stable(
+            linear_tolerance=args_cli.base_stable_linear_tolerance,
+            angular_tolerance=args_cli.base_stable_angular_tolerance,
+        )
         if (
             stable
-            and distance_after <= args_cli.goal_tolerance
-            and abs(yaw_error_after) <= args_cli.goal_yaw_tolerance
+            and distance_after <= position_acceptance_tolerance
+            and abs(yaw_error_after) <= yaw_acceptance_tolerance
         ):
             stable_count += 1
             if stable_count >= required_stable_steps:
@@ -1200,6 +1246,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     )
     yaw_stall_diagnostics = yaw_stall_detector.diagnostics()
     yaw_align_stall_detected = False
+    terminal_recovery_until_step = -1
+    terminal_recovery_count = 0
     stall_detector = NavigationStallDetector(
         window_steps=max(2, args_cli.stall_window_steps),
         min_progress_m=args_cli.stall_min_progress,
@@ -1229,29 +1277,39 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         speed = adapter.get_base_velocity()
         distance = math.hypot(pose[0] - goal.x, pose[1] - goal.y)
         yaw_error = wrap_yaw(goal.yaw - pose[2])
+        position_acceptance_tolerance = args_cli.goal_tolerance + max(0.0, args_cli.final_goal_tolerance_margin)
+        yaw_acceptance_tolerance = args_cli.goal_yaw_tolerance + max(0.0, args_cli.final_yaw_tolerance_margin)
         planner_debug = None
         terminal_yaw_distance = max(args_cli.goal_tolerance, args_cli.yaw_align_start_distance)
-        needs_terminal_yaw = abs(yaw_error) > args_cli.goal_yaw_tolerance
+        needs_terminal_yaw = abs(yaw_error) > yaw_acceptance_tolerance
         terminal_pose_active = distance <= terminal_yaw_distance
-        if distance <= args_cli.goal_tolerance and not needs_terminal_yaw:
+        if distance <= position_acceptance_tolerance and not needs_terminal_yaw:
             success = True
             break
         if terminal_pose_active:
             if final_phase != "yaw_align":
                 yaw_stall_detector.reset()
             final_phase = "yaw_align"
-            command = _terminal_pose_command(pose, goal, yaw_align_config)
+            terminal_recovery_active = step < terminal_recovery_until_step
+            command = _terminal_pose_command(
+                pose,
+                goal,
+                yaw_align_config,
+                recovery=terminal_recovery_active,
+            )
             if needs_terminal_yaw:
                 yaw_stalled, yaw_stall_diagnostics = yaw_stall_detector.update(abs(yaw_error))
-                if yaw_stalled and distance <= args_cli.goal_tolerance:
-                    failure_reason = "yaw_align_failed"
+                if yaw_stalled and distance <= position_acceptance_tolerance:
                     yaw_align_stall_detected = True
+                    terminal_recovery_count += 1
+                    terminal_recovery_until_step = step + max(1, args_cli.terminal_recovery_steps)
+                    yaw_stall_detector.reset()
                     print(
-                        f"[nav] yaw align stalled: error_reduction={yaw_stall_diagnostics.error_reduction:.3f}rad "
+                        f"[nav] yaw align recovery: error_reduction={yaw_stall_diagnostics.error_reduction:.3f}rad "
                         f"within {yaw_stall_diagnostics.sample_count} steps; "
-                        f"current_abs_error={yaw_stall_diagnostics.current_abs_error:.3f}rad"
+                        f"current_abs_error={yaw_stall_diagnostics.current_abs_error:.3f}rad; "
+                        f"recovery_steps={max(1, args_cli.terminal_recovery_steps)}"
                     )
-                    break
             else:
                 yaw_stall_detector.reset()
         elif args_cli.debug_command is not None:
@@ -1385,7 +1443,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             phase="settle",
         )
         yaw_settle_steps = args_cli.settle_steps
-    stable = adapter.is_stable()
+    stable = adapter.is_stable(
+        linear_tolerance=args_cli.base_stable_linear_tolerance,
+        angular_tolerance=args_cli.base_stable_angular_tolerance,
+    )
     final_vx, final_vy, final_wz = adapter.get_base_velocity_full()
     final_pose = adapter.get_base_pose_full()
     final_distance = math.hypot(final_pose["x"] - goal.x, final_pose["y"] - goal.y)
@@ -1395,6 +1456,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     final_position_reached = final_distance <= position_acceptance_tolerance
     final_yaw_aligned = abs(yaw_error) <= yaw_acceptance_tolerance
     if stable and final_position_reached and final_yaw_aligned:
+        success = True
+        failure_reason = ""
         yaw_settle_success = True
     if success and final_distance > position_acceptance_tolerance:
         success = False
@@ -1427,6 +1490,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         "final_position_reached": final_position_reached,
         "final_yaw_aligned": final_yaw_aligned,
         "base_stable": stable,
+        "base_stable_linear_tolerance": args_cli.base_stable_linear_tolerance,
+        "base_stable_angular_tolerance": args_cli.base_stable_angular_tolerance,
         "final_body_velocity": {
             "vx": final_vx,
             "vy": final_vy,
@@ -1436,6 +1501,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         "timeout": failure_reason == "nav_timeout",
         "stall_detected": failure_reason == "nav_collision",
         "yaw_align_stall_detected": yaw_align_stall_detected,
+        "terminal_recovery_count": terminal_recovery_count,
         "yaw_settle_success": yaw_settle_success,
         "yaw_settle_steps": yaw_settle_steps,
         "episode_dir": str(recorder.episode_dir),

@@ -5,11 +5,13 @@ from __future__ import annotations
 import unittest
 
 from source.navigation.adapters.yaw_align import (
+    TerminalPoseConfig,
     YawAlignConfig,
     YawAlignStallDetector,
     body_goal_components,
     body_goal_forward_projection,
     compute_yaw_align_command,
+    compute_terminal_pose_command,
 )
 
 
@@ -87,6 +89,94 @@ class YawAlignTest(unittest.TestCase):
         stalled, diagnostics = detector.update(0.48)
         self.assertFalse(stalled)
         self.assertAlmostEqual(diagnostics.error_reduction, 0.12)
+
+    def test_terminal_command_polishes_yaw_inside_position_acceptance(self) -> None:
+        command = compute_terminal_pose_command(
+            body_goal_x=-0.04,
+            body_goal_y=-0.02,
+            yaw_error=0.52,
+            distance_to_goal=0.06,
+            config=TerminalPoseConfig(
+                yaw_kp=2.0,
+                yaw_min_wz=0.40,
+                yaw_max_wz=1.00,
+                yaw_slowdown_error=0.65,
+                yaw_slowdown_max_wz=0.45,
+                yaw_polish_gait_vx=0.08,
+                yaw_polish_min_wz=0.45,
+                yaw_polish_max_wz=0.55,
+            ),
+        )
+        self.assertEqual(command[0], 0.08)
+        self.assertEqual(command[1], 0.0)
+        self.assertEqual(command[2], 0.55)
+
+    def test_terminal_command_keeps_arc_motion_for_large_yaw_inside_acceptance(self) -> None:
+        command = compute_terminal_pose_command(
+            body_goal_x=0.06,
+            body_goal_y=-0.16,
+            yaw_error=2.0,
+            distance_to_goal=0.17,
+            config=TerminalPoseConfig(
+                position_tolerance=0.08,
+                position_acceptance_tolerance=0.18,
+                yaw_tolerance=0.08,
+                position_kp=0.1,
+                max_vx=0.25,
+                min_vx=0.20,
+                lateral_kp=0.9,
+                max_vy=0.45,
+                min_vy=0.15,
+                lateral_deadband=0.03,
+                yaw_kp=1.2,
+                yaw_min_wz=0.40,
+                yaw_max_wz=0.75,
+                yaw_polish_min_wz=0.45,
+                yaw_polish_max_wz=0.55,
+                large_yaw_error=1.0,
+            ),
+        )
+        self.assertGreaterEqual(command[0], 0.20)
+        self.assertLessEqual(command[1], -0.15)
+        self.assertEqual(command[2], 0.55)
+
+    def test_terminal_command_allows_small_reverse_recenter(self) -> None:
+        command = compute_terminal_pose_command(
+            body_goal_x=-0.12,
+            body_goal_y=0.02,
+            yaw_error=0.20,
+            distance_to_goal=0.12,
+            config=TerminalPoseConfig(
+                position_tolerance=0.08,
+                position_acceptance_tolerance=0.10,
+                max_vx=0.35,
+                min_vx=0.08,
+                allow_reverse=True,
+                lateral_deadband=0.03,
+            ),
+        )
+        self.assertLess(command[0], 0.0)
+        self.assertEqual(command[1], 0.0)
+
+    def test_terminal_recovery_reduces_yaw_and_keeps_gait_active(self) -> None:
+        command = compute_terminal_pose_command(
+            body_goal_x=0.0,
+            body_goal_y=0.0,
+            yaw_error=-0.40,
+            distance_to_goal=0.04,
+            recovery=True,
+            config=TerminalPoseConfig(
+                position_tolerance=0.01,
+                position_acceptance_tolerance=0.02,
+                yaw_kp=2.0,
+                yaw_max_wz=1.0,
+                recovery_yaw_max_wz=0.30,
+                recovery_gait_vx=0.07,
+            ),
+        )
+        self.assertEqual(command[0], 0.07)
+        self.assertEqual(command[1], 0.0)
+        self.assertEqual(command[2], -0.30)
 
 
 if __name__ == "__main__":
