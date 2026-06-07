@@ -141,9 +141,11 @@ def _apply_grasp_policy_env(context: dict) -> None:
     require_lift = bool(context.get("require_object_lift_success", True))
     legacy_side_retreat = bool(context.get("legacy_side_retreat", False))
     fallback_retreat = bool(context.get("side_grasp_fallback_retreat", False))
+    show_grasp_trajectory = bool(context.get("show_grasp_trajectory", False))
     os.environ["GO2_X5_REQUIRE_OBJECT_LIFT_SUCCESS"] = "1" if require_lift else "0"
     os.environ["GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT"] = "0" if legacy_side_retreat else "1"
     os.environ["GO2_X5_SIDE_GRASP_FALLBACK_RETREAT"] = "1" if fallback_retreat else "0"
+    os.environ["GO2_X5_SHOW_GRASP_TRAJECTORY"] = "1" if show_grasp_trajectory else "0"
 
 
 def _nav_result_path() -> Path:

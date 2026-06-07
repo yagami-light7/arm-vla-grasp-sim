@@ -68,6 +68,21 @@ GRASP_DEPTH_BELOW_TOP_M = 0.035
 SIDE_GRASP_CENTER_Z_OFFSET_M = 0.0075
 
 # 侧向抓取时，pregrasp 沿 TCP 局部 -X 退出，即从物体朝机械臂方向退开。
+
+
+def env_bool(name: str, default: bool) -> bool:
+    """Read a boolean environment flag."""
+
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def show_grasp_debug_visuals() -> bool:
+    """Return whether grasp target/path debug geometry should be visible."""
+
+    return env_bool("GO2_X5_SHOW_GRASP_TRAJECTORY", False)
 SIDE_PREGRASP_OFFSET_M = 0.10
 
 # pregrasp 比 grasp 再高一点，后续 approach 会从 pregrasp 下降到 grasp。
@@ -401,6 +416,13 @@ def create_marker(stage, path, position, color, radius=0.025):
     return sphere
 
 
+def clear_debug_markers(stage):
+    """Remove stale grasp target debug geometry from previous runs."""
+
+    if stage.GetPrimAtPath(DEBUG_ROOT_PATH).IsValid():
+        stage.RemovePrim(DEBUG_ROOT_PATH)
+
+
 def draw_debug_markers(
     stage,
     grasp_pos_world,
@@ -409,9 +431,7 @@ def draw_debug_markers(
     lift_pos_world,
     bbox_center,
 ):
-    if stage.GetPrimAtPath(DEBUG_ROOT_PATH).IsValid():
-        stage.RemovePrim(DEBUG_ROOT_PATH)
-
+    clear_debug_markers(stage)
     UsdGeom.Xform.Define(stage, DEBUG_ROOT_PATH)
 
     create_marker(
@@ -642,14 +662,17 @@ async def main():
     pregrasp_pos_world, _ = matrix_to_pose(T_world_pregrasp)
     lift_pos_world, _ = matrix_to_pose(T_world_lift)
 
-    draw_debug_markers(
-        stage,
-        grasp_pos_world,
-        grasp_contact_pos_world,
-        pregrasp_pos_world,
-        lift_pos_world,
-        bbox_center,
-    )
+    if show_grasp_debug_visuals():
+        draw_debug_markers(
+            stage,
+            grasp_pos_world,
+            grasp_contact_pos_world,
+            pregrasp_pos_world,
+            lift_pos_world,
+            bbox_center,
+        )
+    else:
+        clear_debug_markers(stage)
 
     save_target_pose_json(
         object_path,

@@ -98,6 +98,12 @@ def env_bool(name: str, default: bool) -> bool:
 REQUIRE_OBJECT_LIFT_SUCCESS = env_bool("GO2_X5_REQUIRE_OBJECT_LIFT_SUCCESS", True)
 
 
+def show_grasp_trajectory() -> bool:
+    """Return whether planned TCP path debug geometry should be visible."""
+
+    return env_bool("GO2_X5_SHOW_GRASP_TRAJECTORY", False)
+
+
 def load_grasp_plan() -> dict:
     """读取分段抓取计划。"""
     if not GRASP_PLAN_JSON.exists():
@@ -404,11 +410,16 @@ def print_grasp_target_diagnostics(object_bbox):
         print(f"[warning] grasp {bbox_reference_label} 与物体中心 XY 偏差超过 1.5cm，可能夹不到物体。")
 
 
-def draw_motion_segments(stage, segments):
-    """在 Isaac viewport 中画出完整抓取 TCP 路径。"""
+def clear_motion_segment_debug(stage):
+    """Remove stale TCP path debug geometry from previous runs."""
+
     if stage.GetPrimAtPath(DEBUG_ROOT_PATH).IsValid():
         stage.RemovePrim(DEBUG_ROOT_PATH)
 
+
+def draw_motion_segments(stage, segments):
+    """在 Isaac viewport 中画出完整抓取 TCP 路径。"""
+    clear_motion_segment_debug(stage)
     UsdGeom.Xform.Define(stage, DEBUG_ROOT_PATH)
 
     colors = {
@@ -910,7 +921,10 @@ async def main():
     print("[segments]", [segment["name"] for segment in segments])
     print("[grasp_mode]", grasp_mode)
 
-    draw_motion_segments(stage, segments)
+    if show_grasp_trajectory():
+        draw_motion_segments(stage, segments)
+    else:
+        clear_motion_segment_debug(stage)
 
     object_bbox_before = compute_world_bbox(stage, object_path)
     print("[object] bbox before:", object_bbox_before)

@@ -28,6 +28,15 @@ MAX_PREFLIGHT_GRASP_XY_RADIUS_M = 1.00
 MAX_PREFLIGHT_PREGRASP_RADIUS_3D_M = 1.20
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    """Read a boolean environment flag."""
+
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
 @dataclass(frozen=True)
 class GraspTask:
     """Input and output files for one pick attempt."""
@@ -161,6 +170,8 @@ class GraspPipeline:
             "state_json": task.state_json,
             "target_json": task.target_json,
             "output_json": task.plan_json,
+            "side_grasp_plan_vertical_lift": _env_bool("GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT", True),
+            "side_grasp_fallback_retreat": _env_bool("GO2_X5_SIDE_GRASP_FALLBACK_RETREAT", False),
         }
         try:
             with socket.create_connection((self.config.planner_host, self.config.planner_port), timeout=1.0) as sock:

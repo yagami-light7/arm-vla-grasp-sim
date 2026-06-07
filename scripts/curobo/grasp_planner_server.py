@@ -128,6 +128,12 @@ class CuroboPlannerServer:
         module.TARGET_JSON = target_json
         module.OUTPUT_JSON = output_json
         module.PROFILER = module.Profiler()
+        module.SIDE_GRASP_PLAN_VERTICAL_LIFT = bool(
+            request.get("side_grasp_plan_vertical_lift", module.SIDE_GRASP_PLAN_VERTICAL_LIFT)
+        )
+        module.SIDE_GRASP_FALLBACK_RETREAT = bool(
+            request.get("side_grasp_fallback_retreat", module.SIDE_GRASP_FALLBACK_RETREAT)
+        )
 
         log("")
         log("========== Planner Server Request ==========")
@@ -135,6 +141,8 @@ class CuroboPlannerServer:
         log("[server] state_json:", state_json)
         log("[server] target_json:", target_json)
         log("[server] output_json:", output_json)
+        log("[server] side_grasp_plan_vertical_lift:", module.SIDE_GRASP_PLAN_VERTICAL_LIFT)
+        log("[server] side_grasp_fallback_retreat:", module.SIDE_GRASP_FALLBACK_RETREAT)
 
         start = time.perf_counter()
         with contextlib.redirect_stdout(sys.stderr):

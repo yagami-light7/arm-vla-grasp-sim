@@ -22,6 +22,10 @@ from isaaclab.app import AppLauncher
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONTEXT_JSON = Path("/tmp/go2_x5_pipeline_context.json")
 DEFAULT_NAV_RESULT_JSON = Path("/tmp/go2_x5_nav_result.json")
+DEFAULT_HANDOFF_REPORT_JSON = Path("/tmp/go2_x5_handoff_report.json")
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def _project_path(raw_path: str) -> Path:
@@ -35,6 +39,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--scene-usd", default=None)
     parser.add_argument("--nav-map", default=None)
     parser.add_argument("--nav-result", default=str(DEFAULT_NAV_RESULT_JSON))
+    parser.add_argument("--handoff-report", default=str(DEFAULT_HANDOFF_REPORT_JSON))
     parser.add_argument("--pipeline-context", default=str(DEFAULT_CONTEXT_JSON))
     parser.add_argument("--terrain-prim-path", default="/World/scene_collision")
     parser.add_argument("--dataset-dir", default=None)
@@ -46,8 +51,28 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--require-lift-success", action="store_true", default=False)
     parser.add_argument("--allow-retreat-success", action="store_true")
     parser.add_argument("--legacy-side-retreat", action="store_true")
+    parser.add_argument(
+        "--side-retreat-only",
+        action="store_true",
+        help="For side grasps, skip vertical lift and count the planned reverse retreat as pick success.",
+    )
     parser.add_argument("--side-grasp-fallback-retreat", action="store_true")
+    parser.add_argument(
+        "--keep-window-open",
+        action="store_true",
+        help="After the handoff run finishes, keep the Isaac Sim window alive until the user closes it.",
+    )
+    parser.add_argument(
+        "--show-grasp-trajectory",
+        action="store_true",
+        help="Draw planned TCP path markers during grasp execution.",
+    )
     parser.add_argument("--stage-load-updates", type=int, default=30)
+    parser.add_argument("--replay-trajectory", default=None, help="Optional navigation trajectory JSONL to replay before grasp.")
+    parser.add_argument("--replay-real-time", action="store_true", help="Replay the navigation trajectory using recorded timestamps.")
+    parser.add_argument("--replay-speed", type=float, default=1.0, help="Playback speed multiplier for --replay-real-time.")
+    parser.add_argument("--set-viewport-camera", action="store_true", help="Switch the active viewport to --viewport-camera-prim.")
+    parser.add_argument("--viewport-camera-prim", default="/World/Camera_main")
     parser.add_argument("--timeout-s", type=float, default=900.0)
     AppLauncher.add_app_launcher_args(parser)
     return parser.parse_args()
@@ -62,6 +87,68 @@ def _load_raw_task(task_json: Path) -> dict:
     return json.loads(task_json.read_text(encoding="utf-8"))
 
 
+def _handoff_report_path(args: argparse.Namespace) -> Path:
+    return Path(args.handoff_report).expanduser().resolve()
+
+
+def _read_json_if_exists(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_standalone_report(args: argparse.Namespace, payload: dict) -> None:
+    """Write a diagnostic report before the handoff coroutine owns the file."""
+
+    report_path = _handoff_report_path(args)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report = {
+        "schema_version": 1,
+        "success": False,
+        "failure_reason": "standalone_not_completed",
+        "failure_detail": "",
+        "standalone": {
+            "status": "starting",
+            "task_json": str(_project_path(args.task_json)),
+            "scene_usd": None,
+            "nav_result_json": str(Path(args.nav_result).expanduser().resolve()),
+            "handoff_report_json": str(report_path),
+            "replay_trajectory": str(Path(args.replay_trajectory).expanduser().resolve()) if args.replay_trajectory else None,
+            "updated_at": time.time(),
+        },
+    }
+    report.update(payload)
+    standalone = dict(report.get("standalone", {}))
+    standalone.setdefault("updated_at", time.time())
+    report["standalone"] = standalone
+    report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _write_standalone_failure_if_needed(args: argparse.Namespace, exc: BaseException) -> None:
+    """Preserve handoff-authored reports, otherwise write standalone failure detail."""
+
+    report_path = _handoff_report_path(args)
+    existing = _read_json_if_exists(report_path)
+    if existing is not None and existing.get("handoff"):
+        return
+    _write_standalone_report(
+        args,
+        {
+            "success": False,
+            "failure_reason": "standalone_exception",
+            "failure_detail": str(exc),
+            "standalone": {
+                "status": "exception",
+                "task_json": str(_project_path(args.task_json)),
+                "nav_result_json": str(Path(args.nav_result).expanduser().resolve()),
+                "handoff_report_json": str(report_path),
+                "replay_trajectory": str(Path(args.replay_trajectory).expanduser().resolve()) if args.replay_trajectory else None,
+                "updated_at": time.time(),
+            },
+        },
+    )
+
+
 def _write_context(args: argparse.Namespace, task_json: Path, raw_task: dict) -> Path:
     nav_map = args.nav_map or raw_task["nav_map"]
     scene_usd = args.scene_usd or raw_task["scene_usd"]
@@ -71,6 +158,7 @@ def _write_context(args: argparse.Namespace, task_json: Path, raw_task: dict) ->
         "task_json": str(task_json),
         "scene_usd": str(_project_path(scene_usd)),
         "nav_result_json": str(Path(args.nav_result).expanduser().resolve()),
+        "handoff_report_json": str(Path(args.handoff_report).expanduser().resolve()),
         "nav_map": str(_project_path(nav_map)),
         "terrain_prim_path": args.terrain_prim_path,
         "handoff_clearance_radius": args.handoff_clearance_radius,
@@ -78,7 +166,10 @@ def _write_context(args: argparse.Namespace, task_json: Path, raw_task: dict) ->
         "handoff_smoke_only": args.handoff_smoke_only,
         "require_object_lift_success": not args.allow_retreat_success,
         "legacy_side_retreat": args.legacy_side_retreat,
+        "side_retreat_only": args.side_retreat_only,
         "side_grasp_fallback_retreat": args.side_grasp_fallback_retreat,
+        "keep_window_open": args.keep_window_open,
+        "show_grasp_trajectory": args.show_grasp_trajectory,
         "settle_steps": args.settle_steps,
         "dataset_dir": args.dataset_dir,
         "no_record": args.no_record,
@@ -104,23 +195,262 @@ def _open_stage(scene_usd: Path, load_updates: int) -> None:
     print(f"[standalone] opened stage: {scene_usd}")
 
 
+def _candidate_stage_camera_paths(camera_prim_path: str) -> list[str]:
+    """Return common camera path candidates for authored SAGE scenes."""
+
+    candidates = [camera_prim_path]
+    if camera_prim_path == "/World/camera_main":
+        candidates.append("/World/Camera_main")
+    if camera_prim_path == "/World/Camera_main":
+        candidates.append("/World/camera_main")
+    return list(dict.fromkeys(candidates))
+
+
+def _set_viewport_stage_camera(camera_prim_path: str) -> bool:
+    """Switch the visible Isaac Sim viewport to an authored camera prim."""
+
+    try:
+        import omni.usd
+        from omni.kit.viewport.utility import get_active_viewport
+        from pxr import Sdf, UsdGeom
+
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            print("[WARN] Cannot set stage camera: no active USD stage.")
+            return False
+
+        selected_path = None
+        for candidate in _candidate_stage_camera_paths(camera_prim_path):
+            prim = stage.GetPrimAtPath(candidate)
+            if prim.IsValid() and prim.IsA(UsdGeom.Camera):
+                selected_path = candidate
+                break
+        if selected_path is None:
+            print(
+                "[WARN] Cannot set stage camera: no valid Camera prim found. "
+                f"tried={_candidate_stage_camera_paths(camera_prim_path)}"
+            )
+            return False
+
+        viewport = get_active_viewport()
+        if viewport is None:
+            print("[WARN] Cannot set stage camera: no active viewport.")
+            return False
+        sdf_path = Sdf.Path(selected_path)
+        try:
+            viewport.camera_path = sdf_path
+        except Exception:
+            if hasattr(viewport, "set_active_camera"):
+                viewport.set_active_camera(sdf_path)
+            else:
+                raise
+        print(f"[standalone] viewport camera set to stage camera: {selected_path}")
+        return True
+    except Exception as exc:
+        print(f"[WARN] Failed to set stage camera {camera_prim_path}: {exc}")
+        return False
+
+
+def _read_replay_trajectory(path: Path) -> list[dict]:
+    """Load a navigation replay trajectory written by run_nav_only.py."""
+
+    if not path.exists():
+        raise FileNotFoundError(f"replay trajectory does not exist: {path}")
+    frames: list[dict] = []
+    required_keys = {
+        "root_pos_w",
+        "root_quat_w",
+        "root_lin_vel_w",
+        "root_ang_vel_w",
+        "joint_pos",
+    }
+    with path.open("r", encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            frame = json.loads(line)
+            missing = sorted(required_keys - set(frame))
+            if missing:
+                raise RuntimeError(f"replay frame {line_number} is missing keys: {missing}")
+            frames.append(frame)
+    if not frames:
+        raise RuntimeError(f"replay trajectory is empty: {path}")
+    return frames
+
+
+def _robot_dof_names(robot) -> list[str]:
+    """Return Isaac Sim articulation DOF names using the local API variant."""
+
+    dof_names = getattr(robot, "dof_names", None)
+    if dof_names is not None:
+        return list(dof_names)
+    joint_names = getattr(robot, "joint_names", None)
+    if joint_names is not None:
+        return list(joint_names)
+    return []
+
+
+def _map_replay_joint_positions(robot, frame: dict) -> list[float] | None:
+    """Map recorded joint positions onto the open-stage articulation order."""
+
+    current_joint_positions = robot.get_joint_positions()
+    if current_joint_positions is None:
+        return None
+
+    current = [float(value) for value in current_joint_positions]
+    recorded = [float(value) for value in frame["joint_pos"]]
+    dof_names = _robot_dof_names(robot)
+    recorded_names = list(frame.get("joint_names") or [])
+
+    if dof_names and recorded_names:
+        recorded_by_name = {name: idx for idx, name in enumerate(recorded_names)}
+        common = 0
+        target = current[:]
+        for idx, name in enumerate(dof_names):
+            recorded_idx = recorded_by_name.get(name)
+            if recorded_idx is None or recorded_idx >= len(recorded):
+                continue
+            target[idx] = recorded[recorded_idx]
+            common += 1
+        if common == 0:
+            print("[WARN] Replay joint name mapping found no common joints; root-only replay will continue.")
+            return None
+        if common != len(dof_names):
+            print(f"[WARN] Replay mapped {common}/{len(dof_names)} open-stage joints; unmapped joints keep current pose.")
+        return target
+
+    if len(recorded) == len(current):
+        return recorded
+
+    print(
+        "[WARN] Replay joint count mismatch without joint names; "
+        f"recorded={len(recorded)} current={len(current)}. Root-only replay will continue."
+    )
+    return None
+
+
+def _schedule_kit_coroutine(coro):
+    """Schedule a coroutine on Kit's async engine when available."""
+
+    try:
+        from omni.kit.async_engine import run_coroutine
+
+        return run_coroutine(coro)
+    except Exception:
+        loop = asyncio.get_event_loop()
+        return loop.create_task(coro)
+
+
+def _drive_future_to_completion(future, *, timeout_s: float, label: str):
+    """Advance Isaac Sim until a Kit/asyncio future completes."""
+
+    started_at = time.time()
+    while not future.done():
+        simulation_app.update()
+        if timeout_s > 0.0 and time.time() - started_at > timeout_s:
+            if hasattr(future, "cancel"):
+                future.cancel()
+            raise TimeoutError(f"{label} timed out after {timeout_s:.1f}s")
+    return future.result()
+
+
+async def _initialize_replay_robot():
+    """Initialize the open-stage articulation for visual replay."""
+
+    import omni.kit.app
+    import omni.usd
+    from isaacsim.core.api.world import World
+    from isaacsim.core.prims import SingleArticulation
+    from scripts.isaac.run_pick_from_nav_result import _resolve_articulation_root
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        raise RuntimeError("No USD stage is open for replay.")
+    world = World.instance()
+    if world is None:
+        world = World()
+    if world.get_physics_context() is None:
+        await world.initialize_simulation_context_async()
+    await world.play_async()
+    await omni.kit.app.get_app().next_update_async()
+    articulation_path = _resolve_articulation_root(stage)
+    robot = SingleArticulation(prim_path=articulation_path, name="go2_x5_nav_video_replay_robot")
+    robot.initialize()
+    if not robot.is_valid():
+        raise RuntimeError(f"invalid articulation for replay: {articulation_path}")
+    return world, robot
+
+
+async def _replay_navigation_trajectory_async(path: Path, *, real_time: bool, speed: float) -> None:
+    """Replay navigation in the open Isaac Sim grasp stage before handoff."""
+
+    import numpy as np
+    import omni.kit.app
+    from isaacsim.core.utils.types import ArticulationAction
+
+    frames = _read_replay_trajectory(path)
+    world, robot = await _initialize_replay_robot()
+    print(f"[standalone] replaying navigation trajectory: {path} frames={len(frames)} real_time={real_time} speed={speed}")
+
+    previous_frame = None
+    playback_speed = max(float(speed), 1.0e-6)
+    for frame in frames:
+        position = np.asarray(frame["root_pos_w"], dtype=float)
+        orientation = np.asarray(frame["root_quat_w"], dtype=float)
+        robot.set_world_pose(position=position, orientation=orientation)
+        robot.set_linear_velocity(np.asarray(frame["root_lin_vel_w"], dtype=float))
+        robot.set_angular_velocity(np.asarray(frame["root_ang_vel_w"], dtype=float))
+
+        joint_positions = _map_replay_joint_positions(robot, frame)
+        if joint_positions is not None:
+            robot.apply_action(ArticulationAction(joint_positions=np.asarray(joint_positions, dtype=float)))
+
+        world.step(render=True)
+        await omni.kit.app.get_app().next_update_async()
+
+        if real_time:
+            if previous_frame is None:
+                delay = 0.0
+            else:
+                delay = max(
+                    0.0,
+                    float(frame.get("timestamp", 0.0)) - float(previous_frame.get("timestamp", 0.0)),
+                ) / playback_speed
+            if delay > 0.0:
+                time.sleep(delay)
+        previous_frame = frame
+    print("[standalone] navigation replay complete")
+
+
+def _run_replay_task(replay_trajectory: Path, *, real_time: bool, speed: float, timeout_s: float) -> None:
+    future = _schedule_kit_coroutine(
+        _replay_navigation_trajectory_async(replay_trajectory, real_time=real_time, speed=speed)
+    )
+    _drive_future_to_completion(future, timeout_s=timeout_s, label="navigation replay")
+
+
 def _run_handoff_task(timeout_s: float) -> None:
     from scripts.isaac import run_pick_from_nav_result
 
-    loop = asyncio.get_event_loop()
-    task = asyncio.ensure_future(run_pick_from_nav_result.guarded_main())
-    started_at = time.time()
-    while not task.done():
+    future = _schedule_kit_coroutine(run_pick_from_nav_result.guarded_main())
+    _drive_future_to_completion(future, timeout_s=timeout_s, label="standalone pick")
+
+
+def _keep_window_open_until_closed() -> None:
+    """Keep the Kit app responsive after the run for video capture."""
+
+    print("[standalone] keep-window-open enabled; close the Isaac Sim window to end this process.")
+    while simulation_app.is_running():
         simulation_app.update()
-        if timeout_s > 0.0 and time.time() - started_at > timeout_s:
-            task.cancel()
-            raise TimeoutError(f"standalone pick timed out after {timeout_s:.1f}s")
-    exception = task.exception()
-    if exception is not None:
-        raise exception
+        time.sleep(1.0 / 60.0)
 
 
 def main() -> int:
+    if args_cli.side_retreat_only:
+        args_cli.legacy_side_retreat = True
+        args_cli.allow_retreat_success = True
+
     task_json = _project_path(args_cli.task_json)
     raw_task = _load_raw_task(task_json)
     scene_usd = _project_path(args_cli.scene_usd or raw_task["scene_usd"])
@@ -129,13 +459,103 @@ def main() -> int:
     os.environ["GO2_X5_WORKSPACE"] = str(PROJECT_ROOT)
     os.environ["GO2_X5_PIPELINE_CONTEXT"] = str(context_json)
     os.environ["GO2_X5_NAV_RESULT"] = str(Path(args_cli.nav_result).expanduser().resolve())
+    os.environ["GO2_X5_HANDOFF_REPORT"] = str(Path(args_cli.handoff_report).expanduser().resolve())
     os.environ["GO2_X5_HANDOFF_SMOKE_ONLY"] = "1" if args_cli.handoff_smoke_only else "0"
     os.environ["GO2_X5_REQUIRE_OBJECT_LIFT_SUCCESS"] = "0" if args_cli.allow_retreat_success else "1"
     os.environ["GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT"] = "0" if args_cli.legacy_side_retreat else "1"
     os.environ["GO2_X5_SIDE_GRASP_FALLBACK_RETREAT"] = "1" if args_cli.side_grasp_fallback_retreat else "0"
+    os.environ["GO2_X5_SHOW_GRASP_TRAJECTORY"] = "1" if args_cli.show_grasp_trajectory else "0"
 
-    _open_stage(scene_usd, args_cli.stage_load_updates)
-    _run_handoff_task(args_cli.timeout_s)
+    _write_standalone_report(
+        args_cli,
+        {
+            "standalone": {
+                "status": "starting",
+                "task_json": str(task_json),
+                "scene_usd": str(scene_usd),
+                "nav_result_json": str(Path(args_cli.nav_result).expanduser().resolve()),
+                "handoff_report_json": str(_handoff_report_path(args_cli)),
+                "replay_trajectory": str(Path(args_cli.replay_trajectory).expanduser().resolve())
+                if args_cli.replay_trajectory
+                else None,
+                "updated_at": time.time(),
+            },
+        },
+    )
+    try:
+        _open_stage(scene_usd, args_cli.stage_load_updates)
+        _write_standalone_report(
+            args_cli,
+            {
+                "standalone": {
+                    "status": "stage_opened",
+                    "task_json": str(task_json),
+                    "scene_usd": str(scene_usd),
+                    "nav_result_json": str(Path(args_cli.nav_result).expanduser().resolve()),
+                    "handoff_report_json": str(_handoff_report_path(args_cli)),
+                    "replay_trajectory": str(Path(args_cli.replay_trajectory).expanduser().resolve())
+                    if args_cli.replay_trajectory
+                    else None,
+                    "updated_at": time.time(),
+                },
+            },
+        )
+        if args_cli.set_viewport_camera:
+            _set_viewport_stage_camera(args_cli.viewport_camera_prim)
+        if args_cli.replay_trajectory:
+            _run_replay_task(
+                Path(args_cli.replay_trajectory).expanduser().resolve(),
+                real_time=args_cli.replay_real_time,
+                speed=args_cli.replay_speed,
+                timeout_s=args_cli.timeout_s,
+            )
+            _write_standalone_report(
+                args_cli,
+                {
+                    "standalone": {
+                        "status": "replay_complete",
+                        "task_json": str(task_json),
+                        "scene_usd": str(scene_usd),
+                        "nav_result_json": str(Path(args_cli.nav_result).expanduser().resolve()),
+                        "handoff_report_json": str(_handoff_report_path(args_cli)),
+                        "replay_trajectory": str(Path(args_cli.replay_trajectory).expanduser().resolve()),
+                        "updated_at": time.time(),
+                    },
+                },
+            )
+        _write_standalone_report(
+            args_cli,
+            {
+                "standalone": {
+                    "status": "handoff_running",
+                    "task_json": str(task_json),
+                    "scene_usd": str(scene_usd),
+                    "nav_result_json": str(Path(args_cli.nav_result).expanduser().resolve()),
+                    "handoff_report_json": str(_handoff_report_path(args_cli)),
+                    "replay_trajectory": str(Path(args_cli.replay_trajectory).expanduser().resolve())
+                    if args_cli.replay_trajectory
+                    else None,
+                    "updated_at": time.time(),
+                },
+            },
+        )
+        _run_handoff_task(args_cli.timeout_s)
+    except Exception as exc:
+        _write_standalone_failure_if_needed(args_cli, exc)
+        raise
+
+    handoff_report = _handoff_report_path(args_cli)
+    if not handoff_report.exists():
+        raise RuntimeError(
+            f"handoff task finished without writing report: {handoff_report}. "
+            "The grasp coroutine may not have run to completion."
+        )
+    report = _read_json_if_exists(handoff_report) or {}
+    if not bool(report.get("success", False)):
+        raise RuntimeError(
+            f"handoff task finished with failure report: {handoff_report} "
+            f"reason={report.get('failure_reason')} detail={report.get('failure_detail')}"
+        )
     print("[standalone] pick handoff complete")
     return 0
 
@@ -144,4 +564,7 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     finally:
-        simulation_app.close()
+        if args_cli.keep_window_open:
+            _keep_window_open_until_closed()
+        else:
+            simulation_app.close()

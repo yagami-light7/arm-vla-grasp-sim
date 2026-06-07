@@ -11,6 +11,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from scripts.pipeline.run_nav_then_pick import (
+    _apply_derived_defaults,
+    _apply_preset_defaults,
     _default_checkpoint_path,
     _nav_command,
     _pick_script_editor_command,
@@ -34,6 +36,83 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"GO2_X5_CHECKPOINT": "/tmp/custom_go2_x5.pt"}):
             self.assertEqual(_default_checkpoint_path(), "/tmp/custom_go2_x5.pt")
 
+    def test_apple_fast_preset_applies_defaults_without_overriding_explicit_values(self) -> None:
+        args = Namespace(
+            preset="apple-fast",
+            task_json="custom_task.json",
+            dataset_dir=None,
+            nav_result="/tmp/go2_x5_nav_result.json",
+            max_nav_steps=5000,
+            lookahead_distance=0.35,
+            prediction_horizon=0.90,
+            goal_tolerance=0.15,
+            goal_yaw_tolerance=0.15,
+            terminal_position_tolerance=0.10,
+            terminal_yaw_tolerance=0.10,
+            final_goal_tolerance_margin=0.01,
+            final_yaw_tolerance_margin=0.01,
+            yaw_align_start_distance=0.65,
+            yaw_align_vx=0.16,
+            yaw_align_max_vx=0.35,
+            yaw_align_position_kp=0.8,
+            yaw_align_max_vy=0.18,
+            yaw_align_lateral_kp=0.8,
+            yaw_align_lateral_deadband=0.03,
+            yaw_align_min_wz=0.75,
+            yaw_align_max_wz=1.00,
+            settle_steps=120,
+            yaw_settle_stable_steps=20,
+            yaw_settle_max_wz=0.35,
+            brisk_nav=False,
+            fast_dwa=False,
+        )
+        with mock.patch("scripts.pipeline.run_nav_then_pick.RAW_CLI_ARGS", ["--task-json", "custom_task.json"]):
+            _apply_preset_defaults(args)
+
+        self.assertEqual(args.task_json, "custom_task.json")
+        self.assertEqual(args.dataset_dir, "/tmp/nav_pick_apple_fast")
+        self.assertEqual(args.nav_result, "/tmp/go2_x5_nav_pick_apple_fast_result.json")
+        self.assertEqual(args.max_nav_steps, 3000)
+        self.assertEqual(args.goal_tolerance, 0.15)
+        self.assertEqual(args.terminal_position_tolerance, 0.08)
+        self.assertEqual(args.final_goal_tolerance_margin, 0.03)
+        self.assertEqual(args.yaw_align_vx, 0.35)
+        self.assertEqual(args.yaw_align_max_vx, 0.60)
+        self.assertEqual(args.yaw_align_lateral_kp, 0.9)
+        self.assertEqual(args.yaw_align_lateral_deadband, 0.015)
+        self.assertEqual(args.yaw_align_max_wz, 0.60)
+        self.assertEqual(args.yaw_settle_stable_steps, 15)
+        self.assertEqual(args.yaw_settle_max_wz, 0.25)
+        self.assertTrue(args.brisk_nav)
+        self.assertTrue(args.fast_dwa)
+
+    def test_video_replay_mode_defaults_to_headless_nav(self) -> None:
+        args = Namespace(demo_visuals=True, replay_nav_before_grasp=True, nav_headless=False, keep_window_open=None)
+
+        with mock.patch("scripts.pipeline.run_nav_then_pick.RAW_CLI_ARGS", ["--demo-visuals", "--replay-nav-before-grasp"]):
+            _apply_derived_defaults(args)
+
+        self.assertTrue(args.nav_headless)
+        self.assertTrue(args.keep_window_open)
+
+    def test_side_retreat_only_enables_existing_side_retreat_policy(self) -> None:
+        args = Namespace(
+            demo_visuals=False,
+            replay_nav_before_grasp=False,
+            nav_headless=False,
+            keep_window_open=None,
+            side_retreat_only=True,
+            legacy_side_retreat=False,
+            allow_retreat_success=False,
+        )
+
+        with mock.patch("scripts.pipeline.run_nav_then_pick.RAW_CLI_ARGS", ["--side-retreat-only"]):
+            _apply_derived_defaults(args)
+
+        self.assertTrue(args.legacy_side_retreat)
+        self.assertTrue(args.allow_retreat_success)
+        self.assertFalse(args.keep_window_open)
+
     def test_nav_command_forwards_visual_and_speed_options(self) -> None:
         args = Namespace(
             isaaclab_launcher="/opt/IsaacLab/isaaclab.sh",
@@ -44,6 +123,8 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             terrain_prim_path="/World/scene_collision",
             ground_height=0.0,
             nav_result="/tmp/go2_x5_nav_result.json",
+            handoff_report="/tmp/go2_x5_handoff_report.json",
+            nav_headless=False,
             max_nav_steps=3000,
             settle_steps=120,
             stall_window_steps=240,
@@ -52,6 +133,10 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             stall_min_forward_ratio=0.25,
             goal_tolerance=0.15,
             goal_yaw_tolerance=0.15,
+            terminal_position_tolerance=0.08,
+            terminal_yaw_tolerance=0.08,
+            final_goal_tolerance_margin=0.03,
+            final_yaw_tolerance_margin=0.03,
             inflate_radius=0.25,
             local_clearance_radius=0.20,
             lookahead_distance=0.35,
@@ -117,6 +202,9 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             replay_sample_every=2,
             replay_output="/tmp/replay.jsonl",
             replay_trajectory_name="trajectory.jsonl",
+            replay_nav_before_grasp=False,
+            replay_nav_real_time=False,
+            replay_nav_speed=1.0,
             replay_include_initial_settle=True,
             profile_dwa=True,
             profile_print_every=60,
@@ -133,6 +221,11 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
         self.assertIn("0.5", command)
         self.assertIn("--brisk-nav", command)
         self.assertIn("--fast-dwa", command)
+        self.assertIn("--terminal-position-tolerance", command)
+        self.assertIn("0.08", command)
+        self.assertIn("--terminal-yaw-tolerance", command)
+        self.assertIn("--final-goal-tolerance-margin", command)
+        self.assertIn("--final-yaw-tolerance-margin", command)
         self.assertIn("--dwa-linear-samples", command)
         self.assertIn("3", command)
         self.assertIn("--dwa-angular-samples", command)
@@ -194,6 +287,12 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             scene_usd=None,
             nav_map=None,
             nav_result="/tmp/go2_x5_nav_result.json",
+            handoff_report="/tmp/go2_x5_handoff_report.json",
+            replay_nav_before_grasp=False,
+            replay_nav_real_time=False,
+            replay_nav_speed=1.0,
+            follow_camera_mode="chase",
+            viewport_camera_prim="/World/Camera_main",
             terrain_prim_path="/World/scene_collision",
             inflate_radius=0.25,
             local_clearance_radius=0.20,
@@ -204,7 +303,10 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             no_record=False,
             allow_retreat_success=False,
             legacy_side_retreat=False,
+            side_retreat_only=False,
             side_grasp_fallback_retreat=False,
+            keep_window_open=False,
+            show_grasp_trajectory=False,
             grasp_headless=True,
             demo_visuals=False,
         )
@@ -216,6 +318,110 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
         self.assertIn("--require-lift-success", command)
         self.assertIn("--scene-usd", command)
         self.assertIn("--nav-map", command)
+        self.assertIn("--handoff-report", command)
+        self.assertIn("/tmp/go2_x5_handoff_report.json", command)
+        self.assertNotIn("--show-grasp-trajectory", command)
+
+    def test_standalone_pick_command_forwards_replay_and_stage_camera(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            nav_result = Path(tmp_dir) / "nav_result.json"
+            replay = Path(tmp_dir) / "trajectory.jsonl"
+            replay.touch()
+            nav_result.write_text(
+                '{"success": true, "replay_trajectory_path": ' + repr(str(replay)).replace("'", '"') + "}",
+                encoding="utf-8",
+            )
+            args = Namespace(
+                isaac_python="/opt/isaac/python",
+                task_json="tasks/nav_pick_example.json",
+                scene_usd=None,
+                nav_map=None,
+                nav_result=str(nav_result),
+                handoff_report="/tmp/go2_x5_handoff_report.json",
+                replay_nav_before_grasp=True,
+                replay_nav_real_time=True,
+                replay_nav_speed=1.25,
+                follow_camera_mode="stage",
+                viewport_camera_prim="/World/Camera_main",
+                terrain_prim_path="/World/scene_collision",
+                inflate_radius=0.25,
+                local_clearance_radius=0.20,
+                settle_steps=120,
+                dataset_dir=None,
+                use_planner_server=False,
+                handoff_smoke_only=False,
+                no_record=False,
+                allow_retreat_success=False,
+                legacy_side_retreat=False,
+                side_retreat_only=False,
+                side_grasp_fallback_retreat=False,
+                keep_window_open=True,
+                show_grasp_trajectory=False,
+                grasp_headless=True,
+                demo_visuals=True,
+            )
+            task = SimpleNamespace(
+                scene_usd="source/scene/839920_go2_x5.usd",
+                nav_map="source/scene/nav_maps/839920/map.json",
+            )
+
+            command = _standalone_pick_command(args, task)
+
+        self.assertNotIn("--headless", command)
+        self.assertIn("--replay-trajectory", command)
+        self.assertIn(str(replay.resolve()), command)
+        self.assertIn("--replay-real-time", command)
+        self.assertIn("--replay-speed", command)
+        self.assertIn("1.25", command)
+        self.assertIn("--set-viewport-camera", command)
+        self.assertIn("--viewport-camera-prim", command)
+        self.assertIn("/World/Camera_main", command)
+        self.assertIn("--keep-window-open", command)
+        self.assertNotIn("--show-grasp-trajectory", command)
+
+    def test_standalone_pick_command_forwards_side_retreat_and_optional_debug_trajectory(self) -> None:
+        args = Namespace(
+            isaac_python="/opt/isaac/python",
+            task_json="tasks/nav_pick_example.json",
+            scene_usd=None,
+            nav_map=None,
+            nav_result="/tmp/go2_x5_nav_result.json",
+            handoff_report="/tmp/go2_x5_handoff_report.json",
+            replay_nav_before_grasp=False,
+            replay_nav_real_time=False,
+            replay_nav_speed=1.0,
+            follow_camera_mode="chase",
+            viewport_camera_prim="/World/Camera_main",
+            terrain_prim_path="/World/scene_collision",
+            inflate_radius=0.25,
+            local_clearance_radius=0.20,
+            settle_steps=120,
+            dataset_dir=None,
+            use_planner_server=True,
+            handoff_smoke_only=False,
+            no_record=False,
+            allow_retreat_success=True,
+            legacy_side_retreat=True,
+            side_retreat_only=True,
+            side_grasp_fallback_retreat=False,
+            keep_window_open=False,
+            show_grasp_trajectory=True,
+            grasp_headless=True,
+            demo_visuals=False,
+        )
+        task = SimpleNamespace(
+            scene_usd="source/scene/839920_go2_x5.usd",
+            nav_map="source/scene/nav_maps/839920/map.json",
+        )
+
+        command = _standalone_pick_command(args, task)
+
+        self.assertIn("--use-planner-server", command)
+        self.assertIn("--allow-retreat-success", command)
+        self.assertIn("--side-retreat-only", command)
+        self.assertIn("--legacy-side-retreat", command)
+        self.assertNotIn("--require-lift-success", command)
+        self.assertIn("--show-grasp-trajectory", command)
 
     def test_demo_visuals_uses_fixed_camera_and_visible_grasp(self) -> None:
         args = Namespace(
@@ -227,6 +433,8 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             terrain_prim_path="/World/scene_collision",
             ground_height=0.0,
             nav_result="/tmp/go2_x5_nav_result.json",
+            handoff_report="/tmp/go2_x5_handoff_report.json",
+            nav_headless=False,
             max_nav_steps=5000,
             settle_steps=120,
             stall_window_steps=240,
@@ -235,6 +443,10 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             stall_min_forward_ratio=0.25,
             goal_tolerance=0.15,
             goal_yaw_tolerance=0.15,
+            terminal_position_tolerance=0.08,
+            terminal_yaw_tolerance=0.08,
+            final_goal_tolerance_margin=0.03,
+            final_yaw_tolerance_margin=0.03,
             inflate_radius=0.25,
             local_clearance_radius=0.20,
             lookahead_distance=0.35,
@@ -300,6 +512,9 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             replay_sample_every=1,
             replay_output=None,
             replay_trajectory_name="trajectory.jsonl",
+            replay_nav_before_grasp=False,
+            replay_nav_real_time=False,
+            replay_nav_speed=1.0,
             replay_include_initial_settle=False,
             profile_dwa=False,
             profile_print_every=60,
@@ -310,7 +525,10 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
             handoff_smoke_only=False,
             allow_retreat_success=False,
             legacy_side_retreat=False,
+            side_retreat_only=False,
             side_grasp_fallback_retreat=False,
+            keep_window_open=True,
+            show_grasp_trajectory=False,
             grasp_headless=True,
             isaac_python="/opt/isaac/python",
         )
@@ -335,6 +553,7 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
         self.assertIn("--fixed-camera-lookat", nav_command)
         self.assertIn("0.35", nav_command)
         self.assertNotIn("--headless", pick_command)
+        self.assertIn("--keep-window-open", pick_command)
 
 
 if __name__ == "__main__":
