@@ -1020,7 +1020,7 @@ def _settle_with_yaw_hold(
             distance <= args_cli.terminal_position_tolerance
             and abs(yaw_error) <= args_cli.terminal_yaw_tolerance
         )
-        if inside_acceptance or (inside_terminal_deadband and stable_now):
+        if inside_terminal_deadband and stable_now:
             command = (0.0, 0.0, 0.0)
         else:
             command = _terminal_pose_command(pose, goal, settle_config)

@@ -1,0 +1,358 @@
+{
+  "navigation": {
+    "schema_version": 1,
+    "success": true,
+    "failure_reason": "",
+    "final_base_pose_world": {
+      "x": 1.2540522813796997,
+      "y": 0.5320622324943542,
+      "z": 0.33382824063301086,
+      "yaw": 1.8020711664115838,
+      "quat_wxyz": [
+        0.6207947731018066,
+        0.0022462611086666584,
+        0.004835278727114201,
+        0.7839550971984863
+      ]
+    },
+    "goal_xyyaw": [
+      1.2390223233828674,
+      0.6567612052255583,
+      2.094395102393195
+    ],
+    "final_goal_distance": 0.12560148660586826,
+    "yaw_error": 0.292323935981611,
+    "goal_tolerance": 0.15,
+    "goal_yaw_tolerance": 0.2,
+    "terminal_position_tolerance": 0.08,
+    "terminal_yaw_tolerance": 0.08,
+    "final_goal_tolerance_margin": 0.03,
+    "final_yaw_tolerance_margin": 0.2,
+    "position_acceptance_tolerance": 0.18,
+    "yaw_acceptance_tolerance": 0.4,
+    "final_position_reached": true,
+    "final_yaw_aligned": true,
+    "base_stable": true,
+    "base_stable_linear_tolerance": 0.06,
+    "base_stable_angular_tolerance": 0.2,
+    "final_body_velocity": {
+      "vx": -0.013062400743365288,
+      "vy": 0.011303851380944252,
+      "wz": 0.05756605044007301
+    },
+    "path_length": 6.835302877942191,
+    "timeout": false,
+    "stall_detected": false,
+    "yaw_align_stall_detected": false,
+    "terminal_recovery_count": 0,
+    "yaw_settle_success": true,
+    "yaw_settle_steps": 38,
+    "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_3_close_retry/episode_0000/2/7",
+    "elapsed_wall_time_s": 20.987866163253784,
+    "replay_trajectory_path": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_3_close_retry/episode_0000/2/7/replay/trajectory.jsonl",
+    "replay_frame_count": 510
+  },
+  "task_json": "/home/light/workspace/arm_vla/outputs/random_tasks/apple_video_3_close_retry/apple_seed_0007.json",
+  "success": false,
+  "failure_reason": "arm_tracking_failed",
+  "mode": "full_pick",
+  "handoff": {
+    "map_check": {
+      "nav_xy": [
+        1.2540522813796997,
+        0.5320622324943542
+      ],
+      "grid_index": [
+        148,
+        234
+      ],
+      "goal_distance_m": 0.12560148660586826,
+      "goal_tolerance_m": 0.18,
+      "goal_tolerance_source": "nav_result.position_acceptance_tolerance",
+      "nav_final_position_reached": true,
+      "clearance_radius_m": 0.2,
+      "boundary_clearance_m": 1.9622679471969615,
+      "raw_cell_occupied": false,
+      "clearance_cell_occupied": false,
+      "map_json": "/home/light/workspace/arm_vla/source/scene/nav_maps/839920/map.json"
+    },
+    "stage_check": {
+      "terrain_prim_path": "/World/scene_collision",
+      "terrain_prim_exists": true,
+      "terrain_mesh_count": 237,
+      "object_prim_path": "/World/apple",
+      "object_prim_exists": true
+    },
+    "object_visibility": {
+      "applied": true,
+      "kept_object_prim_path": "/World/apple",
+      "shown_paths": [
+        "/World/apple",
+        "/World/apple/Looks",
+        "/World/apple/Apple_M_Apple_0",
+        "/World/apple/Apple_M_Apple_0/Apple_M_Apple_0"
+      ],
+      "hidden_paths": [
+        "/World/apple_01",
+        "/World/apple_01/Looks",
+        "/World/apple_01/Apple_M_Apple_0",
+        "/World/apple_01/Apple_M_Apple_0/Apple_M_Apple_0",
+        "/World/apple_02",
+        "/World/apple_02/Looks",
+        "/World/apple_02/Apple_M_Apple_0",
+        "/World/apple_02/Apple_M_Apple_0/Apple_M_Apple_0",
+        "/World/orange",
+        "/World/orange/Looks",
+        "/World/orange/Orange_defaultMat_0",
+        "/World/orange/Orange_defaultMat_0/Orange_defaultMat_0",
+        "/World/orange_01",
+        "/World/orange_01/Looks",
+        "/World/orange_01/Orange_defaultMat_0",
+        "/World/orange_01/Orange_defaultMat_0/Orange_defaultMat_0",
+        "/World/bottle",
+        "/World/bottle/Looks",
+        "/World/bottle/geometry_0",
+        "/World/bottle/geometry_0/geometry_0"
+      ]
+    },
+    "object_pose": {
+      "applied": true,
+      "object_prim_path": "/World/apple",
+      "pose_world": {
+        "x": 0.9390223233828676,
+        "y": 1.1763764474962215,
+        "z": 0.82,
+        "yaw": -1.1229667425754801,
+        "roll": 0.0,
+        "pitch": 0.0
+      },
+      "quaternion_wxyz": [
+        0.8464662328021156,
+        0.0,
+        0.0,
+        -0.5324424069566535
+      ],
+      "xform_op_order": [
+        "xformOp:translate",
+        "xformOp:orient",
+        "xformOp:scale",
+        "xformOp:rotateX:unitsResolve"
+      ],
+      "rigid_body_velocity_zeroed_count": 1
+    },
+    "restore": {
+      "requested_root_pose": {
+        "x": 1.2540522813796997,
+        "y": 0.5320622324943542,
+        "z": 0.33382824063301086,
+        "yaw": 1.8020711664115838
+      },
+      "settled_root": {
+        "position_xyz": [
+          1.2540522813796997,
+          0.5320622324943542,
+          0.33382824063301086
+        ],
+        "quaternion_wxyz": [
+          0.6207984685897827,
+          0.0,
+          -5.32054400537163e-10,
+          0.783970296382904
+        ],
+        "yaw": 1.8020713703576616,
+        "linear_velocity_xyz": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity_xyz": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "linear_speed_xy": 0.0,
+        "angular_speed_z": 0.0
+      },
+      "settle_steps": 120,
+      "xy_error_m": 0.0,
+      "yaw_error_rad": 2.039460778036073e-07,
+      "stable": true
+    },
+    "state_export": {
+      "state_json": "/tmp/go2_x5_isaac_state.json",
+      "base_frame_path": "/World/go2_x5/arm_base_link",
+      "arm_base_position_xyz": [
+        1.2265460491180422,
+        0.6488673090934752,
+        0.3838282823562622
+      ],
+      "arm_base_yaw": 1.8020713703576619,
+      "arm_base_to_nav_root_xy_m": 0.12000007805230281,
+      "arm_base_to_nav_root_yaw_error_rad": 2.039460778036073e-07,
+      "world_collision_cuboids": 16
+    },
+    "target": {
+      "target_json": "/tmp/go2_x5_target_tcp_pose.json",
+      "object_prim_path": "/World/apple",
+      "grasp_mode": "side",
+      "target_workspace_base": {
+        "pregrasp": {
+          "position_xyz": [
+            0.5089784600659285,
+            0.13402070163582305,
+            0.44019842837015927
+          ],
+          "quaternion_wxyz": [
+            0.9917251598674846,
+            0.0,
+            0.0,
+            0.12837915440527103
+          ],
+          "xy_radius_m": 0.5263274848210402,
+          "radius_3d_m": 0.6861452307038216,
+          "z_m": 0.44019842837015927
+        },
+        "grasp": {
+          "position_xyz": [
+            0.605682218608766,
+            0.15948406912106702,
+            0.44019842837015927
+          ],
+          "quaternion_wxyz": [
+            0.9917251598674846,
+            0.0,
+            0.0,
+            0.12837915440527103
+          ],
+          "xy_radius_m": 0.6263274848210402,
+          "radius_3d_m": 0.7655460630045775,
+          "z_m": 0.44019842837015927
+        },
+        "lift": {
+          "position_xyz": [
+            0.605682218608766,
+            0.15948406912106702,
+            0.5401984283701593
+          ],
+          "quaternion_wxyz": [
+            0.9917251598674846,
+            0.0,
+            0.0,
+            0.12837915440527103
+          ],
+          "xy_radius_m": 0.6263274848210402,
+          "radius_3d_m": 0.8271036575036048,
+          "z_m": 0.5401984283701593
+        },
+        "warnings": [
+          "grasp 的水平距离偏大，可能接近机械臂可达边界。",
+          "grasp 在 arm_base_link 上方较高，top-down 姿态可能难以规划。",
+          "pregrasp 的三维距离偏大，建议降低物体高度或把物体放近机械臂。"
+        ]
+      }
+    }
+  },
+  "grasp": {
+    "success": false,
+    "plan_summary": {
+      "num_segments": 4,
+      "num_motion_segments": 2,
+      "all_motion_segments_success": true,
+      "total_motion_duration_s": 4.927170334383845,
+      "final_q_arm": [
+        0.0067865364253520966,
+        0.0655575767159462,
+        0.08762355893850327,
+        0.04181581363081932,
+        -0.033686988055706024,
+        -0.0035987766459584236
+      ],
+      "grasp_mode": "side",
+      "side_grasp_plan_vertical_lift": false,
+      "side_grasp_fallback_retreat": false
+    },
+    "target": {
+      "target_json": "/tmp/go2_x5_target_tcp_pose.json",
+      "object_prim_path": "/World/apple",
+      "grasp_mode": "side",
+      "target_workspace_base": {
+        "pregrasp": {
+          "position_xyz": [
+            0.5089784600659285,
+            0.13402070163582305,
+            0.44019842837015927
+          ],
+          "quaternion_wxyz": [
+            0.9917251598674846,
+            0.0,
+            0.0,
+            0.12837915440527103
+          ],
+          "xy_radius_m": 0.5263274848210402,
+          "radius_3d_m": 0.6861452307038216,
+          "z_m": 0.44019842837015927
+        },
+        "grasp": {
+          "position_xyz": [
+            0.605682218608766,
+            0.15948406912106702,
+            0.44019842837015927
+          ],
+          "quaternion_wxyz": [
+            0.9917251598674846,
+            0.0,
+            0.0,
+            0.12837915440527103
+          ],
+          "xy_radius_m": 0.6263274848210402,
+          "radius_3d_m": 0.7655460630045775,
+          "z_m": 0.44019842837015927
+        },
+        "lift": {
+          "position_xyz": [
+            0.605682218608766,
+            0.15948406912106702,
+            0.5401984283701593
+          ],
+          "quaternion_wxyz": [
+            0.9917251598674846,
+            0.0,
+            0.0,
+            0.12837915440527103
+          ],
+          "xy_radius_m": 0.6263274848210402,
+          "radius_3d_m": 0.8271036575036048,
+          "z_m": 0.5401984283701593
+        },
+        "warnings": [
+          "grasp 的水平距离偏大，可能接近机械臂可达边界。",
+          "grasp 在 arm_base_link 上方较高，top-down 姿态可能难以规划。",
+          "pregrasp 的三维距离偏大，建议降低物体高度或把物体放近机械臂。"
+        ]
+      }
+    },
+    "execution_summary": {
+      "num_executed_segments": 2,
+      "max_motion_joint_error_norm": 0.08764017110198498,
+      "mean_motion_joint_error_norm": 0.045421267453309384,
+      "final_motion_joint_error_norm": 0.08764017110198498,
+      "max_gripper_error_norm": 0.0012938057974483034,
+      "mean_gripper_error_norm": 0.0006709317876020266,
+      "grasp_mode": "side",
+      "has_lift_segment": false,
+      "has_planned_retreat": true,
+      "object_lift_delta_top_z_m": 0.000595602445753185,
+      "object_lift_delta_center_z_m": 7.94529914855957e-05,
+      "object_lift_success": false,
+      "object_lift_success_threshold_m": 0.04,
+      "object_center_displacement_m": 0.0006634993137769889,
+      "object_retreat_success": false,
+      "object_retreat_success_threshold_m": 0.03,
+      "require_object_lift_success": false,
+      "task_success": false,
+      "aborted": true,
+      "abort_reason": "approach_to_grasp 未在闭环等待内到位，跳过后续抓取。 final_joint_error=0.08789403649035325"
+    }
+  },
+  "updated_at": 1780893081.8262246
+}

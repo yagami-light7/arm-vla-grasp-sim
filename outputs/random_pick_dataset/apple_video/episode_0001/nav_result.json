@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "success": true,
+  "failure_reason": "",
+  "final_base_pose_world": {
+    "x": 0.8673049807548523,
+    "y": 0.07378493249416351,
+    "z": 0.3357362151145935,
+    "yaw": 1.3637952198190397,
+    "quat_wxyz": [
+      0.776344895362854,
+      0.006187634076923132,
+      -0.005457824561744928,
+      0.6302545666694641
+    ]
+  },
+  "goal_xyyaw": [
+    0.8970411872582845,
+    0.18017331397552439,
+    1.5707963267948966
+  ],
+  "final_goal_distance": 0.11046596621330179,
+  "yaw_error": 0.2070011069758566,
+  "goal_tolerance": 0.15,
+  "goal_yaw_tolerance": 0.15,
+  "terminal_position_tolerance": 0.08,
+  "terminal_yaw_tolerance": 0.08,
+  "final_goal_tolerance_margin": 0.03,
+  "final_yaw_tolerance_margin": 0.07,
+  "position_acceptance_tolerance": 0.18,
+  "yaw_acceptance_tolerance": 0.22,
+  "final_position_reached": true,
+  "final_yaw_aligned": true,
+  "base_stable": true,
+  "base_stable_linear_tolerance": 0.06,
+  "base_stable_angular_tolerance": 0.2,
+  "final_body_velocity": {
+    "vx": 0.002921117004007101,
+    "vy": 0.005042147357016802,
+    "wz": 0.0034965581726282835
+  },
+  "path_length": 6.1742640687119295,
+  "timeout": false,
+  "stall_detected": false,
+  "yaw_align_stall_detected": false,
+  "terminal_recovery_count": 0,
+  "yaw_settle_success": true,
+  "yaw_settle_steps": 18,
+  "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video/episode_0001/2/8",
+  "elapsed_wall_time_s": 21.526018619537354,
+  "replay_trajectory_path": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video/episode_0001/2/8/replay/trajectory.jsonl",
+  "replay_frame_count": 518
+}

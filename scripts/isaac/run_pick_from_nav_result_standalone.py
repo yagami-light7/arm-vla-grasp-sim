@@ -35,7 +35,17 @@ def _project_path(raw_path: str) -> Path:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--task-json", required=True)
+    parser.add_argument("--task-json", default=None)
+    parser.add_argument(
+        "--batch-manifest",
+        default=None,
+        help=(
+            "Optional JSON manifest with an 'episodes' list. Each episode can "
+            "override task_json, nav_result, handoff_report, dataset_dir, scene_usd, "
+            "nav_map, and replay_trajectory while reusing one Isaac Sim window."
+        ),
+    )
+    parser.add_argument("--batch-continue-on-failure", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--scene-usd", default=None)
     parser.add_argument("--nav-map", default=None)
     parser.add_argument("--nav-result", default=str(DEFAULT_NAV_RESULT_JSON))
@@ -85,6 +95,37 @@ simulation_app = app_launcher.app
 
 def _load_raw_task(task_json: Path) -> dict:
     return json.loads(task_json.read_text(encoding="utf-8"))
+
+
+def _load_batch_manifest(path: str | Path) -> list[dict]:
+    manifest_path = Path(path).expanduser().resolve()
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    episodes = payload.get("episodes") if isinstance(payload, dict) else payload
+    if not isinstance(episodes, list) or not episodes:
+        raise ValueError(f"batch manifest has no episodes: {manifest_path}")
+    normalized = []
+    for index, episode in enumerate(episodes):
+        if not isinstance(episode, dict):
+            raise ValueError(f"batch manifest episode {index} must be an object.")
+        normalized.append(dict(episode))
+    return normalized
+
+
+def _episode_args(base_args: argparse.Namespace, episode: dict) -> argparse.Namespace:
+    values = vars(base_args).copy()
+    key_map = {
+        "task_json": "task_json",
+        "scene_usd": "scene_usd",
+        "nav_map": "nav_map",
+        "nav_result": "nav_result",
+        "handoff_report": "handoff_report",
+        "dataset_dir": "dataset_dir",
+        "replay_trajectory": "replay_trajectory",
+    }
+    for source_key, arg_key in key_map.items():
+        if source_key in episode and episode[source_key] is not None:
+            values[arg_key] = episode[source_key]
+    return argparse.Namespace(**values)
 
 
 def _handoff_report_path(args: argparse.Namespace) -> Path:
@@ -498,106 +539,108 @@ def _keep_window_open_until_closed() -> None:
         time.sleep(1.0 / 60.0)
 
 
-def main() -> int:
-    if args_cli.side_retreat_only:
-        args_cli.legacy_side_retreat = True
-        args_cli.allow_retreat_success = True
+def _run_single_episode(args: argparse.Namespace) -> None:
+    if args.side_retreat_only:
+        args.legacy_side_retreat = True
+        args.allow_retreat_success = True
+    if not args.task_json:
+        raise ValueError("--task-json is required unless --batch-manifest is used.")
 
-    task_json = _project_path(args_cli.task_json)
+    task_json = _project_path(args.task_json)
     raw_task = _load_raw_task(task_json)
-    scene_usd = _project_path(args_cli.scene_usd or raw_task["scene_usd"])
-    context_json = _write_context(args_cli, task_json, raw_task)
+    scene_usd = _project_path(args.scene_usd or raw_task["scene_usd"])
+    context_json = _write_context(args, task_json, raw_task)
 
     os.environ["GO2_X5_WORKSPACE"] = str(PROJECT_ROOT)
     os.environ["GO2_X5_PIPELINE_CONTEXT"] = str(context_json)
-    os.environ["GO2_X5_NAV_RESULT"] = str(Path(args_cli.nav_result).expanduser().resolve())
-    os.environ["GO2_X5_HANDOFF_REPORT"] = str(Path(args_cli.handoff_report).expanduser().resolve())
-    os.environ["GO2_X5_HANDOFF_SMOKE_ONLY"] = "1" if args_cli.handoff_smoke_only else "0"
-    os.environ["GO2_X5_REQUIRE_OBJECT_LIFT_SUCCESS"] = "0" if args_cli.allow_retreat_success else "1"
-    os.environ["GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT"] = "0" if args_cli.legacy_side_retreat else "1"
-    os.environ["GO2_X5_SIDE_GRASP_FALLBACK_RETREAT"] = "1" if args_cli.side_grasp_fallback_retreat else "0"
-    os.environ["GO2_X5_SHOW_GRASP_TRAJECTORY"] = "1" if args_cli.show_grasp_trajectory else "0"
+    os.environ["GO2_X5_NAV_RESULT"] = str(Path(args.nav_result).expanduser().resolve())
+    os.environ["GO2_X5_HANDOFF_REPORT"] = str(Path(args.handoff_report).expanduser().resolve())
+    os.environ["GO2_X5_HANDOFF_SMOKE_ONLY"] = "1" if args.handoff_smoke_only else "0"
+    os.environ["GO2_X5_REQUIRE_OBJECT_LIFT_SUCCESS"] = "0" if args.allow_retreat_success else "1"
+    os.environ["GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT"] = "0" if args.legacy_side_retreat else "1"
+    os.environ["GO2_X5_SIDE_GRASP_FALLBACK_RETREAT"] = "1" if args.side_grasp_fallback_retreat else "0"
+    os.environ["GO2_X5_SHOW_GRASP_TRAJECTORY"] = "1" if args.show_grasp_trajectory else "0"
 
     _write_standalone_report(
-        args_cli,
+        args,
         {
             "standalone": {
                 "status": "starting",
                 "task_json": str(task_json),
                 "scene_usd": str(scene_usd),
-                "nav_result_json": str(Path(args_cli.nav_result).expanduser().resolve()),
-                "handoff_report_json": str(_handoff_report_path(args_cli)),
-                "replay_trajectory": str(Path(args_cli.replay_trajectory).expanduser().resolve())
-                if args_cli.replay_trajectory
+                "nav_result_json": str(Path(args.nav_result).expanduser().resolve()),
+                "handoff_report_json": str(_handoff_report_path(args)),
+                "replay_trajectory": str(Path(args.replay_trajectory).expanduser().resolve())
+                if args.replay_trajectory
                 else None,
                 "updated_at": time.time(),
             },
         },
     )
     try:
-        _open_stage(scene_usd, args_cli.stage_load_updates)
+        _open_stage(scene_usd, args.stage_load_updates)
         _prepare_randomized_task_stage(task_json)
         _write_standalone_report(
-            args_cli,
+            args,
             {
                 "standalone": {
                     "status": "stage_opened",
                     "task_json": str(task_json),
                     "scene_usd": str(scene_usd),
-                    "nav_result_json": str(Path(args_cli.nav_result).expanduser().resolve()),
-                    "handoff_report_json": str(_handoff_report_path(args_cli)),
-                    "replay_trajectory": str(Path(args_cli.replay_trajectory).expanduser().resolve())
-                    if args_cli.replay_trajectory
+                    "nav_result_json": str(Path(args.nav_result).expanduser().resolve()),
+                    "handoff_report_json": str(_handoff_report_path(args)),
+                    "replay_trajectory": str(Path(args.replay_trajectory).expanduser().resolve())
+                    if args.replay_trajectory
                     else None,
                     "updated_at": time.time(),
                 },
             },
         )
-        if args_cli.set_viewport_camera:
-            _set_viewport_stage_camera(args_cli.viewport_camera_prim)
-        if args_cli.replay_trajectory:
+        if args.set_viewport_camera:
+            _set_viewport_stage_camera(args.viewport_camera_prim)
+        if args.replay_trajectory:
             _run_replay_task(
-                Path(args_cli.replay_trajectory).expanduser().resolve(),
-                real_time=args_cli.replay_real_time,
-                speed=args_cli.replay_speed,
-                timeout_s=args_cli.timeout_s,
+                Path(args.replay_trajectory).expanduser().resolve(),
+                real_time=args.replay_real_time,
+                speed=args.replay_speed,
+                timeout_s=args.timeout_s,
             )
             _write_standalone_report(
-                args_cli,
+                args,
                 {
                     "standalone": {
                         "status": "replay_complete",
                         "task_json": str(task_json),
                         "scene_usd": str(scene_usd),
-                        "nav_result_json": str(Path(args_cli.nav_result).expanduser().resolve()),
-                        "handoff_report_json": str(_handoff_report_path(args_cli)),
-                        "replay_trajectory": str(Path(args_cli.replay_trajectory).expanduser().resolve()),
+                        "nav_result_json": str(Path(args.nav_result).expanduser().resolve()),
+                        "handoff_report_json": str(_handoff_report_path(args)),
+                        "replay_trajectory": str(Path(args.replay_trajectory).expanduser().resolve()),
                         "updated_at": time.time(),
                     },
                 },
             )
         _write_standalone_report(
-            args_cli,
+            args,
             {
                 "standalone": {
                     "status": "handoff_running",
                     "task_json": str(task_json),
                     "scene_usd": str(scene_usd),
-                    "nav_result_json": str(Path(args_cli.nav_result).expanduser().resolve()),
-                    "handoff_report_json": str(_handoff_report_path(args_cli)),
-                    "replay_trajectory": str(Path(args_cli.replay_trajectory).expanduser().resolve())
-                    if args_cli.replay_trajectory
+                    "nav_result_json": str(Path(args.nav_result).expanduser().resolve()),
+                    "handoff_report_json": str(_handoff_report_path(args)),
+                    "replay_trajectory": str(Path(args.replay_trajectory).expanduser().resolve())
+                    if args.replay_trajectory
                     else None,
                     "updated_at": time.time(),
                 },
             },
         )
-        _run_handoff_task(args_cli.timeout_s)
+        _run_handoff_task(args.timeout_s)
     except Exception as exc:
-        _write_standalone_failure_if_needed(args_cli, exc)
+        _write_standalone_failure_if_needed(args, exc)
         raise
 
-    handoff_report = _handoff_report_path(args_cli)
+    handoff_report = _handoff_report_path(args)
     if not handoff_report.exists():
         raise RuntimeError(
             f"handoff task finished without writing report: {handoff_report}. "
@@ -610,6 +653,32 @@ def main() -> int:
             f"reason={report.get('failure_reason')} detail={report.get('failure_detail')}"
         )
     print("[standalone] pick handoff complete")
+
+
+def main() -> int:
+    if args_cli.batch_manifest:
+        episodes = _load_batch_manifest(args_cli.batch_manifest)
+        failures = 0
+        for index, episode in enumerate(episodes):
+            episode_args = _episode_args(args_cli, episode)
+            print(
+                f"[standalone batch] episode {index + 1}/{len(episodes)} "
+                f"task={episode_args.task_json}"
+            )
+            try:
+                _run_single_episode(episode_args)
+            except Exception as exc:
+                failures += 1
+                print(f"[standalone batch] episode {index + 1} failed: {exc}")
+                if not args_cli.batch_continue_on_failure:
+                    raise
+        if failures:
+            print(f"[standalone batch] completed with failures={failures}/{len(episodes)}")
+            return 1
+        print(f"[standalone batch] completed episodes={len(episodes)}")
+        return 0
+
+    _run_single_episode(args_cli)
     return 0
 
 

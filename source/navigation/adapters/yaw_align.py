@@ -132,7 +132,13 @@ def compute_terminal_pose_command(
 
     inside_position_acceptance = distance_to_goal <= max(config.position_tolerance, config.position_acceptance_tolerance)
 
+    inside_terminal_position = distance_to_goal <= config.position_tolerance
     inside_large_yaw_arc = inside_position_acceptance and abs_yaw_error >= config.large_yaw_error
+    inside_yaw_polish_arc = (
+        inside_position_acceptance
+        and not inside_terminal_position
+        and config.yaw_tolerance < abs_yaw_error < config.large_yaw_error
+    )
 
     if inside_large_yaw_arc:
         vx = _axis_velocity(
@@ -155,7 +161,30 @@ def compute_terminal_pose_command(
         )
         if abs(vx) < 1.0e-6 and abs(vy) < 1.0e-6:
             vx = max(config.min_vx, config.yaw_polish_gait_vx)
-    elif distance_to_goal <= config.position_tolerance or inside_position_acceptance:
+    elif inside_yaw_polish_arc:
+        polish_max_vx = min(config.max_vx, max(config.yaw_polish_gait_vx, config.min_vx))
+        polish_max_vy = min(config.max_vy, max(config.yaw_polish_gait_vx, config.min_vy))
+        vx = _axis_velocity(
+            error=body_goal_x,
+            kp=config.position_kp,
+            max_abs=polish_max_vx,
+            min_abs=min(config.yaw_polish_gait_vx, polish_max_vx),
+            deadband=config.lateral_deadband,
+            allow_negative=config.allow_reverse,
+            scale=1.0,
+        )
+        vy = _axis_velocity(
+            error=body_goal_y,
+            kp=config.lateral_kp,
+            max_abs=polish_max_vy,
+            min_abs=min(max(config.yaw_polish_gait_vx, config.min_vy), polish_max_vy),
+            deadband=config.lateral_deadband,
+            allow_negative=True,
+            scale=1.0,
+        )
+        if abs(vx) < 1.0e-6 and abs(vy) < 1.0e-6:
+            vx = config.yaw_polish_gait_vx
+    elif inside_terminal_position or inside_position_acceptance:
         vx = 0.0
         vy = 0.0
     else:
@@ -204,7 +233,7 @@ def compute_terminal_pose_command(
         elif abs_yaw_error <= config.yaw_slowdown_error:
             max_wz = min(max_wz, config.yaw_slowdown_max_wz)
             min_wz = min(min_wz, config.yaw_slowdown_min_wz)
-        if recovery:
+        if recovery and not inside_position_acceptance:
             max_wz = min(max_wz, config.recovery_yaw_max_wz)
             min_wz = min(min_wz, max_wz)
         wz_abs = min(max_wz, max(config.yaw_kp * abs_yaw_error, min_wz))

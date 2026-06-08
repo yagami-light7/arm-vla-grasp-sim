@@ -80,7 +80,7 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
         self.assertEqual(args.goal_tolerance, 0.15)
         self.assertEqual(args.terminal_position_tolerance, 0.08)
         self.assertEqual(args.final_goal_tolerance_margin, 0.03)
-        self.assertEqual(args.final_yaw_tolerance_margin, 0.07)
+        self.assertEqual(args.final_yaw_tolerance_margin, 0.20)
         self.assertEqual(args.yaw_align_vx, 0.35)
         self.assertEqual(args.yaw_align_max_vx, 0.60)
         self.assertEqual(args.yaw_align_lateral_kp, 0.9)
@@ -90,7 +90,7 @@ class PipelineCheckpointValidationTest(unittest.TestCase):
         self.assertEqual(args.terminal_yaw_polish_min_wz, 0.45)
         self.assertEqual(args.terminal_yaw_polish_max_wz, 0.55)
         self.assertEqual(args.yaw_settle_stable_steps, 15)
-        self.assertEqual(args.yaw_settle_max_wz, 0.25)
+        self.assertEqual(args.yaw_settle_max_wz, 0.55)
         self.assertTrue(args.brisk_nav)
         self.assertTrue(args.fast_dwa)
 

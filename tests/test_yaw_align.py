@@ -140,6 +140,68 @@ class YawAlignTest(unittest.TestCase):
         self.assertLessEqual(command[1], -0.15)
         self.assertEqual(command[2], 0.55)
 
+    def test_terminal_command_keeps_arc_motion_for_small_yaw_polish_outside_tight_position(self) -> None:
+        command = compute_terminal_pose_command(
+            body_goal_x=0.16,
+            body_goal_y=-0.06,
+            yaw_error=0.24,
+            distance_to_goal=0.16,
+            config=TerminalPoseConfig(
+                position_tolerance=0.08,
+                position_acceptance_tolerance=0.18,
+                yaw_tolerance=0.08,
+                position_kp=0.8,
+                max_vx=0.60,
+                min_vx=0.35,
+                lateral_kp=0.9,
+                max_vy=0.35,
+                min_vy=0.15,
+                lateral_deadband=0.015,
+                yaw_kp=1.4,
+                yaw_min_wz=0.50,
+                yaw_max_wz=0.85,
+                yaw_polish_gait_vx=0.08,
+                yaw_polish_min_wz=0.45,
+                yaw_polish_max_wz=0.55,
+            ),
+        )
+        self.assertGreater(command[0], 0.08)
+        self.assertLessEqual(command[1], -0.15)
+        self.assertGreaterEqual(command[2], 0.45)
+        self.assertLessEqual(command[2], 0.55)
+
+    def test_terminal_recovery_keeps_polish_yaw_speed_inside_position_acceptance(self) -> None:
+        command = compute_terminal_pose_command(
+            body_goal_x=0.16,
+            body_goal_y=-0.06,
+            yaw_error=0.24,
+            distance_to_goal=0.16,
+            recovery=True,
+            config=TerminalPoseConfig(
+                position_tolerance=0.08,
+                position_acceptance_tolerance=0.18,
+                yaw_tolerance=0.08,
+                position_kp=0.8,
+                max_vx=0.60,
+                min_vx=0.35,
+                lateral_kp=0.9,
+                max_vy=0.35,
+                min_vy=0.15,
+                lateral_deadband=0.015,
+                yaw_kp=1.4,
+                yaw_min_wz=0.50,
+                yaw_max_wz=0.85,
+                recovery_yaw_max_wz=0.32,
+                yaw_polish_gait_vx=0.08,
+                yaw_polish_min_wz=0.45,
+                yaw_polish_max_wz=0.55,
+            ),
+        )
+        self.assertGreater(command[0], 0.08)
+        self.assertLessEqual(command[1], -0.15)
+        self.assertGreaterEqual(command[2], 0.45)
+        self.assertLessEqual(command[2], 0.55)
+
     def test_terminal_command_allows_small_reverse_recenter(self) -> None:
         command = compute_terminal_pose_command(
             body_goal_x=-0.12,

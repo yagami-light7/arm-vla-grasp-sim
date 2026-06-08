@@ -12,7 +12,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from source.data.random_task import SpawnRegion, write_random_pick_task
+from source.data.random_task import (
+    DEFAULT_APPROACH_ANGLES_DEG,
+    DEFAULT_OBJECT_OFFSET_BASE_GOAL_XY_M,
+    DEFAULT_STANDOFF_CANDIDATES_M,
+    SpawnRegion,
+    write_random_pick_task,
+)
 
 
 def _project_path(raw_path: str | Path) -> Path:
@@ -29,11 +35,25 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--table-prim-path", default="/World/table")
     parser.add_argument("--table-x-range", type=float, nargs=2, default=(0.86, 0.96), metavar=("X_MIN", "X_MAX"))
     parser.add_argument("--table-y-range", type=float, nargs=2, default=(0.9, 1.6), metavar=("Y_MIN", "Y_MAX"))
-    parser.add_argument("--table-z", type=float, default=0.82)
-    parser.add_argument("--object-z-offset", type=float, default=0.04)
+    parser.add_argument("--table-z", type=float, default=0.82, help="World z written directly to pick.object_pose_world.z.")
+    parser.add_argument("--object-z-offset", type=float, default=0.0, help="Optional explicit offset added to --table-z.")
     parser.add_argument("--yaw-range", type=float, nargs=2, default=(0.0, 360.0), metavar=("DEG_MIN", "DEG_MAX"))
-    parser.add_argument("--standoff-candidates", type=float, nargs="+", default=(0.75, 0.90, 1.05))
-    parser.add_argument("--approach-angles-deg", type=float, nargs="+", default=(180.0, 210.0, 240.0))
+    parser.add_argument("--standoff-candidates", type=float, nargs="+", default=DEFAULT_STANDOFF_CANDIDATES_M)
+    parser.add_argument("--approach-angles-deg", type=float, nargs="+", default=DEFAULT_APPROACH_ANGLES_DEG)
+    parser.add_argument(
+        "--base-goal-mode",
+        choices=("radial", "object-offset"),
+        default="radial",
+        help="Use radial candidates or a fixed object-frame XY offset for pick base generation.",
+    )
+    parser.add_argument(
+        "--base-goal-offset-xy",
+        type=float,
+        nargs=2,
+        default=DEFAULT_OBJECT_OFFSET_BASE_GOAL_XY_M,
+        metavar=("DX", "DY"),
+        help="World XY offset added to the sampled object position when --base-goal-mode object-offset is used.",
+    )
     parser.add_argument("--nav-map", default=None)
     parser.add_argument("--clearance-radius", type=float, default=0.25)
     parser.add_argument("--min-boundary-clearance", type=float, default=0.25)
@@ -51,6 +71,19 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--edge-margin", type=float, default=0.12, help="Width of the near-edge sampling band in meters.")
     parser.add_argument("--edge-min-clearance", type=float, default=0.02, help="Minimum object-center clearance from the selected edge.")
+    parser.add_argument(
+        "--max-path-heading-error",
+        type=float,
+        default=1.0,
+        help=(
+            "Reject base_goal candidates whose A* final heading differs from base_yaw by more than this many radians. "
+            "Use a negative value to disable the hard reject."
+        ),
+    )
+    parser.add_argument("--path-heading-weight", type=float, default=1.5)
+    parser.add_argument("--path-length-weight", type=float, default=0.03)
+    parser.add_argument("--path-heading-lookback-points", type=int, default=5)
+    parser.add_argument("--path-heading-min-segment-length", type=float, default=0.10)
     parser.add_argument("--max-sample-attempts", type=int, default=200)
     return parser.parse_args()
 
@@ -76,13 +109,21 @@ def main() -> int:
         yaw_range_deg=(float(args.yaw_range[0]), float(args.yaw_range[1])),
         standoff_candidates=args.standoff_candidates,
         approach_angles_deg=args.approach_angles_deg,
+        base_goal_mode=args.base_goal_mode.replace("-", "_"),
+        base_goal_offset_xy=(float(args.base_goal_offset_xy[0]), float(args.base_goal_offset_xy[1])),
         clearance_radius=args.clearance_radius,
         min_boundary_clearance=args.min_boundary_clearance,
         edge_sides=args.edge_sides,
         edge_margin=args.edge_margin if args.edge_biased else None,
         edge_min_clearance=args.edge_min_clearance,
+        max_path_heading_error=args.max_path_heading_error if args.max_path_heading_error >= 0.0 else None,
+        path_heading_weight=args.path_heading_weight,
+        path_length_weight=args.path_length_weight,
+        path_heading_lookback_points=args.path_heading_lookback_points,
+        path_heading_min_segment_length=args.path_heading_min_segment_length,
         max_sample_attempts=args.max_sample_attempts,
     )
+    selected_base_goal = task.get("randomization", {}).get("selected_base_goal_candidate", {})
     print(
         json.dumps(
             {
@@ -90,6 +131,11 @@ def main() -> int:
                 "seed": int(args.seed),
                 "object_pose_world": task["pick"].get("object_pose_world"),
                 "base_goal": task["pick"].get("base_goal"),
+                "base_goal_mode": task.get("randomization", {}).get("base_goal_generation", {}).get("mode"),
+                "base_goal_offset_xy": task.get("randomization", {}).get("base_goal_generation", {}).get("base_goal_offset_xy"),
+                "path_final_heading": selected_base_goal.get("path_final_heading"),
+                "path_heading_error": selected_base_goal.get("path_heading_error"),
+                "path_length_m": selected_base_goal.get("path_length_m"),
                 "object_edge_sampling": task.get("randomization", {}).get("object_edge_sampling"),
                 "attempts_used": task.get("randomization", {}).get("attempts_used"),
             },

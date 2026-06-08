@@ -251,6 +251,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--final-yaw-tolerance-margin", type=float, default=0.03)
     parser.add_argument("--inflate-radius", type=float, default=0.25)
     parser.add_argument("--local-clearance-radius", type=float, default=0.20)
+    parser.add_argument(
+        "--handoff-clearance-radius",
+        type=float,
+        default=None,
+        help=(
+            "Obstacle clearance radius checked before restoring the nav pose in the "
+            "Isaac Sim grasp stage. Defaults to max(--inflate-radius, --local-clearance-radius)."
+        ),
+    )
     parser.add_argument("--lookahead-distance", type=float, default=0.35)
     parser.add_argument("--prediction-horizon", type=float, default=0.90)
     parser.add_argument("--max-lin-vel", type=float, default=0.50)
@@ -348,7 +357,7 @@ def _apply_preset_defaults(args: argparse.Namespace) -> None:
     _set_if_not_supplied(args, "terminal_position_tolerance", 0.08)
     _set_if_not_supplied(args, "terminal_yaw_tolerance", 0.08)
     _set_if_not_supplied(args, "final_goal_tolerance_margin", 0.03)
-    _set_if_not_supplied(args, "final_yaw_tolerance_margin", 0.07)
+    _set_if_not_supplied(args, "final_yaw_tolerance_margin", 0.20)
     _set_if_not_supplied(args, "yaw_align_start_distance", 0.50)
     _set_if_not_supplied(args, "yaw_align_vx", 0.35)
     _set_if_not_supplied(args, "yaw_align_max_vx", 0.60)
@@ -364,6 +373,7 @@ def _apply_preset_defaults(args: argparse.Namespace) -> None:
     _set_if_not_supplied(args, "terminal_yaw_polish_vx", 0.08)
     _set_if_not_supplied(args, "terminal_yaw_polish_min_wz", 0.45)
     _set_if_not_supplied(args, "terminal_yaw_polish_max_wz", 0.55)
+    _set_if_not_supplied(args, "handoff_clearance_radius", 0.20)
     _set_if_not_supplied(args, "settle_steps", 120)
     _set_if_not_supplied(args, "yaw_settle_stable_steps", 15)
     _set_if_not_supplied(args, "yaw_settle_max_wz", 0.25)
@@ -383,6 +393,14 @@ def _apply_derived_defaults(args: argparse.Namespace) -> None:
         args.allow_retreat_success = True
     if getattr(args, "auto_start_planner_server", False):
         args.use_planner_server = True
+
+
+def _handoff_clearance_radius(args: argparse.Namespace) -> float:
+    """Return the grasp handoff clearance radius for nav-result validation."""
+
+    if args.handoff_clearance_radius is not None:
+        return float(args.handoff_clearance_radius)
+    return max(float(args.inflate_radius), float(args.local_clearance_radius))
 
 
 def _pipeline_grasp_resume_command(args: argparse.Namespace, *, smoke_only: bool) -> str:
@@ -468,7 +486,7 @@ def _write_context(args: argparse.Namespace, task_json: Path, task) -> None:
                 "terrain_prim_path": args.terrain_prim_path,
                 "add_nav_ground": args.add_nav_ground,
                 "ground_height": args.ground_height,
-                "handoff_clearance_radius": max(args.inflate_radius, args.local_clearance_radius),
+                "handoff_clearance_radius": _handoff_clearance_radius(args),
                 "goal_tolerance": args.goal_tolerance,
                 "goal_yaw_tolerance": args.goal_yaw_tolerance,
                 "terminal_position_tolerance": args.terminal_position_tolerance,
@@ -828,7 +846,7 @@ def _standalone_pick_command(args: argparse.Namespace, task, *, smoke_only: bool
         "--terrain-prim-path",
         args.terrain_prim_path,
         "--handoff-clearance-radius",
-        str(max(args.inflate_radius, args.local_clearance_radius)),
+        str(_handoff_clearance_radius(args)),
         "--settle-steps",
         str(args.settle_steps),
     ]

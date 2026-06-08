@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 import time
@@ -15,7 +16,14 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from source.data.random_task import RandomTaskGenerationError, SpawnRegion, write_random_pick_task
+from source.data.random_task import (
+    DEFAULT_APPROACH_ANGLES_DEG,
+    DEFAULT_OBJECT_OFFSET_BASE_GOAL_XY_M,
+    DEFAULT_STANDOFF_CANDIDATES_M,
+    RandomTaskGenerationError,
+    SpawnRegion,
+    write_random_pick_task,
+)
 
 
 DEFAULT_ISAAC_PYTHON = "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python"
@@ -47,19 +55,47 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--base-task", default="tasks/nav_pick_apple_fast.json")
     parser.add_argument("--num-episodes", type=int, required=True)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--output-task-dir", default="/tmp/random_tasks")
+    parser.add_argument("--output-task-dir", default="outputs/random_tasks")
     parser.add_argument("--dataset-root", default="/tmp/random_pick_dataset")
     parser.add_argument("--task", default="RobotLab-Isaac-Velocity-Flat-Go2-X5-Foundation-v0")
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
     parser.add_argument("--isaaclab-launcher", default=DEFAULT_ISAACLAB_LAUNCHER)
     parser.add_argument("--isaac-python", default=DEFAULT_ISAAC_PYTHON)
     parser.add_argument("--pipeline-python", default=DEFAULT_ISAAC_PYTHON)
+    parser.add_argument(
+        "--nav-headless",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Forward explicit navigation headless mode to run_nav_then_pick.py.",
+    )
     parser.add_argument("--nav-only", action="store_true")
+    parser.add_argument(
+        "--precompute-nav-first",
+        action="store_true",
+        help="Run all episodes as headless nav-only first, then replay successful nav trajectories and grasp in GUI.",
+    )
+    parser.add_argument(
+        "--single-window-replay",
+        action="store_true",
+        help=(
+            "With --precompute-nav-first, launch one standalone Isaac Sim process "
+            "that replays all successful nav trajectories and grasp attempts in sequence."
+        ),
+    )
     parser.add_argument("--handoff-smoke-only", action="store_true")
     parser.add_argument("--replay-nav-before-grasp", action="store_true")
     parser.add_argument("--replay-nav-real-time", action="store_true")
     parser.add_argument("--replay-nav-speed", type=float, default=1.0)
     parser.add_argument("--demo-visuals", action="store_true")
+    parser.add_argument("--follow-camera-mode", choices=("chase", "front", "overhead", "fixed", "stage"), default="stage")
+    parser.add_argument("--viewport-camera-prim", default="/World/Camera_main")
+    parser.add_argument("--keep-window-open", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--show-grasp-trajectory", action="store_true")
+    parser.add_argument("--use-planner-server", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--auto-start-planner-server", action="store_true")
+    parser.add_argument("--restart-planner-server", action="store_true")
+    parser.add_argument("--planner-server-log", default="/tmp/go2_x5_curobo_planner_server.log")
+    parser.add_argument("--planner-server-start-timeout-s", type=float, default=180.0)
     parser.add_argument("--allow-retreat-success", action="store_true")
     parser.add_argument("--legacy-side-retreat", action="store_true")
     parser.add_argument(
@@ -70,18 +106,54 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--side-grasp-fallback-retreat", action="store_true")
     parser.add_argument("--skip-grasp-on-nav-failure", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--continue-on-failure", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--table-x-range", type=float, nargs=2, default=(0.9, 1.6), metavar=("X_MIN", "X_MAX"))
-    parser.add_argument("--table-y-range", type=float, nargs=2, default=(1.0, 1.8), metavar=("Y_MIN", "Y_MAX"))
-    parser.add_argument("--table-z", type=float, default=0.78)
-    parser.add_argument("--object-z-offset", type=float, default=0.04)
+    parser.add_argument("--table-x-range", type=float, nargs=2, default=(0.90, 0.96), metavar=("X_MIN", "X_MAX"))
+    parser.add_argument("--table-y-range", type=float, nargs=2, default=(1.0, 1.5), metavar=("Y_MIN", "Y_MAX"))
+    parser.add_argument("--table-z", type=float, default=0.82, help="World z written directly to generated pick.object_pose_world.z.")
+    parser.add_argument("--object-z-offset", type=float, default=0.0, help="Optional explicit offset added to --table-z.")
     parser.add_argument("--object-prim-path", default=None)
     parser.add_argument("--table-prim-path", default="/World/table")
     parser.add_argument("--yaw-range", type=float, nargs=2, default=(0.0, 360.0), metavar=("DEG_MIN", "DEG_MAX"))
-    parser.add_argument("--standoff-candidates", type=float, nargs="+", default=(0.75, 0.90, 1.05))
-    parser.add_argument("--approach-angles-deg", type=float, nargs="+", default=(180.0, 210.0, 240.0))
+    parser.add_argument("--standoff-candidates", type=float, nargs="+", default=DEFAULT_STANDOFF_CANDIDATES_M)
+    parser.add_argument("--approach-angles-deg", type=float, nargs="+", default=DEFAULT_APPROACH_ANGLES_DEG)
+    parser.add_argument(
+        "--base-goal-mode",
+        choices=("radial", "object-offset"),
+        default="object-offset",
+        help="Use radial candidates or a fixed object-frame XY offset for pick base generation.",
+    )
+    parser.add_argument(
+        "--base-goal-offset-xy",
+        type=float,
+        nargs=2,
+        default=DEFAULT_OBJECT_OFFSET_BASE_GOAL_XY_M,
+        metavar=("DX", "DY"),
+        help="World XY offset added to the sampled object position when --base-goal-mode object-offset is used.",
+    )
     parser.add_argument("--nav-map", default=None)
     parser.add_argument("--clearance-radius", type=float, default=0.25)
+    parser.add_argument(
+        "--handoff-clearance-radius",
+        type=float,
+        default=0.20,
+        help=(
+            "Clearance radius used by the grasp handoff map check. The default matches "
+            "the nav local clearance used by the apple demo."
+        ),
+    )
     parser.add_argument("--min-boundary-clearance", type=float, default=0.25)
+    parser.add_argument(
+        "--max-path-heading-error",
+        type=float,
+        default=1.0,
+        help=(
+            "Reject generated base goals whose A* final heading differs from base_yaw by more than this many radians. "
+            "Use a negative value to disable the hard reject."
+        ),
+    )
+    parser.add_argument("--path-heading-weight", type=float, default=1.5)
+    parser.add_argument("--path-length-weight", type=float, default=0.03)
+    parser.add_argument("--path-heading-lookback-points", type=int, default=5)
+    parser.add_argument("--path-heading-min-segment-length", type=float, default=0.10)
     parser.add_argument(
         "--edge-biased",
         action=argparse.BooleanOptionalAction,
@@ -96,12 +168,19 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--edge-margin", type=float, default=0.12, help="Width of the near-edge sampling band in meters.")
     parser.add_argument("--edge-min-clearance", type=float, default=0.02, help="Minimum object-center clearance from the selected edge.")
-    parser.add_argument("--goal-yaw-tolerance", type=float, default=0.15)
+    parser.add_argument("--goal-yaw-tolerance", type=float, default=0.20)
     parser.add_argument("--terminal-yaw-tolerance", type=float, default=0.08)
-    parser.add_argument("--final-yaw-tolerance-margin", type=float, default=0.07)
+    parser.add_argument("--final-yaw-tolerance-margin", type=float, default=0.20)
+    parser.add_argument(
+        "--ignore-goal-yaw",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Do not require final base yaw alignment; useful when arm yaw can cover the object.",
+    )
     parser.add_argument("--yaw-align-start-distance", type=float, default=0.5)
     parser.add_argument("--yaw-align-min-wz", type=float, default=0.4)
     parser.add_argument("--yaw-align-max-wz", type=float, default=0.6)
+    parser.add_argument("--yaw-settle-max-wz", type=float, default=0.25)
     parser.add_argument("--yaw-align-lateral-kp", type=float, default=0.9)
     parser.add_argument(
         "--yaw-align-min-vy",
@@ -144,6 +223,8 @@ def _pipeline_command(
     dataset_dir: Path,
     nav_result: Path,
     handoff_report: Path,
+    nav_only: bool | None = None,
+    grasp_only: bool = False,
 ) -> list[str]:
     command = [
         _command_path(args.pipeline_python),
@@ -166,6 +247,8 @@ def _pipeline_command(
         str(handoff_report),
         "--brisk-nav",
         "--fast-dwa",
+        "--handoff-clearance-radius",
+        str(args.handoff_clearance_radius),
         "--max-nav-steps",
         str(args.max_nav_steps),
         "--goal-tolerance",
@@ -221,15 +304,28 @@ def _pipeline_command(
         "--yaw-settle-stable-steps",
         "15",
         "--yaw-settle-max-wz",
-        "0.25",
+        str(args.yaw_settle_max_wz),
         "--save-replay-trajectory",
     ]
     if args.nav_map:
         command.extend(["--nav-map", args.nav_map])
-    if args.nav_only:
+    if args.nav_headless is not None:
+        command.append("--nav-headless" if args.nav_headless else "--no-nav-headless")
+    nav_only_active = bool(args.nav_only if nav_only is None else nav_only)
+    if grasp_only:
+        command.append("--grasp-only")
+    elif nav_only_active:
         command.append("--nav-only")
     if args.handoff_smoke_only:
         command.append("--handoff-smoke-only")
+    if args.use_planner_server:
+        command.append("--use-planner-server")
+    if args.auto_start_planner_server:
+        command.append("--auto-start-planner-server")
+    if args.restart_planner_server:
+        command.append("--restart-planner-server")
+    command.extend(["--planner-server-log", args.planner_server_log])
+    command.extend(["--planner-server-start-timeout-s", str(args.planner_server_start_timeout_s)])
     if args.replay_nav_before_grasp:
         command.append("--replay-nav-before-grasp")
         if args.replay_nav_real_time:
@@ -237,6 +333,12 @@ def _pipeline_command(
         command.extend(["--replay-nav-speed", str(args.replay_nav_speed)])
     if args.demo_visuals:
         command.append("--demo-visuals")
+    command.extend(["--follow-camera-mode", args.follow_camera_mode])
+    command.extend(["--viewport-camera-prim", args.viewport_camera_prim])
+    if args.keep_window_open is not None:
+        command.append("--keep-window-open" if args.keep_window_open else "--no-keep-window-open")
+    if args.show_grasp_trajectory:
+        command.append("--show-grasp-trajectory")
     if args.allow_retreat_success:
         command.append("--allow-retreat-success")
     if args.legacy_side_retreat:
@@ -246,6 +348,92 @@ def _pipeline_command(
     if args.side_grasp_fallback_retreat:
         command.append("--side-grasp-fallback-retreat")
     return command
+
+
+def _standalone_batch_command(args: argparse.Namespace, *, manifest_path: Path) -> list[str]:
+    command = [
+        _command_path(args.isaac_python),
+        str(PROJECT_ROOT / "scripts/isaac/run_pick_from_nav_result_standalone.py"),
+        "--batch-manifest",
+        str(manifest_path),
+        "--handoff-clearance-radius",
+        str(args.handoff_clearance_radius),
+        "--settle-steps",
+        "120",
+        "--timeout-s",
+        "900.0",
+        "--set-viewport-camera",
+        "--viewport-camera-prim",
+        args.viewport_camera_prim,
+        "--replay-speed",
+        str(args.replay_nav_speed),
+    ]
+    if args.replay_nav_real_time:
+        command.append("--replay-real-time")
+    if args.use_planner_server:
+        command.append("--use-planner-server")
+    if args.handoff_smoke_only:
+        command.append("--handoff-smoke-only")
+    if args.allow_retreat_success:
+        command.append("--allow-retreat-success")
+    if args.legacy_side_retreat:
+        command.append("--legacy-side-retreat")
+    if args.side_retreat_only:
+        command.append("--side-retreat-only")
+    if args.side_grasp_fallback_retreat:
+        command.append("--side-grasp-fallback-retreat")
+    if args.show_grasp_trajectory:
+        command.append("--show-grasp-trajectory")
+    if args.keep_window_open:
+        command.append("--keep-window-open")
+    return command
+
+
+def _write_single_window_manifest(args: argparse.Namespace, rows: list[dict[str, Any]], manifest_path: Path) -> None:
+    episodes: list[dict[str, Any]] = []
+    for row in rows:
+        replay_trajectory = row.get("replay_trajectory_path")
+        nav_result = _read_json_if_exists(Path(str(row["nav_result"])))
+        if not replay_trajectory:
+            replay_trajectory = (nav_result or {}).get("replay_trajectory_path")
+        if not replay_trajectory:
+            raise RuntimeError(
+                f"episode {row['episode_index']} has no replay trajectory. "
+                "Re-run with --precompute-nav-first so nav results include replay_trajectory_path."
+            )
+        episodes.append(
+            {
+                "episode_index": row["episode_index"],
+                "seed": row["seed"],
+                "task_json": row["task_json"],
+                "dataset_dir": row["dataset_dir"],
+                "nav_result": row["nav_result"],
+                "handoff_report": row["handoff_report"],
+                "replay_trajectory": replay_trajectory,
+            }
+        )
+    manifest = {
+        "schema_version": 1,
+        "mode": "single_window_replay",
+        "created_at": time.time(),
+        "episodes": episodes,
+    }
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _start_planner_server_for_single_window(args: argparse.Namespace) -> subprocess.Popen | None:
+    if not args.auto_start_planner_server:
+        return None
+    from scripts.pipeline import run_nav_then_pick
+
+    if args.side_retreat_only:
+        args.legacy_side_retreat = True
+        args.allow_retreat_success = True
+    args.use_planner_server = True
+    process = run_nav_then_pick._start_planner_server_if_requested(args)
+    run_nav_then_pick._wait_for_planner_server_if_started(args, process)
+    return process
 
 
 def _write_summary_line(summary_path: Path, row: dict[str, Any]) -> None:
@@ -288,6 +476,10 @@ def main() -> int:
     args = _parse_args()
     if args.num_episodes <= 0:
         raise ValueError("--num-episodes must be positive.")
+    if args.ignore_goal_yaw:
+        args.goal_yaw_tolerance = math.pi
+        args.terminal_yaw_tolerance = math.pi
+        args.final_yaw_tolerance_margin = 0.0
 
     output_task_dir = Path(args.output_task_dir).expanduser().resolve()
     dataset_root = Path(args.dataset_root).expanduser().resolve()
@@ -303,8 +495,16 @@ def main() -> int:
         table_z=float(args.table_z),
         object_z_offset=float(args.object_z_offset),
     )
+    if args.precompute_nav_first:
+        if args.nav_headless is None:
+            args.nav_headless = True
+        if not args.nav_only:
+            args.replay_nav_before_grasp = True
+            if args.keep_window_open is None:
+                args.keep_window_open = bool(args.single_window_replay and args.demo_visuals)
 
     overall_success = True
+    precomputed_rows: list[dict[str, Any]] = []
     for episode_index in range(args.num_episodes):
         episode_seed = int(args.seed) + episode_index
         seed_label = _format_seed(episode_seed)
@@ -336,16 +536,34 @@ def main() -> int:
                 yaw_range_deg=(float(args.yaw_range[0]), float(args.yaw_range[1])),
                 standoff_candidates=args.standoff_candidates,
                 approach_angles_deg=args.approach_angles_deg,
+                base_goal_mode=args.base_goal_mode.replace("-", "_"),
+                base_goal_offset_xy=(float(args.base_goal_offset_xy[0]), float(args.base_goal_offset_xy[1])),
                 clearance_radius=args.clearance_radius,
                 min_boundary_clearance=args.min_boundary_clearance,
                 edge_sides=args.edge_sides,
                 edge_margin=args.edge_margin if args.edge_biased else None,
                 edge_min_clearance=args.edge_min_clearance,
+                max_path_heading_error=args.max_path_heading_error if args.max_path_heading_error >= 0.0 else None,
+                path_heading_weight=args.path_heading_weight,
+                path_length_weight=args.path_length_weight,
+                path_heading_lookback_points=args.path_heading_lookback_points,
+                path_heading_min_segment_length=args.path_heading_min_segment_length,
                 max_sample_attempts=args.max_sample_attempts,
             )
+            selected_base_goal = task.get("randomization", {}).get("selected_base_goal_candidate", {})
             row["object_pose_world"] = task["pick"].get("object_pose_world")
             row["base_goal"] = task["pick"].get("base_goal")
             row["object_edge_sampling"] = task.get("randomization", {}).get("object_edge_sampling")
+            row["base_goal_generation"] = task.get("randomization", {}).get("base_goal_generation")
+            row["selected_base_goal_candidate"] = selected_base_goal
+            row["path_heading_error"] = selected_base_goal.get("path_heading_error")
+            row["path_final_heading"] = selected_base_goal.get("path_final_heading")
+            row["path_length_m"] = selected_base_goal.get("path_length_m")
+            row["path_heading_filter"] = (
+                task.get("randomization", {})
+                .get("base_goal_generation", {})
+                .get("path_heading_filter")
+            )
         except (RandomTaskGenerationError, ValueError, FileNotFoundError) as exc:
             row["failure_reason"] = "task_generation_failed"
             row["failure_detail"] = str(exc)
@@ -355,6 +573,47 @@ def main() -> int:
             print(f"[batch] episode={episode_index} seed={episode_seed} task generation failed: {exc}")
             if not args.continue_on_failure:
                 break
+            continue
+
+        if args.precompute_nav_first:
+            command = _pipeline_command(
+                args,
+                task_json=task_json,
+                dataset_dir=dataset_dir,
+                nav_result=nav_result_path,
+                handoff_report=handoff_report_path,
+                nav_only=True,
+            )
+            print(f"[batch] episode={episode_index} seed={episode_seed} precomputing navigation")
+            completed = subprocess.run(command, cwd=str(PROJECT_ROOT), check=False)
+
+            nav_result = _read_json_if_exists(nav_result_path)
+            nav_success = bool(nav_result and nav_result.get("success", False)) and completed.returncode == 0
+            failure_reason = "" if nav_success else str((nav_result or {}).get("failure_reason") or f"returncode_{completed.returncode}")
+            episode_summary_path = _episode_summary_path(nav_result)
+            row.update(
+                {
+                    "mode": "precompute_nav_first",
+                    "nav_returncode": completed.returncode,
+                    "success": nav_success if args.nav_only else False,
+                    "failure_reason": failure_reason,
+                    "nav_result_payload": nav_result,
+                    "episode_summary": str(episode_summary_path) if episode_summary_path is not None else None,
+                    "replay_trajectory_path": (nav_result or {}).get("replay_trajectory_path"),
+                    "elapsed_wall_time_s": time.time() - started_at,
+                }
+            )
+            print(f"[batch] episode={episode_index} nav_success={nav_success} failure_reason={failure_reason}")
+            if not nav_success:
+                overall_success = False
+                _write_summary_line(summary_jsonl, row)
+                if not args.continue_on_failure:
+                    break
+                continue
+            if args.nav_only:
+                _write_summary_line(summary_jsonl, row)
+            else:
+                precomputed_rows.append(row)
             continue
 
         command = _pipeline_command(
@@ -395,6 +654,103 @@ def main() -> int:
             overall_success = False
             if not args.continue_on_failure:
                 break
+
+    if args.precompute_nav_first and not args.nav_only:
+        if args.single_window_replay:
+            if not precomputed_rows:
+                overall_success = False
+                print("[batch] no successful navigation episodes to replay.")
+            else:
+                manifest_path = dataset_root / "single_window_replay_manifest.json"
+                _write_single_window_manifest(args, precomputed_rows, manifest_path)
+                command = _standalone_batch_command(args, manifest_path=manifest_path)
+                print(
+                    f"[batch] single-window replaying {len(precomputed_rows)} episodes "
+                    f"with manifest={manifest_path}"
+                )
+                _start_planner_server_for_single_window(args)
+                started_at = time.time()
+                completed = subprocess.run(command, cwd=str(PROJECT_ROOT), check=False)
+
+                for row in precomputed_rows:
+                    nav_result_path = Path(str(row["nav_result"]))
+                    handoff_report_path = Path(str(row["handoff_report"]))
+                    nav_result = _read_json_if_exists(nav_result_path)
+                    handoff_report = _read_json_if_exists(handoff_report_path)
+                    episode_summary_path = _episode_summary_path(nav_result)
+                    episode_summary = _read_json_if_exists(episode_summary_path) if episode_summary_path is not None else None
+                    row_returncode = 0 if handoff_report and handoff_report.get("success", False) else completed.returncode
+                    success, failure_reason = _success_and_failure(
+                        args=args,
+                        returncode=row_returncode,
+                        nav_result=nav_result,
+                        handoff_report=handoff_report,
+                        episode_summary=episode_summary,
+                    )
+                    row.update(
+                        {
+                            "mode": "single_window_replay",
+                            "batch_manifest": str(manifest_path),
+                            "grasp_returncode": completed.returncode,
+                            "success": success,
+                            "failure_reason": failure_reason,
+                            "handoff_report_payload": handoff_report,
+                            "episode_summary": str(episode_summary_path) if episode_summary_path is not None else None,
+                            "elapsed_replay_grasp_wall_time_s": time.time() - started_at,
+                        }
+                    )
+                    _write_summary_line(summary_jsonl, row)
+                    print(f"[batch] episode={row['episode_index']} success={success} failure_reason={failure_reason}")
+                    if not success:
+                        overall_success = False
+                if completed.returncode != 0:
+                    overall_success = False
+        else:
+            for row in precomputed_rows:
+                task_json = Path(str(row["task_json"]))
+                dataset_dir = Path(str(row["dataset_dir"]))
+                nav_result_path = Path(str(row["nav_result"]))
+                handoff_report_path = Path(str(row["handoff_report"]))
+                started_at = time.time()
+                command = _pipeline_command(
+                    args,
+                    task_json=task_json,
+                    dataset_dir=dataset_dir,
+                    nav_result=nav_result_path,
+                    handoff_report=handoff_report_path,
+                    nav_only=False,
+                    grasp_only=True,
+                )
+                print(f"[batch] episode={row['episode_index']} seed={row['seed']} replaying navigation and grasping")
+                completed = subprocess.run(command, cwd=str(PROJECT_ROOT), check=False)
+
+                nav_result = _read_json_if_exists(nav_result_path)
+                handoff_report = _read_json_if_exists(handoff_report_path)
+                episode_summary_path = _episode_summary_path(nav_result)
+                episode_summary = _read_json_if_exists(episode_summary_path) if episode_summary_path is not None else None
+                success, failure_reason = _success_and_failure(
+                    args=args,
+                    returncode=completed.returncode,
+                    nav_result=nav_result,
+                    handoff_report=handoff_report,
+                    episode_summary=episode_summary,
+                )
+                row.update(
+                    {
+                        "grasp_returncode": completed.returncode,
+                        "success": success,
+                        "failure_reason": failure_reason,
+                        "handoff_report_payload": handoff_report,
+                        "episode_summary": str(episode_summary_path) if episode_summary_path is not None else None,
+                        "elapsed_replay_grasp_wall_time_s": time.time() - started_at,
+                    }
+                )
+                _write_summary_line(summary_jsonl, row)
+                print(f"[batch] episode={row['episode_index']} success={success} failure_reason={failure_reason}")
+                if not success:
+                    overall_success = False
+                    if not args.continue_on_failure:
+                        break
 
     print(f"[batch] summary: {summary_jsonl}")
     return 0 if overall_success else 1

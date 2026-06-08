@@ -1,0 +1,126 @@
+{
+  "task_id": 2,
+  "episode_id": 9,
+  "instruction": "Walk briskly from a far start pose to the apple pick base pose.",
+  "scene_usd": "source/scene/839920_go2_x5.usd",
+  "nav_map": "source/scene/nav_maps/839920/map.json",
+  "start": {
+    "x": -5.0,
+    "y": 0.0,
+    "yaw": 0.0
+  },
+  "pick": {
+    "base_goal": {
+      "x": 1.371321523318672,
+      "y": 0.7907910515704618,
+      "yaw": 2.094395102393195
+    },
+    "object_prim_path": "/World/apple",
+    "grasp_mode": "auto",
+    "object_pose_world": {
+      "x": 0.9213215233186721,
+      "y": 1.5702139149764567,
+      "z": 0.86,
+      "yaw": -2.0317083992058214,
+      "roll": 0.0,
+      "pitch": 0.0
+    }
+  },
+  "place": {
+    "enabled": false,
+    "base_goal": null,
+    "place_pose_world": null
+  },
+  "recording": {
+    "dataset_dir": "episodes",
+    "front_camera": true,
+    "wrist_camera": false,
+    "save_every_n_steps": 10
+  },
+  "randomization": {
+    "enabled": true,
+    "seed": 9,
+    "object": "apple",
+    "object_prim_path": "/World/apple",
+    "table_prim_path": "/World/table",
+    "spawn_region": {
+      "x_min": 0.86,
+      "x_max": 0.96,
+      "y_min": 0.9,
+      "y_max": 1.6,
+      "z": 0.82,
+      "object_z_offset": 0.04
+    },
+    "yaw_range_deg": [
+      0.0,
+      360.0
+    ],
+    "object_edge_sampling": {
+      "enabled": true,
+      "edge_sides": [
+        "x_min",
+        "y_min",
+        "x_max",
+        "y_max"
+      ],
+      "edge_margin": 0.12,
+      "edge_min_clearance": 0.02,
+      "selected_edge_side": "y_max",
+      "selected_edge_distance_m": 0.029786085023543366
+    },
+    "base_goal_generation": {
+      "standoff_candidates": [
+        0.75,
+        0.9,
+        1.05
+      ],
+      "approach_angle_candidates_deg": [
+        0.0,
+        30.0,
+        60.0,
+        90.0,
+        120.0,
+        150.0,
+        180.0,
+        210.0,
+        240.0,
+        270.0,
+        300.0,
+        330.0
+      ],
+      "clearance_radius": 0.25,
+      "min_boundary_clearance": 0.25,
+      "max_sample_attempts": 200,
+      "path_heading_filter": {
+        "enabled": true,
+        "max_path_heading_error": 1.0,
+        "path_heading_weight": 1.5,
+        "path_length_weight": 0.03,
+        "path_heading_lookback_points": 5,
+        "path_heading_min_segment_length": 0.1
+      }
+    },
+    "attempts_used": 1,
+    "selected_base_goal_candidate": {
+      "x": 1.371321523318672,
+      "y": 0.7907910515704618,
+      "yaw": 2.094395102393195,
+      "standoff": 0.9,
+      "approach_angle_deg": 119.99999999999999,
+      "raw_free": true,
+      "clearance_free": true,
+      "boundary_clearance_m": 1.8449987052579893,
+      "obstacle_clearance_m": 0.45000001788139343,
+      "edge_alignment_score": 0.0,
+      "score": -0.6500714591536292,
+      "valid": true,
+      "rejection_reason": "",
+      "path_found": true,
+      "path_length_m": 6.981370849898479,
+      "path_final_heading": 1.1071487177940993,
+      "path_heading_error": 0.9872463845990955,
+      "path_expanded_nodes": 733
+    },
+    "candidate_count": 36
+  }
+}

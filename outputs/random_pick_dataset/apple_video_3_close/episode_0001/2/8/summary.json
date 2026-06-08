@@ -1,0 +1,82 @@
+{
+  "success": false,
+  "failure_reason": "nav_collision",
+  "failure_detail": "nav_collision: unsafe handoff pose (0.873, 0.227): cell lacks 0.25 m obstacle clearance",
+  "navigation": {
+    "schema_version": 1,
+    "success": true,
+    "failure_reason": "",
+    "final_base_pose_world": {
+      "x": 0.8726335763931274,
+      "y": 0.22661711275577545,
+      "z": 0.3356460928916931,
+      "yaw": 1.226219896771107,
+      "quat_wxyz": [
+        0.8178420066833496,
+        -0.005724690854549408,
+        -0.0022412389516830444,
+        0.575410008430481
+      ]
+    },
+    "goal_xyyaw": [
+      0.9222247123549707,
+      0.38017331397552434,
+      1.5707963267948966
+    ],
+    "final_goal_distance": 0.1613653856904449,
+    "yaw_error": 0.34457643002378946,
+    "goal_tolerance": 0.15,
+    "goal_yaw_tolerance": 0.2,
+    "terminal_position_tolerance": 0.08,
+    "terminal_yaw_tolerance": 0.08,
+    "final_goal_tolerance_margin": 0.03,
+    "final_yaw_tolerance_margin": 0.2,
+    "position_acceptance_tolerance": 0.18,
+    "yaw_acceptance_tolerance": 0.4,
+    "final_position_reached": true,
+    "final_yaw_aligned": true,
+    "base_stable": true,
+    "base_stable_linear_tolerance": 0.06,
+    "base_stable_angular_tolerance": 0.2,
+    "final_body_velocity": {
+      "vx": 0.0009352699853479862,
+      "vy": -0.008882100693881512,
+      "wz": 0.07332365214824677
+    },
+    "path_length": 6.415495167257323,
+    "timeout": false,
+    "stall_detected": false,
+    "yaw_align_stall_detected": false,
+    "terminal_recovery_count": 0,
+    "yaw_settle_success": true,
+    "yaw_settle_steps": 32,
+    "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_3_close/episode_0001/2/8",
+    "elapsed_wall_time_s": 17.72492742538452,
+    "replay_trajectory_path": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_3_close/episode_0001/2/8/replay/trajectory.jsonl",
+    "replay_frame_count": 486
+  },
+  "handoff": {
+    "failure_report": {
+      "nav_xy": [
+        0.8726335763931274,
+        0.22661711275577545
+      ],
+      "grid_index": [
+        154,
+        227
+      ],
+      "goal_distance_m": 0.1613653856904449,
+      "goal_tolerance_m": 0.18,
+      "goal_tolerance_source": "nav_result.position_acceptance_tolerance",
+      "nav_final_position_reached": true,
+      "clearance_radius_m": 0.25,
+      "boundary_clearance_m": 2.343686652183534,
+      "raw_cell_occupied": false,
+      "clearance_cell_occupied": true,
+      "map_json": "/home/light/workspace/arm_vla/source/scene/nav_maps/839920/map.json"
+    }
+  },
+  "task_json": "/home/light/workspace/arm_vla/outputs/random_tasks/apple_video_3_close/apple_seed_0008.json",
+  "updated_at": 1780849148.037861,
+  "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_3_close/episode_0001/2/8"
+}
