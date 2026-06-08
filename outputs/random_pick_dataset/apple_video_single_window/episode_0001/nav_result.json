@@ -3,24 +3,24 @@
   "success": true,
   "failure_reason": "",
   "final_base_pose_world": {
-    "x": 1.2349615097045898,
-    "y": 0.9120820760726929,
-    "z": 0.3336052894592285,
-    "yaw": 1.1890232267094245,
+    "x": 1.2261812686920166,
+    "y": 1.3839460611343384,
+    "z": 0.33397987484931946,
+    "yaw": 1.5208735084128868,
     "quat_wxyz": [
-      0.8284035921096802,
-      -0.0034705372527241707,
-      0.006260131951421499,
-      0.5600861310958862
+      0.7245156764984131,
+      -0.005082716234028339,
+      0.004617489408701658,
+      0.6892241835594177
     ]
   },
   "goal_xyyaw": [
-    1.2222247123549708,
-    0.9101733139755245,
-    2.761086276477428
+    1.2193606726667285,
+    1.3997054059445264,
+    2.7985687131690895
   ],
-  "final_goal_distance": 0.012879028669463014,
-  "yaw_error": 1.572063049768004,
+  "final_goal_distance": 0.01717199694230627,
+  "yaw_error": 1.2776952047562027,
   "goal_tolerance": 0.15,
   "goal_yaw_tolerance": 3.141592653589793,
   "terminal_position_tolerance": 0.08,
@@ -35,19 +35,19 @@
   "base_stable_linear_tolerance": 0.06,
   "base_stable_angular_tolerance": 0.2,
   "final_body_velocity": {
-    "vx": 0.006508117076009512,
-    "vy": -0.008478254079818726,
-    "wz": -0.025943011045455933
+    "vx": -0.010089937597513199,
+    "vy": 0.0012137619778513908,
+    "wz": -0.0039610955864191055
   },
-  "path_length": 7.092054548784288,
+  "path_length": 7.601005755184479,
   "timeout": false,
   "stall_detected": false,
   "yaw_align_stall_detected": false,
   "terminal_recovery_count": 0,
   "yaw_settle_success": true,
-  "yaw_settle_steps": 80,
+  "yaw_settle_steps": 74,
   "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_single_window/episode_0001/2/8",
-  "elapsed_wall_time_s": 20.120945930480957,
+  "elapsed_wall_time_s": 22.701942682266235,
   "replay_trajectory_path": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_single_window/episode_0001/2/8/replay/trajectory.jsonl",
-  "replay_frame_count": 544
+  "replay_frame_count": 572
 }

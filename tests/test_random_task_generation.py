@@ -163,6 +163,36 @@ class RandomTaskGenerationTest(unittest.TestCase):
         self.assertEqual(generation["base_goal_offset_xy"], [0.35, 0.0])
         self.assertFalse(generation["path_heading_filter"]["enabled"])
 
+    def test_object_offset_edge_bias_respects_selected_edge_clearance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            map_json = self._write_temp_map(tmpdir)
+            base_task = {
+                "nav_map": map_json,
+                "start": {"x": 0.1, "y": 0.1, "yaw": 0.0},
+                "pick": {"object_prim_path": "/World/apple"},
+            }
+            task = generate_random_pick_task(
+                base_task,
+                seed=7,
+                spawn_region=SpawnRegion(
+                    x_min=0.86,
+                    x_max=0.96,
+                    y_min=0.9,
+                    y_max=1.6,
+                    table_z=0.82,
+                ),
+                edge_margin=0.12,
+                edge_min_clearance=0.03,
+                base_goal_mode="object_offset",
+                base_goal_offset_xy=(0.28, -0.08),
+                clearance_radius=0.0,
+                min_boundary_clearance=0.0,
+            )
+
+        edge_sampling = task["randomization"]["object_edge_sampling"]
+        self.assertGreaterEqual(edge_sampling["selected_edge_distance_m"], 0.03)
+        self.assertAlmostEqual(task["pick"]["object_pose_world"]["z"], 0.82)
+
 
 if __name__ == "__main__":
     unittest.main()

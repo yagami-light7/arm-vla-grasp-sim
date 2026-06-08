@@ -55,6 +55,8 @@ class Go2LocomotionAdapter:
         self.gripper_joint_ids, _ = self.robot.find_joints(GRIPPER_JOINT_NAMES, preserve_order=True)
         self.ee_body_ids, _ = self.robot.find_bodies(["arm_link6"])
         self._command = (0.0, 0.0, 0.0)
+        self._arm_joint_target = None
+        self._gripper_joint_target = None
         self._last_actions = None
 
     def reset_to_pose(self, x: float, y: float, yaw: float) -> None:
@@ -107,6 +109,16 @@ class Go2LocomotionAdapter:
 
         self._command = float(vx), float(vy), float(wz)
 
+    def set_arm_joint_target(self, target: Any | None) -> None:
+        """Optionally hold arm joints while the locomotion policy steps."""
+
+        self._arm_joint_target = target
+
+    def set_gripper_joint_target(self, target: Any | None) -> None:
+        """Optionally hold gripper joints while the locomotion policy steps."""
+
+        self._gripper_joint_target = target
+
     def step(self) -> Any:
         """Inject the command term, run policy inference, and advance simulation."""
 
@@ -121,7 +133,15 @@ class Go2LocomotionAdapter:
         if hasattr(self.base_cmd_term, "heading_target"):
             self.base_cmd_term.heading_target[:] = 0.0
         if self.arm_term is not None:
-            self.arm_term.command_buffer[:] = 0.0
+            if self._arm_joint_target is None:
+                self.arm_term.command_buffer[:] = 0.0
+            else:
+                arm_target = torch.as_tensor(
+                    self._arm_joint_target,
+                    dtype=torch.float32,
+                    device=self.arm_term.command_buffer.device,
+                ).reshape(1, -1)
+                self.arm_term.command_buffer[:, : arm_target.shape[1]] = arm_target
 
         self.observations = self.env.get_observations()
         with torch.inference_mode():
@@ -129,8 +149,16 @@ class Go2LocomotionAdapter:
             self._last_actions = actions.detach()
             self.observations, _, _, _ = self.env.step(actions)
             if len(self.gripper_joint_ids) == 2:
-                closed = torch.zeros((1, 2), dtype=torch.float32, device=self.runtime.device)
-                self.robot.set_joint_position_target(closed, joint_ids=self.gripper_joint_ids)
+                gripper_target = (
+                    torch.zeros((1, 2), dtype=torch.float32, device=self.runtime.device)
+                    if self._gripper_joint_target is None
+                    else torch.as_tensor(
+                        self._gripper_joint_target,
+                        dtype=torch.float32,
+                        device=self.runtime.device,
+                    ).reshape(1, -1)
+                )
+                self.robot.set_joint_position_target(gripper_target, joint_ids=self.gripper_joint_ids)
         return self.observations
 
     def settle(self, steps: int = 120) -> None:

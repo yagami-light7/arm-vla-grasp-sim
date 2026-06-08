@@ -514,7 +514,11 @@ def resolve_base_and_tcp_matrices(stage, robot_root_path: str) -> tuple[dict, di
 
 
 def safe_numpy(value) -> np.ndarray:
-    """把 Isaac 返回的数据转成一维 numpy array。"""
+    """把 Isaac / Isaac Lab 返回的数据转成一维 CPU numpy array。"""
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
     arr = np.asarray(value)
     if arr.ndim > 1 and arr.shape[0] == 1:
         arr = arr[0]

@@ -104,6 +104,19 @@ def show_grasp_trajectory() -> bool:
     return env_bool("GO2_X5_SHOW_GRASP_TRAJECTORY", False)
 
 
+def safe_numpy(value) -> np.ndarray:
+    """Convert Isaac/Isaac Lab array-like values to a 1-D CPU numpy array."""
+
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    arr = np.asarray(value)
+    if arr.ndim > 1 and arr.shape[0] == 1:
+        arr = arr[0]
+    return arr.astype(float, copy=False)
+
+
 def load_grasp_plan() -> dict:
     """读取分段抓取计划。"""
     if not GRASP_PLAN_JSON.exists():
@@ -455,7 +468,7 @@ def draw_motion_segments(stage, segments):
 
 async def settle_arm_to_start(world, robot, arm_indices, q_start, label: str):
     """执行某段轨迹前，平滑移动到该段起点，避免规划状态和当前仿真状态有小偏差。"""
-    q_full_initial = np.asarray(robot.get_joint_positions(), dtype=float).copy()
+    q_full_initial = safe_numpy(robot.get_joint_positions()).copy()
     q_arm_initial = q_full_initial[arm_indices].copy()
     q_start = np.asarray(q_start, dtype=float)
 
@@ -468,7 +481,7 @@ async def settle_arm_to_start(world, robot, arm_indices, q_start, label: str):
         s = smoothstep5(u)
         q_target = (1.0 - s) * q_arm_initial + s * q_start
 
-        q_full_now = np.asarray(robot.get_joint_positions(), dtype=float).copy()
+        q_full_now = safe_numpy(robot.get_joint_positions()).copy()
         action = make_partial_action(q_target, arm_indices, q_full_now)
 
         robot.apply_action(action)
@@ -513,14 +526,14 @@ async def execute_motion_segment(world, robot, arm_indices, segment):
         if step % command_period_steps == 0 or step == num_steps - 1:
             q_target = sample_cubic_hermite(time_from_start, q_traj, qd_traj, t)
 
-        q_full_now = np.asarray(robot.get_joint_positions(), dtype=float).copy()
+        q_full_now = safe_numpy(robot.get_joint_positions()).copy()
         action = make_partial_action(q_target, arm_indices, q_full_now)
 
         robot.apply_action(action)
         world.step(render=True)
         await omni.kit.app.get_app().next_update_async()
 
-        q_full_actual = np.asarray(robot.get_joint_positions(), dtype=float)
+        q_full_actual = safe_numpy(robot.get_joint_positions())
         q_actual = q_full_actual[arm_indices]
         error = float(np.linalg.norm(q_actual - q_target))
 
@@ -606,7 +619,7 @@ async def execute_return_home_motion(world, robot, arm_indices, q_home):
     """抓取流程结束后，用关节空间 S 曲线回到任务开始时的 home pose。"""
     name = "return_home"
     q_home = np.asarray(q_home, dtype=float)
-    q_full_start = np.asarray(robot.get_joint_positions(), dtype=float).copy()
+    q_full_start = safe_numpy(robot.get_joint_positions()).copy()
     q_start = q_full_start[arm_indices].copy()
 
     max_delta = float(np.max(np.abs(q_home - q_start)))
@@ -640,13 +653,13 @@ async def execute_return_home_motion(world, robot, arm_indices, q_home):
             s = smoothstep5(u)
             q_target = (1.0 - s) * q_start + s * q_home
 
-        q_full_now = np.asarray(robot.get_joint_positions(), dtype=float).copy()
+        q_full_now = safe_numpy(robot.get_joint_positions()).copy()
         action = make_partial_action(q_target, arm_indices, q_full_now)
         robot.apply_action(action)
         world.step(render=True)
         await omni.kit.app.get_app().next_update_async()
 
-        q_actual = np.asarray(robot.get_joint_positions(), dtype=float)[arm_indices]
+        q_actual = safe_numpy(robot.get_joint_positions())[arm_indices]
         error = float(np.linalg.norm(q_actual - q_target))
 
         log["time"].append(float(t))
@@ -689,14 +702,14 @@ async def wait_until_arm_reaches_target(world, robot, arm_indices, q_target, lab
     }
 
     for step in range(max_steps):
-        q_full_now = np.asarray(robot.get_joint_positions(), dtype=float).copy()
+        q_full_now = safe_numpy(robot.get_joint_positions()).copy()
         action = make_partial_action(q_target, arm_indices, q_full_now)
 
         robot.apply_action(action)
         world.step(render=True)
         await omni.kit.app.get_app().next_update_async()
 
-        q_full_actual = np.asarray(robot.get_joint_positions(), dtype=float)
+        q_full_actual = safe_numpy(robot.get_joint_positions())
         q_actual = q_full_actual[arm_indices]
         error = float(np.linalg.norm(q_actual - q_target))
 
@@ -727,14 +740,14 @@ async def hold_arm_target(world, robot, arm_indices, q_arm_hold, duration_s: flo
     hold_steps = max(1, int(duration_s / SIM_DT))
 
     for step in range(hold_steps):
-        q_full_now = np.asarray(robot.get_joint_positions(), dtype=float).copy()
+        q_full_now = safe_numpy(robot.get_joint_positions()).copy()
         action = make_partial_action(q_arm_hold, arm_indices, q_full_now)
         robot.apply_action(action)
         world.step(render=True)
         await omni.kit.app.get_app().next_update_async()
 
         if step == 0 or step == hold_steps - 1:
-            q_actual = np.asarray(robot.get_joint_positions(), dtype=float)[arm_indices]
+            q_actual = safe_numpy(robot.get_joint_positions())[arm_indices]
             error = float(np.linalg.norm(q_actual - q_arm_hold))
             print(f"[hold_arm:{label}] step={step:03d}, joint_error={error:.6f}")
 
@@ -751,7 +764,7 @@ async def execute_gripper_segment(
     name = segment["name"]
     q_target = np.asarray(segment["target_position"], dtype=float)
 
-    q_full_start = np.asarray(robot.get_joint_positions(), dtype=float).copy()
+    q_full_start = safe_numpy(robot.get_joint_positions()).copy()
     q_start = q_full_start[gripper_indices].copy()
 
     num_steps = max(2, int(GRIPPER_MOVE_DURATION / SIM_DT))
@@ -789,7 +802,7 @@ async def execute_gripper_segment(
             s = smoothstep5(u)
             q_cmd = (1.0 - s) * q_start + s * q_target
 
-        q_full_now = np.asarray(robot.get_joint_positions(), dtype=float).copy()
+        q_full_now = safe_numpy(robot.get_joint_positions()).copy()
         apply_gripper_command_with_arm_hold(
             robot,
             q_cmd,
@@ -801,7 +814,7 @@ async def execute_gripper_segment(
         world.step(render=True)
         await omni.kit.app.get_app().next_update_async()
 
-        q_full_actual = np.asarray(robot.get_joint_positions(), dtype=float)
+        q_full_actual = safe_numpy(robot.get_joint_positions())
         q_actual = q_full_actual[gripper_indices]
         error = float(np.linalg.norm(q_actual - q_cmd))
 
@@ -814,7 +827,7 @@ async def execute_gripper_segment(
 
     hold_steps = int(GRIPPER_HOLD_DURATION / SIM_DT)
     for _ in range(hold_steps):
-        q_full_now = np.asarray(robot.get_joint_positions(), dtype=float).copy()
+        q_full_now = safe_numpy(robot.get_joint_positions()).copy()
         apply_gripper_command_with_arm_hold(
             robot,
             q_target,
@@ -826,7 +839,7 @@ async def execute_gripper_segment(
         world.step(render=True)
         await omni.kit.app.get_app().next_update_async()
 
-    q_final = np.asarray(robot.get_joint_positions(), dtype=float)[gripper_indices]
+    q_final = safe_numpy(robot.get_joint_positions())[gripper_indices]
     final_error = float(np.linalg.norm(q_final - q_target))
 
     log["final_q_gripper"] = q_final.tolist()
@@ -870,7 +883,7 @@ async def hold_final(world, robot, segments, arm_indices):
     q_final = np.asarray(last_motion["trajectory"]["q"][-1], dtype=float)
     hold_steps = int(FINAL_HOLD_DURATION / SIM_DT)
     for _ in range(hold_steps):
-        q_full_now = np.asarray(robot.get_joint_positions(), dtype=float).copy()
+        q_full_now = safe_numpy(robot.get_joint_positions()).copy()
         action = make_partial_action(q_final, arm_indices, q_full_now)
         robot.apply_action(action)
         world.step(render=True)

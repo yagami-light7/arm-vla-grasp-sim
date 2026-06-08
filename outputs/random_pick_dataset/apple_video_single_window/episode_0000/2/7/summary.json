@@ -4,24 +4,24 @@
     "success": true,
     "failure_reason": "",
     "final_base_pose_world": {
-      "x": 1.2490853071212769,
-      "y": 1.0757414102554321,
-      "z": 0.3322790563106537,
-      "yaw": 1.346825109159296,
+      "x": 1.2443253993988037,
+      "y": 1.432096242904663,
+      "z": 0.33403587341308594,
+      "yaw": 1.5702819821168101,
       "quat_wxyz": [
-        0.7816978693008423,
-        0.0004741851589642465,
-        0.0012077746214345098,
-        0.6236560940742493
+        0.7072767019271851,
+        -0.00410970114171505,
+        0.004700079560279846,
+        0.7069092988967896
       ]
     },
     "goal_xyyaw": [
-      1.2390223233828677,
-      1.0774117482115866,
-      2.761086276477428
+      1.2263984469698515,
+      1.4488193156794318,
+      2.7985687131690904
     ],
-    "final_goal_distance": 0.010200670105794916,
-    "yaw_error": 1.4142611673181325,
+    "final_goal_distance": 0.024516051607469898,
+    "yaw_error": 1.2282867310522807,
     "goal_tolerance": 0.15,
     "goal_yaw_tolerance": 3.141592653589793,
     "terminal_position_tolerance": 0.08,
@@ -36,21 +36,21 @@
     "base_stable_linear_tolerance": 0.06,
     "base_stable_angular_tolerance": 0.2,
     "final_body_velocity": {
-      "vx": -0.01566915586590767,
-      "vy": 0.017832860350608826,
-      "wz": -0.008684080094099045
+      "vx": -0.01943851076066494,
+      "vy": 0.001926567405462265,
+      "wz": -0.0021270429715514183
     },
-    "path_length": 7.219238815542515,
+    "path_length": 7.647364264517646,
     "timeout": false,
     "stall_detected": false,
     "yaw_align_stall_detected": false,
     "terminal_recovery_count": 0,
     "yaw_settle_success": true,
-    "yaw_settle_steps": 60,
+    "yaw_settle_steps": 71,
     "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_single_window/episode_0000/2/7",
-    "elapsed_wall_time_s": 20.305270433425903,
+    "elapsed_wall_time_s": 24.14527463912964,
     "replay_trajectory_path": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_single_window/episode_0000/2/7/replay/trajectory.jsonl",
-    "replay_frame_count": 531
+    "replay_frame_count": 573
   },
   "task_json": "/home/light/workspace/arm_vla/outputs/random_tasks/apple_video_single_window/apple_seed_0007.json",
   "success": true,
@@ -59,19 +59,19 @@
   "handoff": {
     "map_check": {
       "nav_xy": [
-        1.2490853071212769,
-        1.0757414102554321
+        1.2443253993988037,
+        1.432096242904663
       ],
       "grid_index": [
-        137,
+        130,
         234
       ],
-      "goal_distance_m": 0.010200670105794916,
+      "goal_distance_m": 0.024516051607469898,
       "goal_tolerance_m": 0.18,
       "goal_tolerance_source": "nav_result.position_acceptance_tolerance",
       "nav_final_position_reached": true,
       "clearance_radius_m": 0.2,
-      "boundary_clearance_m": 1.9672349214553844,
+      "boundary_clearance_m": 1.9719948291778575,
       "raw_cell_occupied": false,
       "clearance_cell_occupied": false,
       "map_json": "/home/light/workspace/arm_vla/source/scene/nav_maps/839920/map.json"
@@ -84,82 +84,39 @@
       "object_prim_exists": true
     },
     "object_visibility": {
-      "applied": true,
-      "kept_object_prim_path": "/World/apple",
-      "shown_paths": [
-        "/World/apple",
-        "/World/apple/Looks",
-        "/World/apple/Apple_M_Apple_0",
-        "/World/apple/Apple_M_Apple_0/Apple_M_Apple_0"
-      ],
-      "hidden_paths": [
-        "/World/apple_01",
-        "/World/apple_01/Looks",
-        "/World/apple_01/Apple_M_Apple_0",
-        "/World/apple_01/Apple_M_Apple_0/Apple_M_Apple_0",
-        "/World/apple_02",
-        "/World/apple_02/Looks",
-        "/World/apple_02/Apple_M_Apple_0",
-        "/World/apple_02/Apple_M_Apple_0/Apple_M_Apple_0",
-        "/World/orange",
-        "/World/orange/Looks",
-        "/World/orange/Orange_defaultMat_0",
-        "/World/orange/Orange_defaultMat_0/Orange_defaultMat_0",
-        "/World/orange_01",
-        "/World/orange_01/Looks",
-        "/World/orange_01/Orange_defaultMat_0",
-        "/World/orange_01/Orange_defaultMat_0/Orange_defaultMat_0",
-        "/World/bottle",
-        "/World/bottle/Looks",
-        "/World/bottle/geometry_0",
-        "/World/bottle/geometry_0/geometry_0"
-      ]
+      "applied": false,
+      "skipped": true,
+      "reason": "randomized_object_stage_already_prepared",
+      "preserves_current_physics_state": true,
+      "object_prim_path": "/World/apple"
     },
     "object_pose": {
-      "applied": true,
-      "object_prim_path": "/World/apple",
-      "pose_world": {
-        "x": 0.9390223233828676,
-        "y": 1.1974117482115867,
-        "z": 0.82,
-        "yaw": -1.1229667425754801,
-        "roll": 0.0,
-        "pitch": 0.0
-      },
-      "quaternion_wxyz": [
-        0.8464662328021156,
-        0.0,
-        0.0,
-        -0.5324424069566535
-      ],
-      "xform_op_order": [
-        "xformOp:translate",
-        "xformOp:orient",
-        "xformOp:scale",
-        "xformOp:rotateX:unitsResolve"
-      ],
-      "rigid_body_velocity_zeroed_count": 1
+      "applied": false,
+      "skipped": true,
+      "reason": "randomized_object_stage_already_prepared",
+      "preserves_current_physics_state": true,
+      "object_prim_path": "/World/apple"
     },
     "restore": {
       "requested_root_pose": {
-        "x": 1.2490853071212769,
-        "y": 1.0757414102554321,
-        "z": 0.3322790563106537,
-        "yaw": 1.346825109159296
+        "x": 1.2443253993988037,
+        "y": 1.432096242904663,
+        "z": 0.33403587341308594,
+        "yaw": 1.5702819821168101
       },
       "settled_root": {
         "position_xyz": [
-          1.2490853071212769,
-          1.0757414102554321,
-          0.3322790563106537
+          1.2443253993988037,
+          1.432096242904663,
+          0.33403587341308594
         ],
         "quaternion_wxyz": [
-          0.7816980481147766,
-          -9.313225746154785e-10,
-          -8.030838216654956e-10,
-          0.6236572861671448
+          0.7072886824607849,
+          4.656612873077393e-10,
+          1.1868905858136714e-10,
+          0.7069249749183655
         ],
-        "yaw": 1.3468253732117796,
+        "yaw": 1.5702821672019422,
         "linear_velocity_xyz": [
           0.0,
           0.0,
@@ -175,20 +132,20 @@
       },
       "settle_steps": 120,
       "xy_error_m": 0.0,
-      "yaw_error_rad": 2.6405248387817437e-07,
+      "yaw_error_rad": 1.8508513210946376e-07,
       "stable": true
     },
     "state_export": {
       "state_json": "/tmp/go2_x5_isaac_state.json",
       "base_frame_path": "/World/go2_x5/arm_base_link",
       "arm_base_position_xyz": [
-        1.2757377624511719,
-        1.192744255065918,
-        0.38227909803390503
+        1.244387149810791,
+        1.5520962476730347,
+        0.3840359151363373
       ],
-      "arm_base_yaw": 1.3468251745124702,
-      "arm_base_to_nav_root_xy_m": 0.12000007945355154,
-      "arm_base_to_nav_root_yaw_error_rad": 6.535317442768473e-08,
+      "arm_base_yaw": 1.5702819985712482,
+      "arm_base_to_nav_root_xy_m": 0.12000002065634231,
+      "arm_base_to_nav_root_yaw_error_rad": 1.6454437812285505e-08,
       "world_collision_cuboids": 16
     },
     "target": {
@@ -198,51 +155,51 @@
       "target_workspace_base": {
         "pregrasp": {
           "position_xyz": [
-            -0.047650227864045304,
-            0.24731889142843394,
-            0.4417869528376967
+            -0.01956268099215475,
+            0.2530362552835256,
+            0.43489888999050513
           ],
           "quaternion_wxyz": [
-            0.6367150980264714,
+            0.6793078274870739,
             0.0,
             0.0,
-            0.7710991401532885
+            0.733853442803665
           ],
-          "xy_radius_m": 0.25186738231236877,
-          "radius_3d_m": 0.5085399590695919,
-          "z_m": 0.4417869528376967
+          "xy_radius_m": 0.25379134141162174,
+          "radius_3d_m": 0.503534596120747,
+          "z_m": 0.43489888999050513
         },
         "grasp": {
           "position_xyz": [
-            -0.06656900465307349,
-            0.34551298435059974,
-            0.4417869528376967
+            -0.027270856095113132,
+            0.35273873286849905,
+            0.43489888999050513
           ],
           "quaternion_wxyz": [
-            0.6367150980264714,
+            0.6793078274870739,
             0.0,
             0.0,
-            0.7710991401532885
+            0.733853442803665
           ],
-          "xy_radius_m": 0.3518673823123688,
-          "radius_3d_m": 0.5647887803710127,
-          "z_m": 0.4417869528376967
+          "xy_radius_m": 0.3537913414116218,
+          "radius_3d_m": 0.5606294299916909,
+          "z_m": 0.43489888999050513
         },
         "lift": {
           "position_xyz": [
-            -0.06656900465307349,
-            0.34551298435059974,
-            0.5417869528376967
+            -0.027270856095113132,
+            0.35273873286849905,
+            0.5348988899905052
           ],
           "quaternion_wxyz": [
-            0.6367150980264714,
+            0.6793078274870739,
             0.0,
             0.0,
-            0.7710991401532885
+            0.733853442803665
           ],
-          "xy_radius_m": 0.3518673823123688,
-          "radius_3d_m": 0.6460214833893029,
-          "z_m": 0.5417869528376967
+          "xy_radius_m": 0.3537913414116218,
+          "radius_3d_m": 0.6413151610330986,
+          "z_m": 0.5348988899905052
         },
         "warnings": [
           "grasp 在 arm_base_link 上方较高，top-down 姿态可能难以规划。"
@@ -256,14 +213,14 @@
       "num_segments": 4,
       "num_motion_segments": 2,
       "all_motion_segments_success": true,
-      "total_motion_duration_s": 4.024465376045555,
+      "total_motion_duration_s": 3.7452103580581024,
       "final_q_arm": [
-        -0.015193510800600052,
-        0.008035664446651936,
-        0.012433882802724838,
-        0.004168998915702105,
-        0.0041734459809958935,
-        0.0356358177959919
+        -0.004657894838601351,
+        0.002014796482399106,
+        0.01407321635633707,
+        0.010569192469120026,
+        -0.014398422092199326,
+        0.004082915373146534
       ],
       "grasp_mode": "side",
       "side_grasp_plan_vertical_lift": false,
@@ -276,51 +233,51 @@
       "target_workspace_base": {
         "pregrasp": {
           "position_xyz": [
-            -0.047650227864045304,
-            0.24731889142843394,
-            0.4417869528376967
+            -0.01956268099215475,
+            0.2530362552835256,
+            0.43489888999050513
           ],
           "quaternion_wxyz": [
-            0.6367150980264714,
+            0.6793078274870739,
             0.0,
             0.0,
-            0.7710991401532885
+            0.733853442803665
           ],
-          "xy_radius_m": 0.25186738231236877,
-          "radius_3d_m": 0.5085399590695919,
-          "z_m": 0.4417869528376967
+          "xy_radius_m": 0.25379134141162174,
+          "radius_3d_m": 0.503534596120747,
+          "z_m": 0.43489888999050513
         },
         "grasp": {
           "position_xyz": [
-            -0.06656900465307349,
-            0.34551298435059974,
-            0.4417869528376967
+            -0.027270856095113132,
+            0.35273873286849905,
+            0.43489888999050513
           ],
           "quaternion_wxyz": [
-            0.6367150980264714,
+            0.6793078274870739,
             0.0,
             0.0,
-            0.7710991401532885
+            0.733853442803665
           ],
-          "xy_radius_m": 0.3518673823123688,
-          "radius_3d_m": 0.5647887803710127,
-          "z_m": 0.4417869528376967
+          "xy_radius_m": 0.3537913414116218,
+          "radius_3d_m": 0.5606294299916909,
+          "z_m": 0.43489888999050513
         },
         "lift": {
           "position_xyz": [
-            -0.06656900465307349,
-            0.34551298435059974,
-            0.5417869528376967
+            -0.027270856095113132,
+            0.35273873286849905,
+            0.5348988899905052
           ],
           "quaternion_wxyz": [
-            0.6367150980264714,
+            0.6793078274870739,
             0.0,
             0.0,
-            0.7710991401532885
+            0.733853442803665
           ],
-          "xy_radius_m": 0.3518673823123688,
-          "radius_3d_m": 0.6460214833893029,
-          "z_m": 0.5417869528376967
+          "xy_radius_m": 0.3537913414116218,
+          "radius_3d_m": 0.6413151610330986,
+          "z_m": 0.5348988899905052
         },
         "warnings": [
           "grasp 在 arm_base_link 上方较高，top-down 姿态可能难以规划。"
@@ -329,19 +286,19 @@
     },
     "execution_summary": {
       "num_executed_segments": 4,
-      "max_motion_joint_error_norm": 0.0810033352931812,
-      "mean_motion_joint_error_norm": 0.03160933695423093,
-      "final_motion_joint_error_norm": 0.006387821963349908,
-      "max_gripper_error_norm": 0.04737889208155615,
-      "mean_gripper_error_norm": 0.011148208884436028,
+      "max_motion_joint_error_norm": 0.08331712481679322,
+      "mean_motion_joint_error_norm": 0.029817033053087194,
+      "final_motion_joint_error_norm": 0.007091045584309777,
+      "max_gripper_error_norm": 0.05632210333340834,
+      "mean_gripper_error_norm": 0.013964724227451883,
       "grasp_mode": "side",
       "has_lift_segment": false,
       "has_planned_retreat": true,
-      "object_lift_delta_top_z_m": -0.275496380174604,
-      "object_lift_delta_center_z_m": -0.2835392951965332,
+      "object_lift_delta_top_z_m": -0.26861564115988146,
+      "object_lift_delta_center_z_m": -0.27149033546447776,
       "object_lift_success": false,
       "object_lift_success_threshold_m": 0.04,
-      "object_center_displacement_m": 0.5422940294768495,
+      "object_center_displacement_m": 0.5089635255824544,
       "object_retreat_success": true,
       "object_retreat_success_threshold_m": 0.03,
       "require_object_lift_success": false,
@@ -350,6 +307,6 @@
       "abort_reason": null
     }
   },
-  "updated_at": 1780897374.267777,
+  "updated_at": 1780901462.4345179,
   "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_single_window/episode_0000/2/7"
 }

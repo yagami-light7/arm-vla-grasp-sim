@@ -242,13 +242,18 @@ def _prepare_randomized_task_stage(task_json: Path) -> dict:
     """Apply randomized object visibility and pose before replay/grasp."""
 
     from source.data import load_task
-    from scripts.isaac.run_pick_from_nav_result import _apply_object_pose_from_task, _show_only_task_object
+    from scripts.isaac.run_pick_from_nav_result import (
+        RANDOMIZED_OBJECT_STAGE_PREPARED_ENV,
+        _apply_object_pose_from_task,
+        _show_only_task_object,
+    )
 
     task = load_task(task_json)
     report = {
         "object_visibility": _show_only_task_object(task),
         "object_pose": _apply_object_pose_from_task(task),
     }
+    os.environ[RANDOMIZED_OBJECT_STAGE_PREPARED_ENV] = "1"
     print("[standalone] prepared randomized task stage:", report)
     return report
 

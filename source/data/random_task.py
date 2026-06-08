@@ -201,23 +201,53 @@ def _sample_axis_near_edge(
     *,
     edge_margin: float,
     edge_min_clearance: float,
+    support_clearance: float = 0.0,
 ) -> tuple[float, float]:
     """Sample an axis value near one boundary and return distance to that edge."""
 
     width = upper - lower
     if width <= 0.0:
         raise ValueError("spawn axis range must have positive width for edge-biased sampling.")
-    margin = min(float(edge_margin), width)
-    min_clearance = min(max(0.0, float(edge_min_clearance)), margin)
-    if margin <= min_clearance:
+    support_clearance = max(0.0, float(support_clearance))
+    min_clearance = max(0.0, float(edge_min_clearance), support_clearance)
+    max_clearance = min(float(edge_margin), width - support_clearance)
+    if max_clearance < min_clearance:
+        raise ValueError(
+            "spawn axis range is too narrow for edge-biased support clearance: "
+            f"width={width:.3f}, min_clearance={min_clearance:.3f}, support_clearance={support_clearance:.3f}."
+        )
+    if max_clearance <= min_clearance:
         distance = min_clearance
     else:
-        distance = rng.triangular(min_clearance, margin, min_clearance)
+        distance = rng.triangular(min_clearance, max_clearance, min_clearance)
     if edge_name == "min":
         return lower + distance, distance
     if edge_name == "max":
         return upper - distance, distance
     raise ValueError(f"unsupported edge name {edge_name!r}")
+
+
+def _sample_axis_with_support_clearance(
+    rng: random.Random,
+    lower: float,
+    upper: float,
+    *,
+    support_clearance: float,
+) -> float:
+    """Sample one axis while keeping the point away from both interval boundaries."""
+
+    width = upper - lower
+    support_clearance = max(0.0, float(support_clearance))
+    if width == 0.0 and support_clearance == 0.0:
+        return float(lower)
+    if width < 2.0 * support_clearance:
+        raise ValueError(
+            "spawn axis range is too narrow for support clearance: "
+            f"width={width:.3f}, required={2.0 * support_clearance:.3f}."
+        )
+    if width <= 0.0:
+        raise ValueError("spawn axis range must have positive width.")
+    return rng.uniform(lower + support_clearance, upper - support_clearance)
 
 
 def sample_object_pose(
@@ -228,6 +258,7 @@ def sample_object_pose(
     edge_sides: Sequence[str] | None = None,
     edge_margin: float | None = None,
     edge_min_clearance: float = 0.02,
+    object_support_clearance: float = 0.0,
 ) -> ObjectPose:
     """Sample one object pose inside the configured table region."""
 
@@ -240,9 +271,20 @@ def sample_object_pose(
         raise ValueError("yaw_range_deg min must be <= max.")
     edge_side = None
     edge_distance = None
+    support_clearance = max(0.0, float(object_support_clearance))
     if edge_margin is None:
-        x = rng.uniform(spawn_region.x_min, spawn_region.x_max)
-        y = rng.uniform(spawn_region.y_min, spawn_region.y_max)
+        x = _sample_axis_with_support_clearance(
+            rng,
+            spawn_region.x_min,
+            spawn_region.x_max,
+            support_clearance=support_clearance,
+        )
+        y = _sample_axis_with_support_clearance(
+            rng,
+            spawn_region.y_min,
+            spawn_region.y_max,
+            support_clearance=support_clearance,
+        )
     else:
         if edge_margin <= 0.0:
             raise ValueError("edge_margin must be positive when edge-biased sampling is enabled.")
@@ -251,8 +293,18 @@ def sample_object_pose(
             raise ValueError("edge_sides must not be empty when edge-biased sampling is enabled.")
         edge_side = rng.choice(candidate_sides)
         tokens = _edge_tokens(edge_side)
-        x = rng.uniform(spawn_region.x_min, spawn_region.x_max)
-        y = rng.uniform(spawn_region.y_min, spawn_region.y_max)
+        x = _sample_axis_with_support_clearance(
+            rng,
+            spawn_region.x_min,
+            spawn_region.x_max,
+            support_clearance=support_clearance,
+        )
+        y = _sample_axis_with_support_clearance(
+            rng,
+            spawn_region.y_min,
+            spawn_region.y_max,
+            support_clearance=support_clearance,
+        )
         distances: list[float] = []
         for token in tokens:
             axis, edge_name = token.split("_", 1)
@@ -264,6 +316,7 @@ def sample_object_pose(
                     edge_name,
                     edge_margin=edge_margin,
                     edge_min_clearance=edge_min_clearance,
+                    support_clearance=support_clearance,
                 )
             else:
                 y, distance = _sample_axis_near_edge(
@@ -273,6 +326,7 @@ def sample_object_pose(
                     edge_name,
                     edge_margin=edge_margin,
                     edge_min_clearance=edge_min_clearance,
+                    support_clearance=support_clearance,
                 )
             distances.append(distance)
         edge_distance = min(distances) if distances else None
@@ -504,6 +558,7 @@ def generate_random_pick_task(
     edge_sides: Sequence[str] | None = None,
     edge_margin: float | None = 0.12,
     edge_min_clearance: float = 0.02,
+    object_support_clearance: float = 0.0,
     max_path_heading_error: float | None = 1.0,
     path_heading_weight: float = 1.5,
     path_length_weight: float = 0.03,
@@ -570,6 +625,7 @@ def generate_random_pick_task(
             edge_sides=effective_edge_sides,
             edge_margin=edge_margin,
             edge_min_clearance=edge_min_clearance,
+            object_support_clearance=object_support_clearance,
         )
         candidates = generate_base_goal_candidates(
             object_pose,
@@ -613,6 +669,7 @@ def generate_random_pick_task(
                 "edge_sides": list(effective_edge_sides) if edge_margin is not None else [],
                 "edge_margin": float(edge_margin) if edge_margin is not None else None,
                 "edge_min_clearance": float(edge_min_clearance),
+                "object_support_clearance": float(object_support_clearance),
                 **object_pose.edge_report_dict(),
             },
             "base_goal_generation": {
@@ -671,6 +728,7 @@ def write_random_pick_task(
     edge_sides: Sequence[str] | None = None,
     edge_margin: float | None = 0.12,
     edge_min_clearance: float = 0.02,
+    object_support_clearance: float = 0.0,
     max_path_heading_error: float | None = 1.0,
     path_heading_weight: float = 1.5,
     path_length_weight: float = 0.03,
@@ -698,6 +756,7 @@ def write_random_pick_task(
         edge_sides=edge_sides,
         edge_margin=edge_margin,
         edge_min_clearance=edge_min_clearance,
+        object_support_clearance=object_support_clearance,
         max_path_heading_error=max_path_heading_error,
         path_heading_weight=path_heading_weight,
         path_length_weight=path_length_weight,

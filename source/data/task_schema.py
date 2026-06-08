@@ -79,20 +79,76 @@ class PickConfig:
 
 @dataclass(frozen=True)
 class PlaceConfig:
-    """Optional carry-navigation and placement phase."""
+    """Optional placement phase used by contact-only dataset collection."""
 
     enabled: bool = False
     base_goal: Pose2D | None = None
-    place_pose_world: dict[str, Any] | None = None
+    place_pose_world: ObjectPoseWorld | None = None
+    release_height: float = 0.04
+    retreat_height: float = 0.12
+    settle_steps: int = 120
+    place_xy_tolerance: float = 0.10
+    place_z_tolerance: float = 0.08
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "PlaceConfig":
         data = data or {}
         goal_data = data.get("base_goal")
+        pose_data = data.get("place_pose_world")
         return cls(
             enabled=bool(data.get("enabled", False)),
             base_goal=Pose2D.from_dict(goal_data) if goal_data is not None else None,
-            place_pose_world=data.get("place_pose_world"),
+            place_pose_world=ObjectPoseWorld.from_dict(pose_data) if pose_data is not None else None,
+            release_height=float(data.get("release_height", 0.04)),
+            retreat_height=float(data.get("retreat_height", 0.12)),
+            settle_steps=max(0, int(data.get("settle_steps", 120))),
+            place_xy_tolerance=float(data.get("place_xy_tolerance", 0.10)),
+            place_z_tolerance=float(data.get("place_z_tolerance", 0.08)),
+        )
+
+
+@dataclass(frozen=True)
+class CarryConfig:
+    """Contact-only carry controls and verification thresholds."""
+
+    mode: str = "contact"
+    arm_posture: str = "stow"
+    gripper_hold_command: str = "close"
+    max_slip_distance: float = 0.08
+    min_lift_height: float = 0.05
+    object_drop_height_threshold: float = 0.05
+    verify_grasp_steps: int = 60
+    verify_carry_every_steps: int = 10
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "CarryConfig":
+        data = data or {}
+        mode = str(data.get("mode", "contact"))
+        return cls(
+            mode=mode,
+            arm_posture=str(data.get("arm_posture", "stow")),
+            gripper_hold_command=str(data.get("gripper_hold_command", "close")),
+            max_slip_distance=float(data.get("max_slip_distance", 0.08)),
+            min_lift_height=float(data.get("min_lift_height", 0.05)),
+            object_drop_height_threshold=float(data.get("object_drop_height_threshold", 0.05)),
+            verify_grasp_steps=max(1, int(data.get("verify_grasp_steps", 60))),
+            verify_carry_every_steps=max(1, int(data.get("verify_carry_every_steps", 10))),
+        )
+
+
+@dataclass(frozen=True)
+class LoopConfig:
+    """Optional repeated-cycle dataset collection settings."""
+
+    enabled: bool = False
+    num_cycles: int = 1
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "LoopConfig":
+        data = data or {}
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            num_cycles=max(1, int(data.get("num_cycles", 1))),
         )
 
 
@@ -128,6 +184,8 @@ class NavPickTask:
     start: Pose2D
     pick: PickConfig
     place: PlaceConfig = field(default_factory=PlaceConfig)
+    carry: CarryConfig = field(default_factory=CarryConfig)
+    loop: LoopConfig = field(default_factory=LoopConfig)
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     randomization: dict[str, Any] = field(default_factory=dict)
 
@@ -142,6 +200,8 @@ class NavPickTask:
             start=Pose2D.from_dict(data["start"]),
             pick=PickConfig.from_dict(data["pick"]),
             place=PlaceConfig.from_dict(data.get("place")),
+            carry=CarryConfig.from_dict(data.get("carry")),
+            loop=LoopConfig.from_dict(data.get("loop")),
             recording=RecordingConfig.from_dict(data.get("recording")),
             randomization=dict(data.get("randomization") or {}),
         )

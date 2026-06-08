@@ -7,7 +7,7 @@ from argparse import Namespace
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.pipeline.run_random_nav_pick_batch import _parse_args, _pipeline_command
+from scripts.pipeline.run_random_nav_pick_batch import _parse_args, _pipeline_command, _validate_apple_spawn_stability
 
 
 class RandomBatchPipelineTest(unittest.TestCase):
@@ -15,15 +15,51 @@ class RandomBatchPipelineTest(unittest.TestCase):
         with patch("sys.argv", ["run_random_nav_pick_batch.py", "--num-episodes", "1"]):
             args = _parse_args()
 
-        self.assertEqual(tuple(args.table_x_range), (0.90, 0.96))
+        self.assertEqual(tuple(args.table_x_range), (0.88, 0.93))
         self.assertEqual(tuple(args.table_y_range), (0.9, 1.6))
         self.assertAlmostEqual(args.table_z, 0.82)
         self.assertAlmostEqual(args.object_z_offset, 0.0)
+        self.assertAlmostEqual(args.edge_min_clearance, 0.03)
+        self.assertAlmostEqual(args.object_support_clearance, 0.0)
         self.assertEqual(tuple(args.standoff_candidates), (0.50, 0.55, 0.60))
         self.assertEqual(args.base_goal_mode, "object-offset")
-        self.assertEqual(tuple(args.base_goal_offset_xy), (0.35, 0.0))
+        self.assertEqual(tuple(args.base_goal_offset_xy), (0.28, -0.08))
         self.assertTrue(args.ignore_goal_yaw)
         self.assertFalse(args.precompute_nav_first)
+
+    def test_batch_rejects_unstable_apple_xy_support_when_overridden(self) -> None:
+        with patch(
+            "sys.argv",
+            [
+                "run_random_nav_pick_batch.py",
+                "--num-episodes",
+                "1",
+                "--edge-min-clearance",
+                "0.02",
+            ],
+        ):
+            args = _parse_args()
+
+        with self.assertRaisesRegex(ValueError, "too small"):
+            _validate_apple_spawn_stability(args)
+
+        with patch(
+            "sys.argv",
+            [
+                "run_random_nav_pick_batch.py",
+                "--num-episodes",
+                "1",
+                "--table-x-range",
+                "0.90",
+                "0.94",
+                "--object-support-clearance",
+                "0.03",
+            ],
+        ):
+            args = _parse_args()
+
+        with self.assertRaisesRegex(ValueError, "too narrow"):
+            _validate_apple_spawn_stability(args)
 
     def test_batch_command_forwards_video_replay_and_planner_options(self) -> None:
         args = Namespace(

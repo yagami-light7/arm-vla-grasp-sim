@@ -66,6 +66,7 @@ ANGULAR_STABLE_TOLERANCE = 0.10
 HANDOFF_CLEARANCE_M = float(os.environ.get("GO2_X5_HANDOFF_CLEARANCE_M", "0.30"))
 HANDOFF_REPORT_JSON = Path(os.environ.get("GO2_X5_HANDOFF_REPORT", "/tmp/go2_x5_handoff_report.json"))
 DEFAULT_TERRAIN_PRIM_PATH = "/World/scene_collision"
+RANDOMIZED_OBJECT_STAGE_PREPARED_ENV = "GO2_X5_RANDOMIZED_OBJECT_STAGE_PREPARED"
 
 
 class HandoffFailure(RuntimeError):
@@ -154,6 +155,27 @@ def _record_handoff_episode(context: dict) -> bool:
     if env_value is not None:
         return env_value
     return not bool(context.get("no_record", False))
+
+
+def _randomized_object_stage_prepared(context: dict) -> bool:
+    """Return whether this open stage already received randomized object setup."""
+
+    env_value = _env_bool(RANDOMIZED_OBJECT_STAGE_PREPARED_ENV)
+    if env_value is not None:
+        return env_value
+    return bool(context.get("randomized_object_stage_prepared", False))
+
+
+def _skip_repeated_object_stage_prepare_report(task) -> dict:
+    """Stable handoff report entry when upstream already prepared the object."""
+
+    return {
+        "applied": False,
+        "skipped": True,
+        "reason": "randomized_object_stage_already_prepared",
+        "preserves_current_physics_state": True,
+        "object_prim_path": getattr(task.pick, "object_prim_path", None),
+    }
 
 
 def _apply_grasp_policy_env(context: dict) -> None:
@@ -669,8 +691,17 @@ async def main() -> None:
             )
         handoff_report["map_check"] = _validate_handoff_pose(task, nav_result)
         handoff_report["stage_check"] = _validate_open_stage(task, context)
-        handoff_report["object_visibility"] = _show_only_task_object(task)
-        handoff_report["object_pose"] = _apply_object_pose_from_task(task)
+        if _randomized_object_stage_prepared(context):
+            skip_report = _skip_repeated_object_stage_prepare_report(task)
+            handoff_report["object_visibility"] = dict(skip_report)
+            handoff_report["object_pose"] = dict(skip_report)
+            print(
+                "[randomize] skipped repeated object stage preparation:",
+                skip_report,
+            )
+        else:
+            handoff_report["object_visibility"] = _show_only_task_object(task)
+            handoff_report["object_pose"] = _apply_object_pose_from_task(task)
         world, robot = await _initialize_robot()
         handoff_report["restore"] = await _restore_and_settle(world, robot, nav_result)
         pipeline = GraspPipeline(recorder=recorder)

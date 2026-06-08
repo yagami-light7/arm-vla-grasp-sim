@@ -29,6 +29,9 @@ from source.data.random_task import (
 DEFAULT_ISAAC_PYTHON = "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python"
 DEFAULT_CHECKPOINT = "checkpoints/go2_x5/flat/model_8500.pt"
 DEFAULT_ISAACLAB_LAUNCHER = "/home/light/workspace/IsaacLab/isaaclab.sh"
+DEFAULT_APPLE_OBJECT_Z_OFFSET_M = 0.0
+DEFAULT_APPLE_EDGE_MIN_CLEARANCE_M = 0.03
+DEFAULT_APPLE_SUPPORT_CLEARANCE_M = 0.0
 
 
 def _project_path(raw_path: str | Path) -> Path:
@@ -106,10 +109,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--side-grasp-fallback-retreat", action="store_true")
     parser.add_argument("--skip-grasp-on-nav-failure", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--continue-on-failure", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--table-x-range", type=float, nargs=2, default=(0.90, 0.96), metavar=("X_MIN", "X_MAX"))
-    parser.add_argument("--table-y-range", type=float, nargs=2, default=(1.0, 1.5), metavar=("Y_MIN", "Y_MAX"))
+    parser.add_argument("--table-x-range", type=float, nargs=2, default=(0.88, 0.93), metavar=("X_MIN", "X_MAX"))
+    parser.add_argument("--table-y-range", type=float, nargs=2, default=(0.9, 1.6), metavar=("Y_MIN", "Y_MAX"))
     parser.add_argument("--table-z", type=float, default=0.82, help="World z written directly to generated pick.object_pose_world.z.")
-    parser.add_argument("--object-z-offset", type=float, default=0.0, help="Optional explicit offset added to --table-z.")
+    parser.add_argument(
+        "--object-z-offset",
+        type=float,
+        default=DEFAULT_APPLE_OBJECT_Z_OFFSET_M,
+        help="Optional explicit offset added to --table-z. For the current apple asset, 0.0 keeps the stable center height at z=0.82.",
+    )
     parser.add_argument("--object-prim-path", default=None)
     parser.add_argument("--table-prim-path", default="/World/table")
     parser.add_argument("--yaw-range", type=float, nargs=2, default=(0.0, 360.0), metavar=("DEG_MIN", "DEG_MAX"))
@@ -167,7 +175,18 @@ def _parse_args() -> argparse.Namespace:
         help="Optional edge sides such as x_max y_max x_max_y_max. Defaults derive from approach angles.",
     )
     parser.add_argument("--edge-margin", type=float, default=0.12, help="Width of the near-edge sampling band in meters.")
-    parser.add_argument("--edge-min-clearance", type=float, default=0.02, help="Minimum object-center clearance from the selected edge.")
+    parser.add_argument(
+        "--edge-min-clearance",
+        type=float,
+        default=DEFAULT_APPLE_EDGE_MIN_CLEARANCE_M,
+        help="Minimum apple-center clearance from the selected table edge. The default avoids reset samples at ~2cm from the edge.",
+    )
+    parser.add_argument(
+        "--object-support-clearance",
+        type=float,
+        default=DEFAULT_APPLE_SUPPORT_CLEARANCE_M,
+        help="Optional minimum apple-center clearance from every sampled table-region boundary.",
+    )
     parser.add_argument("--goal-yaw-tolerance", type=float, default=0.20)
     parser.add_argument("--terminal-yaw-tolerance", type=float, default=0.08)
     parser.add_argument("--final-yaw-tolerance-margin", type=float, default=0.20)
@@ -472,10 +491,41 @@ def _format_seed(seed: int) -> str:
     return f"{seed:04d}" if seed >= 0 else f"neg{abs(seed):04d}"
 
 
+def _validate_apple_spawn_stability(args: argparse.Namespace) -> None:
+    """Reject spawn settings that are likely to make the apple fall at reset."""
+
+    edge_min_clearance = float(args.edge_min_clearance)
+    if edge_min_clearance < 0.0:
+        raise ValueError("--edge-min-clearance must be non-negative.")
+    if bool(args.edge_biased) and edge_min_clearance < DEFAULT_APPLE_EDGE_MIN_CLEARANCE_M:
+        raise ValueError(
+            "--edge-min-clearance is too small for apple reset stability. "
+            f"got={edge_min_clearance:.3f}, required_min={DEFAULT_APPLE_EDGE_MIN_CLEARANCE_M:.3f}."
+        )
+    support_clearance = float(args.object_support_clearance)
+    if support_clearance < 0.0:
+        raise ValueError("--object-support-clearance must be non-negative.")
+    if bool(args.edge_biased) and edge_min_clearance < support_clearance:
+        raise ValueError(
+            "--edge-min-clearance must be >= --object-support-clearance so edge-biased samples remain supported. "
+            f"edge_min_clearance={edge_min_clearance:.3f}, "
+            f"object_support_clearance={support_clearance:.3f}."
+        )
+    x_width = float(args.table_x_range[1]) - float(args.table_x_range[0])
+    y_width = float(args.table_y_range[1]) - float(args.table_y_range[0])
+    required_width = 2.0 * support_clearance
+    if x_width < required_width or y_width < required_width:
+        raise ValueError(
+            "table spawn range is too narrow for --object-support-clearance. "
+            f"x_width={x_width:.3f}, y_width={y_width:.3f}, required_each_axis={required_width:.3f}."
+        )
+
+
 def main() -> int:
     args = _parse_args()
     if args.num_episodes <= 0:
         raise ValueError("--num-episodes must be positive.")
+    _validate_apple_spawn_stability(args)
     if args.ignore_goal_yaw:
         args.goal_yaw_tolerance = math.pi
         args.terminal_yaw_tolerance = math.pi
@@ -543,6 +593,7 @@ def main() -> int:
                 edge_sides=args.edge_sides,
                 edge_margin=args.edge_margin if args.edge_biased else None,
                 edge_min_clearance=args.edge_min_clearance,
+                object_support_clearance=args.object_support_clearance,
                 max_path_heading_error=args.max_path_heading_error if args.max_path_heading_error >= 0.0 else None,
                 path_heading_weight=args.path_heading_weight,
                 path_length_weight=args.path_length_weight,

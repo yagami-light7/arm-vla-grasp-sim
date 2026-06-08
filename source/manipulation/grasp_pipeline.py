@@ -106,6 +106,7 @@ class GraspPipeline:
     def plan(self, task: GraspTask) -> dict[str, Any]:
         """Plan arm-only grasp segments with the external cuRobo runtime."""
 
+        Path(task.plan_json).unlink(missing_ok=True)
         if task.use_planner_server and self._try_server(task):
             return self._read_json(task.plan_json)
         env = os.environ.copy()
@@ -116,6 +117,9 @@ class GraspPipeline:
                 "GO2_X5_STATE_JSON": task.state_json,
                 "GO2_X5_TARGET_JSON": task.target_json,
                 "GO2_X5_PLAN_JSON": task.plan_json,
+                "GO2_X5_REQUIRE_OBJECT_LIFT_SUCCESS": os.environ.get("GO2_X5_REQUIRE_OBJECT_LIFT_SUCCESS", "1"),
+                "GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT": os.environ.get("GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT", "1"),
+                "GO2_X5_SIDE_GRASP_FALLBACK_RETREAT": os.environ.get("GO2_X5_SIDE_GRASP_FALLBACK_RETREAT", "0"),
             }
         )
         result = subprocess.run(
