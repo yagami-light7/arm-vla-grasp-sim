@@ -210,16 +210,16 @@ def make_partial_action(target_positions, joint_indices, q_full_current):
     如果不支持，则 fallback 到完整 q_full target，其他关节保持当前值。
     """
     target_positions = np.asarray(target_positions, dtype=float)
-    joint_indices_np = np.asarray(joint_indices, dtype=np.int32)
+    joint_indices_list = [int(index) for index in joint_indices]
 
     try:
         return ArticulationAction(
             joint_positions=target_positions,
-            joint_indices=joint_indices_np,
+            joint_indices=joint_indices_list,
         )
     except TypeError:
         q_full_target = np.asarray(q_full_current, dtype=float).copy()
-        q_full_target[joint_indices] = target_positions
+        q_full_target[joint_indices_list] = target_positions
         return ArticulationAction(joint_positions=q_full_target)
 
 

@@ -176,7 +176,19 @@ class ContactPickPlaceStateMachine:
         if not pick.success:
             return self._fail(pick.failure_reason or "pick_failed", pick.metadata)
 
-        if not self._verify_grasp():
+        pick_summary = pick.metadata.get("state", {}).get("grasp_summary", {})
+        side_retreat_verified = bool(
+            pick_summary.get("execution_backend") == "isaac_lab_contact_runtime"
+            and pick_summary.get("object_retreat_success", False)
+        )
+        if side_retreat_verified:
+            self.summary.update(
+                {
+                    "grasp_verified": True,
+                    "object_lifted": bool(pick_summary.get("object_lift_success", False)),
+                }
+            )
+        elif not self._verify_grasp():
             return self._finalize()
 
         carry_posture = self.runtime.move_to_carry_posture(self.carry_posture_name)

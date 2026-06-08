@@ -10,6 +10,6 @@
     "nav_result_json": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_single_window/episode_0001/nav_result.json",
     "handoff_report_json": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_single_window/episode_0001/handoff_report.json",
     "replay_trajectory": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_single_window/episode_0001/2/8/replay/trajectory.jsonl",
-    "updated_at": 1780901512.0982351
+    "updated_at": 1780921617.3659282
   }
 }

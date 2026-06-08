@@ -376,7 +376,7 @@ def _apply_preset_defaults(args: argparse.Namespace) -> None:
     _set_if_not_supplied(args, "handoff_clearance_radius", 0.20)
     _set_if_not_supplied(args, "settle_steps", 120)
     _set_if_not_supplied(args, "yaw_settle_stable_steps", 15)
-    _set_if_not_supplied(args, "yaw_settle_max_wz", 0.25)
+    _set_if_not_supplied(args, "yaw_settle_max_wz", 0.55)
     args.brisk_nav = True
     args.fast_dwa = True
 
@@ -398,8 +398,9 @@ def _apply_derived_defaults(args: argparse.Namespace) -> None:
 def _handoff_clearance_radius(args: argparse.Namespace) -> float:
     """Return the grasp handoff clearance radius for nav-result validation."""
 
-    if args.handoff_clearance_radius is not None:
-        return float(args.handoff_clearance_radius)
+    handoff_clearance_radius = getattr(args, "handoff_clearance_radius", None)
+    if handoff_clearance_radius is not None:
+        return float(handoff_clearance_radius)
     return max(float(args.inflate_radius), float(args.local_clearance_radius))
 
 

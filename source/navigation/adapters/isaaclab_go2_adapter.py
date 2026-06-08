@@ -50,26 +50,105 @@ class Go2LocomotionAdapter:
         if self.base_cmd_term is None:
             raise RuntimeError("Isaac Lab task is missing the base_velocity command term.")
         self.arm_term = self.runtime.command_manager._terms.get("arm_joint_pos")
+        self.joint_pos_action_term = self.runtime.action_manager._terms.get("joint_pos")
         self.dog_joint_ids, _ = self.robot.find_joints(DOG_JOINT_NAMES, preserve_order=True)
         self.arm_joint_ids, _ = self.robot.find_joints(ARM_JOINT_NAMES, preserve_order=True)
         self.gripper_joint_ids, _ = self.robot.find_joints(GRIPPER_JOINT_NAMES, preserve_order=True)
         self.ee_body_ids, _ = self.robot.find_bodies(["arm_link6"])
+        self.dog_action_indices = self._resolve_action_indices(DOG_JOINT_NAMES)
+        self.arm_action_indices = self._resolve_action_indices(ARM_JOINT_NAMES)
+        self.direct_arm_action_override = False
+        self._base_pose_lock_xyzyaw: tuple[float, float, float, float] | None = None
+        self._dog_joint_lock_target = None
         self._command = (0.0, 0.0, 0.0)
         self._arm_joint_target = None
         self._gripper_joint_target = None
         self._last_actions = None
 
-    def reset_to_pose(self, x: float, y: float, yaw: float) -> None:
-        """Write a root pose and zero root velocity directly to simulation."""
-
+    def _write_root_pose_xyzyaw(self, x: float, y: float, z: float, yaw: float) -> None:
+        """Write a level root pose and zero root velocity directly to simulation."""
         import torch
 
-        current_z = _item(self.robot.data.root_pos_w[0][2])
         quat = yaw_to_quat_wxyz(yaw)
-        pose = torch.tensor([[x, y, current_z, *quat]], dtype=torch.float32, device=self.runtime.device)
+        pose = torch.tensor([[x, y, z, *quat]], dtype=torch.float32, device=self.runtime.device)
         velocity = torch.zeros((1, 6), dtype=torch.float32, device=self.runtime.device)
         self.robot.write_root_pose_to_sim(pose)
         self.robot.write_root_velocity_to_sim(velocity)
+
+    def reset_to_pose(self, x: float, y: float, yaw: float) -> None:
+        """Write a root pose and zero root velocity directly to simulation."""
+
+        current_z = _item(self.robot.data.root_pos_w[0][2])
+        self._write_root_pose_xyzyaw(x, y, current_z, yaw)
+
+    def set_base_pose_lock(self, enabled: bool = True, pose_xyyaw: tuple[float, float, float] | None = None) -> dict[str, Any]:
+        """Pin the floating base to a level world x/y/z/yaw pose during manipulation."""
+
+        if enabled:
+            pose = pose_xyyaw if pose_xyyaw is not None else self.get_base_pose()
+            z = _item(self.robot.data.root_pos_w[0][2])
+            self._base_pose_lock_xyzyaw = (float(pose[0]), float(pose[1]), float(z), float(pose[2]))
+        else:
+            self._base_pose_lock_xyzyaw = None
+        pose_xyzyaw = list(self._base_pose_lock_xyzyaw) if self._base_pose_lock_xyzyaw is not None else None
+        pose_xyyaw_report = (
+            [pose_xyzyaw[0], pose_xyzyaw[1], pose_xyzyaw[3]]
+            if pose_xyzyaw is not None
+            else None
+        )
+        return {
+            "enabled": self._base_pose_lock_xyzyaw is not None,
+            "pose_xyzyaw": pose_xyzyaw,
+            "pose_xyyaw": pose_xyyaw_report,
+        }
+
+    def _apply_base_pose_lock(self) -> None:
+        if self._base_pose_lock_xyzyaw is None:
+            return
+        self._write_root_pose_xyzyaw(*self._base_pose_lock_xyzyaw)
+
+    def set_support_joint_lock(self, enabled: bool = True) -> dict[str, Any]:
+        """Freeze the quadruped support joints during manipulation phases."""
+
+        if enabled:
+            if len(self.dog_joint_ids) != len(DOG_JOINT_NAMES):
+                self._dog_joint_lock_target = None
+            else:
+                self._dog_joint_lock_target = self.robot.data.joint_pos[0, self.dog_joint_ids].detach().clone().reshape(1, -1)
+        else:
+            self._dog_joint_lock_target = None
+        return {
+            "enabled": self._dog_joint_lock_target is not None,
+            "joint_names": list(DOG_JOINT_NAMES) if self._dog_joint_lock_target is not None else [],
+            "joint_ids": [int(index) for index in self.dog_joint_ids] if self._dog_joint_lock_target is not None else [],
+            "action_indices": list(self.dog_action_indices or []),
+        }
+
+    def _apply_support_joint_lock(self) -> None:
+        if self._dog_joint_lock_target is None:
+            return
+        import torch
+
+        target = self._dog_joint_lock_target.to(device=self.runtime.device, dtype=torch.float32)
+        velocity = torch.zeros_like(target)
+        self.robot.set_joint_position_target(target, joint_ids=self.dog_joint_ids)
+        self.robot.write_joint_state_to_sim(target, velocity, joint_ids=self.dog_joint_ids)
+
+    def _apply_gripper_joint_target(self) -> None:
+        if len(self.gripper_joint_ids) != 2:
+            return
+        import torch
+
+        gripper_target = (
+            torch.zeros((1, 2), dtype=torch.float32, device=self.runtime.device)
+            if self._gripper_joint_target is None
+            else torch.as_tensor(
+                self._gripper_joint_target,
+                dtype=torch.float32,
+                device=self.runtime.device,
+            ).reshape(1, -1)
+        )
+        self.robot.set_joint_position_target(gripper_target, joint_ids=self.gripper_joint_ids)
 
     def get_base_pose(self) -> tuple[float, float, float]:
         """Return world-frame ``x, y, yaw``."""
@@ -119,6 +198,97 @@ class Go2LocomotionAdapter:
 
         self._gripper_joint_target = target
 
+    def set_direct_arm_action_override(self, enabled: bool = True) -> dict[str, Any]:
+        """Override policy arm action slots with externally supplied joint targets.
+
+        The Go2-X5 locomotion policy action controls both dog joints and
+        arm_joint1~6. Writing only the arm command term asks the policy to track
+        a target, but does not guarantee execution. Contact manipulation needs
+        the cuRobo trajectory to own the arm slots while the policy still owns
+        the legs, so we replace just those action dimensions before env.step().
+        """
+
+        self.direct_arm_action_override = bool(enabled)
+        return {
+            "enabled": self.direct_arm_action_override,
+            "action_term_available": self.joint_pos_action_term is not None,
+            "arm_action_indices": list(self.arm_action_indices or []),
+            "arm_joint_names": list(ARM_JOINT_NAMES),
+        }
+
+    def _resolve_action_indices(self, joint_name_order: list[str]) -> list[int] | None:
+        """Map ordered joint names into the joint_pos action vector."""
+
+        action_term = self.joint_pos_action_term
+        if action_term is None:
+            return None
+        joint_names = list(getattr(action_term, "_joint_names", []))
+        if not joint_names:
+            return None
+        indices = []
+        for joint_name in joint_name_order:
+            if joint_name not in joint_names:
+                return None
+            indices.append(joint_names.index(joint_name))
+        return indices
+
+    def _term_values_for_indices(self, value: Any, indices: Any, actions: Any, *, default: float):
+        """Return a tensor [num_envs, len(indices)] for action scale/offset values."""
+
+        import torch
+
+        if hasattr(value, "detach"):
+            tensor = value.to(device=actions.device, dtype=actions.dtype)
+            if tensor.ndim == 0:
+                return tensor.reshape(1, 1).expand(actions.shape[0], indices.numel())
+            if tensor.ndim == 1:
+                return tensor[indices].reshape(1, -1).expand(actions.shape[0], -1)
+            return tensor[: actions.shape[0], :][:, indices]
+        return torch.full(
+            (actions.shape[0], indices.numel()),
+            float(value if value is not None else default),
+            dtype=actions.dtype,
+            device=actions.device,
+        )
+
+    def _override_target_actions(self, actions: Any, action_indices: list[int] | None, target: Any | None):
+        """Replace selected policy action dimensions with direct joint targets."""
+
+        import torch
+
+        if target is None:
+            return actions
+        if self.joint_pos_action_term is None or not action_indices:
+            return actions
+        indices = torch.as_tensor(action_indices, dtype=torch.long, device=actions.device)
+        target = torch.as_tensor(target, dtype=actions.dtype, device=actions.device).reshape(1, -1)
+        if target.shape[1] != indices.numel():
+            return actions
+        scale = self._term_values_for_indices(
+            getattr(self.joint_pos_action_term, "_scale", 1.0),
+            indices,
+            actions,
+            default=1.0,
+        )
+        offset = self._term_values_for_indices(
+            getattr(self.joint_pos_action_term, "_offset", 0.0),
+            indices,
+            actions,
+            default=0.0,
+        )
+        raw_arm_action = (target.expand(actions.shape[0], -1) - offset) / torch.clamp(scale.abs(), min=1.0e-6)
+        overridden = actions.clone()
+        overridden[:, indices] = raw_arm_action
+        return overridden
+
+    def _override_arm_actions(self, actions: Any):
+        """Replace policy action dimensions for dog locks and arm targets."""
+
+        actions = self._override_target_actions(actions, self.dog_action_indices, self._dog_joint_lock_target)
+        if not self.direct_arm_action_override or self._arm_joint_target is None:
+            return actions
+        return self._override_target_actions(actions, self.arm_action_indices, self._arm_joint_target)
+
     def step(self) -> Any:
         """Inject the command term, run policy inference, and advance simulation."""
 
@@ -143,22 +313,18 @@ class Go2LocomotionAdapter:
                 ).reshape(1, -1)
                 self.arm_term.command_buffer[:, : arm_target.shape[1]] = arm_target
 
-        self.observations = self.env.get_observations()
         with torch.inference_mode():
+            self._apply_base_pose_lock()
+            self._apply_support_joint_lock()
+            self._apply_gripper_joint_target()
+            self.observations = self.env.get_observations()
             actions = self.policy(self.observations)
+            actions = self._override_arm_actions(actions)
             self._last_actions = actions.detach()
             self.observations, _, _, _ = self.env.step(actions)
-            if len(self.gripper_joint_ids) == 2:
-                gripper_target = (
-                    torch.zeros((1, 2), dtype=torch.float32, device=self.runtime.device)
-                    if self._gripper_joint_target is None
-                    else torch.as_tensor(
-                        self._gripper_joint_target,
-                        dtype=torch.float32,
-                        device=self.runtime.device,
-                    ).reshape(1, -1)
-                )
-                self.robot.set_joint_position_target(gripper_target, joint_ids=self.gripper_joint_ids)
+            self._apply_gripper_joint_target()
+            self._apply_support_joint_lock()
+            self._apply_base_pose_lock()
         return self.observations
 
     def settle(self, steps: int = 120) -> None:

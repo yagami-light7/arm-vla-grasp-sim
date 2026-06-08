@@ -30,6 +30,16 @@ CARRY_POSTURES = {
     "carry_front": (0.0, -0.35, 0.65, 0.0, 0.70, 0.0),
     "carry_high": (0.0, -0.55, 0.95, 0.0, 0.85, 0.0),
 }
+CONTACT_ARM_COMMAND_DT = 0.02
+CONTACT_SETTLE_TO_SEGMENT_START_DURATION = 0.35
+CONTACT_GRIPPER_MOVE_DURATION = 0.70
+CONTACT_GRIPPER_HOLD_DURATION = 0.45
+CONTACT_PRE_CLOSE_HOLD_DURATION = 0.10
+CONTACT_POST_MOTION_CONVERGENCE_TIMEOUT = 3.00
+CONTACT_POST_MOTION_JOINT_ERROR_TOL = 0.050
+CONTACT_STRICT_POST_MOTION_WAIT_SEGMENTS = {"move_to_pregrasp", "approach_to_grasp"}
+CONTACT_GRIPPER_MIN_CLOSE_PROGRESS = 0.05
+CONTACT_OBJECT_RETREAT_SUCCESS_THRESHOLD_M = 0.03
 
 
 def _project_path(raw_path: str | Path) -> Path:
@@ -112,8 +122,71 @@ def _parse_args() -> tuple[argparse.Namespace, list[str], Any]:
     parser.add_argument("--terminal-yaw-tolerance", type=float, default=0.08)
     parser.add_argument("--final-goal-tolerance-margin", type=float, default=0.03)
     parser.add_argument("--final-yaw-tolerance-margin", type=float, default=0.08)
+    parser.add_argument(
+        "--ignore-goal-yaw",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Do not require final base yaw alignment; the arm base can rotate to cover the object.",
+    )
     parser.add_argument("--carry-mode", choices=("contact",), default="contact")
     parser.add_argument("--carry-posture-name", default="carry_high")
+    parser.add_argument(
+        "--manip-base-lock",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Hold the floating base x/y/z/yaw during arm manipulation phases. "
+            "Navigation remains free; the lock is released before carry navigation."
+        ),
+    )
+    parser.add_argument(
+        "--manip-dog-joint-lock",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Freeze the 12 quadruped support joints during manipulation phases. "
+            "This is enabled by default with --manip-base-lock to avoid standing-policy foot jitter."
+        ),
+    )
+    parser.add_argument(
+        "--contact-arm-speed-scale",
+        type=float,
+        default=0.35,
+        help=(
+            "Scale contact-mode cuRobo arm trajectory time. Values below 1.0 execute slower; "
+            "0.35 makes a 1.2 s plan take about 3.4 s."
+        ),
+    )
+    parser.add_argument(
+        "--contact-arm-settle-duration",
+        type=float,
+        default=CONTACT_SETTLE_TO_SEGMENT_START_DURATION,
+        help="Seconds used to smoothly move from current arm joints to the first planned waypoint.",
+    )
+    parser.add_argument(
+        "--contact-post-motion-convergence-timeout",
+        type=float,
+        default=CONTACT_POST_MOTION_CONVERGENCE_TIMEOUT,
+        help="Seconds to keep holding strict motion targets before allowing gripper close.",
+    )
+    parser.add_argument(
+        "--contact-post-motion-joint-error-tol",
+        type=float,
+        default=CONTACT_POST_MOTION_JOINT_ERROR_TOL,
+        help="Arm joint error tolerance for strict contact motion convergence.",
+    )
+    parser.add_argument(
+        "--side-pregrasp-offset",
+        type=float,
+        default=None,
+        help="Optional override for GO2_X5_SIDE_PREGRASP_OFFSET_M during side-grasp target generation.",
+    )
+    parser.add_argument(
+        "--tip-tcp-insertion",
+        type=float,
+        default=None,
+        help="Optional override for GO2_X5_TIP_TCP_INSERTION_BEYOND_GRASP_CENTER_M during target generation.",
+    )
     parser.add_argument("--verify-grasp-steps", type=int, default=60)
     parser.add_argument("--min-lift-height", type=float, default=0.05)
     parser.add_argument("--max-slip-distance", type=float, default=0.08)
@@ -145,7 +218,7 @@ def _parse_args() -> tuple[argparse.Namespace, list[str], Any]:
     parser.add_argument("--close-goal-speed-limit", type=float, default=0.22)
     parser.add_argument("--speed-bias", type=float, default=0.35)
     parser.add_argument("--max-linear-accel", type=float, default=2.5)
-    parser.add_argument("--terminal-yaw-start-distance", type=float, default=0.65)
+    parser.add_argument("--terminal-yaw-start-distance", type=float, default=0.50)
     parser.add_argument("--terminal-position-kp", type=float, default=0.8)
     parser.add_argument("--terminal-lateral-kp", type=float, default=0.8)
     parser.add_argument("--terminal-lateral-deadband", type=float, default=0.03)
@@ -163,10 +236,26 @@ def _parse_args() -> tuple[argparse.Namespace, list[str], Any]:
     parser.add_argument("--seed", type=int, default=42)
     AppLauncher.add_app_launcher_args(parser)
     args, hydra_args = parser.parse_known_args()
+    if args.ignore_goal_yaw:
+        args.goal_yaw_tolerance = math.pi
+        args.terminal_yaw_tolerance = math.pi
+        args.final_yaw_tolerance_margin = 0.0
     if args.front_camera or args.wrist_camera or args.third_camera:
         args.enable_cameras = True
     if args.demo_visuals:
         args.load_visual_scene = True
+    if args.contact_arm_speed_scale <= 0.0:
+        raise ValueError("--contact-arm-speed-scale must be > 0.")
+    if args.contact_arm_settle_duration < 0.0:
+        raise ValueError("--contact-arm-settle-duration must be >= 0.")
+    if args.contact_post_motion_convergence_timeout <= 0.0:
+        raise ValueError("--contact-post-motion-convergence-timeout must be > 0.")
+    if args.contact_post_motion_joint_error_tol <= 0.0:
+        raise ValueError("--contact-post-motion-joint-error-tol must be > 0.")
+    if args.side_pregrasp_offset is not None and args.side_pregrasp_offset <= 0.0:
+        raise ValueError("--side-pregrasp-offset must be > 0.")
+    if args.tip_tcp_insertion is not None and args.tip_tcp_insertion < 0.0:
+        raise ValueError("--tip-tcp-insertion must be >= 0.")
     return args, hydra_args, AppLauncher
 
 
@@ -704,6 +793,42 @@ def _hide_distractor_objects(task: Any) -> dict[str, Any]:
         return {"applied": False, "reason": str(exc)}
 
 
+def _world_root_path(prim_path: str) -> str:
+    """Return the top-level /World child for a prim path when available."""
+
+    parts = prim_path.split("/")
+    if len(parts) >= 3 and parts[1] == "World":
+        return f"/World/{parts[2]}"
+    return prim_path
+
+
+def _grasp_collision_exclusion_paths(stage: Any, task: Any, *, exclude_distractors: bool) -> list[str]:
+    """Paths excluded from cuRobo world collision for the pick planner."""
+
+    object_prim_path = task.pick.object_prim_path
+    paths: list[str] = []
+
+    def add(path: str | None) -> None:
+        if path and path not in paths:
+            paths.append(path)
+
+    add(object_prim_path)
+    if not exclude_distractors:
+        return paths
+
+    object_prefix = object_prim_path.rstrip("/") + "/" if object_prim_path else ""
+    keywords = ("apple", "orange", "bottle")
+    for prim in stage.Traverse():
+        prim_path = str(prim.GetPath())
+        prim_path_lower = prim_path.lower()
+        if not any(keyword in prim_path_lower for keyword in keywords):
+            continue
+        if object_prim_path and (prim_path == object_prim_path or prim_path.startswith(object_prefix)):
+            continue
+        add(_world_root_path(prim_path))
+    return paths
+
+
 def _get_or_add_xform_op(xformable, op_type):
     from pxr import UsdGeom
 
@@ -852,9 +977,12 @@ def _live_body_matrix(adapter: Any, body_name: str):
     from scripts.math.SE3 import pose_to_matrix
 
     try:
-        body_ids, _ = adapter.robot.find_bodies([body_name], preserve_order=True)
-    except TypeError:
-        body_ids, _ = adapter.robot.find_bodies([body_name])
+        try:
+            body_ids, _ = adapter.robot.find_bodies([body_name], preserve_order=True)
+        except TypeError:
+            body_ids, _ = adapter.robot.find_bodies([body_name])
+    except ValueError:
+        return None
     if not body_ids:
         return None
     body_id = int(body_ids[0])
@@ -864,12 +992,164 @@ def _live_body_matrix(adapter: Any, body_name: str):
     return matrix
 
 
+def _robot_body_names(adapter: Any) -> list[str]:
+    """Return Isaac Lab articulation body names for diagnostics."""
+
+    try:
+        names = getattr(adapter.robot, "body_names", [])
+        if callable(names):
+            names = names()
+        return [str(name) for name in names]
+    except Exception as exc:
+        return [f"<body_names unavailable: {exc}>"]
+
+
+def _find_prim_by_name_under(stage: Any, root_path: str, prim_name: str) -> str | None:
+    """Find the first USD prim with a given name under likely robot roots."""
+
+    from pxr import Usd
+
+    root_candidates = [root_path, "/World/go2_x5", "/World"]
+    for candidate in dict.fromkeys(path for path in root_candidates if path):
+        root_prim = stage.GetPrimAtPath(candidate)
+        if not root_prim.IsValid():
+            continue
+        for prim in Usd.PrimRange(root_prim):
+            if prim.GetName() == prim_name:
+                return str(prim.GetPath())
+    return None
+
+
+def _usd_world_matrix(stage: Any, prim_path: str):
+    """Read a USD prim world transform using the same convention as the state exporter."""
+
+    import numpy as np
+    from pxr import Usd, UsdGeom
+    from scripts.math.SE3 import normalize_quat_wxyz, pose_to_matrix
+
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        return None
+    usd_matrix = UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(prim)
+    translation = usd_matrix.ExtractTranslation()
+    rotation = usd_matrix.ExtractRotationQuat()
+    imaginary = rotation.GetImaginary()
+    position = np.asarray([translation[0], translation[1], translation[2]], dtype=float)
+    quaternion = normalize_quat_wxyz([rotation.GetReal(), imaginary[0], imaginary[1], imaginary[2]])
+    return pose_to_matrix(position, quaternion)
+
+
+def _usd_relative_matrix_by_name(stage: Any, root_path: str, parent_name: str, child_name: str):
+    """Return the authored fixed USD transform parent_name -> child_name."""
+
+    import numpy as np
+
+    parent_path = _find_prim_by_name_under(stage, root_path, parent_name)
+    child_path = _find_prim_by_name_under(stage, root_path, child_name)
+    if parent_path is None or child_path is None:
+        return None, {"parent_path": parent_path, "child_path": child_path}
+    T_world_parent = _usd_world_matrix(stage, parent_path)
+    T_world_child = _usd_world_matrix(stage, child_path)
+    if T_world_parent is None or T_world_child is None:
+        return None, {"parent_path": parent_path, "child_path": child_path}
+    return np.linalg.inv(T_world_parent) @ T_world_child, {
+        "parent_path": parent_path,
+        "child_path": child_path,
+    }
+
+
+def _live_frame_matrix(
+    adapter: Any,
+    frame_name: str,
+    *,
+    stage: Any,
+    robot_root_path: str,
+    frame_report: dict[str, Any],
+):
+    """Return a live matrix for planner frames that may not be articulation bodies."""
+
+    from scripts.math.SE3 import xyz_rpy_to_matrix
+
+    T_world_body = _live_body_matrix(adapter, frame_name)
+    if T_world_body is not None:
+        frame_report[frame_name] = {"source": "live_articulation_body", "body_name": frame_name}
+        return T_world_body
+
+    if frame_name == "arm_base_link":
+        T_world_base_body = _live_body_matrix(adapter, "base")
+        if T_world_base_body is None:
+            frame_report[frame_name] = {
+                "source": "missing",
+                "reason": "articulation body base not found",
+            }
+            return None
+        T_base_body_arm_base, usd_paths = _usd_relative_matrix_by_name(
+            stage,
+            robot_root_path,
+            "base",
+            "arm_base_link",
+        )
+        if T_base_body_arm_base is None:
+            frame_report[frame_name] = {
+                "source": "missing",
+                "reason": "USD relative transform base -> arm_base_link not found",
+                **usd_paths,
+            }
+            return None
+        frame_report[frame_name] = {
+            "source": "live_body_plus_usd_fixed_frame",
+            "body_name": "base",
+            "relative_transform": "base->arm_base_link",
+            **usd_paths,
+        }
+        return T_world_base_body @ T_base_body_arm_base
+
+    if frame_name == "grasp_tcp_link":
+        T_world_arm_link6 = _live_body_matrix(adapter, "arm_link6")
+        if T_world_arm_link6 is None:
+            frame_report[frame_name] = {
+                "source": "missing",
+                "reason": "articulation body arm_link6 not found",
+            }
+            return None
+        T_arm_link6_tcp, usd_paths = _usd_relative_matrix_by_name(
+            stage,
+            robot_root_path,
+            "arm_link6",
+            "grasp_tcp_link",
+        )
+        if T_arm_link6_tcp is not None:
+            frame_report[frame_name] = {
+                "source": "live_body_plus_usd_fixed_frame",
+                "body_name": "arm_link6",
+                "relative_transform": "arm_link6->grasp_tcp_link",
+                **usd_paths,
+            }
+            return T_world_arm_link6 @ T_arm_link6_tcp
+        T_arm_link6_tcp = xyz_rpy_to_matrix((0.15757, 0.0, 0.0), (0.0, 0.0, 0.0))
+        frame_report[frame_name] = {
+            "source": "live_body_plus_configured_tcp_offset",
+            "body_name": "arm_link6",
+            "relative_transform": "arm_link6->grasp_tcp_link",
+            "fallback_offset_xyz": [0.15757, 0.0, 0.0],
+            **usd_paths,
+        }
+        return T_world_arm_link6 @ T_arm_link6_tcp
+
+    frame_report[frame_name] = {
+        "source": "missing",
+        "reason": "not an articulation body and no special frame rule",
+    }
+    return None
+
+
 def _patch_grasp_state_from_live_robot(
     *,
     state: dict[str, Any],
     adapter: Any,
     task: Any,
     pipeline: Any,
+    exclude_distractor_collision: bool = True,
 ) -> dict[str, Any]:
     """Patch exported grasp state with live Isaac Lab body transforms.
 
@@ -881,36 +1161,49 @@ def _patch_grasp_state_from_live_robot(
 
     import numpy as np
     import omni.usd
-    from scripts.math.SE3 import pose_dict_from_matrix, xyz_rpy_to_matrix
+    from scripts.math.SE3 import pose_dict_from_matrix
 
-    report: dict[str, Any] = {"applied": False}
-    T_world_base = _live_body_matrix(adapter, "arm_base_link")
+    report: dict[str, Any] = {
+        "applied": False,
+        "robot_body_names": _robot_body_names(adapter),
+        "frame_patch": {},
+    }
+    print("[contact-pipeline] Isaac Lab robot body_names:", report["robot_body_names"])
+    stage = omni.usd.get_context().get_stage()
+    robot_root_path = state.get("paths", {}).get("robot_root_path") or "/World/go2_x5"
+
+    T_world_base = _live_frame_matrix(
+        adapter,
+        "arm_base_link",
+        stage=stage,
+        robot_root_path=robot_root_path,
+        frame_report=report["frame_patch"],
+    )
     if T_world_base is None:
-        report["reason"] = "arm_base_link body not found in Isaac Lab robot"
+        report["reason"] = "arm_base_link frame not resolved from live robot body and USD fixed frame"
+        print("[contact-pipeline] frame patch report:", json.dumps(report["frame_patch"], ensure_ascii=False))
         return report
 
-    T_world_tcp = _live_body_matrix(adapter, "grasp_tcp_link")
+    T_world_tcp = _live_frame_matrix(
+        adapter,
+        "grasp_tcp_link",
+        stage=stage,
+        robot_root_path=robot_root_path,
+        frame_report=report["frame_patch"],
+    )
     if T_world_tcp is None:
-        T_world_arm_link6 = _live_body_matrix(adapter, "arm_link6")
-        if T_world_arm_link6 is not None:
-            T_arm_link6_tcp = xyz_rpy_to_matrix((0.15757, 0.0, 0.0), (0.0, 0.0, 0.0))
-            T_world_tcp = T_world_arm_link6 @ T_arm_link6_tcp
-            report["tcp_source"] = "live_arm_link6_plus_fixed_offset"
-        else:
-            old_base_tcp = state.get("poses", {}).get("base_tcp", {})
-            old_position = old_base_tcp.get("position_xyz")
-            old_quat = old_base_tcp.get("quaternion_wxyz")
-            if old_position is None or old_quat is None:
-                report["reason"] = "tcp body not found and exported base_tcp missing"
-                return report
-            from scripts.math.SE3 import pose_to_matrix
+        old_base_tcp = state.get("poses", {}).get("base_tcp", {})
+        old_matrix = old_base_tcp.get("matrix_4x4")
+        if old_matrix is None:
+            report["reason"] = "grasp_tcp_link frame not resolved and exported base_tcp missing"
+            print("[contact-pipeline] frame patch report:", json.dumps(report["frame_patch"], ensure_ascii=False))
+            return report
+        T_world_tcp = T_world_base @ np.asarray(old_matrix, dtype=float)
+        report["frame_patch"]["grasp_tcp_link"] = {
+            "source": "exported_base_tcp_recomposed_with_live_arm_base_link",
+        }
 
-            T_base_tcp_old = pose_to_matrix(np.asarray(old_position, dtype=float), np.asarray(old_quat, dtype=float))
-            T_world_tcp = T_world_base @ T_base_tcp_old
-            report["tcp_source"] = "exported_base_tcp_recomposed_with_live_base"
-    else:
-        report["tcp_source"] = "live_grasp_tcp_link_body"
-
+    print("[contact-pipeline] frame patch report:", json.dumps(report["frame_patch"], ensure_ascii=False))
     T_base_tcp = np.linalg.inv(T_world_base) @ T_world_tcp
     state.setdefault("poses", {})["world_base"] = pose_dict_from_matrix(T_world_base)
     state["poses"]["world_tcp"] = pose_dict_from_matrix(T_world_tcp)
@@ -919,11 +1212,15 @@ def _patch_grasp_state_from_live_robot(
 
     try:
         export_module = pipeline._load_module("go2_x5_export_state_live_patch", pipeline.script_export)
-        stage = omni.usd.get_context().get_stage()
-        selected_paths = [task.pick.object_prim_path] if task.pick.object_prim_path else []
+        selected_paths = _grasp_collision_exclusion_paths(
+            stage,
+            task,
+            exclude_distractors=exclude_distractor_collision,
+        )
+        print("[contact-pipeline] grasp collision excluded paths:", selected_paths)
         cuboids = export_module.compute_world_collision_cuboids(
             stage=stage,
-            robot_root_path=state.get("paths", {}).get("robot_root_path", ""),
+            robot_root_path=robot_root_path,
             T_world_base=T_world_base,
             selected_paths=selected_paths,
         )
@@ -931,8 +1228,10 @@ def _patch_grasp_state_from_live_robot(
         world_collision["cuboids_base"] = cuboids
         world_collision["live_pose_recomputed"] = True
         world_collision["excluded_selected_prim_paths"] = selected_paths
+        world_collision["exclude_distractor_collision"] = bool(exclude_distractor_collision)
         report["world_collision_recomputed"] = True
         report["world_collision_cuboids"] = len(cuboids)
+        report["world_collision_excluded_paths"] = selected_paths
     except Exception as exc:
         report["world_collision_recomputed"] = False
         report["world_collision_recompute_error"] = str(exc)
@@ -972,8 +1271,16 @@ class IsaacLabContactRuntime:
         self.current_goal_key: tuple[float, float, float] | None = None
         self.path_world: list[tuple[float, float]] = []
         self.last_command = (0.0, 0.0, 0.0)
+        self._contact_step_count = 0
         self.arm_target = CARRY_POSTURES["stow"]
         self.gripper_target = GRIPPER_OPEN_TARGET
+        self.arm_action_override_report = {}
+        if hasattr(self.adapter, "set_direct_arm_action_override"):
+            self.arm_action_override_report = self.adapter.set_direct_arm_action_override(True)
+            print("[contact-pipeline] arm action override:", self.arm_action_override_report)
+        self.manip_base_lock_report = {"enabled": False, "pose_xyzyaw": None, "pose_xyyaw": None}
+        self.manip_dog_joint_lock_report = {"enabled": False, "joint_names": [], "joint_ids": [], "action_indices": []}
+        self._manip_base_lock_enabled = False
         self.runtime_notes = {
             "attachment_mode": "contact_only",
             "object_pose_write_policy": "reset_only",
@@ -981,11 +1288,28 @@ class IsaacLabContactRuntime:
             "kinematic_follow": False,
             "place_controller": "mvp_release_at_current_carry_posture",
             "pick_success_policy": "side_grasp_retreat",
+            "arm_control": "direct_policy_action_override",
+            "arm_action_override": self.arm_action_override_report,
+            "manip_base_lock": self.manip_base_lock_report,
+            "manip_dog_joint_lock": self.manip_dog_joint_lock_report,
+            "contact_motion": {
+                "arm_speed_scale": float(self.args.contact_arm_speed_scale),
+                "arm_command_dt": CONTACT_ARM_COMMAND_DT,
+                "arm_settle_duration": float(self.args.contact_arm_settle_duration),
+                "pre_close_hold_duration": CONTACT_PRE_CLOSE_HOLD_DURATION,
+                "post_motion_convergence_timeout": float(self.args.contact_post_motion_convergence_timeout),
+                "post_motion_joint_error_tol": float(self.args.contact_post_motion_joint_error_tol),
+            },
+            "target_generation_overrides": {
+                "side_pregrasp_offset": self.args.side_pregrasp_offset,
+                "tip_tcp_insertion": self.args.tip_tcp_insertion,
+            },
         }
 
     def reset_episode(self, task: Any):
         from source.pipeline import PhaseResult
 
+        self._set_manip_base_lock(False, reason="reset_episode")
         self.adapter.reset_to_pose(task.start.x, task.start.y, task.start.yaw)
         self.arm_target = CARRY_POSTURES["stow"]
         self.gripper_target = GRIPPER_OPEN_TARGET
@@ -1011,15 +1335,23 @@ class IsaacLabContactRuntime:
         from source.navigation.adapters.frame_utils import wrap_yaw
         from source.pipeline import RuntimeStepResult
 
+        if phase.value == "carry_nav_to_place":
+            self._set_manip_base_lock(False, reason="carry_navigation")
         self._ensure_planner(goal)
         pose = self.adapter.get_base_pose()
         distance = math.hypot(goal.x - pose[0], goal.y - pose[1])
         yaw_error = wrap_yaw(goal.yaw - pose[2])
+        position_acceptance_tolerance = self.args.goal_tolerance + max(0.0, self.args.final_goal_tolerance_margin)
+        yaw_acceptance_tolerance = self.args.goal_yaw_tolerance + max(0.0, self.args.final_yaw_tolerance_margin)
         reached_before = (
-            distance <= self.args.goal_tolerance + max(0.0, self.args.final_goal_tolerance_margin)
-            and abs(yaw_error) <= self.args.goal_yaw_tolerance + max(0.0, self.args.final_yaw_tolerance_margin)
+            distance <= position_acceptance_tolerance
+            and abs(yaw_error) <= yaw_acceptance_tolerance
         )
-        controller = "terminal" if distance <= max(self.args.goal_tolerance, self.args.terminal_yaw_start_distance) else "dwa"
+        terminal_start_distance = max(self.args.goal_tolerance, self.args.terminal_yaw_start_distance)
+        use_terminal_controller = distance <= terminal_start_distance
+        if self.args.ignore_goal_yaw and distance > position_acceptance_tolerance:
+            use_terminal_controller = False
+        controller = "terminal" if use_terminal_controller else "dwa"
         command = (0.0, 0.0, 0.0) if reached_before else self._nav_command(goal, controller)
         if phase.value == "carry_nav_to_place":
             self.arm_target = CARRY_POSTURES.get(self.args.carry_posture_name, CARRY_POSTURES["carry_high"])
@@ -1031,11 +1363,11 @@ class IsaacLabContactRuntime:
         self.adapter.apply_base_command(*command)
         self._step_policy(controller=controller, phase=phase.value)
         pose_after = self.adapter.get_base_pose()
+        yaw_error_after = wrap_yaw(goal.yaw - pose_after[2])
         reached_after = (
             math.hypot(goal.x - pose_after[0], goal.y - pose_after[1])
-            <= self.args.goal_tolerance + max(0.0, self.args.final_goal_tolerance_margin)
-            and abs(wrap_yaw(goal.yaw - pose_after[2]))
-            <= self.args.goal_yaw_tolerance + max(0.0, self.args.final_yaw_tolerance_margin)
+            <= position_acceptance_tolerance
+            and abs(yaw_error_after) <= yaw_acceptance_tolerance
         )
         return RuntimeStepResult(
             observation=self._observation(),
@@ -1043,7 +1375,10 @@ class IsaacLabContactRuntime:
             state={
                 "goal_xyyaw": [goal.x, goal.y, goal.yaw],
                 "goal_distance": math.hypot(goal.x - pose_after[0], goal.y - pose_after[1]),
-                "yaw_error": wrap_yaw(goal.yaw - pose_after[2]),
+                "yaw_error": yaw_error_after,
+                "position_acceptance_tolerance": position_acceptance_tolerance,
+                "yaw_acceptance_tolerance": yaw_acceptance_tolerance,
+                "terminal_controller_enabled": use_terminal_controller,
                 "runtime_notes": self.runtime_notes,
             },
             timestamp=time.time(),
@@ -1055,10 +1390,34 @@ class IsaacLabContactRuntime:
         self.last_command = (0.0, 0.0, 0.0)
         self.adapter.apply_base_command(0.0, 0.0, 0.0)
 
+    def _set_manip_base_lock(self, enabled: bool, *, reason: str) -> None:
+        if not self.args.manip_base_lock or not hasattr(self.adapter, "set_base_pose_lock"):
+            return
+        if bool(enabled) == self._manip_base_lock_enabled:
+            return
+        self.manip_base_lock_report = self.adapter.set_base_pose_lock(enabled)
+        if self.args.manip_dog_joint_lock and hasattr(self.adapter, "set_support_joint_lock"):
+            self.manip_dog_joint_lock_report = self.adapter.set_support_joint_lock(enabled)
+        else:
+            self.manip_dog_joint_lock_report = {"enabled": False, "joint_names": [], "joint_ids": [], "action_indices": []}
+        self._manip_base_lock_enabled = bool(self.manip_base_lock_report.get("enabled", False))
+        self.runtime_notes["manip_base_lock"] = {
+            **self.manip_base_lock_report,
+            "reason": reason,
+        }
+        self.runtime_notes["manip_dog_joint_lock"] = {
+            **self.manip_dog_joint_lock_report,
+            "reason": reason,
+        }
+        print("[contact-pipeline] manip base lock:", self.runtime_notes["manip_base_lock"])
+        print("[contact-pipeline] manip dog joint lock:", self.runtime_notes["manip_dog_joint_lock"])
+
     def settle_base(self, phase: Any):
         from source.pipeline import RuntimeStepResult
 
         self.stop_base()
+        if phase.value in {"pick_prepare", "place_approach"}:
+            self._set_manip_base_lock(True, reason=phase.value)
         self._step_policy(controller="pd", phase=phase.value)
         return RuntimeStepResult(
             observation=self._observation(),
@@ -1069,13 +1428,404 @@ class IsaacLabContactRuntime:
             reached_goal=False,
         )
 
+    def _arm_positions(self):
+        import numpy as np
+
+        if len(self.adapter.arm_joint_ids) != 6:
+            return np.asarray([], dtype=float)
+        return np.asarray(_tensor_list(self.adapter.robot.data.joint_pos[0, self.adapter.arm_joint_ids]), dtype=float)
+
+    def _gripper_positions(self):
+        import numpy as np
+
+        if len(self.adapter.gripper_joint_ids) != 2:
+            return np.asarray([], dtype=float)
+        return np.asarray(_tensor_list(self.adapter.robot.data.joint_pos[0, self.adapter.gripper_joint_ids]), dtype=float)
+
+    @staticmethod
+    def _smoothstep5(value: float) -> float:
+        value = max(0.0, min(1.0, float(value)))
+        return 10.0 * value**3 - 15.0 * value**4 + 6.0 * value**5
+
+    @staticmethod
+    def _sample_joint_trajectory(time_from_start: Any, q_traj: Any, t: float):
+        import numpy as np
+
+        times = np.asarray(time_from_start, dtype=float)
+        q = np.asarray(q_traj, dtype=float)
+        if q.ndim != 2 or times.ndim != 1 or q.shape[0] != times.shape[0]:
+            raise RuntimeError("invalid cuRobo trajectory: q and time_from_start shape mismatch")
+        t = float(max(times[0], min(times[-1], t)))
+        return np.asarray([np.interp(t, times, q[:, index]) for index in range(q.shape[1])], dtype=float)
+
+    @staticmethod
+    def _sample_cubic_hermite(time_from_start: Any, q_traj: Any, qd_traj: Any, t: float):
+        import numpy as np
+
+        times = np.asarray(time_from_start, dtype=float)
+        q = np.asarray(q_traj, dtype=float)
+        qd = np.asarray(qd_traj, dtype=float)
+        if q.ndim != 2 or times.ndim != 1 or q.shape[0] != times.shape[0]:
+            raise RuntimeError("invalid cuRobo trajectory: q and time_from_start shape mismatch")
+        if qd.shape != q.shape:
+            return IsaacLabContactRuntime._sample_joint_trajectory(times, q, t)
+        t = float(np.clip(t, times[0], times[-1]))
+        index = int(np.searchsorted(times, t, side="right") - 1)
+        index = max(0, min(index, len(times) - 2))
+        t0 = float(times[index])
+        t1 = float(times[index + 1])
+        h = t1 - t0
+        if h <= 1.0e-9:
+            return q[index].copy()
+        u = (t - t0) / h
+        q0 = q[index]
+        q1 = q[index + 1]
+        v0 = qd[index]
+        v1 = qd[index + 1]
+        h00 = 2.0 * u**3 - 3.0 * u**2 + 1.0
+        h10 = u**3 - 2.0 * u**2 + u
+        h01 = -2.0 * u**3 + 3.0 * u**2
+        h11 = u**3 - u**2
+        return h00 * q0 + h10 * h * v0 + h01 * q1 + h11 * h * v1
+
+    @staticmethod
+    def _close_progress(q_start: Any, q_final: Any, q_target: Any) -> float:
+        import numpy as np
+
+        q_start = np.asarray(q_start, dtype=float)
+        q_final = np.asarray(q_final, dtype=float)
+        q_target = np.asarray(q_target, dtype=float)
+        total = float(np.linalg.norm(q_start - q_target))
+        if total < 1.0e-9:
+            return 1.0
+        actual = float(np.linalg.norm(q_start - q_final))
+        return float(np.clip(actual / total, 0.0, 1.0))
+
+    def _step_contact_targets(self, *, arm_target: Any | None, gripper_target: Any | None, phase: str) -> None:
+        self.adapter.apply_base_command(0.0, 0.0, 0.0)
+        if arm_target is not None:
+            self.adapter.set_arm_joint_target(arm_target)
+        if gripper_target is not None:
+            self.adapter.set_gripper_joint_target(gripper_target)
+        self.adapter.step()
+        self._contact_step_count += 1
+        if self.args.debug_print_every > 0 and self._contact_step_count % self.args.debug_print_every == 0:
+            pose = self.adapter.get_base_pose()
+            print(f"[contact-pipeline] phase={phase} pose=({pose[0]:.3f},{pose[1]:.3f},{pose[2]:.3f}) controller=contact_grasp")
+
+    def _settle_arm_to_plan_start(self, q_start: Any, label: str) -> dict[str, Any]:
+        import numpy as np
+
+        q_initial = self._arm_positions()
+        q_start = np.asarray(q_start, dtype=float)
+        start_error = float(np.linalg.norm(q_initial - q_start))
+        print(f"[contact-settle:{label}] start_error={start_error:.6f}")
+        settle_duration = max(0.0, float(self.args.contact_arm_settle_duration))
+        steps = max(2, int(round(settle_duration / max(self.dt, 1.0e-6))))
+        log = {
+            "name": f"settle_{label}",
+            "type": "settle",
+            "duration": settle_duration,
+            "start_error": start_error,
+            "target_q_arm": [],
+            "actual_q_arm": [],
+            "joint_error_norm": [],
+        }
+        gripper_hold = self._gripper_positions()
+        for step in range(steps):
+            u = step / float(max(1, steps - 1))
+            s = self._smoothstep5(u)
+            q_target = (1.0 - s) * q_initial + s * q_start
+            self._step_contact_targets(arm_target=q_target, gripper_target=gripper_hold, phase=f"settle_{label}")
+            q_actual = self._arm_positions()
+            log["target_q_arm"].append(q_target.tolist())
+            log["actual_q_arm"].append(q_actual.tolist())
+            log["joint_error_norm"].append(float(np.linalg.norm(q_actual - q_target)))
+        return log
+
+    def _wait_until_arm_reaches(self, q_target: Any, label: str) -> dict[str, Any]:
+        import numpy as np
+
+        q_target = np.asarray(q_target, dtype=float)
+        timeout_s = max(1.0e-6, float(self.args.contact_post_motion_convergence_timeout))
+        error_tol = max(1.0e-6, float(self.args.contact_post_motion_joint_error_tol))
+        steps = max(1, int(round(timeout_s / max(self.dt, 1.0e-6))))
+        gripper_hold = self._gripper_positions()
+        log = {
+            "name": f"wait_{label}",
+            "type": "wait",
+            "converged": False,
+            "timeout_s": timeout_s,
+            "joint_error_tol": error_tol,
+            "joint_error_norm": [],
+            "target_q_arm": [],
+            "actual_q_arm": [],
+        }
+        for step in range(steps):
+            self._step_contact_targets(arm_target=q_target, gripper_target=gripper_hold, phase=f"wait_{label}")
+            q_actual = self._arm_positions()
+            error = float(np.linalg.norm(q_actual - q_target))
+            log["joint_error_norm"].append(error)
+            log["target_q_arm"].append(q_target.tolist())
+            log["actual_q_arm"].append(q_actual.tolist())
+            if step % 20 == 0:
+                print(f"[contact-wait:{label}] step={step:03d}, joint_error={error:.6f}")
+            if error <= error_tol:
+                log["converged"] = True
+                print(f"[contact-wait:{label}] converged, joint_error={error:.6f}")
+                break
+        if not log["converged"]:
+            final_error = log["joint_error_norm"][-1] if log["joint_error_norm"] else None
+            print(f"[contact-wait:{label}] timeout, final_joint_error={final_error}")
+        return log
+
+    def _execute_contact_motion_segment(self, segment: dict[str, Any]) -> dict[str, Any]:
+        import numpy as np
+
+        name = str(segment.get("name", "motion"))
+        trajectory = segment.get("trajectory", {})
+        times = np.asarray(trajectory.get("time_from_start", []), dtype=float)
+        q_traj = np.asarray(trajectory.get("q", []), dtype=float)
+        qd_traj = np.asarray(trajectory.get("qd", np.zeros_like(q_traj)), dtype=float)
+        if times.size == 0 or q_traj.size == 0:
+            raise RuntimeError(f"{name}: missing q trajectory")
+        settle_log = self._settle_arm_to_plan_start(q_traj[0], name)
+        duration = float(times[-1])
+        speed_scale = max(1.0e-6, float(self.args.contact_arm_speed_scale))
+        effective_duration = duration / speed_scale
+        steps = int(math.ceil(effective_duration / max(self.dt, 1.0e-6))) + 1
+        command_period_steps = max(1, int(round(CONTACT_ARM_COMMAND_DT / max(self.dt, 1.0e-6))))
+        q_target = q_traj[0].copy()
+        gripper_hold = self._gripper_positions()
+        log = {
+            "name": name,
+            "type": "motion",
+            "sim_dt": self.dt,
+            "command_dt": CONTACT_ARM_COMMAND_DT,
+            "arm_speed_scale": speed_scale,
+            "planned_duration": duration,
+            "effective_duration": effective_duration,
+            "time": [],
+            "plan_time": [],
+            "target_q_arm": [],
+            "actual_q_arm": [],
+            "joint_error_norm": [],
+            "settle_to_start": settle_log,
+        }
+        print(
+            f"[contact-motion:{name}] duration={duration:.3f}s, "
+            f"effective_duration={effective_duration:.3f}s, speed_scale={speed_scale:.3f}, sim_steps={steps}"
+        )
+        for step in range(steps):
+            t_wall = min(step * self.dt, effective_duration)
+            t = min(t_wall * speed_scale, duration)
+            if step % command_period_steps == 0 or step == steps - 1:
+                q_target = self._sample_cubic_hermite(times, q_traj, qd_traj, t)
+            self._step_contact_targets(arm_target=q_target, gripper_target=gripper_hold, phase=name)
+            q_actual = self._arm_positions()
+            error = float(np.linalg.norm(q_actual - q_target))
+            log["time"].append(float(t_wall))
+            log["plan_time"].append(float(t))
+            log["target_q_arm"].append(q_target.tolist())
+            log["actual_q_arm"].append(q_actual.tolist())
+            log["joint_error_norm"].append(error)
+            if step % 20 == 0 or step == steps - 1:
+                print(
+                    f"[contact-motion:{name}] t={t:.3f}/{duration:.3f} "
+                    f"(wall={t_wall:.3f}/{effective_duration:.3f}), joint_error={error:.6f}"
+                )
+        if name in CONTACT_STRICT_POST_MOTION_WAIT_SEGMENTS:
+            wait_log = self._wait_until_arm_reaches(q_traj[-1], name)
+        else:
+            wait_log = {"converged": True, "reason": "strict wait not required"}
+        log["post_motion_wait"] = wait_log
+        log["motion_converged"] = bool(wait_log.get("converged", True))
+        return log
+
+    def _execute_contact_gripper_segment(
+        self,
+        segment: dict[str, Any],
+        *,
+        arm_hold: Any | None,
+    ) -> dict[str, Any]:
+        import numpy as np
+
+        name = str(segment.get("name", "gripper"))
+        q_target = np.asarray(segment.get("target_position", []), dtype=float)
+        if q_target.size != 2:
+            raise RuntimeError(f"{name}: invalid gripper target {q_target}")
+        q_start = self._gripper_positions()
+        if arm_hold is None:
+            arm_hold = self._arm_positions()
+        arm_hold = np.asarray(arm_hold, dtype=float)
+        if name == "close_gripper":
+            hold_steps = max(1, int(round(CONTACT_PRE_CLOSE_HOLD_DURATION / max(self.dt, 1.0e-6))))
+            print("[contact-gripper:close_gripper] hold arm at grasp pose before closing")
+            for step in range(hold_steps):
+                self._step_contact_targets(arm_target=arm_hold, gripper_target=q_start, phase="pre_close_hold")
+                if step == 0 or step == hold_steps - 1:
+                    q_actual = self._arm_positions()
+                    error = float(np.linalg.norm(q_actual - arm_hold))
+                    print(f"[contact-hold:pre_close] step={step:03d}, joint_error={error:.6f}")
+        move_steps = max(2, int(round(CONTACT_GRIPPER_MOVE_DURATION / max(self.dt, 1.0e-6))))
+        hold_steps = max(1, int(round(CONTACT_GRIPPER_HOLD_DURATION / max(self.dt, 1.0e-6))))
+        log = {
+            "name": name,
+            "type": "gripper",
+            "target_position": q_target.tolist(),
+            "sim_dt": self.dt,
+            "time": [],
+            "actual_q_gripper": [],
+        }
+        print(f"[contact-gripper:{name}] start={q_start}, target={q_target}")
+        for step in range(move_steps):
+            u = step / float(max(1, move_steps - 1))
+            s = self._smoothstep5(u)
+            q_cmd = (1.0 - s) * q_start + s * q_target
+            self._step_contact_targets(arm_target=arm_hold, gripper_target=q_cmd, phase=name)
+            q_actual = self._gripper_positions()
+            log["time"].append(step * self.dt)
+            log["actual_q_gripper"].append(q_actual.tolist())
+            if step % 20 == 0 or step == move_steps - 1:
+                error = float(np.linalg.norm(q_actual - q_target))
+                print(f"[contact-gripper:{name}] step={step:03d}, q_actual={q_actual}, error={error:.6f}")
+        for _ in range(hold_steps):
+            self._step_contact_targets(arm_target=arm_hold, gripper_target=q_target, phase=f"{name}_hold")
+            q_actual = self._gripper_positions()
+            log["time"].append(len(log["time"]) * self.dt)
+            log["actual_q_gripper"].append(q_actual.tolist())
+        q_final = self._gripper_positions()
+        log["final_position"] = q_final.tolist()
+        log["final_error"] = float(np.linalg.norm(q_final - q_target))
+        if name == "close_gripper":
+            close_progress = self._close_progress(q_start, q_final, q_target)
+            log["close_progress"] = close_progress
+            log["min_close_progress"] = CONTACT_GRIPPER_MIN_CLOSE_PROGRESS
+            log["close_success"] = close_progress >= CONTACT_GRIPPER_MIN_CLOSE_PROGRESS
+            if not log["close_success"]:
+                log["abort_reason"] = (
+                    "close_gripper did not make enough progress: "
+                    f"close_progress={close_progress:.3f}"
+                )
+        return log
+
+    def _execute_contact_grasp_plan(self, plan: dict[str, Any], task: Any) -> dict[str, Any]:
+        import numpy as np
+
+        segments = list(plan.get("segments", []))
+        if not segments:
+            raise RuntimeError("grasp plan has no segments")
+        plan_summary = plan.get("summary", {})
+        if not plan_summary.get("all_motion_segments_success", False):
+            raise RuntimeError("grasp plan contains failed motion segments")
+
+        logs: list[dict[str, Any]] = []
+        executed_segments: list[dict[str, Any]] = []
+        last_motion_q_final = None
+        abort_reason = None
+        for segment in segments:
+            segment_type = segment.get("type")
+            if segment_type == "motion":
+                motion_log = self._execute_contact_motion_segment(segment)
+                logs.append(motion_log)
+                executed_segments.append(segment)
+                q = np.asarray(segment.get("trajectory", {}).get("q", []), dtype=float)
+                if q.size:
+                    last_motion_q_final = q[-1].copy()
+                if (
+                    segment.get("name") in CONTACT_STRICT_POST_MOTION_WAIT_SEGMENTS
+                    and not motion_log.get("motion_converged", False)
+                ):
+                    final_error = None
+                    wait_log = motion_log.get("post_motion_wait", {})
+                    if wait_log.get("joint_error_norm"):
+                        final_error = wait_log["joint_error_norm"][-1]
+                    abort_reason = (
+                        f"{segment.get('name')} did not converge before gripper close; "
+                        f"final_joint_error={final_error}"
+                    )
+                    print("[contact-grasp abort]", abort_reason)
+                    break
+            elif segment_type == "gripper":
+                gripper_log = self._execute_contact_gripper_segment(segment, arm_hold=last_motion_q_final)
+                logs.append(gripper_log)
+                executed_segments.append(segment)
+                if segment.get("name") == "close_gripper" and not gripper_log.get("close_success", True):
+                    abort_reason = gripper_log.get("abort_reason", "close_gripper failed")
+                    print("[contact-grasp abort]", abort_reason)
+                    break
+            else:
+                raise RuntimeError(f"unknown grasp segment type: {segment_type}")
+
+        for _ in range(max(1, int(round(0.20 / max(self.dt, 1.0e-6))))):
+            self._step_contact_targets(
+                arm_target=last_motion_q_final if last_motion_q_final is not None else self._arm_positions(),
+                gripper_target=self._gripper_positions(),
+                phase="contact_grasp_hold_final",
+            )
+
+        current_object = self.monitor.get_object_state()
+        before_object = self.monitor.object_state_before_grasp
+        object_retreat_success = False
+        object_retreat_delta = None
+        if current_object is not None and before_object is not None:
+            object_retreat_delta = float(np.linalg.norm(np.asarray(current_object.position) - np.asarray(before_object.position)))
+            object_retreat_success = object_retreat_delta >= CONTACT_OBJECT_RETREAT_SUCCESS_THRESHOLD_M
+        lift_report = self.monitor.get_lift_report()
+        has_lift_segment = any(
+            segment.get("type") == "motion" and segment.get("name") == "lift_object"
+            for segment in segments
+        )
+        has_planned_retreat = any(
+            segment.get("type") == "motion" and segment.get("name") == "retreat_object"
+            for segment in segments
+        )
+        grasp_mode = plan.get("grasp_mode") or plan_summary.get("grasp_mode")
+        if abort_reason is not None:
+            task_success = False
+        elif grasp_mode == "side" and has_planned_retreat and not has_lift_segment:
+            task_success = object_retreat_success
+        elif has_lift_segment:
+            task_success = bool(lift_report.get("object_lifted", False))
+        else:
+            task_success = object_retreat_success
+
+        summary = {
+            "task_success": bool(task_success),
+            "abort_reason": abort_reason,
+            "grasp_mode": grasp_mode,
+            "has_lift_segment": has_lift_segment,
+            "has_planned_retreat": has_planned_retreat,
+            "object_lift_success": bool(lift_report.get("object_lifted", False)),
+            "object_lift_report": lift_report,
+            "object_retreat_success": object_retreat_success,
+            "object_retreat_delta_m": object_retreat_delta,
+            "object_retreat_success_threshold_m": CONTACT_OBJECT_RETREAT_SUCCESS_THRESHOLD_M,
+            "execution_backend": "isaac_lab_contact_runtime",
+            "executed_segment_names": [segment.get("name") for segment in executed_segments],
+            "runtime_notes": self.runtime_notes,
+        }
+        return {
+            "schema_version": 1,
+            "success": bool(task_success),
+            "object_prim_path": task.object_prim_path,
+            "execution_logs": logs,
+            "summary": summary,
+        }
+
     def execute_pick(self):
         from source.manipulation import GraspPipeline, GraspPipelineConfig, GraspTask
         from source.pipeline import PhaseResult
 
+        self.stop_base()
+        self._set_manip_base_lock(True, reason="execute_pick")
         os.environ["GO2_X5_REQUIRE_OBJECT_LIFT_SUCCESS"] = "0"
         os.environ["GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT"] = "0"
         os.environ["GO2_X5_SIDE_GRASP_FALLBACK_RETREAT"] = "0"
+        if self.args.side_pregrasp_offset is not None:
+            os.environ["GO2_X5_SIDE_PREGRASP_OFFSET_M"] = str(float(self.args.side_pregrasp_offset))
+        if self.args.tip_tcp_insertion is not None:
+            os.environ["GO2_X5_TIP_TCP_INSERTION_BEYOND_GRASP_CENTER_M"] = str(float(self.args.tip_tcp_insertion))
         pipeline = GraspPipeline(
             GraspPipelineConfig(
                 workspace=PROJECT_ROOT,
@@ -1099,6 +1849,7 @@ class IsaacLabContactRuntime:
                 adapter=self.adapter,
                 task=self.task,
                 pipeline=pipeline,
+                exclude_distractor_collision=bool(self.args.hide_distractor_objects),
             )
             Path(grasp_task.state_json).write_text(
                 json.dumps(state, indent=2, ensure_ascii=False),
@@ -1112,11 +1863,10 @@ class IsaacLabContactRuntime:
                 label="contact pick target generation",
             )
             plan = pipeline.plan(grasp_task)
-            execution = _run_kit_coroutine(
-                pipeline.execute(grasp_task),
-                self.simulation_app,
-                timeout_s=600.0,
-                label="contact pick execution",
+            execution = self._execute_contact_grasp_plan(plan, grasp_task)
+            Path(grasp_task.result_json).write_text(
+                json.dumps(execution, indent=2, ensure_ascii=False),
+                encoding="utf-8",
             )
             summary = execution.get("summary", {})
             result = {
@@ -1161,6 +1911,8 @@ class IsaacLabContactRuntime:
     def move_to_carry_posture(self, posture_name: str):
         from source.pipeline import PhaseResult
 
+        self.stop_base()
+        self._set_manip_base_lock(True, reason="move_to_carry_posture")
         self.arm_target = CARRY_POSTURES.get(posture_name, CARRY_POSTURES["carry_high"])
         self.gripper_target = GRIPPER_CLOSE_TARGET
         for _ in range(90):
@@ -1182,6 +1934,8 @@ class IsaacLabContactRuntime:
     def hold_carry_posture(self, phase: Any):
         from source.pipeline import RuntimeStepResult
 
+        if phase.value == "carry_nav_to_place":
+            self._set_manip_base_lock(False, reason="carry_navigation")
         self.arm_target = CARRY_POSTURES.get(self.args.carry_posture_name, CARRY_POSTURES["carry_high"])
         self.gripper_target = GRIPPER_CLOSE_TARGET
         self.stop_base()
@@ -1198,6 +1952,7 @@ class IsaacLabContactRuntime:
         from source.pipeline import PhaseResult
 
         self.stop_base()
+        self._set_manip_base_lock(True, reason="execute_place")
         self.gripper_target = GRIPPER_OPEN_TARGET
         settle_steps = self.args.place_settle_steps
         if settle_steps is None:

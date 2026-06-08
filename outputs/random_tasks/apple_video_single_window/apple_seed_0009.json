@@ -11,14 +11,14 @@
   },
   "pick": {
     "base_goal": {
-      "x": 1.2237659509742258,
-      "y": 0.9185899435910304,
-      "yaw": 2.7985687131690895
+      "x": 1.2253617002783503,
+      "y": 0.9385899435910304,
+      "yaw": 2.8809902618424523
     },
     "object_prim_path": "/World/apple",
     "grasp_mode": "auto",
     "object_pose_world": {
-      "x": 0.9437659509742258,
+      "x": 0.9253617002783503,
       "y": 1.0185899435910304,
       "z": 0.82,
       "yaw": -0.3061721012984755,
@@ -44,8 +44,8 @@
     "object_prim_path": "/World/apple",
     "table_prim_path": "/World/table",
     "spawn_region": {
-      "x_min": 0.86,
-      "x_max": 0.96,
+      "x_min": 0.88,
+      "x_max": 0.93,
       "y_min": 0.9,
       "y_max": 1.6,
       "z": 0.82,
@@ -67,19 +67,19 @@
       "edge_min_clearance": 0.03,
       "object_support_clearance": 0.0,
       "selected_edge_side": "x_min",
-      "selected_edge_distance_m": 0.08376595097422583
+      "selected_edge_distance_m": 0.04536170027835028
     },
     "base_goal_generation": {
       "mode": "object_offset",
       "base_goal_offset_xy": [
-        0.28,
-        -0.1
+        0.3,
+        -0.08
       ],
       "standoff_candidates": [
-        0.2973213749463701
+        0.31048349392520047
       ],
       "approach_angle_candidates_deg": [
-        160.3461759419467
+        165.06858282186246
       ],
       "clearance_radius": 0.25,
       "min_boundary_clearance": 0.25,
@@ -95,23 +95,23 @@
     },
     "attempts_used": 3,
     "selected_base_goal_candidate": {
-      "x": 1.2237659509742258,
-      "y": 0.9185899435910304,
-      "yaw": 2.7985687131690895,
-      "standoff": 0.2973213749463701,
-      "approach_angle_deg": 160.3461759419467,
+      "x": 1.2253617002783503,
+      "y": 0.9385899435910304,
+      "yaw": 2.8809902618424523,
+      "standoff": 0.31048349392520047,
+      "approach_angle_deg": 165.06858282186246,
       "raw_free": true,
       "clearance_free": true,
-      "boundary_clearance_m": 1.9925542776024354,
+      "boundary_clearance_m": 1.9909585282983109,
       "obstacle_clearance_m": 0.30000001192092896,
       "edge_alignment_score": 0.0,
-      "score": -1.2701566447483734,
+      "score": -1.39441436769128,
       "valid": true,
       "rejection_reason": "",
       "path_found": true,
       "path_length_m": 7.069238815542515,
       "path_final_heading": 1.5707963267948966,
-      "path_heading_error": 1.227772386374193,
+      "path_heading_error": 1.3101939350475558,
       "path_expanded_nodes": 785
     },
     "candidate_count": 1

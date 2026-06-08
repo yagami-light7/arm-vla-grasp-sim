@@ -11,17 +11,17 @@
   },
   "pick": {
     "base_goal": {
-      "x": 1.2263984469698515,
-      "y": 1.4488193156794318,
-      "yaw": 2.7985687131690904
+      "x": 1.2170848446305964,
+      "y": 1.261438141012216,
+      "yaw": 2.8809902618424523
     },
     "object_prim_path": "/World/apple",
     "grasp_mode": "auto",
     "object_pose_world": {
-      "x": 0.9463984469698514,
-      "y": 1.5488193156794317,
+      "x": 0.9170848446305964,
+      "y": 1.341438141012216,
       "z": 0.82,
-      "yaw": 2.254225714651363,
+      "yaw": 0.3886907131776707,
       "roll": 0.0,
       "pitch": 0.0
     }
@@ -44,8 +44,8 @@
     "object_prim_path": "/World/apple",
     "table_prim_path": "/World/table",
     "spawn_region": {
-      "x_min": 0.86,
-      "x_max": 0.96,
+      "x_min": 0.88,
+      "x_max": 0.93,
       "y_min": 0.9,
       "y_max": 1.6,
       "z": 0.82,
@@ -66,20 +66,20 @@
       "edge_margin": 0.12,
       "edge_min_clearance": 0.03,
       "object_support_clearance": 0.0,
-      "selected_edge_side": "y_max",
-      "selected_edge_distance_m": 0.051180684320568534
+      "selected_edge_side": "x_min",
+      "selected_edge_distance_m": 0.03708484463059632
     },
     "base_goal_generation": {
       "mode": "object_offset",
       "base_goal_offset_xy": [
-        0.28,
-        -0.1
+        0.3,
+        -0.08
       ],
       "standoff_candidates": [
-        0.2973213749463701
+        0.31048349392520047
       ],
       "approach_angle_candidates_deg": [
-        160.3461759419467
+        165.06858282186246
       ],
       "clearance_radius": 0.25,
       "min_boundary_clearance": 0.25,
@@ -93,26 +93,26 @@
         "path_heading_min_segment_length": 0.1
       }
     },
-    "attempts_used": 20,
+    "attempts_used": 4,
     "selected_base_goal_candidate": {
-      "x": 1.2263984469698515,
-      "y": 1.4488193156794318,
-      "yaw": 2.7985687131690904,
-      "standoff": 0.2973213749463701,
-      "approach_angle_deg": 160.3461759419467,
+      "x": 1.2170848446305964,
+      "y": 1.261438141012216,
+      "yaw": 2.8809902618424523,
+      "standoff": 0.31048349392520047,
+      "approach_angle_deg": 165.06858282186246,
       "raw_free": true,
       "clearance_free": true,
-      "boundary_clearance_m": 1.9899217816068102,
+      "boundary_clearance_m": 1.9992353839460648,
       "obstacle_clearance_m": 0.30000001192092896,
       "edge_alignment_score": 0.0,
-      "score": -1.2923922369376122,
+      "score": -1.4052475093714891,
       "valid": true,
       "rejection_reason": "",
       "path_found": true,
-      "path_length_m": 7.619238815542515,
+      "path_length_m": 7.419238815542514,
       "path_final_heading": 1.5707963267948966,
-      "path_heading_error": 1.2277723863741938,
-      "path_expanded_nodes": 959
+      "path_heading_error": 1.3101939350475558,
+      "path_expanded_nodes": 890
     },
     "candidate_count": 1
   }

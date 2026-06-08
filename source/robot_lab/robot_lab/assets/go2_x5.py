@@ -76,10 +76,19 @@ GO2_X5_CFG = ArticulationCfg(
         # The locomotion checkpoint still uses the same leg gains; only arm_joint1~8
         # are made consistent with the cuRobo/Isaac Sim grasp stage.
         "arm": DCMotorCfg(
-            joint_names_expr=["arm_joint.*"],
+            joint_names_expr=["arm_joint[1-6]"],
             effort_limit=15.0,
             saturation_effort=15.0,
             velocity_limit=3.0,
+            stiffness=1000.0,
+            damping=50.0,
+            friction=0.0,
+        ),
+        "gripper": DCMotorCfg(
+            joint_names_expr=["arm_joint[7-8]"],
+            effort_limit=20.0,
+            saturation_effort=20.0,
+            velocity_limit=1.0,
             stiffness=1000.0,
             damping=50.0,
             friction=0.0,

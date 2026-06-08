@@ -40,6 +40,19 @@ if str(WORKSPACE) not in sys.path:
 from scripts.math.SE3 import matrix_to_pose, pose_to_matrix, rotmat_to_quat_wxyz
 
 
+def env_float(name: str, default: float) -> float:
+    """Read a float environment override with a stable fallback."""
+
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return float(default)
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"[warning] invalid {name}={raw!r}; using default {default}")
+        return float(default)
+
+
 OUTPUT_TARGET_JSON = Path("/tmp/go2_x5_target_tcp_pose.json")
 STATE_JSON = Path("/tmp/go2_x5_isaac_state.json")
 
@@ -56,16 +69,16 @@ OBJECT_PRIM_PATH_OVERRIDE = None
 # 因此最终 grasp 目标把指尖 TCP 沿局部 +X 再送入一小段距离。
 # 这样 cuRobo 仍然用指尖 TCP 做路径规划和桌面 clearance 检查，
 # 但 close_gripper 前的有效夹持中心仍对齐原先的 bbox grasp 规则。
-TIP_TCP_INSERTION_BEYOND_GRASP_CENTER_M = 0.015
+TIP_TCP_INSERTION_BEYOND_GRASP_CENTER_M = env_float("GO2_X5_TIP_TCP_INSERTION_BEYOND_GRASP_CENTER_M", 0.015)
 
 # 对平行夹爪抓立方体，TCP 应该落到物体高度中部附近，而不是停在物体顶部上方。
 # 第一版使用 bbox 顶部向下一个深度。
 # 对苹果这类近似球体，TCP 停在 bbox 中心高度附近更容易让两指形成对夹；
 # 之前 0.025 m 会让 TCP 高于苹果中心约 1 cm，容易夹到上半部分但 lift 不起来。
-GRASP_DEPTH_BELOW_TOP_M = 0.035
+GRASP_DEPTH_BELOW_TOP_M = env_float("GO2_X5_GRASP_DEPTH_BELOW_TOP_M", 0.035)
 
 # 侧向抓取时，有效夹持中心默认放在 bbox 中心高度。正值会让它稍微高于中心。
-SIDE_GRASP_CENTER_Z_OFFSET_M = 0.0075
+SIDE_GRASP_CENTER_Z_OFFSET_M = env_float("GO2_X5_SIDE_GRASP_CENTER_Z_OFFSET_M", 0.0075)
 
 # 侧向抓取时，pregrasp 沿 TCP 局部 -X 退出，即从物体朝机械臂方向退开。
 
@@ -83,15 +96,15 @@ def show_grasp_debug_visuals() -> bool:
     """Return whether grasp target/path debug geometry should be visible."""
 
     return env_bool("GO2_X5_SHOW_GRASP_TRAJECTORY", False)
-SIDE_PREGRASP_OFFSET_M = 0.10
+SIDE_PREGRASP_OFFSET_M = env_float("GO2_X5_SIDE_PREGRASP_OFFSET_M", 0.10)
 
 # pregrasp 比 grasp 再高一点，后续 approach 会从 pregrasp 下降到 grasp。
-PREGRASP_OFFSET_M = 0.10
+PREGRASP_OFFSET_M = env_float("GO2_X5_PREGRASP_OFFSET_M", 0.10)
     
 # lift 比 grasp 更高一点，后续 close gripper 后向上抬起物体。
 # 当前 Go2-X5 arm 在 top-down 姿态下从低位 grasp 继续抬太高会进入
 # cuRobo 难以求解的构型。第一版先回到 pregrasp 高度，保证流程可闭环。
-LIFT_OFFSET_M = 0.10
+LIFT_OFFSET_M = env_float("GO2_X5_LIFT_OFFSET_M", 0.10)
 
 # 经验诊断阈值：只打印 warning，不阻止生成 JSON。
 # 这些阈值不是机械臂严格工作空间，而是用来提醒“目标明显比之前成功样例更难”。
@@ -111,8 +124,8 @@ TCP_TOP_DOWN_QUAT_BASE_WXYZ = np.array(
 )
 
 # 夹爪控制使用的第一版经验值。这里只写入 JSON，真正控制在 Isaac 执行脚本里完成。
-GRIPPER_OPEN_M = 0.043
-GRIPPER_CLOSE_M = 0.0
+GRIPPER_OPEN_M = env_float("GO2_X5_GRIPPER_OPEN_M", 0.043)
+GRIPPER_CLOSE_M = env_float("GO2_X5_GRIPPER_CLOSE_M", 0.0)
 
 
 # 读取stage并选中物体
