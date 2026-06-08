@@ -3,24 +3,24 @@
   "success": true,
   "failure_reason": "",
   "final_base_pose_world": {
-    "x": 1.2278237342834473,
-    "y": 0.8579371571540833,
-    "z": 0.33417683839797974,
-    "yaw": 1.3035915219287624,
+    "x": 1.2094132900238037,
+    "y": 0.8554259538650513,
+    "z": 0.33517158031463623,
+    "yaw": 1.1065240312764206,
     "quat_wxyz": [
-      0.7949788570404053,
-      -0.004701518453657627,
-      0.0017637297278270125,
-      0.6066163778305054
+      0.8508121967315674,
+      -0.000714024412445724,
+      0.0031464810017496347,
+      0.5254599452018738
     ]
   },
   "goal_xyyaw": [
-    1.2176738969976182,
-    0.8641620764915531,
+    1.1985205936291423,
+    0.859155982577972,
     2.8809902618424523
   ],
-  "final_goal_distance": 0.011906671142129186,
-  "yaw_error": 1.57739873991369,
+  "final_goal_distance": 0.011513641862828734,
+  "yaw_error": 1.7744662305660315,
   "goal_tolerance": 0.15,
   "goal_yaw_tolerance": 3.141592653589793,
   "terminal_position_tolerance": 0.08,
@@ -35,19 +35,19 @@
   "base_stable_linear_tolerance": 0.06,
   "base_stable_angular_tolerance": 0.2,
   "final_body_velocity": {
-    "vx": -0.00024959747679531574,
-    "vy": 0.00507856672629714,
-    "wz": -0.0151443500071764
+    "vx": -0.01787092164158821,
+    "vy": 0.0070488411001861095,
+    "wz": -0.050061628222465515
   },
-  "path_length": 7.044365789110585,
+  "path_length": 6.91383191116675,
   "timeout": false,
   "stall_detected": false,
   "yaw_align_stall_detected": false,
   "terminal_recovery_count": 0,
   "yaw_settle_success": true,
-  "yaw_settle_steps": 68,
+  "yaw_settle_steps": 59,
   "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_single_window/episode_0001/2/8",
-  "elapsed_wall_time_s": 20.00255274772644,
+  "elapsed_wall_time_s": 19.610263347625732,
   "replay_trajectory_path": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_single_window/episode_0001/2/8/replay/trajectory.jsonl",
-  "replay_frame_count": 527
+  "replay_frame_count": 511
 }

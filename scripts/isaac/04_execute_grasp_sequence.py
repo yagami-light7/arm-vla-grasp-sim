@@ -82,6 +82,7 @@ STRICT_POST_MOTION_WAIT_SEGMENTS = {
 # 物体中心或 bbox 顶部至少上升这么多，认为第一版 lift 有效果。
 OBJECT_LIFT_SUCCESS_THRESHOLD_M = 0.04
 OBJECT_RETREAT_SUCCESS_THRESHOLD_M = 0.03
+MAX_OBJECT_PRE_EXECUTION_DRIFT_M = float(os.environ.get("GO2_X5_MAX_OBJECT_PRE_EXECUTION_DRIFT_M", "0.012"))
 
 
 def env_bool(name: str, default: bool) -> bool:
@@ -421,6 +422,43 @@ def print_grasp_target_diagnostics(object_bbox):
         print(f"[warning] grasp {bbox_reference_label} 与物体中心高度差超过 2cm，可能夹偏。")
     if xy_error > 0.015:
         print(f"[warning] grasp {bbox_reference_label} 与物体中心 XY 偏差超过 1.5cm，可能夹不到物体。")
+
+
+def compute_target_bbox_delta(object_bbox: dict | None) -> dict:
+    """Compare the target-generation bbox against the object bbox right before execution."""
+
+    if object_bbox is None:
+        return {"available": False, "reason": "object_bbox_missing"}
+    if not TARGET_JSON.exists():
+        return {"available": False, "reason": "target_json_missing"}
+    target = json.loads(TARGET_JSON.read_text(encoding="utf-8"))
+    target_bbox = target.get("source", {}).get("bbox_world")
+    if not isinstance(target_bbox, dict) or "center_xyz" not in target_bbox:
+        return {"available": False, "reason": "target_bbox_missing"}
+
+    target_center = np.asarray(target_bbox["center_xyz"], dtype=float)
+    current_center = np.asarray(object_bbox["center_xyz"], dtype=float)
+    delta = current_center - target_center
+    xy_drift = float(np.linalg.norm(delta[:2]))
+    drift = float(np.linalg.norm(delta))
+    threshold = float(MAX_OBJECT_PRE_EXECUTION_DRIFT_M)
+    report = {
+        "available": True,
+        "target_bbox_center_xyz": target_center.tolist(),
+        "current_bbox_center_xyz": current_center.tolist(),
+        "delta_xyz": delta.tolist(),
+        "xy_drift_m": xy_drift,
+        "drift_m": drift,
+        "max_allowed_drift_m": threshold,
+        "within_tolerance": bool(drift <= threshold),
+    }
+    if not report["within_tolerance"]:
+        report["warning"] = "object_moved_after_target_generation"
+        print(
+            "[warning] object moved after target generation: "
+            f"drift={drift:.4f}m xy={xy_drift:.4f}m threshold={threshold:.4f}m"
+        )
+    return report
 
 
 def clear_motion_segment_debug(stage):
@@ -942,6 +980,9 @@ async def main():
     object_bbox_before = compute_world_bbox(stage, object_path)
     print("[object] bbox before:", object_bbox_before)
     print_grasp_target_diagnostics(object_bbox_before)
+    target_bbox_delta = compute_target_bbox_delta(object_bbox_before)
+    if target_bbox_delta.get("available"):
+        print("[diagnostic] target bbox vs execution bbox:", target_bbox_delta)
 
     world, robot = await init_robot()
     await omni.kit.app.get_app().next_update_async()
@@ -965,7 +1006,16 @@ async def main():
     executed_segments = []
     last_motion_q_final = None
     abort_reason = None
+    if target_bbox_delta.get("available") and not target_bbox_delta.get("within_tolerance", True):
+        abort_reason = (
+            "object moved after target generation; re-run target generation before executing "
+            f"(drift={target_bbox_delta.get('drift_m'):.4f}m, "
+            f"threshold={target_bbox_delta.get('max_allowed_drift_m'):.4f}m)."
+        )
+        print("[abort]", abort_reason)
     for segment in segments:
+        if abort_reason is not None:
+            break
         if segment["type"] == "motion":
             motion_log = await execute_motion_segment(world, robot, arm_indices, segment)
             logs.append(motion_log)
@@ -1101,6 +1151,7 @@ async def main():
             "object_center_displacement_m": object_center_displacement,
             "object_retreat_success": object_retreat_success,
             "object_retreat_success_threshold_m": OBJECT_RETREAT_SUCCESS_THRESHOLD_M,
+            "target_vs_pre_execution_object_drift": target_bbox_delta,
             "require_object_lift_success": REQUIRE_OBJECT_LIFT_SUCCESS,
             "task_success": task_success,
             "aborted": abort_reason is not None,
@@ -1118,6 +1169,7 @@ async def main():
         "arm_joint_indices": dict(zip(plan["joint_names"], arm_indices)),
         "gripper_joint_indices": dict(zip(gripper_joint_names, gripper_indices)),
         "object_bbox_before": object_bbox_before,
+        "target_vs_pre_execution_object_drift": target_bbox_delta,
         "object_bbox_after_primary_motion": object_bbox_after_primary_motion,
         "object_bbox_after_lift": object_bbox_after_primary_motion,
         "object_bbox_after": object_bbox_after,

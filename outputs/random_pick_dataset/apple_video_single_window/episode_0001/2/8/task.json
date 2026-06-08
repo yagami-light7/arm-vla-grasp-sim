@@ -11,19 +11,19 @@
   },
   "pick": {
     "base_goal": {
-      "x": 1.2176738969976182,
-      "y": 0.8641620764915531,
+      "x": 1.1985205936291423,
+      "y": 0.859155982577972,
       "yaw": 2.8809902618424523
     },
     "object_prim_path": "/World/apple",
     "grasp_mode": "auto",
     "object_pose_world": {
-      "x": 0.9176738969976181,
-      "y": 0.944162076491553,
-      "z": 0.82,
-      "yaw": 2.370049757254205,
-      "roll": 0.0,
-      "pitch": 0.0
+      "x": 0.8985205936291423,
+      "y": 0.939155982577972,
+      "z": 0.81653,
+      "yaw": -0.0031590459461097176,
+      "roll": -0.04405211032033688,
+      "pitch": -0.13651965409099645
     }
   },
   "place": {
@@ -55,6 +55,20 @@
       0.0,
       360.0
     ],
+    "object_pose_policy": {
+      "xy": "random_in_table_region",
+      "z": "fixed",
+      "fixed_z": 0.81653,
+      "rpy": "fixed",
+      "fixed_rpy_input": [
+        -2.524,
+        -7.822,
+        -0.181
+      ],
+      "fixed_rpy_input_unit": "deg",
+      "fixed_rpy_stored_unit": "rad",
+      "randomize_object_yaw": false
+    },
     "object_edge_sampling": {
       "enabled": true,
       "edge_sides": [
@@ -66,8 +80,8 @@
       "edge_margin": 0.12,
       "edge_min_clearance": 0.03,
       "object_support_clearance": 0.0,
-      "selected_edge_side": "x_min",
-      "selected_edge_distance_m": 0.03767389699761819
+      "selected_edge_side": "y_min",
+      "selected_edge_distance_m": 0.03915598257797197
     },
     "base_goal_generation": {
       "mode": "object_offset",
@@ -81,7 +95,7 @@
       "approach_angle_candidates_deg": [
         165.06858282186246
       ],
-      "clearance_radius": 0.25,
+      "clearance_radius": 0.2,
       "min_boundary_clearance": 0.25,
       "max_sample_attempts": 200,
       "path_heading_filter": {
@@ -93,26 +107,26 @@
         "path_heading_min_segment_length": 0.1
       }
     },
-    "attempts_used": 6,
+    "attempts_used": 1,
     "selected_base_goal_candidate": {
-      "x": 1.2176738969976182,
-      "y": 0.8641620764915531,
+      "x": 1.1985205936291423,
+      "y": 0.859155982577972,
       "yaw": 2.8809902618424523,
       "standoff": 0.31048349392520047,
       "approach_angle_deg": 165.06858282186246,
       "raw_free": true,
       "clearance_free": true,
-      "boundary_clearance_m": 1.9986463315790424,
-      "obstacle_clearance_m": 0.30000001192092896,
+      "boundary_clearance_m": 2.0177996349475187,
+      "obstacle_clearance_m": 0.25,
       "edge_alignment_score": 0.0,
-      "score": -1.3900784277648426,
+      "score": -1.4806858220715202,
       "valid": true,
       "rejection_reason": "",
       "path_found": true,
-      "path_length_m": 7.019238815542515,
+      "path_length_m": 6.89852813742386,
       "path_final_heading": 1.5707963267948966,
       "path_heading_error": 1.3101939350475558,
-      "path_expanded_nodes": 771
+      "path_expanded_nodes": 1015
     },
     "candidate_count": 1
   }

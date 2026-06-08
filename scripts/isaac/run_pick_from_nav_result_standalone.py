@@ -222,6 +222,13 @@ def _write_context(args: argparse.Namespace, task_json: Path, raw_task: dict) ->
     return context_path
 
 
+def _merge_context(context_path: Path, updates: dict) -> None:
+    context = _read_json_if_exists(context_path) or {}
+    context.update(updates)
+    context_path.parent.mkdir(parents=True, exist_ok=True)
+    context_path.write_text(json.dumps(context, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 def _open_stage(scene_usd: Path, load_updates: int) -> None:
     import omni.usd
 
@@ -584,7 +591,14 @@ def _run_single_episode(args: argparse.Namespace) -> None:
     )
     try:
         _open_stage(scene_usd, args.stage_load_updates)
-        _prepare_randomized_task_stage(task_json)
+        stage_prepare_report = _prepare_randomized_task_stage(task_json)
+        _merge_context(
+            context_json,
+            {
+                "randomized_object_stage_prepared": True,
+                "randomized_object_stage_prepare_report": stage_prepare_report,
+            },
+        )
         _write_standalone_report(
             args,
             {
@@ -599,6 +613,7 @@ def _run_single_episode(args: argparse.Namespace) -> None:
                     else None,
                     "updated_at": time.time(),
                 },
+                "stage_prepare": stage_prepare_report,
             },
         )
         if args.set_viewport_camera:

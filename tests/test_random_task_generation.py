@@ -59,6 +59,55 @@ class RandomTaskGenerationTest(unittest.TestCase):
         self.assertAlmostEqual(spawn_region.object_z, 0.86)
         self.assertAlmostEqual(object_pose.z, 0.86)
 
+    def test_fixed_object_pose_overrides_z_and_rpy_with_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            map_json = self._write_temp_map(tmpdir)
+            base_task = {
+                "nav_map": map_json,
+                "start": {"x": 0.1, "y": 0.1, "yaw": 0.0},
+                "pick": {"object_prim_path": "/World/apple"},
+            }
+            kwargs = {
+                "base_task": base_task,
+                "spawn_region": SpawnRegion(
+                    x_min=0.86,
+                    x_max=0.96,
+                    y_min=0.9,
+                    y_max=1.6,
+                    table_z=0.82,
+                    object_z_offset=0.04,
+                ),
+                "object_fixed_z": 0.81653,
+                "object_fixed_rpy": (-2.524, -7.822, -0.181),
+                "object_fixed_rpy_unit": "deg",
+                "randomize_object_yaw": False,
+                "edge_margin": None,
+                "clearance_radius": 0.0,
+                "min_boundary_clearance": 0.0,
+            }
+
+            task_seed_7 = generate_random_pick_task(seed=7, **kwargs)
+            task_seed_8 = generate_random_pick_task(seed=8, **kwargs)
+
+        pose_7 = task_seed_7["pick"]["object_pose_world"]
+        pose_8 = task_seed_8["pick"]["object_pose_world"]
+        self.assertNotEqual((pose_7["x"], pose_7["y"]), (pose_8["x"], pose_8["y"]))
+        for pose in (pose_7, pose_8):
+            self.assertAlmostEqual(pose["z"], 0.81653)
+            self.assertAlmostEqual(pose["roll"], math.radians(-2.524))
+            self.assertAlmostEqual(pose["pitch"], math.radians(-7.822))
+            self.assertAlmostEqual(pose["yaw"], math.radians(-0.181))
+
+        policy = task_seed_7["randomization"]["object_pose_policy"]
+        self.assertEqual(policy["xy"], "random_in_table_region")
+        self.assertEqual(policy["z"], "fixed")
+        self.assertEqual(policy["rpy"], "fixed")
+        self.assertEqual(policy["fixed_z"], 0.81653)
+        self.assertEqual(policy["fixed_rpy_input"], [-2.524, -7.822, -0.181])
+        self.assertEqual(policy["fixed_rpy_input_unit"], "deg")
+        self.assertEqual(policy["fixed_rpy_stored_unit"], "rad")
+        self.assertFalse(policy["randomize_object_yaw"])
+
     def test_path_final_heading_uses_dense_tail_segment(self) -> None:
         path = [(0.0, 0.0), (0.1, 0.0), (0.2, 0.1), (0.3, 0.2)]
 

@@ -190,7 +190,7 @@ DEFAULT_APPROACH_ANGLES_DEG: tuple[float, ...] = (
 )
 
 DEFAULT_STANDOFF_CANDIDATES_M: tuple[float, ...] = (0.50, 0.55, 0.60)
-DEFAULT_OBJECT_OFFSET_BASE_GOAL_XY_M: tuple[float, float] = (0.28, -0.08)
+DEFAULT_OBJECT_OFFSET_BASE_GOAL_XY_M: tuple[float, float] = (0.35, -0.08)
 
 
 def _sample_axis_near_edge(
@@ -255,6 +255,9 @@ def sample_object_pose(
     spawn_region: SpawnRegion,
     *,
     yaw_range_deg: tuple[float, float] = (0.0, 360.0),
+    object_fixed_z: float | None = None,
+    object_fixed_rpy_rad: tuple[float, float, float] | None = None,
+    randomize_object_yaw: bool = True,
     edge_sides: Sequence[str] | None = None,
     edge_margin: float | None = None,
     edge_min_clearance: float = 0.02,
@@ -269,6 +272,14 @@ def sample_object_pose(
         raise ValueError("spawn_region y_min must be <= y_max.")
     if yaw_min > yaw_max:
         raise ValueError("yaw_range_deg min must be <= max.")
+    if object_fixed_z is not None and not math.isfinite(float(object_fixed_z)):
+        raise ValueError("object_fixed_z must be finite when provided.")
+    if object_fixed_rpy_rad is not None:
+        fixed_roll, fixed_pitch, fixed_yaw = (float(value) for value in object_fixed_rpy_rad)
+        if not all(math.isfinite(value) for value in (fixed_roll, fixed_pitch, fixed_yaw)):
+            raise ValueError("object_fixed_rpy_rad values must be finite when provided.")
+    else:
+        fixed_roll, fixed_pitch, fixed_yaw = 0.0, 0.0, 0.0
     edge_side = None
     edge_distance = None
     support_clearance = max(0.0, float(object_support_clearance))
@@ -333,13 +344,59 @@ def sample_object_pose(
     return ObjectPose(
         x=x,
         y=y,
-        z=spawn_region.object_z,
-        yaw=wrap_yaw(math.radians(rng.uniform(yaw_min, yaw_max))),
-        roll=0.0,
-        pitch=0.0,
+        z=float(object_fixed_z) if object_fixed_z is not None else spawn_region.object_z,
+        yaw=wrap_yaw(math.radians(rng.uniform(yaw_min, yaw_max))) if randomize_object_yaw else wrap_yaw(fixed_yaw),
+        roll=fixed_roll,
+        pitch=fixed_pitch,
         edge_side=edge_side,
         edge_distance_m=edge_distance,
     )
+
+
+def _fixed_rpy_to_radians(
+    object_fixed_rpy: Sequence[float] | None,
+    *,
+    object_fixed_rpy_unit: str,
+) -> tuple[tuple[float, float, float] | None, list[float] | None, str | None]:
+    """Normalize optional fixed RPY input to radians for task storage."""
+
+    if object_fixed_rpy is None:
+        return None, None, None
+    unit = str(object_fixed_rpy_unit).lower()
+    if unit not in {"deg", "rad"}:
+        raise ValueError("object_fixed_rpy_unit must be either 'deg' or 'rad'.")
+    values = [float(value) for value in object_fixed_rpy]
+    if len(values) != 3:
+        raise ValueError("object_fixed_rpy must contain exactly roll, pitch, yaw.")
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("object_fixed_rpy values must be finite.")
+    if unit == "deg":
+        stored = tuple(math.radians(value) for value in values)
+    else:
+        stored = tuple(values)
+    return (float(stored[0]), float(stored[1]), float(stored[2])), values, unit
+
+
+def _object_pose_policy_metadata(
+    *,
+    object_fixed_z: float | None,
+    object_fixed_rpy_input: list[float] | None,
+    object_fixed_rpy_input_unit: str | None,
+    randomize_object_yaw: bool,
+) -> dict[str, Any]:
+    """Return a compact policy report for downstream validation."""
+
+    has_fixed_rpy = object_fixed_rpy_input is not None
+    return {
+        "xy": "random_in_table_region",
+        "z": "fixed" if object_fixed_z is not None else "spawn_region",
+        "fixed_z": float(object_fixed_z) if object_fixed_z is not None else None,
+        "rpy": "fixed" if has_fixed_rpy and not randomize_object_yaw else ("fixed_roll_pitch_random_yaw" if has_fixed_rpy else "legacy"),
+        "fixed_rpy_input": object_fixed_rpy_input,
+        "fixed_rpy_input_unit": object_fixed_rpy_input_unit,
+        "fixed_rpy_stored_unit": "rad" if has_fixed_rpy else None,
+        "randomize_object_yaw": bool(randomize_object_yaw),
+    }
 
 
 def _path_length(path_world: Sequence[tuple[float, float]]) -> float:
@@ -549,6 +606,10 @@ def generate_random_pick_task(
     table_prim_path: str = "/World/table",
     spawn_region: SpawnRegion,
     yaw_range_deg: tuple[float, float] = (0.0, 360.0),
+    object_fixed_z: float | None = None,
+    object_fixed_rpy: Sequence[float] | None = None,
+    object_fixed_rpy_unit: str = "rad",
+    randomize_object_yaw: bool = True,
     standoff_candidates: Sequence[float] = DEFAULT_STANDOFF_CANDIDATES_M,
     approach_angles_deg: Sequence[float] = DEFAULT_APPROACH_ANGLES_DEG,
     base_goal_mode: str = "radial",
@@ -581,6 +642,10 @@ def generate_random_pick_task(
         raise ValueError("edge_min_clearance must be non-negative.")
     if base_goal_mode not in {"radial", "object_offset"}:
         raise ValueError("base_goal_mode must be either 'radial' or 'object_offset'.")
+    fixed_rpy_rad, fixed_rpy_input, fixed_rpy_input_unit = _fixed_rpy_to_radians(
+        object_fixed_rpy,
+        object_fixed_rpy_unit=object_fixed_rpy_unit,
+    )
 
     candidate_standoff_candidates = tuple(float(value) for value in standoff_candidates)
     candidate_approach_angles_deg = tuple(float(value) for value in approach_angles_deg)
@@ -622,6 +687,9 @@ def generate_random_pick_task(
             rng,
             spawn_region,
             yaw_range_deg=yaw_range_deg,
+            object_fixed_z=object_fixed_z,
+            object_fixed_rpy_rad=fixed_rpy_rad,
+            randomize_object_yaw=randomize_object_yaw,
             edge_sides=effective_edge_sides,
             edge_margin=edge_margin,
             edge_min_clearance=edge_min_clearance,
@@ -664,6 +732,12 @@ def generate_random_pick_task(
             "table_prim_path": table_prim_path,
             "spawn_region": spawn_region.to_dict(),
             "yaw_range_deg": [float(yaw_range_deg[0]), float(yaw_range_deg[1])],
+            "object_pose_policy": _object_pose_policy_metadata(
+                object_fixed_z=object_fixed_z,
+                object_fixed_rpy_input=fixed_rpy_input,
+                object_fixed_rpy_input_unit=fixed_rpy_input_unit,
+                randomize_object_yaw=randomize_object_yaw,
+            ),
             "object_edge_sampling": {
                 "enabled": edge_margin is not None,
                 "edge_sides": list(effective_edge_sides) if edge_margin is not None else [],
@@ -719,6 +793,10 @@ def write_random_pick_task(
     table_prim_path: str = "/World/table",
     spawn_region: SpawnRegion,
     yaw_range_deg: tuple[float, float] = (0.0, 360.0),
+    object_fixed_z: float | None = None,
+    object_fixed_rpy: Sequence[float] | None = None,
+    object_fixed_rpy_unit: str = "rad",
+    randomize_object_yaw: bool = True,
     standoff_candidates: Sequence[float] = DEFAULT_STANDOFF_CANDIDATES_M,
     approach_angles_deg: Sequence[float] = DEFAULT_APPROACH_ANGLES_DEG,
     base_goal_mode: str = "radial",
@@ -747,6 +825,10 @@ def write_random_pick_task(
         table_prim_path=table_prim_path,
         spawn_region=spawn_region,
         yaw_range_deg=yaw_range_deg,
+        object_fixed_z=object_fixed_z,
+        object_fixed_rpy=object_fixed_rpy,
+        object_fixed_rpy_unit=object_fixed_rpy_unit,
+        randomize_object_yaw=randomize_object_yaw,
         standoff_candidates=standoff_candidates,
         approach_angles_deg=approach_angles_deg,
         base_goal_mode=base_goal_mode,

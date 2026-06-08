@@ -69,7 +69,7 @@ OBJECT_PRIM_PATH_OVERRIDE = None
 # 因此最终 grasp 目标把指尖 TCP 沿局部 +X 再送入一小段距离。
 # 这样 cuRobo 仍然用指尖 TCP 做路径规划和桌面 clearance 检查，
 # 但 close_gripper 前的有效夹持中心仍对齐原先的 bbox grasp 规则。
-TIP_TCP_INSERTION_BEYOND_GRASP_CENTER_M = env_float("GO2_X5_TIP_TCP_INSERTION_BEYOND_GRASP_CENTER_M", 0.015)
+TIP_TCP_INSERTION_BEYOND_GRASP_CENTER_M = env_float("GO2_X5_TIP_TCP_INSERTION_BEYOND_GRASP_CENTER_M", 0.005)
 
 # 对平行夹爪抓立方体，TCP 应该落到物体高度中部附近，而不是停在物体顶部上方。
 # 第一版使用 bbox 顶部向下一个深度。

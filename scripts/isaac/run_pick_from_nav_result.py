@@ -61,6 +61,7 @@ PIPELINE_CONTEXT_JSON = Path(os.environ.get("GO2_X5_PIPELINE_CONTEXT", "/tmp/go2
 NAV_RESULT_JSON = Path(os.environ.get("GO2_X5_NAV_RESULT", "/tmp/go2_x5_nav_result.json"))
 DEFAULT_TASK_JSON = PROJECT_ROOT / "tasks/nav_pick_example.json"
 SETTLE_STEPS = int(os.environ.get("GO2_X5_PICK_SETTLE_STEPS", "120"))
+OBJECT_TARGET_SETTLE_STEPS = int(os.environ.get("GO2_X5_PICK_OBJECT_TARGET_SETTLE_STEPS", "30"))
 LINEAR_STABLE_TOLERANCE = 0.05
 ANGULAR_STABLE_TOLERANCE = 0.10
 HANDOFF_CLEARANCE_M = float(os.environ.get("GO2_X5_HANDOFF_CLEARANCE_M", "0.30"))
@@ -419,6 +420,36 @@ def _set_orient_op(op: UsdGeom.XformOp, quat_wxyz: tuple[float, float, float, fl
         op.Set(Gf.Quatf(w, Gf.Vec3f(x, y, z)))
 
 
+def _path_is_under(path: str, parent_path: str) -> bool:
+    parent = parent_path.rstrip("/")
+    return path == parent or path.startswith(parent + "/")
+
+
+def _prim_keyword_match_text(prim) -> str:
+    """Return a best-effort text blob for path/reference based asset matching."""
+
+    pieces = [str(prim.GetPath()), prim.GetName()]
+    for metadata_name in ("references", "payload", "payloads", "assetInfo"):
+        try:
+            value = prim.GetMetadata(metadata_name)
+        except Exception:
+            value = None
+        if value:
+            pieces.append(str(value))
+    return " ".join(pieces).lower()
+
+
+def _dedupe_root_paths(paths: list[str]) -> list[str]:
+    """Keep the shallowest roots so a hidden parent is not reported many times."""
+
+    roots: list[str] = []
+    for path in sorted(set(paths), key=lambda item: (item.count("/"), item)):
+        if any(_path_is_under(path, root) for root in roots):
+            continue
+        roots.append(path)
+    return roots
+
+
 def _show_only_task_object(task) -> dict:
     """Hide apple/orange/bottle distractors while keeping the task object visible."""
 
@@ -431,21 +462,39 @@ def _show_only_task_object(task) -> dict:
 
     object_prefix = object_prim_path.rstrip("/") + "/"
     hidden_paths: list[str] = []
+    hidden_root_paths: list[str] = []
     shown_paths: list[str] = []
     keywords = ("apple", "orange", "bottle")
+    candidate_roots: list[str] = []
+
     for prim in stage.Traverse():
         prim_path = str(prim.GetPath())
-        lower_path = prim_path.lower()
-        if not any(keyword in lower_path for keyword in keywords):
+        if prim_path == object_prim_path or prim_path.startswith(object_prefix):
             continue
+        match_text = _prim_keyword_match_text(prim)
+        if not any(keyword in match_text for keyword in keywords):
+            continue
+        candidate_roots.append(prim_path)
+
+    for root_path in _dedupe_root_paths(candidate_roots):
+        prim = stage.GetPrimAtPath(root_path)
+        if not prim.IsValid():
+            continue
+        hidden_root_paths.append(root_path)
+        for child in Usd.PrimRange(prim):
+            child_path = str(child.GetPath())
+            if child_path == object_prim_path or child_path.startswith(object_prefix):
+                continue
+            if child.IsA(UsdGeom.Imageable):
+                UsdGeom.Imageable(child).MakeInvisible()
+                hidden_paths.append(child_path)
+
+    for prim in stage.Traverse():
+        prim_path = str(prim.GetPath())
         if prim_path == object_prim_path or prim_path.startswith(object_prefix):
             if prim.IsA(UsdGeom.Imageable):
                 UsdGeom.Imageable(prim).MakeVisible()
                 shown_paths.append(prim_path)
-            continue
-        if prim.IsA(UsdGeom.Imageable):
-            UsdGeom.Imageable(prim).MakeInvisible()
-            hidden_paths.append(prim_path)
 
     print(
         "[randomize] object visibility:",
@@ -453,12 +502,14 @@ def _show_only_task_object(task) -> dict:
             "keep": object_prim_path,
             "shown": len(shown_paths),
             "hidden": len(hidden_paths),
+            "hidden_roots": len(hidden_root_paths),
         },
     )
     return {
         "applied": True,
         "kept_object_prim_path": object_prim_path,
         "shown_paths": shown_paths,
+        "hidden_root_paths": hidden_root_paths,
         "hidden_paths": hidden_paths,
     }
 
@@ -629,6 +680,65 @@ async def _restore_and_settle(world: World, robot: SingleArticulation, nav_resul
     return report
 
 
+def _compute_world_bbox(stage, prim_path: str) -> dict | None:
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        return None
+    bbox_cache = UsdGeom.BBoxCache(
+        0.0,
+        [UsdGeom.Tokens.default_, UsdGeom.Tokens.render],
+        useExtentsHint=True,
+    )
+    bound = bbox_cache.ComputeWorldBound(prim)
+    aligned_box = bound.ComputeAlignedBox()
+    bbox_min = np.array(aligned_box.GetMin(), dtype=float)
+    bbox_max = np.array(aligned_box.GetMax(), dtype=float)
+    bbox_center = 0.5 * (bbox_min + bbox_max)
+    return {
+        "min_xyz": bbox_min.tolist(),
+        "max_xyz": bbox_max.tolist(),
+        "center_xyz": bbox_center.tolist(),
+        "top_z": float(bbox_max[2]),
+        "center_z": float(bbox_center[2]),
+    }
+
+
+async def _settle_object_before_target(world: World, object_prim_path: str | None) -> dict:
+    """Let lightweight objects settle immediately before reading the target bbox."""
+
+    steps = max(0, int(_pipeline_context().get("object_target_settle_steps", OBJECT_TARGET_SETTLE_STEPS)))
+    stage = omni.usd.get_context().get_stage()
+    if stage is None or not object_prim_path:
+        return {"applied": False, "reason": "stage_or_object_missing", "settle_steps": steps}
+
+    bbox_before = _compute_world_bbox(stage, object_prim_path)
+    for _ in range(steps):
+        world.step(render=True)
+        await omni.kit.app.get_app().next_update_async()
+    bbox_after = _compute_world_bbox(stage, object_prim_path)
+    displacement = None
+    if bbox_before is not None and bbox_after is not None:
+        before_center = np.asarray(bbox_before["center_xyz"], dtype=float)
+        after_center = np.asarray(bbox_after["center_xyz"], dtype=float)
+        displacement = float(np.linalg.norm(after_center - before_center))
+    report = {
+        "applied": True,
+        "object_prim_path": object_prim_path,
+        "settle_steps": steps,
+        "bbox_before": bbox_before,
+        "bbox_after": bbox_after,
+        "center_displacement_m": displacement,
+    }
+    print(
+        "[handoff] object target settle:",
+        {
+            "steps": steps,
+            "center_displacement_m": None if displacement is None else round(displacement, 5),
+        },
+    )
+    return report
+
+
 def _state_export_report(state: dict, nav_result: dict) -> dict:
     """Summarize exported arm-base state after handoff smoke."""
 
@@ -664,6 +774,8 @@ def _summarize_target(target: dict) -> dict:
         or source.get("object_prim_path")
         or diagnostics.get("object_prim_path"),
         "grasp_mode": target.get("grasp_mode") or source.get("grasp_mode") or diagnostics.get("grasp_mode"),
+        "bbox_world": source.get("bbox_world"),
+        "tip_tcp_insertion_beyond_grasp_center_m": source.get("tip_tcp_insertion_beyond_grasp_center_m"),
         "target_workspace_base": workspace,
     }
 
@@ -692,9 +804,15 @@ async def main() -> None:
         handoff_report["map_check"] = _validate_handoff_pose(task, nav_result)
         handoff_report["stage_check"] = _validate_open_stage(task, context)
         if _randomized_object_stage_prepared(context):
+            prepared_report = context.get("randomized_object_stage_prepare_report")
             skip_report = _skip_repeated_object_stage_prepare_report(task)
-            handoff_report["object_visibility"] = dict(skip_report)
-            handoff_report["object_pose"] = dict(skip_report)
+            if isinstance(prepared_report, dict):
+                handoff_report["stage_prepare"] = prepared_report
+                handoff_report["object_visibility"] = prepared_report.get("object_visibility", dict(skip_report))
+                handoff_report["object_pose"] = prepared_report.get("object_pose", dict(skip_report))
+            else:
+                handoff_report["object_visibility"] = dict(skip_report)
+                handoff_report["object_pose"] = dict(skip_report)
             print(
                 "[randomize] skipped repeated object stage preparation:",
                 skip_report,
@@ -727,6 +845,10 @@ async def main() -> None:
             print("[handoff] state JSON:", task_spec.state_json)
             return
 
+        handoff_report["object_settle_before_target"] = await _settle_object_before_target(
+            world,
+            task.pick.object_prim_path,
+        )
         state = await pipeline.export_state(task_spec)
         handoff_report["state_export"] = _state_export_report(state, nav_result)
         target = await pipeline.generate_target(task_spec)

@@ -32,6 +32,8 @@ DEFAULT_ISAACLAB_LAUNCHER = "/home/light/workspace/IsaacLab/isaaclab.sh"
 DEFAULT_APPLE_OBJECT_Z_OFFSET_M = 0.0
 DEFAULT_APPLE_EDGE_MIN_CLEARANCE_M = 0.03
 DEFAULT_APPLE_SUPPORT_CLEARANCE_M = 0.0
+DEFAULT_APPLE_FIXED_Z_M = 0.81653
+DEFAULT_APPLE_FIXED_RPY_DEG = (-2.524, -7.822, -0.181)
 
 
 def _project_path(raw_path: str | Path) -> Path:
@@ -118,6 +120,12 @@ def _parse_args() -> argparse.Namespace:
         default=DEFAULT_APPLE_OBJECT_Z_OFFSET_M,
         help="Optional explicit offset added to --table-z. For the current apple asset, 0.0 keeps the stable center height at z=0.82.",
     )
+    parser.add_argument("--object-fixed-z", type=float, default=DEFAULT_APPLE_FIXED_Z_M)
+    parser.add_argument("--object-fixed-roll", type=float, default=DEFAULT_APPLE_FIXED_RPY_DEG[0])
+    parser.add_argument("--object-fixed-pitch", type=float, default=DEFAULT_APPLE_FIXED_RPY_DEG[1])
+    parser.add_argument("--object-fixed-yaw", type=float, default=DEFAULT_APPLE_FIXED_RPY_DEG[2])
+    parser.add_argument("--object-fixed-rpy-unit", choices=("deg", "rad"), default="deg")
+    parser.add_argument("--randomize-object-yaw", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--object-prim-path", default=None)
     parser.add_argument("--table-prim-path", default="/World/table")
     parser.add_argument("--yaw-range", type=float, nargs=2, default=(0.0, 360.0), metavar=("DEG_MIN", "DEG_MAX"))
@@ -138,7 +146,7 @@ def _parse_args() -> argparse.Namespace:
         help="World XY offset added to the sampled object position when --base-goal-mode object-offset is used.",
     )
     parser.add_argument("--nav-map", default=None)
-    parser.add_argument("--clearance-radius", type=float, default=0.25)
+    parser.add_argument("--clearance-radius", type=float, default=0.20)
     parser.add_argument(
         "--handoff-clearance-radius",
         type=float,
@@ -235,6 +243,15 @@ def _episode_summary_path(nav_result: dict[str, Any] | None) -> Path | None:
     return Path(episode_dir).expanduser().resolve() / "summary.json"
 
 
+def _nav_clearance_radius(args: argparse.Namespace) -> float:
+    """Return the navigation clearance paired with generated pick base goals."""
+
+    clearance = float(args.clearance_radius)
+    if str(args.base_goal_mode).replace("-", "_") == "object_offset":
+        return min(clearance, float(args.handoff_clearance_radius))
+    return clearance
+
+
 def _pipeline_command(
     args: argparse.Namespace,
     *,
@@ -268,6 +285,10 @@ def _pipeline_command(
         "--fast-dwa",
         "--handoff-clearance-radius",
         str(args.handoff_clearance_radius),
+        "--inflate-radius",
+        str(_nav_clearance_radius(args)),
+        "--local-clearance-radius",
+        str(_nav_clearance_radius(args)),
         "--max-nav-steps",
         str(args.max_nav_steps),
         "--goal-tolerance",
@@ -584,6 +605,10 @@ def main() -> int:
                 table_prim_path=args.table_prim_path,
                 spawn_region=spawn_region,
                 yaw_range_deg=(float(args.yaw_range[0]), float(args.yaw_range[1])),
+                object_fixed_z=args.object_fixed_z,
+                object_fixed_rpy=(args.object_fixed_roll, args.object_fixed_pitch, args.object_fixed_yaw),
+                object_fixed_rpy_unit=args.object_fixed_rpy_unit,
+                randomize_object_yaw=args.randomize_object_yaw,
                 standoff_candidates=args.standoff_candidates,
                 approach_angles_deg=args.approach_angles_deg,
                 base_goal_mode=args.base_goal_mode.replace("-", "_"),
@@ -603,6 +628,7 @@ def main() -> int:
             )
             selected_base_goal = task.get("randomization", {}).get("selected_base_goal_candidate", {})
             row["object_pose_world"] = task["pick"].get("object_pose_world")
+            row["object_pose_policy"] = task.get("randomization", {}).get("object_pose_policy")
             row["base_goal"] = task["pick"].get("base_goal")
             row["object_edge_sampling"] = task.get("randomization", {}).get("object_edge_sampling")
             row["base_goal_generation"] = task.get("randomization", {}).get("base_goal_generation")

@@ -37,6 +37,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--table-y-range", type=float, nargs=2, default=(0.9, 1.6), metavar=("Y_MIN", "Y_MAX"))
     parser.add_argument("--table-z", type=float, default=0.82, help="World z written directly to pick.object_pose_world.z.")
     parser.add_argument("--object-z-offset", type=float, default=0.0, help="Optional explicit offset added to --table-z.")
+    parser.add_argument("--object-fixed-z", type=float, default=0.81653)
+    parser.add_argument("--object-fixed-roll", type=float, default=-2.524)
+    parser.add_argument("--object-fixed-pitch", type=float, default=-7.822)
+    parser.add_argument("--object-fixed-yaw", type=float, default=-0.181)
+    parser.add_argument("--object-fixed-rpy-unit", choices=("deg", "rad"), default="deg")
+    parser.add_argument("--randomize-object-yaw", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--yaw-range", type=float, nargs=2, default=(0.0, 360.0), metavar=("DEG_MIN", "DEG_MAX"))
     parser.add_argument("--standoff-candidates", type=float, nargs="+", default=DEFAULT_STANDOFF_CANDIDATES_M)
     parser.add_argument("--approach-angles-deg", type=float, nargs="+", default=DEFAULT_APPROACH_ANGLES_DEG)
@@ -55,7 +61,7 @@ def _parse_args() -> argparse.Namespace:
         help="World XY offset added to the sampled object position when --base-goal-mode object-offset is used.",
     )
     parser.add_argument("--nav-map", default=None)
-    parser.add_argument("--clearance-radius", type=float, default=0.25)
+    parser.add_argument("--clearance-radius", type=float, default=0.20)
     parser.add_argument("--min-boundary-clearance", type=float, default=0.25)
     parser.add_argument(
         "--edge-biased",
@@ -107,6 +113,10 @@ def main() -> int:
         table_prim_path=args.table_prim_path,
         spawn_region=spawn_region,
         yaw_range_deg=(float(args.yaw_range[0]), float(args.yaw_range[1])),
+        object_fixed_z=args.object_fixed_z,
+        object_fixed_rpy=(args.object_fixed_roll, args.object_fixed_pitch, args.object_fixed_yaw),
+        object_fixed_rpy_unit=args.object_fixed_rpy_unit,
+        randomize_object_yaw=args.randomize_object_yaw,
         standoff_candidates=args.standoff_candidates,
         approach_angles_deg=args.approach_angles_deg,
         base_goal_mode=args.base_goal_mode.replace("-", "_"),

@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "handoff_mode": "multi_process_json",
+  "physical_continuity": false,
+  "updated_at": 1780926535.576971,
+  "success": true,
+  "failure_reason": "",
+  "place_execution_mode": "mvp_reconstructed_object",
+  "place_object_initialization": "reconstructed",
+  "task_json": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_contact/episode_0000/task_nav_to_place.json",
+  "nav_result": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_contact/episode_0000/nav_place_result.json",
+  "dataset_dir": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_contact/episode_0000/place",
+  "restore": {
+    "requested_root_pose": {
+      "x": -1.6532069444656372,
+      "y": 3.256241798400879,
+      "z": 0.3760800063610077,
+      "yaw": 2.696958484076585
+    },
+    "settled_root": {
+      "position_xyz": [
+        -1.6532068252563477,
+        3.256241798400879,
+        0.3760800063610077
+      ],
+      "quaternion_wxyz": [
+        0.22049030661582947,
+        -9.313225746154785e-10,
+        -1.2732925824820995e-11,
+        0.975389301776886
+      ],
+      "yaw": 2.696958587895311,
+      "linear_velocity_xyz": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "angular_velocity_xyz": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "linear_speed_xy": 0.0,
+      "angular_speed_z": 0.0
+    },
+    "settle_steps": 120,
+    "xy_error_m": 1.1920928955078125e-07,
+    "yaw_error_rad": 1.0381872606046727e-07,
+    "stable": true
+  },
+  "stage_prepare": {
+    "object_visibility": {
+      "applied": true,
+      "kept_object_prim_path": "/World/apple",
+      "shown_paths": [
+        "/World/apple",
+        "/World/apple/Looks",
+        "/World/apple/Apple_M_Apple_0",
+        "/World/apple/Apple_M_Apple_0/Apple_M_Apple_0"
+      ],
+      "hidden_paths": [
+        "/World/apple_01",
+        "/World/apple_01/Looks",
+        "/World/apple_01/Apple_M_Apple_0",
+        "/World/apple_01/Apple_M_Apple_0/Apple_M_Apple_0",
+        "/World/apple_02",
+        "/World/apple_02/Looks",
+        "/World/apple_02/Apple_M_Apple_0",
+        "/World/apple_02/Apple_M_Apple_0/Apple_M_Apple_0",
+        "/World/orange",
+        "/World/orange/Looks",
+        "/World/orange/Orange_defaultMat_0",
+        "/World/orange/Orange_defaultMat_0/Orange_defaultMat_0",
+        "/World/orange_01",
+        "/World/orange_01/Looks",
+        "/World/orange_01/Orange_defaultMat_0",
+        "/World/orange_01/Orange_defaultMat_0/Orange_defaultMat_0",
+        "/World/bottle",
+        "/World/bottle/Looks",
+        "/World/bottle/geometry_0",
+        "/World/bottle/geometry_0/geometry_0"
+      ]
+    }
+  },
+  "reconstructed_object": {
+    "applied": true,
+    "place_object_initialization": "reconstructed",
+    "object_prim_path": "/World/apple",
+    "pose_world": {
+      "x": -2.56,
+      "y": 3.38,
+      "z": 0.827,
+      "roll": 0.0,
+      "pitch": 0.0,
+      "yaw": 0.0
+    },
+    "quaternion_wxyz": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "rigid_body_velocity_zeroed_count": 1
+  },
+  "verification": {
+    "success": true,
+    "place_xy_error": 0.0,
+    "place_z_error": 0.0,
+    "place_xy_tolerance": 0.1,
+    "place_z_tolerance": 0.08
+  },
+  "notes": [
+    "This MVP reconstructs the object at place_pose_world after a multi-process JSON handoff.",
+    "It is not a continuous physical carry or full cuRobo place plan."
+  ]
+}

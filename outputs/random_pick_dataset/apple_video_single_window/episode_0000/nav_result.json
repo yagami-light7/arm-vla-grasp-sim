@@ -3,24 +3,24 @@
   "success": true,
   "failure_reason": "",
   "final_base_pose_world": {
-    "x": 1.2313382625579834,
-    "y": 1.2422295808792114,
-    "z": 0.33285000920295715,
-    "yaw": 1.5293358203261407,
+    "x": 1.219478964805603,
+    "y": 1.0917376279830933,
+    "z": 0.3342805802822113,
+    "yaw": 1.4722962109320188,
     "quat_wxyz": [
-      0.721611499786377,
-      -0.0011743619106709957,
-      0.0010809031082317233,
-      0.6922966241836548
+      0.7410212159156799,
+      -0.006863071583211422,
+      0.007945208810269833,
+      0.6713994741439819
     ]
   },
   "goal_xyyaw": [
-    1.2170848446305964,
-    1.261438141012216,
+    1.1995111616914338,
+    1.0963764474962214,
     2.8809902618424523
   ],
-  "final_goal_distance": 0.02391921204797533,
-  "yaw_error": 1.3516544415163114,
+  "final_goal_distance": 0.020499556280115072,
+  "yaw_error": 1.4086940509104338,
   "goal_tolerance": 0.15,
   "goal_yaw_tolerance": 3.141592653589793,
   "terminal_position_tolerance": 0.08,
@@ -35,19 +35,19 @@
   "base_stable_linear_tolerance": 0.06,
   "base_stable_angular_tolerance": 0.2,
   "final_body_velocity": {
-    "vx": -0.021328456699848175,
-    "vy": 0.0019411630928516388,
-    "wz": 0.0024630066473037004
+    "vx": 0.00715981237590313,
+    "vy": -0.022815870121121407,
+    "wz": -0.008822118863463402
   },
-  "path_length": 7.4459462191266566,
+  "path_length": 7.123619135776998,
   "timeout": false,
   "stall_detected": false,
   "yaw_align_stall_detected": false,
   "terminal_recovery_count": 0,
   "yaw_settle_success": true,
-  "yaw_settle_steps": 82,
+  "yaw_settle_steps": 65,
   "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_single_window/episode_0000/2/7",
-  "elapsed_wall_time_s": 21.508413791656494,
+  "elapsed_wall_time_s": 22.08787727355957,
   "replay_trajectory_path": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_single_window/episode_0000/2/7/replay/trajectory.jsonl",
-  "replay_frame_count": 563
+  "replay_frame_count": 535
 }
