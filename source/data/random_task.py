@@ -190,7 +190,7 @@ DEFAULT_APPROACH_ANGLES_DEG: tuple[float, ...] = (
 )
 
 DEFAULT_STANDOFF_CANDIDATES_M: tuple[float, ...] = (0.50, 0.55, 0.60)
-DEFAULT_OBJECT_OFFSET_BASE_GOAL_XY_M: tuple[float, float] = (0.35, -0.08)
+DEFAULT_OBJECT_OFFSET_BASE_GOAL_XY_M: tuple[float, float] = (0.28, -0.12)
 
 
 def _sample_axis_near_edge(
@@ -257,7 +257,7 @@ def sample_object_pose(
     yaw_range_deg: tuple[float, float] = (0.0, 360.0),
     object_fixed_z: float | None = None,
     object_fixed_rpy_rad: tuple[float, float, float] | None = None,
-    randomize_object_yaw: bool = True,
+    randomize_object_yaw: bool = False,
     edge_sides: Sequence[str] | None = None,
     edge_margin: float | None = None,
     edge_min_clearance: float = 0.02,
@@ -609,7 +609,7 @@ def generate_random_pick_task(
     object_fixed_z: float | None = None,
     object_fixed_rpy: Sequence[float] | None = None,
     object_fixed_rpy_unit: str = "rad",
-    randomize_object_yaw: bool = True,
+    randomize_object_yaw: bool = False,
     standoff_candidates: Sequence[float] = DEFAULT_STANDOFF_CANDIDATES_M,
     approach_angles_deg: Sequence[float] = DEFAULT_APPROACH_ANGLES_DEG,
     base_goal_mode: str = "radial",
@@ -796,7 +796,7 @@ def write_random_pick_task(
     object_fixed_z: float | None = None,
     object_fixed_rpy: Sequence[float] | None = None,
     object_fixed_rpy_unit: str = "rad",
-    randomize_object_yaw: bool = True,
+    randomize_object_yaw: bool = False,
     standoff_candidates: Sequence[float] = DEFAULT_STANDOFF_CANDIDATES_M,
     approach_angles_deg: Sequence[float] = DEFAULT_APPROACH_ANGLES_DEG,
     base_goal_mode: str = "radial",

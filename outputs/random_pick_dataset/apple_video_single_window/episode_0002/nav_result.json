@@ -3,24 +3,24 @@
   "success": true,
   "failure_reason": "",
   "final_base_pose_world": {
-    "x": 1.209533452987671,
-    "y": 1.50163733959198,
-    "z": 0.3346298635005951,
-    "yaw": 1.6152609298466585,
+    "x": 1.2179456949234009,
+    "y": 1.3966455459594727,
+    "z": 0.3347315788269043,
+    "yaw": 1.6195848728035802,
     "quat_wxyz": [
-      0.6911836266517639,
-      -0.006657443009316921,
-      0.0069047496654093266,
-      0.7226155400276184
+      0.6896427869796753,
+      -0.0034050345420837402,
+      0.008315643295645714,
+      0.724094033241272
     ]
   },
   "goal_xyyaw": [
-    1.2106607616593361,
-    1.481192523478811,
+    1.2183964569956016,
+    1.381192523478811,
     2.8809902618424523
   ],
-  "final_goal_distance": 0.02047587191653885,
-  "yaw_error": 1.2657293319957938,
+  "final_goal_distance": 0.015459595409763188,
+  "yaw_error": 1.2614053890388721,
   "goal_tolerance": 0.15,
   "goal_yaw_tolerance": 3.141592653589793,
   "terminal_position_tolerance": 0.08,
@@ -35,19 +35,19 @@
   "base_stable_linear_tolerance": 0.06,
   "base_stable_angular_tolerance": 0.2,
   "final_body_velocity": {
-    "vx": -0.024845004081726074,
-    "vy": 0.00307534821331501,
-    "wz": -0.0280095674097538
+    "vx": 0.02930561825633049,
+    "vy": 0.026198068633675575,
+    "wz": -0.05240663141012192
   },
-  "path_length": 7.519667178858625,
+  "path_length": 7.443699031329775,
   "timeout": false,
   "stall_detected": false,
   "yaw_align_stall_detected": false,
   "terminal_recovery_count": 0,
   "yaw_settle_success": true,
-  "yaw_settle_steps": 67,
+  "yaw_settle_steps": 55,
   "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_single_window/episode_0002/2/9",
-  "elapsed_wall_time_s": 21.36205267906189,
+  "elapsed_wall_time_s": 21.803231954574585,
   "replay_trajectory_path": "/home/light/workspace/arm_vla/outputs/random_pick_dataset/apple_video_single_window/episode_0002/2/9/replay/trajectory.jsonl",
-  "replay_frame_count": 557
+  "replay_frame_count": 539
 }

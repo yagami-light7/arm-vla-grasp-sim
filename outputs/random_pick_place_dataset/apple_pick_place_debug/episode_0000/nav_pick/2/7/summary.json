@@ -1,0 +1,59 @@
+{
+  "success": true,
+  "failure_reason": "",
+  "navigation": {
+    "schema_version": 1,
+    "success": true,
+    "failure_reason": "",
+    "final_base_pose_world": {
+      "x": 1.252241611480713,
+      "y": 1.3664448261260986,
+      "z": 0.3347170650959015,
+      "yaw": 1.587135377287105,
+      "quat_wxyz": [
+        0.7013053297996521,
+        0.001291163731366396,
+        0.0016902710776776075,
+        0.7128578424453735
+      ]
+    },
+    "goal_xyyaw": [
+      1.2495111616914338,
+      1.3594823496423172,
+      2.91688148517515
+    ],
+    "final_goal_distance": 0.007478732167886733,
+    "yaw_error": 1.3297461078880453,
+    "goal_tolerance": 0.15,
+    "goal_yaw_tolerance": 3.141592653589793,
+    "terminal_position_tolerance": 0.08,
+    "terminal_yaw_tolerance": 3.141592653589793,
+    "final_goal_tolerance_margin": 0.03,
+    "final_yaw_tolerance_margin": 0.0,
+    "position_acceptance_tolerance": 0.18,
+    "yaw_acceptance_tolerance": 3.141592653589793,
+    "final_position_reached": true,
+    "final_yaw_aligned": true,
+    "base_stable": true,
+    "base_stable_linear_tolerance": 0.06,
+    "base_stable_angular_tolerance": 0.2,
+    "final_body_velocity": {
+      "vx": 0.005905605852603912,
+      "vy": 0.023107141256332397,
+      "wz": -0.005681064445525408
+    },
+    "path_length": 7.434754728643588,
+    "timeout": false,
+    "stall_detected": false,
+    "yaw_align_stall_detected": false,
+    "terminal_recovery_count": 0,
+    "yaw_settle_success": true,
+    "yaw_settle_steps": 60,
+    "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_debug/episode_0000/nav_pick/2/7",
+    "elapsed_wall_time_s": 49.425039768218994,
+    "replay_trajectory_path": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_debug/episode_0000/nav_pick/2/7/replay/trajectory.jsonl",
+    "replay_frame_count": 557
+  },
+  "updated_at": 1780985222.6024518,
+  "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_debug/episode_0000/nav_pick/2/7"
+}

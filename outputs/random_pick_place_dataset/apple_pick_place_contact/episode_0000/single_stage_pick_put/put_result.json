@@ -1,0 +1,286 @@
+{
+  "schema_version": 1,
+  "mode": "single_stage_pick_put_demo",
+  "success": true,
+  "failure_reason": "",
+  "put_mode": "mvp-reconstruct",
+  "execution_backend": "mvp_reconstruct_object",
+  "physical_put_execution": false,
+  "object_reconstruction": {
+    "applied": true,
+    "place_object_initialization": "reconstructed",
+    "object_prim_path": "/World/apple",
+    "pose_world": {
+      "x": -2.56,
+      "y": 3.38,
+      "z": 0.827,
+      "roll": 0.0,
+      "pitch": 0.0,
+      "yaw": 0.0
+    },
+    "quaternion_wxyz": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "reset_xform_stack": true,
+    "xform_op_order_before": [
+      "xformOp:translate",
+      "xformOp:orient",
+      "xformOp:scale"
+    ],
+    "xform_op_order_after": [
+      "xformOp:translate",
+      "xformOp:orient",
+      "xformOp:scale"
+    ],
+    "local_transform_after": [
+      [
+        0.06499999761581421,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.06499999761581421,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.06499999761581421,
+        0.0
+      ],
+      [
+        -2.56,
+        3.38,
+        0.827,
+        1.0
+      ]
+    ],
+    "world_bbox_after": {
+      "min_xyz": [
+        -2.5803342960766904,
+        3.3562917236739223,
+        0.8063950180816644
+      ],
+      "max_xyz": [
+        -2.5396657039233097,
+        3.4037082763260775,
+        0.8476049819183356
+      ],
+      "center_xyz": [
+        -2.56,
+        3.38,
+        0.827
+      ],
+      "top_z": 0.8476049819183356,
+      "center_z": 0.827
+    },
+    "object_velocity_reset_after_reconstruction": {
+      "applied": true,
+      "object_prim_path": "/World/apple",
+      "zero_linear_velocity": true,
+      "zero_angular_velocity": true,
+      "wake_requested": true,
+      "dynamic_rigid_body_count": 1,
+      "rigid_body_count": 1,
+      "rigid_bodies": [
+        {
+          "prim_path": "/World/apple",
+          "dynamic": true,
+          "rigid_body_enabled": true,
+          "kinematic_enabled": false,
+          "usd_velocity_before": [
+            -0.0017182331066578627,
+            -0.0014976176898926497,
+            -0.0011153906816616654
+          ],
+          "usd_angular_velocity_before": [
+            -1.8695216178894043,
+            -3.677907943725586,
+            15.320558547973633
+          ],
+          "usd_velocity_after": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "usd_angular_velocity_after": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "live_velocity_reset": {
+            "attempted": true,
+            "success": false,
+            "backend": "isaacsim.core.prims.SingleRigidPrim",
+            "prim_path": "/World/apple",
+            "error": "Failed to get rigid body velocities from backend"
+          },
+          "live_velocity_reset_success": false,
+          "velocity_before": [
+            -0.0017182331066578627,
+            -0.0014976176898926497,
+            -0.0011153906816616654
+          ],
+          "angular_velocity_before": [
+            -1.8695216178894043,
+            -3.677907943725586,
+            15.320558547973633
+          ],
+          "velocity_after": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "angular_velocity_after": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "linear_velocity_norm_before": 0.0025375736692029656,
+          "angular_velocity_norm_before": 15.86636795691325,
+          "linear_velocity_norm_after": 0.0,
+          "angular_velocity_norm_after": 0.0,
+          "starts_asleep_set_false": true
+        }
+      ],
+      "velocity_before": {
+        "linear_velocity_norm_max": 0.0025375736692029656,
+        "angular_velocity_norm_max": 15.86636795691325
+      },
+      "velocity_after": {
+        "linear_velocity_norm_max": 0.0,
+        "angular_velocity_norm_max": 0.0
+      }
+    },
+    "velocity_zeroed_count": 1,
+    "velocity_before": {
+      "linear_velocity_norm_max": 0.0025375736692029656,
+      "angular_velocity_norm_max": 15.86636795691325
+    },
+    "velocity_after": {
+      "linear_velocity_norm_max": 0.0,
+      "angular_velocity_norm_max": 0.0
+    },
+    "linear_velocity_norm": 0.0,
+    "angular_velocity_norm": 0.0
+  },
+  "velocity_reset_after_settle": {
+    "applied": true,
+    "object_prim_path": "/World/apple",
+    "zero_linear_velocity": true,
+    "zero_angular_velocity": true,
+    "wake_requested": true,
+    "dynamic_rigid_body_count": 1,
+    "rigid_body_count": 1,
+    "rigid_bodies": [
+      {
+        "prim_path": "/World/apple",
+        "dynamic": true,
+        "rigid_body_enabled": true,
+        "kinematic_enabled": false,
+        "usd_velocity_before": [
+          0.002955830190330744,
+          -0.0009257217170670629,
+          -0.0007788192597217858
+        ],
+        "usd_angular_velocity_before": [
+          0.802357017993927,
+          8.04696273803711,
+          -0.12892161309719086
+        ],
+        "usd_velocity_after": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "usd_angular_velocity_after": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "live_velocity_reset": {
+          "attempted": true,
+          "success": false,
+          "backend": "isaacsim.core.prims.SingleRigidPrim",
+          "prim_path": "/World/apple",
+          "error": "Failed to get rigid body velocities from backend"
+        },
+        "live_velocity_reset_success": false,
+        "velocity_before": [
+          0.002955830190330744,
+          -0.0009257217170670629,
+          -0.0007788192597217858
+        ],
+        "angular_velocity_before": [
+          0.802357017993927,
+          8.04696273803711,
+          -0.12892161309719086
+        ],
+        "velocity_after": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity_after": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "linear_velocity_norm_before": 0.00319381468636392,
+        "angular_velocity_norm_before": 8.087892610192434,
+        "linear_velocity_norm_after": 0.0,
+        "angular_velocity_norm_after": 0.0,
+        "starts_asleep_set_false": true
+      }
+    ],
+    "velocity_before": {
+      "linear_velocity_norm_max": 0.00319381468636392,
+      "angular_velocity_norm_max": 8.087892610192434
+    },
+    "velocity_after": {
+      "linear_velocity_norm_max": 0.0,
+      "angular_velocity_norm_max": 0.0
+    }
+  },
+  "bbox_after_settle": {
+    "min_xyz": [
+      -2.5975269041261515,
+      3.312903597516245,
+      0.7197056167050343
+    ],
+    "max_xyz": [
+      -2.5250269212522665,
+      3.3749845479305325,
+      0.7931450254992503
+    ],
+    "center_xyz": [
+      -2.561276912689209,
+      3.3439440727233887,
+      0.7564253211021423
+    ],
+    "top_z": 0.7931450254992503,
+    "center_z": 0.7564253211021423
+  },
+  "verification": {
+    "success": true,
+    "place_xy_error": 0.036078530981625896,
+    "place_z_error": 0.07057467889785762,
+    "place_xy_tolerance": 0.1,
+    "place_z_tolerance": 0.08,
+    "object_center_xyz": [
+      -2.561276912689209,
+      3.3439440727233887,
+      0.7564253211021423
+    ]
+  },
+  "notes": [
+    "MVP put reconstructs the object at place_pose_world in the same stage.",
+    "This is not a full arm put/release plan."
+  ]
+}

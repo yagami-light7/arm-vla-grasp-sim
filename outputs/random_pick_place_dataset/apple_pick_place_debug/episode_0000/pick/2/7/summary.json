@@ -1,0 +1,1930 @@
+{
+  "navigation": {
+    "schema_version": 1,
+    "success": true,
+    "failure_reason": "",
+    "final_base_pose_world": {
+      "x": 1.252241611480713,
+      "y": 1.3664448261260986,
+      "z": 0.3347170650959015,
+      "yaw": 1.587135377287105,
+      "quat_wxyz": [
+        0.7013053297996521,
+        0.001291163731366396,
+        0.0016902710776776075,
+        0.7128578424453735
+      ]
+    },
+    "goal_xyyaw": [
+      1.2495111616914338,
+      1.3594823496423172,
+      2.91688148517515
+    ],
+    "final_goal_distance": 0.007478732167886733,
+    "yaw_error": 1.3297461078880453,
+    "goal_tolerance": 0.15,
+    "goal_yaw_tolerance": 3.141592653589793,
+    "terminal_position_tolerance": 0.08,
+    "terminal_yaw_tolerance": 3.141592653589793,
+    "final_goal_tolerance_margin": 0.03,
+    "final_yaw_tolerance_margin": 0.0,
+    "position_acceptance_tolerance": 0.18,
+    "yaw_acceptance_tolerance": 3.141592653589793,
+    "final_position_reached": true,
+    "final_yaw_aligned": true,
+    "base_stable": true,
+    "base_stable_linear_tolerance": 0.06,
+    "base_stable_angular_tolerance": 0.2,
+    "final_body_velocity": {
+      "vx": 0.005905605852603912,
+      "vy": 0.023107141256332397,
+      "wz": -0.005681064445525408
+    },
+    "path_length": 7.434754728643588,
+    "timeout": false,
+    "stall_detected": false,
+    "yaw_align_stall_detected": false,
+    "terminal_recovery_count": 0,
+    "yaw_settle_success": true,
+    "yaw_settle_steps": 60,
+    "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_debug/episode_0000/nav_pick/2/7",
+    "elapsed_wall_time_s": 49.425039768218994,
+    "replay_trajectory_path": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_debug/episode_0000/nav_pick/2/7/replay/trajectory.jsonl",
+    "replay_frame_count": 557
+  },
+  "task_json": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_debug/episode_0000/task_nav_to_pick.json",
+  "success": true,
+  "failure_reason": "",
+  "mode": "full_pick",
+  "handoff": {
+    "map_check": {
+      "nav_xy": [
+        1.252241611480713,
+        1.3664448261260986
+      ],
+      "grid_index": [
+        131,
+        234
+      ],
+      "goal_distance_m": 0.007478732167886733,
+      "goal_tolerance_m": 0.18,
+      "goal_tolerance_source": "nav_result.position_acceptance_tolerance",
+      "nav_final_position_reached": true,
+      "clearance_radius_m": 0.2,
+      "boundary_clearance_m": 1.9640786170959483,
+      "raw_cell_occupied": false,
+      "clearance_cell_occupied": false,
+      "map_json": "/home/light/workspace/arm_vla/source/scene/nav_maps/839920/map.json"
+    },
+    "stage_check": {
+      "terrain_prim_path": "/World/scene_collision",
+      "terrain_prim_exists": true,
+      "terrain_mesh_count": 237,
+      "object_prim_path": "/World/apple",
+      "object_prim_exists": true
+    },
+    "stage_prepare": {
+      "object_visibility": {
+        "applied": true,
+        "kept_object_prim_path": "/World/apple",
+        "shown_paths": [
+          "/World/apple",
+          "/World/apple/Looks",
+          "/World/apple/Apple_M_Apple_0",
+          "/World/apple/Apple_M_Apple_0/Apple_M_Apple_0"
+        ],
+        "hidden_root_paths": [
+          "/World/apple_01",
+          "/World/apple_02",
+          "/World/bottle",
+          "/World/orange",
+          "/World/orange_01"
+        ],
+        "hidden_paths": [
+          "/World/apple_01",
+          "/World/apple_01/Looks",
+          "/World/apple_01/Apple_M_Apple_0",
+          "/World/apple_01/Apple_M_Apple_0/Apple_M_Apple_0",
+          "/World/apple_02",
+          "/World/apple_02/Looks",
+          "/World/apple_02/Apple_M_Apple_0",
+          "/World/apple_02/Apple_M_Apple_0/Apple_M_Apple_0",
+          "/World/bottle",
+          "/World/bottle/Looks",
+          "/World/bottle/geometry_0",
+          "/World/bottle/geometry_0/geometry_0",
+          "/World/orange",
+          "/World/orange/Looks",
+          "/World/orange/Orange_defaultMat_0",
+          "/World/orange/Orange_defaultMat_0/Orange_defaultMat_0",
+          "/World/orange_01",
+          "/World/orange_01/Looks",
+          "/World/orange_01/Orange_defaultMat_0",
+          "/World/orange_01/Orange_defaultMat_0/Orange_defaultMat_0"
+        ]
+      },
+      "object_pose": {
+        "applied": true,
+        "object_prim_path": "/World/apple",
+        "pose_world": {
+          "x": 0.8995111616914339,
+          "y": 1.4394823496423172,
+          "z": 0.81653,
+          "yaw": -0.0031590459461097176,
+          "roll": -0.04405211032033688,
+          "pitch": -0.13651965409099645
+        },
+        "quaternion_wxyz": [
+          0.99742558657929,
+          -0.02208066481726776,
+          -0.06815549465478893,
+          -0.003077665762843815
+        ],
+        "reset_xform_stack": true,
+        "xform_op_order_before": [
+          "xformOp:translate",
+          "xformOp:orient",
+          "xformOp:scale"
+        ],
+        "xform_op_order_after": [
+          "xformOp:translate",
+          "xformOp:orient",
+          "xformOp:scale"
+        ],
+        "local_transform_after": [
+          [
+            0.06439490084109029,
+            -0.00020342706554663027,
+            0.008846188622848066,
+            0.0
+          ],
+          [
+            0.0005947014590087063,
+            0.06493538473944159,
+            -0.002835811871616494,
+            0.0
+          ],
+          [
+            -0.008828520028671648,
+            0.002890348806900512,
+            0.06433275066351232,
+            0.0
+          ],
+          [
+            0.8995111616914339,
+            1.4394823496423172,
+            0.81653,
+            1.0
+          ]
+        ],
+        "world_bbox_after": {
+          "min_xyz": [
+            0.8763506097402177,
+            1.4148177614172017,
+            0.7923347930471903
+          ],
+          "max_xyz": [
+            0.92267171364265,
+            1.464146937867433,
+            0.8407252069528096
+          ],
+          "center_xyz": [
+            0.8995111616914339,
+            1.4394823496423172,
+            0.81653
+          ],
+          "top_z": 0.8407252069528096,
+          "center_z": 0.81653
+        },
+        "rigid_body_velocity_zeroed_count": 0,
+        "rigid_body_velocity_zeroed_by_pose_apply": false
+      }
+    },
+    "object_visibility": {
+      "applied": true,
+      "kept_object_prim_path": "/World/apple",
+      "shown_paths": [
+        "/World/apple",
+        "/World/apple/Looks",
+        "/World/apple/Apple_M_Apple_0",
+        "/World/apple/Apple_M_Apple_0/Apple_M_Apple_0"
+      ],
+      "hidden_root_paths": [
+        "/World/apple_01",
+        "/World/apple_02",
+        "/World/bottle",
+        "/World/orange",
+        "/World/orange_01"
+      ],
+      "hidden_paths": [
+        "/World/apple_01",
+        "/World/apple_01/Looks",
+        "/World/apple_01/Apple_M_Apple_0",
+        "/World/apple_01/Apple_M_Apple_0/Apple_M_Apple_0",
+        "/World/apple_02",
+        "/World/apple_02/Looks",
+        "/World/apple_02/Apple_M_Apple_0",
+        "/World/apple_02/Apple_M_Apple_0/Apple_M_Apple_0",
+        "/World/bottle",
+        "/World/bottle/Looks",
+        "/World/bottle/geometry_0",
+        "/World/bottle/geometry_0/geometry_0",
+        "/World/orange",
+        "/World/orange/Looks",
+        "/World/orange/Orange_defaultMat_0",
+        "/World/orange/Orange_defaultMat_0/Orange_defaultMat_0",
+        "/World/orange_01",
+        "/World/orange_01/Looks",
+        "/World/orange_01/Orange_defaultMat_0",
+        "/World/orange_01/Orange_defaultMat_0/Orange_defaultMat_0"
+      ]
+    },
+    "object_pose": {
+      "applied": true,
+      "object_prim_path": "/World/apple",
+      "pose_world": {
+        "x": 0.8995111616914339,
+        "y": 1.4394823496423172,
+        "z": 0.81653,
+        "yaw": -0.0031590459461097176,
+        "roll": -0.04405211032033688,
+        "pitch": -0.13651965409099645
+      },
+      "quaternion_wxyz": [
+        0.99742558657929,
+        -0.02208066481726776,
+        -0.06815549465478893,
+        -0.003077665762843815
+      ],
+      "reset_xform_stack": true,
+      "xform_op_order_before": [
+        "xformOp:translate",
+        "xformOp:orient",
+        "xformOp:scale"
+      ],
+      "xform_op_order_after": [
+        "xformOp:translate",
+        "xformOp:orient",
+        "xformOp:scale"
+      ],
+      "local_transform_after": [
+        [
+          0.06439490084109029,
+          -0.00020342706554663027,
+          0.008846188622848066,
+          0.0
+        ],
+        [
+          0.0005947014590087063,
+          0.06493538473944159,
+          -0.002835811871616494,
+          0.0
+        ],
+        [
+          -0.008828520028671648,
+          0.002890348806900512,
+          0.06433275066351232,
+          0.0
+        ],
+        [
+          0.8995111616914339,
+          1.4394823496423172,
+          0.81653,
+          1.0
+        ]
+      ],
+      "world_bbox_after": {
+        "min_xyz": [
+          0.8763506097402177,
+          1.4148177614172017,
+          0.7923347930471903
+        ],
+        "max_xyz": [
+          0.92267171364265,
+          1.464146937867433,
+          0.8407252069528096
+        ],
+        "center_xyz": [
+          0.8995111616914339,
+          1.4394823496423172,
+          0.81653
+        ],
+        "top_z": 0.8407252069528096,
+        "center_z": 0.81653
+      },
+      "rigid_body_velocity_zeroed_count": 0,
+      "rigid_body_velocity_zeroed_by_pose_apply": false
+    },
+    "restore": {
+      "requested_root_pose": {
+        "x": 1.252241611480713,
+        "y": 1.3664448261260986,
+        "z": 0.3760800063610077,
+        "yaw": 1.587135377287105
+      },
+      "settled_root": {
+        "position_xyz": [
+          1.2522414922714233,
+          1.3664448261260986,
+          0.3760800063610077
+        ],
+        "quaternion_wxyz": [
+          0.7013065814971924,
+          -4.656612873077393e-10,
+          -2.1691448637284338e-10,
+          0.7128599286079407
+        ],
+        "yaw": 1.5871356061312496,
+        "linear_velocity_xyz": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity_xyz": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "linear_speed_xy": 0.0,
+        "angular_speed_z": 0.0
+      },
+      "settle_steps": 120,
+      "xy_error_m": 1.1920928955078125e-07,
+      "yaw_error_rad": 2.28844144523066e-07,
+      "stable": true
+    },
+    "object_pose_applied_before_target": {
+      "applied": true,
+      "object_prim_path": "/World/apple",
+      "pose_world": {
+        "x": 0.8995111616914339,
+        "y": 1.4394823496423172,
+        "z": 0.81653,
+        "yaw": -0.0031590459461097176,
+        "roll": -0.04405211032033688,
+        "pitch": -0.13651965409099645
+      },
+      "quaternion_wxyz": [
+        0.99742558657929,
+        -0.02208066481726776,
+        -0.06815549465478893,
+        -0.003077665762843815
+      ],
+      "reset_xform_stack": true,
+      "xform_op_order_before": [
+        "xformOp:translate",
+        "xformOp:orient",
+        "xformOp:scale"
+      ],
+      "xform_op_order_after": [
+        "xformOp:translate",
+        "xformOp:orient",
+        "xformOp:scale"
+      ],
+      "local_transform_after": [
+        [
+          0.06439490084109029,
+          -0.00020342706554663027,
+          0.008846188622848066,
+          0.0
+        ],
+        [
+          0.0005947014590087063,
+          0.06493538473944159,
+          -0.002835811871616494,
+          0.0
+        ],
+        [
+          -0.008828520028671648,
+          0.002890348806900512,
+          0.06433275066351232,
+          0.0
+        ],
+        [
+          0.8995111616914339,
+          1.4394823496423172,
+          0.81653,
+          1.0
+        ]
+      ],
+      "world_bbox_after": {
+        "min_xyz": [
+          0.8763506097402177,
+          1.4148177614172017,
+          0.7923347930471903
+        ],
+        "max_xyz": [
+          0.92267171364265,
+          1.464146937867433,
+          0.8407252069528096
+        ],
+        "center_xyz": [
+          0.8995111616914339,
+          1.4394823496423172,
+          0.81653
+        ],
+        "top_z": 0.8407252069528096,
+        "center_z": 0.81653
+      },
+      "rigid_body_velocity_zeroed_count": 0,
+      "rigid_body_velocity_zeroed_by_pose_apply": false
+    },
+    "object_pose_reapplied_before_target": {
+      "applied": true,
+      "object_prim_path": "/World/apple",
+      "pose_world": {
+        "x": 0.8995111616914339,
+        "y": 1.4394823496423172,
+        "z": 0.81653,
+        "yaw": -0.0031590459461097176,
+        "roll": -0.04405211032033688,
+        "pitch": -0.13651965409099645
+      },
+      "quaternion_wxyz": [
+        0.99742558657929,
+        -0.02208066481726776,
+        -0.06815549465478893,
+        -0.003077665762843815
+      ],
+      "reset_xform_stack": true,
+      "xform_op_order_before": [
+        "xformOp:translate",
+        "xformOp:orient",
+        "xformOp:scale"
+      ],
+      "xform_op_order_after": [
+        "xformOp:translate",
+        "xformOp:orient",
+        "xformOp:scale"
+      ],
+      "local_transform_after": [
+        [
+          0.06439490084109029,
+          -0.00020342706554663027,
+          0.008846188622848066,
+          0.0
+        ],
+        [
+          0.0005947014590087063,
+          0.06493538473944159,
+          -0.002835811871616494,
+          0.0
+        ],
+        [
+          -0.008828520028671648,
+          0.002890348806900512,
+          0.06433275066351232,
+          0.0
+        ],
+        [
+          0.8995111616914339,
+          1.4394823496423172,
+          0.81653,
+          1.0
+        ]
+      ],
+      "world_bbox_after": {
+        "min_xyz": [
+          0.8763506097402177,
+          1.4148177614172017,
+          0.7923347930471903
+        ],
+        "max_xyz": [
+          0.92267171364265,
+          1.464146937867433,
+          0.8407252069528096
+        ],
+        "center_xyz": [
+          0.8995111616914339,
+          1.4394823496423172,
+          0.81653
+        ],
+        "top_z": 0.8407252069528096,
+        "center_z": 0.81653
+      },
+      "rigid_body_velocity_zeroed_count": 0,
+      "rigid_body_velocity_zeroed_by_pose_apply": false
+    },
+    "object_pose_after_reapply_bbox": {
+      "min_xyz": [
+        0.8763506097402177,
+        1.4148177614172017,
+        0.7923347930471903
+      ],
+      "max_xyz": [
+        0.92267171364265,
+        1.464146937867433,
+        0.8407252069528096
+      ],
+      "center_xyz": [
+        0.8995111616914339,
+        1.4394823496423172,
+        0.81653
+      ],
+      "top_z": 0.8407252069528096,
+      "center_z": 0.81653
+    },
+    "object_velocity_reset_before_target": {
+      "applied": true,
+      "object_prim_path": "/World/apple",
+      "zero_linear_velocity": true,
+      "zero_angular_velocity": true,
+      "wake_requested": true,
+      "dynamic_rigid_body_count": 1,
+      "rigid_body_count": 1,
+      "rigid_bodies": [
+        {
+          "prim_path": "/World/apple",
+          "dynamic": true,
+          "rigid_body_enabled": true,
+          "kinematic_enabled": false,
+          "usd_velocity_before": [
+            0.006247884128242731,
+            -0.006228694226592779,
+            -0.002667014952749014
+          ],
+          "usd_angular_velocity_before": [
+            16.880046844482422,
+            17.014793395996094,
+            -5.391499042510986
+          ],
+          "usd_velocity_after": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "usd_angular_velocity_after": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "live_velocity_reset": {
+            "attempted": true,
+            "success": true,
+            "backend": "isaacsim.core.prims.SingleRigidPrim",
+            "prim_path": "/World/apple",
+            "initialized": true,
+            "velocity_before": [
+              0.006247884128242731,
+              -0.006228694226592779,
+              -0.002667014952749014
+            ],
+            "angular_velocity_before": [
+              0.29461240768432617,
+              0.296964168548584,
+              -0.09409940987825394
+            ],
+            "velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "angular_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "linear_velocity_norm_before": 0.009216596801776916,
+            "angular_velocity_norm_before": 0.4287643724736735,
+            "linear_velocity_norm_after": 0.0,
+            "angular_velocity_norm_after": 0.0
+          },
+          "live_velocity_reset_success": true,
+          "velocity_before": [
+            0.006247884128242731,
+            -0.006228694226592779,
+            -0.002667014952749014
+          ],
+          "angular_velocity_before": [
+            0.29461240768432617,
+            0.296964168548584,
+            -0.09409940987825394
+          ],
+          "velocity_after": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "angular_velocity_after": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "linear_velocity_norm_before": 0.009216596801776916,
+          "angular_velocity_norm_before": 0.4287643724736735,
+          "linear_velocity_norm_after": 0.0,
+          "angular_velocity_norm_after": 0.0,
+          "starts_asleep_set_false": true
+        }
+      ],
+      "velocity_before": {
+        "linear_velocity_norm_max": 0.0014252672149359027,
+        "angular_velocity_norm_max": 0.07091119022296646
+      },
+      "velocity_after": {
+        "linear_velocity_norm_max": 0.0,
+        "angular_velocity_norm_max": 0.0
+      },
+      "immediate_reset": {
+        "applied": true,
+        "object_prim_path": "/World/apple",
+        "zero_linear_velocity": true,
+        "zero_angular_velocity": true,
+        "wake_requested": true,
+        "dynamic_rigid_body_count": 1,
+        "rigid_body_count": 1,
+        "rigid_bodies": [
+          {
+            "prim_path": "/World/apple",
+            "dynamic": true,
+            "rigid_body_enabled": true,
+            "kinematic_enabled": false,
+            "usd_velocity_before": [
+              0.00020198943093419075,
+              0.0013363491743803024,
+              -0.00045250169932842255
+            ],
+            "usd_angular_velocity_before": [
+              -3.27195405960083,
+              -1.6180557012557983,
+              1.784226894378662
+            ],
+            "usd_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "usd_angular_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "live_velocity_reset": {
+              "attempted": true,
+              "success": true,
+              "backend": "isaacsim.core.prims.SingleRigidPrim",
+              "prim_path": "/World/apple",
+              "initialized": true,
+              "velocity_before": [
+                0.00020198943093419075,
+                0.0013363491743803024,
+                -0.00045250169932842255
+              ],
+              "angular_velocity_before": [
+                -0.057106371968984604,
+                -0.028240399435162544,
+                0.031140632927417755
+              ],
+              "velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "angular_velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "linear_velocity_norm_before": 0.0014252672149359027,
+              "angular_velocity_norm_before": 0.07091119022296646,
+              "linear_velocity_norm_after": 0.0,
+              "angular_velocity_norm_after": 0.0
+            },
+            "live_velocity_reset_success": true,
+            "velocity_before": [
+              0.00020198943093419075,
+              0.0013363491743803024,
+              -0.00045250169932842255
+            ],
+            "angular_velocity_before": [
+              -0.057106371968984604,
+              -0.028240399435162544,
+              0.031140632927417755
+            ],
+            "velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "angular_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "linear_velocity_norm_before": 0.0014252672149359027,
+            "angular_velocity_norm_before": 0.07091119022296646,
+            "linear_velocity_norm_after": 0.0,
+            "angular_velocity_norm_after": 0.0,
+            "starts_asleep_set_false": true
+          }
+        ],
+        "velocity_before": {
+          "linear_velocity_norm_max": 0.0014252672149359027,
+          "angular_velocity_norm_max": 0.07091119022296646
+        },
+        "velocity_after": {
+          "linear_velocity_norm_max": 0.0,
+          "angular_velocity_norm_max": 0.0
+        }
+      },
+      "linear_velocity_norm": 0.0,
+      "angular_velocity_norm": 0.0
+    },
+    "object_stability_after_reset": {
+      "applied": true,
+      "object_prim_path": "/World/apple",
+      "bbox_after_pose_apply": {
+        "min_xyz": [
+          0.8763506097402177,
+          1.4148177614172017,
+          0.7923347930471903
+        ],
+        "max_xyz": [
+          0.92267171364265,
+          1.464146937867433,
+          0.8407252069528096
+        ],
+        "center_xyz": [
+          0.8995111616914339,
+          1.4394823496423172,
+          0.81653
+        ],
+        "top_z": 0.8407252069528096,
+        "center_z": 0.81653
+      },
+      "velocity_reset_immediate": {
+        "applied": true,
+        "object_prim_path": "/World/apple",
+        "zero_linear_velocity": true,
+        "zero_angular_velocity": true,
+        "wake_requested": true,
+        "dynamic_rigid_body_count": 1,
+        "rigid_body_count": 1,
+        "rigid_bodies": [
+          {
+            "prim_path": "/World/apple",
+            "dynamic": true,
+            "rigid_body_enabled": true,
+            "kinematic_enabled": false,
+            "usd_velocity_before": [
+              0.00020198943093419075,
+              0.0013363491743803024,
+              -0.00045250169932842255
+            ],
+            "usd_angular_velocity_before": [
+              -3.27195405960083,
+              -1.6180557012557983,
+              1.784226894378662
+            ],
+            "usd_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "usd_angular_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "live_velocity_reset": {
+              "attempted": true,
+              "success": true,
+              "backend": "isaacsim.core.prims.SingleRigidPrim",
+              "prim_path": "/World/apple",
+              "initialized": true,
+              "velocity_before": [
+                0.00020198943093419075,
+                0.0013363491743803024,
+                -0.00045250169932842255
+              ],
+              "angular_velocity_before": [
+                -0.057106371968984604,
+                -0.028240399435162544,
+                0.031140632927417755
+              ],
+              "velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "angular_velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "linear_velocity_norm_before": 0.0014252672149359027,
+              "angular_velocity_norm_before": 0.07091119022296646,
+              "linear_velocity_norm_after": 0.0,
+              "angular_velocity_norm_after": 0.0
+            },
+            "live_velocity_reset_success": true,
+            "velocity_before": [
+              0.00020198943093419075,
+              0.0013363491743803024,
+              -0.00045250169932842255
+            ],
+            "angular_velocity_before": [
+              -0.057106371968984604,
+              -0.028240399435162544,
+              0.031140632927417755
+            ],
+            "velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "angular_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "linear_velocity_norm_before": 0.0014252672149359027,
+            "angular_velocity_norm_before": 0.07091119022296646,
+            "linear_velocity_norm_after": 0.0,
+            "angular_velocity_norm_after": 0.0,
+            "starts_asleep_set_false": true
+          }
+        ],
+        "velocity_before": {
+          "linear_velocity_norm_max": 0.0014252672149359027,
+          "angular_velocity_norm_max": 0.07091119022296646
+        },
+        "velocity_after": {
+          "linear_velocity_norm_max": 0.0,
+          "angular_velocity_norm_max": 0.0
+        }
+      },
+      "velocity_reset_after_short_step": {
+        "applied": true,
+        "object_prim_path": "/World/apple",
+        "zero_linear_velocity": true,
+        "zero_angular_velocity": true,
+        "wake_requested": true,
+        "dynamic_rigid_body_count": 1,
+        "rigid_body_count": 1,
+        "rigid_bodies": [
+          {
+            "prim_path": "/World/apple",
+            "dynamic": true,
+            "rigid_body_enabled": true,
+            "kinematic_enabled": false,
+            "usd_velocity_before": [
+              0.006247884128242731,
+              -0.006228694226592779,
+              -0.002667014952749014
+            ],
+            "usd_angular_velocity_before": [
+              16.880046844482422,
+              17.014793395996094,
+              -5.391499042510986
+            ],
+            "usd_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "usd_angular_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "live_velocity_reset": {
+              "attempted": true,
+              "success": true,
+              "backend": "isaacsim.core.prims.SingleRigidPrim",
+              "prim_path": "/World/apple",
+              "initialized": true,
+              "velocity_before": [
+                0.006247884128242731,
+                -0.006228694226592779,
+                -0.002667014952749014
+              ],
+              "angular_velocity_before": [
+                0.29461240768432617,
+                0.296964168548584,
+                -0.09409940987825394
+              ],
+              "velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "angular_velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "linear_velocity_norm_before": 0.009216596801776916,
+              "angular_velocity_norm_before": 0.4287643724736735,
+              "linear_velocity_norm_after": 0.0,
+              "angular_velocity_norm_after": 0.0
+            },
+            "live_velocity_reset_success": true,
+            "velocity_before": [
+              0.006247884128242731,
+              -0.006228694226592779,
+              -0.002667014952749014
+            ],
+            "angular_velocity_before": [
+              0.29461240768432617,
+              0.296964168548584,
+              -0.09409940987825394
+            ],
+            "velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "angular_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "linear_velocity_norm_before": 0.009216596801776916,
+            "angular_velocity_norm_before": 0.4287643724736735,
+            "linear_velocity_norm_after": 0.0,
+            "angular_velocity_norm_after": 0.0,
+            "starts_asleep_set_false": true
+          }
+        ],
+        "velocity_before": {
+          "linear_velocity_norm_max": 0.009216596801776916,
+          "angular_velocity_norm_max": 0.4287643724736735
+        },
+        "velocity_after": {
+          "linear_velocity_norm_max": 0.0,
+          "angular_velocity_norm_max": 0.0
+        }
+      },
+      "object_velocity_reset_before_target": {
+        "applied": true,
+        "object_prim_path": "/World/apple",
+        "zero_linear_velocity": true,
+        "zero_angular_velocity": true,
+        "wake_requested": true,
+        "dynamic_rigid_body_count": 1,
+        "rigid_body_count": 1,
+        "rigid_bodies": [
+          {
+            "prim_path": "/World/apple",
+            "dynamic": true,
+            "rigid_body_enabled": true,
+            "kinematic_enabled": false,
+            "usd_velocity_before": [
+              0.006247884128242731,
+              -0.006228694226592779,
+              -0.002667014952749014
+            ],
+            "usd_angular_velocity_before": [
+              16.880046844482422,
+              17.014793395996094,
+              -5.391499042510986
+            ],
+            "usd_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "usd_angular_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "live_velocity_reset": {
+              "attempted": true,
+              "success": true,
+              "backend": "isaacsim.core.prims.SingleRigidPrim",
+              "prim_path": "/World/apple",
+              "initialized": true,
+              "velocity_before": [
+                0.006247884128242731,
+                -0.006228694226592779,
+                -0.002667014952749014
+              ],
+              "angular_velocity_before": [
+                0.29461240768432617,
+                0.296964168548584,
+                -0.09409940987825394
+              ],
+              "velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "angular_velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "linear_velocity_norm_before": 0.009216596801776916,
+              "angular_velocity_norm_before": 0.4287643724736735,
+              "linear_velocity_norm_after": 0.0,
+              "angular_velocity_norm_after": 0.0
+            },
+            "live_velocity_reset_success": true,
+            "velocity_before": [
+              0.006247884128242731,
+              -0.006228694226592779,
+              -0.002667014952749014
+            ],
+            "angular_velocity_before": [
+              0.29461240768432617,
+              0.296964168548584,
+              -0.09409940987825394
+            ],
+            "velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "angular_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "linear_velocity_norm_before": 0.009216596801776916,
+            "angular_velocity_norm_before": 0.4287643724736735,
+            "linear_velocity_norm_after": 0.0,
+            "angular_velocity_norm_after": 0.0,
+            "starts_asleep_set_false": true
+          }
+        ],
+        "velocity_before": {
+          "linear_velocity_norm_max": 0.0014252672149359027,
+          "angular_velocity_norm_max": 0.07091119022296646
+        },
+        "velocity_after": {
+          "linear_velocity_norm_max": 0.0,
+          "angular_velocity_norm_max": 0.0
+        },
+        "immediate_reset": {
+          "applied": true,
+          "object_prim_path": "/World/apple",
+          "zero_linear_velocity": true,
+          "zero_angular_velocity": true,
+          "wake_requested": true,
+          "dynamic_rigid_body_count": 1,
+          "rigid_body_count": 1,
+          "rigid_bodies": [
+            {
+              "prim_path": "/World/apple",
+              "dynamic": true,
+              "rigid_body_enabled": true,
+              "kinematic_enabled": false,
+              "usd_velocity_before": [
+                0.00020198943093419075,
+                0.0013363491743803024,
+                -0.00045250169932842255
+              ],
+              "usd_angular_velocity_before": [
+                -3.27195405960083,
+                -1.6180557012557983,
+                1.784226894378662
+              ],
+              "usd_velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "usd_angular_velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "live_velocity_reset": {
+                "attempted": true,
+                "success": true,
+                "backend": "isaacsim.core.prims.SingleRigidPrim",
+                "prim_path": "/World/apple",
+                "initialized": true,
+                "velocity_before": [
+                  0.00020198943093419075,
+                  0.0013363491743803024,
+                  -0.00045250169932842255
+                ],
+                "angular_velocity_before": [
+                  -0.057106371968984604,
+                  -0.028240399435162544,
+                  0.031140632927417755
+                ],
+                "velocity_after": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "angular_velocity_after": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "linear_velocity_norm_before": 0.0014252672149359027,
+                "angular_velocity_norm_before": 0.07091119022296646,
+                "linear_velocity_norm_after": 0.0,
+                "angular_velocity_norm_after": 0.0
+              },
+              "live_velocity_reset_success": true,
+              "velocity_before": [
+                0.00020198943093419075,
+                0.0013363491743803024,
+                -0.00045250169932842255
+              ],
+              "angular_velocity_before": [
+                -0.057106371968984604,
+                -0.028240399435162544,
+                0.031140632927417755
+              ],
+              "velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "angular_velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "linear_velocity_norm_before": 0.0014252672149359027,
+              "angular_velocity_norm_before": 0.07091119022296646,
+              "linear_velocity_norm_after": 0.0,
+              "angular_velocity_norm_after": 0.0,
+              "starts_asleep_set_false": true
+            }
+          ],
+          "velocity_before": {
+            "linear_velocity_norm_max": 0.0014252672149359027,
+            "angular_velocity_norm_max": 0.07091119022296646
+          },
+          "velocity_after": {
+            "linear_velocity_norm_max": 0.0,
+            "angular_velocity_norm_max": 0.0
+          }
+        },
+        "linear_velocity_norm": 0.0,
+        "angular_velocity_norm": 0.0
+      },
+      "stability_step_count": 3,
+      "bbox_after_short_step": {
+        "min_xyz": [
+          0.8805743435437767,
+          1.415152875942741,
+          0.7849088484551696
+        ],
+        "max_xyz": [
+          0.9231395741884616,
+          1.4668399409823072,
+          0.8324369614813534
+        ],
+        "center_xyz": [
+          0.9018569588661192,
+          1.440996408462524,
+          0.8086729049682615
+        ],
+        "top_z": 0.8324369614813534,
+        "center_z": 0.8086729049682615
+      },
+      "bbox_after_final_reset": {
+        "min_xyz": [
+          0.8805743435437767,
+          1.415152875942741,
+          0.7849088484551696
+        ],
+        "max_xyz": [
+          0.9231395741884616,
+          1.4668399409823072,
+          0.8324369614813534
+        ],
+        "center_xyz": [
+          0.9018569588661192,
+          1.440996408462524,
+          0.8086729049682615
+        ],
+        "top_z": 0.8324369614813534,
+        "center_z": 0.8086729049682615
+      },
+      "center_displacement_m": 0.008338409970346676,
+      "linear_velocity_norm": 0.0,
+      "angular_velocity_norm": 0.0,
+      "drift_warning_threshold_m": 0.01
+    },
+    "object_settle_before_target": {
+      "applied": true,
+      "object_prim_path": "/World/apple",
+      "bbox_after_pose_apply": {
+        "min_xyz": [
+          0.8763506097402177,
+          1.4148177614172017,
+          0.7923347930471903
+        ],
+        "max_xyz": [
+          0.92267171364265,
+          1.464146937867433,
+          0.8407252069528096
+        ],
+        "center_xyz": [
+          0.8995111616914339,
+          1.4394823496423172,
+          0.81653
+        ],
+        "top_z": 0.8407252069528096,
+        "center_z": 0.81653
+      },
+      "velocity_reset_immediate": {
+        "applied": true,
+        "object_prim_path": "/World/apple",
+        "zero_linear_velocity": true,
+        "zero_angular_velocity": true,
+        "wake_requested": true,
+        "dynamic_rigid_body_count": 1,
+        "rigid_body_count": 1,
+        "rigid_bodies": [
+          {
+            "prim_path": "/World/apple",
+            "dynamic": true,
+            "rigid_body_enabled": true,
+            "kinematic_enabled": false,
+            "usd_velocity_before": [
+              0.00020198943093419075,
+              0.0013363491743803024,
+              -0.00045250169932842255
+            ],
+            "usd_angular_velocity_before": [
+              -3.27195405960083,
+              -1.6180557012557983,
+              1.784226894378662
+            ],
+            "usd_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "usd_angular_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "live_velocity_reset": {
+              "attempted": true,
+              "success": true,
+              "backend": "isaacsim.core.prims.SingleRigidPrim",
+              "prim_path": "/World/apple",
+              "initialized": true,
+              "velocity_before": [
+                0.00020198943093419075,
+                0.0013363491743803024,
+                -0.00045250169932842255
+              ],
+              "angular_velocity_before": [
+                -0.057106371968984604,
+                -0.028240399435162544,
+                0.031140632927417755
+              ],
+              "velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "angular_velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "linear_velocity_norm_before": 0.0014252672149359027,
+              "angular_velocity_norm_before": 0.07091119022296646,
+              "linear_velocity_norm_after": 0.0,
+              "angular_velocity_norm_after": 0.0
+            },
+            "live_velocity_reset_success": true,
+            "velocity_before": [
+              0.00020198943093419075,
+              0.0013363491743803024,
+              -0.00045250169932842255
+            ],
+            "angular_velocity_before": [
+              -0.057106371968984604,
+              -0.028240399435162544,
+              0.031140632927417755
+            ],
+            "velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "angular_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "linear_velocity_norm_before": 0.0014252672149359027,
+            "angular_velocity_norm_before": 0.07091119022296646,
+            "linear_velocity_norm_after": 0.0,
+            "angular_velocity_norm_after": 0.0,
+            "starts_asleep_set_false": true
+          }
+        ],
+        "velocity_before": {
+          "linear_velocity_norm_max": 0.0014252672149359027,
+          "angular_velocity_norm_max": 0.07091119022296646
+        },
+        "velocity_after": {
+          "linear_velocity_norm_max": 0.0,
+          "angular_velocity_norm_max": 0.0
+        }
+      },
+      "velocity_reset_after_short_step": {
+        "applied": true,
+        "object_prim_path": "/World/apple",
+        "zero_linear_velocity": true,
+        "zero_angular_velocity": true,
+        "wake_requested": true,
+        "dynamic_rigid_body_count": 1,
+        "rigid_body_count": 1,
+        "rigid_bodies": [
+          {
+            "prim_path": "/World/apple",
+            "dynamic": true,
+            "rigid_body_enabled": true,
+            "kinematic_enabled": false,
+            "usd_velocity_before": [
+              0.006247884128242731,
+              -0.006228694226592779,
+              -0.002667014952749014
+            ],
+            "usd_angular_velocity_before": [
+              16.880046844482422,
+              17.014793395996094,
+              -5.391499042510986
+            ],
+            "usd_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "usd_angular_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "live_velocity_reset": {
+              "attempted": true,
+              "success": true,
+              "backend": "isaacsim.core.prims.SingleRigidPrim",
+              "prim_path": "/World/apple",
+              "initialized": true,
+              "velocity_before": [
+                0.006247884128242731,
+                -0.006228694226592779,
+                -0.002667014952749014
+              ],
+              "angular_velocity_before": [
+                0.29461240768432617,
+                0.296964168548584,
+                -0.09409940987825394
+              ],
+              "velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "angular_velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "linear_velocity_norm_before": 0.009216596801776916,
+              "angular_velocity_norm_before": 0.4287643724736735,
+              "linear_velocity_norm_after": 0.0,
+              "angular_velocity_norm_after": 0.0
+            },
+            "live_velocity_reset_success": true,
+            "velocity_before": [
+              0.006247884128242731,
+              -0.006228694226592779,
+              -0.002667014952749014
+            ],
+            "angular_velocity_before": [
+              0.29461240768432617,
+              0.296964168548584,
+              -0.09409940987825394
+            ],
+            "velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "angular_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "linear_velocity_norm_before": 0.009216596801776916,
+            "angular_velocity_norm_before": 0.4287643724736735,
+            "linear_velocity_norm_after": 0.0,
+            "angular_velocity_norm_after": 0.0,
+            "starts_asleep_set_false": true
+          }
+        ],
+        "velocity_before": {
+          "linear_velocity_norm_max": 0.009216596801776916,
+          "angular_velocity_norm_max": 0.4287643724736735
+        },
+        "velocity_after": {
+          "linear_velocity_norm_max": 0.0,
+          "angular_velocity_norm_max": 0.0
+        }
+      },
+      "object_velocity_reset_before_target": {
+        "applied": true,
+        "object_prim_path": "/World/apple",
+        "zero_linear_velocity": true,
+        "zero_angular_velocity": true,
+        "wake_requested": true,
+        "dynamic_rigid_body_count": 1,
+        "rigid_body_count": 1,
+        "rigid_bodies": [
+          {
+            "prim_path": "/World/apple",
+            "dynamic": true,
+            "rigid_body_enabled": true,
+            "kinematic_enabled": false,
+            "usd_velocity_before": [
+              0.006247884128242731,
+              -0.006228694226592779,
+              -0.002667014952749014
+            ],
+            "usd_angular_velocity_before": [
+              16.880046844482422,
+              17.014793395996094,
+              -5.391499042510986
+            ],
+            "usd_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "usd_angular_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "live_velocity_reset": {
+              "attempted": true,
+              "success": true,
+              "backend": "isaacsim.core.prims.SingleRigidPrim",
+              "prim_path": "/World/apple",
+              "initialized": true,
+              "velocity_before": [
+                0.006247884128242731,
+                -0.006228694226592779,
+                -0.002667014952749014
+              ],
+              "angular_velocity_before": [
+                0.29461240768432617,
+                0.296964168548584,
+                -0.09409940987825394
+              ],
+              "velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "angular_velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "linear_velocity_norm_before": 0.009216596801776916,
+              "angular_velocity_norm_before": 0.4287643724736735,
+              "linear_velocity_norm_after": 0.0,
+              "angular_velocity_norm_after": 0.0
+            },
+            "live_velocity_reset_success": true,
+            "velocity_before": [
+              0.006247884128242731,
+              -0.006228694226592779,
+              -0.002667014952749014
+            ],
+            "angular_velocity_before": [
+              0.29461240768432617,
+              0.296964168548584,
+              -0.09409940987825394
+            ],
+            "velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "angular_velocity_after": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "linear_velocity_norm_before": 0.009216596801776916,
+            "angular_velocity_norm_before": 0.4287643724736735,
+            "linear_velocity_norm_after": 0.0,
+            "angular_velocity_norm_after": 0.0,
+            "starts_asleep_set_false": true
+          }
+        ],
+        "velocity_before": {
+          "linear_velocity_norm_max": 0.0014252672149359027,
+          "angular_velocity_norm_max": 0.07091119022296646
+        },
+        "velocity_after": {
+          "linear_velocity_norm_max": 0.0,
+          "angular_velocity_norm_max": 0.0
+        },
+        "immediate_reset": {
+          "applied": true,
+          "object_prim_path": "/World/apple",
+          "zero_linear_velocity": true,
+          "zero_angular_velocity": true,
+          "wake_requested": true,
+          "dynamic_rigid_body_count": 1,
+          "rigid_body_count": 1,
+          "rigid_bodies": [
+            {
+              "prim_path": "/World/apple",
+              "dynamic": true,
+              "rigid_body_enabled": true,
+              "kinematic_enabled": false,
+              "usd_velocity_before": [
+                0.00020198943093419075,
+                0.0013363491743803024,
+                -0.00045250169932842255
+              ],
+              "usd_angular_velocity_before": [
+                -3.27195405960083,
+                -1.6180557012557983,
+                1.784226894378662
+              ],
+              "usd_velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "usd_angular_velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "live_velocity_reset": {
+                "attempted": true,
+                "success": true,
+                "backend": "isaacsim.core.prims.SingleRigidPrim",
+                "prim_path": "/World/apple",
+                "initialized": true,
+                "velocity_before": [
+                  0.00020198943093419075,
+                  0.0013363491743803024,
+                  -0.00045250169932842255
+                ],
+                "angular_velocity_before": [
+                  -0.057106371968984604,
+                  -0.028240399435162544,
+                  0.031140632927417755
+                ],
+                "velocity_after": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "angular_velocity_after": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "linear_velocity_norm_before": 0.0014252672149359027,
+                "angular_velocity_norm_before": 0.07091119022296646,
+                "linear_velocity_norm_after": 0.0,
+                "angular_velocity_norm_after": 0.0
+              },
+              "live_velocity_reset_success": true,
+              "velocity_before": [
+                0.00020198943093419075,
+                0.0013363491743803024,
+                -0.00045250169932842255
+              ],
+              "angular_velocity_before": [
+                -0.057106371968984604,
+                -0.028240399435162544,
+                0.031140632927417755
+              ],
+              "velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "angular_velocity_after": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "linear_velocity_norm_before": 0.0014252672149359027,
+              "angular_velocity_norm_before": 0.07091119022296646,
+              "linear_velocity_norm_after": 0.0,
+              "angular_velocity_norm_after": 0.0,
+              "starts_asleep_set_false": true
+            }
+          ],
+          "velocity_before": {
+            "linear_velocity_norm_max": 0.0014252672149359027,
+            "angular_velocity_norm_max": 0.07091119022296646
+          },
+          "velocity_after": {
+            "linear_velocity_norm_max": 0.0,
+            "angular_velocity_norm_max": 0.0
+          }
+        },
+        "linear_velocity_norm": 0.0,
+        "angular_velocity_norm": 0.0
+      },
+      "stability_step_count": 3,
+      "bbox_after_short_step": {
+        "min_xyz": [
+          0.8805743435437767,
+          1.415152875942741,
+          0.7849088484551696
+        ],
+        "max_xyz": [
+          0.9231395741884616,
+          1.4668399409823072,
+          0.8324369614813534
+        ],
+        "center_xyz": [
+          0.9018569588661192,
+          1.440996408462524,
+          0.8086729049682615
+        ],
+        "top_z": 0.8324369614813534,
+        "center_z": 0.8086729049682615
+      },
+      "bbox_after_final_reset": {
+        "min_xyz": [
+          0.8805743435437767,
+          1.415152875942741,
+          0.7849088484551696
+        ],
+        "max_xyz": [
+          0.9231395741884616,
+          1.4668399409823072,
+          0.8324369614813534
+        ],
+        "center_xyz": [
+          0.9018569588661192,
+          1.440996408462524,
+          0.8086729049682615
+        ],
+        "top_z": 0.8324369614813534,
+        "center_z": 0.8086729049682615
+      },
+      "center_displacement_m": 0.008338409970346676,
+      "linear_velocity_norm": 0.0,
+      "angular_velocity_norm": 0.0,
+      "drift_warning_threshold_m": 0.01
+    },
+    "center_displacement_m": 0.008338409970346676,
+    "linear_velocity_norm": 0.0,
+    "angular_velocity_norm": 0.0,
+    "state_export": {
+      "state_json": "/tmp/go2_x5_isaac_state.json",
+      "base_frame_path": "/World/go2_x5/arm_base_link",
+      "arm_base_position_xyz": [
+        1.2502808570861816,
+        1.48642897605896,
+        0.42608004808425903
+      ],
+      "arm_base_yaw": 1.587135438949279,
+      "arm_base_to_nav_root_xy_m": 0.12000016997032555,
+      "arm_base_to_nav_root_yaw_error_rad": 6.166217403347218e-08,
+      "world_collision_cuboids": 16
+    },
+    "target": {
+      "target_json": "/tmp/go2_x5_target_tcp_pose.json",
+      "object_prim_path": "/World/apple",
+      "grasp_mode": "side",
+      "bbox_world": {
+        "min_xyz": [
+          0.8806311965359143,
+          1.4151076824850284,
+          0.784982158255195
+        ],
+        "max_xyz": [
+          0.9232647537814683,
+          1.4669094531350884,
+          0.8323462471250537
+        ],
+        "center_xyz": [
+          0.9019479751586913,
+          1.4410085678100584,
+          0.8086642026901243
+        ],
+        "size_xyz": [
+          0.042633557245554066,
+          0.051801770650059975,
+          0.047364088869858656
+        ]
+      },
+      "tip_tcp_insertion_beyond_grasp_center_m": 0.005,
+      "target_workspace_base": {
+        "pregrasp": {
+          "position_xyz": [
+            -0.02898048993518177,
+            0.25463782959235653,
+            0.3900841549274842
+          ],
+          "quaternion_wxyz": [
+            0.6659276911401939,
+            0.0,
+            0.0,
+            0.7460162935034935
+          ],
+          "xy_radius_m": 0.2562816674215875,
+          "radius_3d_m": 0.4667396929573043,
+          "z_m": 0.3900841549274842
+        },
+        "grasp": {
+          "position_xyz": [
+            -0.04028855196971989,
+            0.35399641116950586,
+            0.3900841549274842
+          ],
+          "quaternion_wxyz": [
+            0.6659276911401939,
+            0.0,
+            0.0,
+            0.7460162935034935
+          ],
+          "xy_radius_m": 0.35628166742158746,
+          "radius_3d_m": 0.528301310301419,
+          "z_m": 0.3900841549274842
+        },
+        "lift": {
+          "position_xyz": [
+            -0.04028855196971989,
+            0.35399641116950586,
+            0.49008415492748425
+          ],
+          "quaternion_wxyz": [
+            0.6659276911401939,
+            0.0,
+            0.0,
+            0.7460162935034935
+          ],
+          "xy_radius_m": 0.35628166742158746,
+          "radius_3d_m": 0.6059035446766202,
+          "z_m": 0.49008415492748425
+        },
+        "warnings": [
+          "grasp 在 arm_base_link 上方较高，top-down 姿态可能难以规划。"
+        ]
+      }
+    }
+  },
+  "grasp": {
+    "success": true,
+    "plan_summary": {
+      "num_segments": 4,
+      "num_motion_segments": 2,
+      "all_motion_segments_success": true,
+      "total_motion_duration_s": 3.8149978087676732,
+      "final_q_arm": [
+        -8.6816733357864e-08,
+        0.0005271401023492217,
+        0.00012056421837769449,
+        -1.9689610780915245e-05,
+        3.0584246246689872e-09,
+        -5.90594184668447e-10
+      ],
+      "grasp_mode": "side",
+      "side_grasp_plan_vertical_lift": false,
+      "side_grasp_fallback_retreat": false
+    },
+    "target": {
+      "target_json": "/tmp/go2_x5_target_tcp_pose.json",
+      "object_prim_path": "/World/apple",
+      "grasp_mode": "side",
+      "bbox_world": {
+        "min_xyz": [
+          0.8806311965359143,
+          1.4151076824850284,
+          0.784982158255195
+        ],
+        "max_xyz": [
+          0.9232647537814683,
+          1.4669094531350884,
+          0.8323462471250537
+        ],
+        "center_xyz": [
+          0.9019479751586913,
+          1.4410085678100584,
+          0.8086642026901243
+        ],
+        "size_xyz": [
+          0.042633557245554066,
+          0.051801770650059975,
+          0.047364088869858656
+        ]
+      },
+      "tip_tcp_insertion_beyond_grasp_center_m": 0.005,
+      "target_workspace_base": {
+        "pregrasp": {
+          "position_xyz": [
+            -0.02898048993518177,
+            0.25463782959235653,
+            0.3900841549274842
+          ],
+          "quaternion_wxyz": [
+            0.6659276911401939,
+            0.0,
+            0.0,
+            0.7460162935034935
+          ],
+          "xy_radius_m": 0.2562816674215875,
+          "radius_3d_m": 0.4667396929573043,
+          "z_m": 0.3900841549274842
+        },
+        "grasp": {
+          "position_xyz": [
+            -0.04028855196971989,
+            0.35399641116950586,
+            0.3900841549274842
+          ],
+          "quaternion_wxyz": [
+            0.6659276911401939,
+            0.0,
+            0.0,
+            0.7460162935034935
+          ],
+          "xy_radius_m": 0.35628166742158746,
+          "radius_3d_m": 0.528301310301419,
+          "z_m": 0.3900841549274842
+        },
+        "lift": {
+          "position_xyz": [
+            -0.04028855196971989,
+            0.35399641116950586,
+            0.49008415492748425
+          ],
+          "quaternion_wxyz": [
+            0.6659276911401939,
+            0.0,
+            0.0,
+            0.7460162935034935
+          ],
+          "xy_radius_m": 0.35628166742158746,
+          "radius_3d_m": 0.6059035446766202,
+          "z_m": 0.49008415492748425
+        },
+        "warnings": [
+          "grasp 在 arm_base_link 上方较高，top-down 姿态可能难以规划。"
+        ]
+      }
+    },
+    "execution_summary": {
+      "num_executed_segments": 4,
+      "max_motion_joint_error_norm": 0.07963450871762051,
+      "mean_motion_joint_error_norm": 0.031001305811737788,
+      "final_motion_joint_error_norm": 0.004622625336172937,
+      "max_gripper_error_norm": 0.03395616314536016,
+      "mean_gripper_error_norm": 0.009305375758607657,
+      "grasp_mode": "side",
+      "has_lift_segment": false,
+      "has_planned_retreat": true,
+      "object_lift_delta_top_z_m": -0.2256143803527525,
+      "object_lift_delta_center_z_m": -0.23540461063384988,
+      "object_lift_success": false,
+      "object_lift_success_threshold_m": 0.04,
+      "object_center_displacement_m": 0.5185767036955405,
+      "object_retreat_success": true,
+      "object_retreat_success_threshold_m": 0.03,
+      "target_vs_pre_execution_object_drift": {
+        "available": true,
+        "target_bbox_center_xyz": [
+          0.9019479751586913,
+          1.4410085678100584,
+          0.8086642026901243
+        ],
+        "current_bbox_center_xyz": [
+          0.90201199054718,
+          1.4409109354019163,
+          0.8086678981781004
+        ],
+        "delta_xyz": [
+          6.401538848865851e-05,
+          -9.763240814208984e-05,
+          3.6954879760742188e-06
+        ],
+        "xy_drift_m": 0.0001167478354530716,
+        "drift_m": 0.00011680630853836103,
+        "max_allowed_drift_m": 0.012,
+        "within_tolerance": true
+      },
+      "require_object_lift_success": false,
+      "task_success": true,
+      "aborted": false,
+      "abort_reason": null
+    }
+  },
+  "updated_at": 1780985278.8916457,
+  "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_debug/episode_0000/pick/2/7"
+}

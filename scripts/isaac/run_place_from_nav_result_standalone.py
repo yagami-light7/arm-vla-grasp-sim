@@ -260,11 +260,19 @@ def _apply_reconstructed_place_object(raw_task: dict[str, Any], place: dict[str,
     yaw = float(pose.get("yaw", 0.0))
     quat = pick_handoff._rpy_to_quat_wxyz(roll, pitch, yaw)
     xformable = UsdGeom.Xformable(prim)
-    translate_op = pick_handoff._get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeTranslate)
-    orient_op = pick_handoff._get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeOrient)
-    pick_handoff._set_translate_op(translate_op, (float(pose["x"]), float(pose["y"]), float(pose["z"])))
-    pick_handoff._set_orient_op(orient_op, quat)
-    zeroed_count = pick_handoff._zero_rigid_body_velocities(prim)
+    xform_op_order_before = pick_handoff._xform_op_order_names(xformable)
+    pick_handoff._reset_pose_xform_stack(
+        xformable,
+        (float(pose["x"]), float(pose["y"]), float(pose["z"])),
+        quat,
+    )
+    xformable = UsdGeom.Xformable(prim)
+    velocity_reset = pick_handoff.reset_object_physics_state(
+        object_prim_path,
+        zero_linear_velocity=True,
+        zero_angular_velocity=True,
+        wake=True,
+    )
     report = {
         "applied": True,
         "place_object_initialization": "reconstructed",
@@ -278,7 +286,17 @@ def _apply_reconstructed_place_object(raw_task: dict[str, Any], place: dict[str,
             "yaw": yaw,
         },
         "quaternion_wxyz": [float(value) for value in quat],
-        "rigid_body_velocity_zeroed_count": zeroed_count,
+        "reset_xform_stack": True,
+        "xform_op_order_before": xform_op_order_before,
+        "xform_op_order_after": pick_handoff._xform_op_order_names(xformable),
+        "local_transform_after": pick_handoff._matrix_to_nested_list(xformable.GetLocalTransformation()),
+        "world_bbox_after": pick_handoff._compute_world_bbox(stage, object_prim_path),
+        "object_velocity_reset_after_reconstruction": velocity_reset,
+        "rigid_body_velocity_zeroed_count": velocity_reset.get("dynamic_rigid_body_count", 0),
+        "velocity_before": velocity_reset.get("velocity_before", {}),
+        "velocity_after": velocity_reset.get("velocity_after", {}),
+        "linear_velocity_norm": float(velocity_reset.get("velocity_after", {}).get("linear_velocity_norm_max", 0.0)),
+        "angular_velocity_norm": float(velocity_reset.get("velocity_after", {}).get("angular_velocity_norm_max", 0.0)),
     }
     print("[place] reconstructed object at place pose:", report["pose_world"])
     return report

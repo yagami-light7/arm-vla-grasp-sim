@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "episode_index": 0,
+  "seed": 7,
+  "success": false,
+  "failure_reason": "missing_place_goal",
+  "handoff_mode": "multi_process_json",
+  "physical_continuity": false,
+  "task_json": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_debug/episode_0000/task_nav_to_pick.json",
+  "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_debug/episode_0000",
+  "stages": {
+    "nav_to_pick": {
+      "success": true,
+      "returncode": 0,
+      "nav_result": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_debug/episode_0000/nav_pick_result.json",
+      "failure_reason": "",
+      "alignment": {
+        "available": true,
+        "warning": "",
+        "final_goal_distance_m": 0.007478732167886733,
+        "yaw_error_rad": 1.3297461078880453,
+        "final_position_reached": true,
+        "final_yaw_aligned": true,
+        "base_stable": true,
+        "final_base_pose_xyyaw": {
+          "x": 1.252241611480713,
+          "y": 1.3664448261260986,
+          "yaw": 1.587135377287105
+        },
+        "object_xy": {
+          "x": 0.8995111616914339,
+          "y": 1.4394823496423172
+        },
+        "final_base_to_object_distance_m": 0.36021278440656335,
+        "base_goal_xy_error_m": 0.007478732167886733,
+        "base_goal_yaw_error_rad": 1.3297461078880448
+      }
+    },
+    "pick": {
+      "success": true,
+      "returncode": 0,
+      "handoff_report": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_debug/episode_0000/pick_handoff_report.json",
+      "summary": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_debug/episode_0000/pick_summary.json",
+      "failure_reason": ""
+    },
+    "nav_to_place": {
+      "success": false,
+      "failure_reason": "missing_place_goal"
+    },
+    "place": {
+      "success": false
+    }
+  },
+  "object_pose_policy": {
+    "xy": "random_in_table_region",
+    "z": "fixed",
+    "fixed_z": 0.81653,
+    "rpy": "fixed",
+    "fixed_rpy_input": [
+      -2.524,
+      -7.822,
+      -0.181
+    ],
+    "fixed_rpy_input_unit": "deg",
+    "fixed_rpy_stored_unit": "rad",
+    "randomize_object_yaw": false
+  },
+  "notes": [
+    "This is a multi-process JSON handoff pipeline.",
+    "Object physical state is not continuous between stages.",
+    "Default place reports not_implemented instead of teleporting the object.",
+    "Pass --mvp-reconstruct-place only for the legacy reconstructed-object place smoke test."
+  ],
+  "generated_task_json": "/home/light/workspace/arm_vla/outputs/random_tasks/apple_pick_place_debug/apple_seed_0007.json",
+  "task_original_json": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_debug/episode_0000/task_original.json"
+}

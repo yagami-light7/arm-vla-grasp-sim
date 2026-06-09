@@ -109,11 +109,16 @@ def _parse_args() -> argparse.Namespace:
         help="For side grasps, skip vertical lift and count the planned reverse retreat as pick success.",
     )
     parser.add_argument("--side-grasp-fallback-retreat", action="store_true")
+    parser.add_argument(
+        "--fail-on-object-reset-drift",
+        action="store_true",
+        help="Fail grasp handoff if the object drifts after target-pose apply and velocity reset.",
+    )
     parser.add_argument("--skip-grasp-on-nav-failure", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--continue-on-failure", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--table-x-range", type=float, nargs=2, default=(0.88, 0.93), metavar=("X_MIN", "X_MAX"))
-    parser.add_argument("--table-y-range", type=float, nargs=2, default=(0.9, 1.6), metavar=("Y_MIN", "Y_MAX"))
-    parser.add_argument("--table-z", type=float, default=0.82, help="World z written directly to generated pick.object_pose_world.z.")
+    parser.add_argument("--table-x-range", type=float, nargs=2, default=(0.90, 0.93), metavar=("X_MIN", "X_MAX"))
+    parser.add_argument("--table-y-range", type=float, nargs=2, default=(1.0, 1.5), metavar=("Y_MIN", "Y_MAX"))
+    parser.add_argument("--table-z", type=float, default=0.81653, help="World z written directly to generated pick.object_pose_world.z.")
     parser.add_argument(
         "--object-z-offset",
         type=float,
@@ -387,6 +392,8 @@ def _pipeline_command(
         command.append("--side-retreat-only")
     if args.side_grasp_fallback_retreat:
         command.append("--side-grasp-fallback-retreat")
+    if getattr(args, "fail_on_object_reset_drift", False):
+        command.append("--fail-on-object-reset-drift")
     return command
 
 
@@ -422,6 +429,8 @@ def _standalone_batch_command(args: argparse.Namespace, *, manifest_path: Path) 
         command.append("--side-retreat-only")
     if args.side_grasp_fallback_retreat:
         command.append("--side-grasp-fallback-retreat")
+    if getattr(args, "fail_on_object_reset_drift", False):
+        command.append("--fail-on-object-reset-drift")
     if args.show_grasp_trajectory:
         command.append("--show-grasp-trajectory")
     if args.keep_window_open:

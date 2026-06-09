@@ -166,6 +166,11 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--side-grasp-fallback-retreat", action="store_true", help="Fallback to side retreat if vertical lift planning fails.")
     parser.add_argument(
+        "--fail-on-object-reset-drift",
+        action="store_true",
+        help="Fail grasp handoff when the object drifts after target-pose apply and velocity reset.",
+    )
+    parser.add_argument(
         "--keep-window-open",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -440,6 +445,8 @@ def _pipeline_grasp_resume_command(args: argparse.Namespace, *, smoke_only: bool
         command.append("--legacy-side-retreat")
     if args.side_grasp_fallback_retreat:
         command.append("--side-grasp-fallback-retreat")
+    if getattr(args, "fail_on_object_reset_drift", False):
+        command.append("--fail-on-object-reset-drift")
     if getattr(args, "keep_window_open", False):
         command.append("--keep-window-open")
     if getattr(args, "show_grasp_trajectory", False):
@@ -565,6 +572,7 @@ def _write_context(args: argparse.Namespace, task_json: Path, task) -> None:
                 "legacy_side_retreat": args.legacy_side_retreat,
                 "side_retreat_only": getattr(args, "side_retreat_only", False),
                 "side_grasp_fallback_retreat": args.side_grasp_fallback_retreat,
+                "fail_on_object_reset_drift": getattr(args, "fail_on_object_reset_drift", False),
                 "keep_window_open": getattr(args, "keep_window_open", False),
                 "show_grasp_trajectory": getattr(args, "show_grasp_trajectory", False),
                 "settle_steps": args.settle_steps,
@@ -869,6 +877,8 @@ def _standalone_pick_command(args: argparse.Namespace, task, *, smoke_only: bool
         command.append("--legacy-side-retreat")
     if args.side_grasp_fallback_retreat:
         command.append("--side-grasp-fallback-retreat")
+    if getattr(args, "fail_on_object_reset_drift", False):
+        command.append("--fail-on-object-reset-drift")
     if getattr(args, "keep_window_open", False):
         command.append("--keep-window-open")
     if getattr(args, "show_grasp_trajectory", False):

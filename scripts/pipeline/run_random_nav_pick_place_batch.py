@@ -105,8 +105,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--show-grasp-trajectory", action="store_true")
 
     parser.add_argument("--table-x-range", type=float, nargs=2, default=(0.88, 0.93), metavar=("X_MIN", "X_MAX"))
-    parser.add_argument("--table-y-range", type=float, nargs=2, default=(0.9, 1.6), metavar=("Y_MIN", "Y_MAX"))
-    parser.add_argument("--table-z", type=float, default=0.82)
+    parser.add_argument("--table-y-range", type=float, nargs=2, default=(1.4, 1.5), metavar=("Y_MIN", "Y_MAX"))
+    parser.add_argument("--table-z", type=float, default=0.81653)
     parser.add_argument("--object-z-offset", type=float, default=0.0)
     parser.add_argument("--object-fixed-z", type=float, default=DEFAULT_APPLE_FIXED_Z_M)
     parser.add_argument("--object-fixed-roll", type=float, default=DEFAULT_APPLE_FIXED_RPY_DEG[0])
@@ -171,6 +171,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-retreat-success", action="store_true")
     parser.add_argument("--legacy-side-retreat", action="store_true")
     parser.add_argument("--side-grasp-fallback-retreat", action="store_true")
+    parser.add_argument(
+        "--fail-on-object-reset-drift",
+        action="store_true",
+        help="Fail pick handoff if the object drifts after target-pose apply and velocity reset.",
+    )
     parser.add_argument("--use-planner-server", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--auto-start-planner-server", action="store_true")
     parser.add_argument("--restart-planner-server", action="store_true")
@@ -334,6 +339,8 @@ def _pipeline_command(
         command.append("--side-retreat-only")
     if args.side_grasp_fallback_retreat:
         command.append("--side-grasp-fallback-retreat")
+    if getattr(args, "fail_on_object_reset_drift", False):
+        command.append("--fail-on-object-reset-drift")
     return command
 
 

@@ -11,15 +11,15 @@
   },
   "pick": {
     "base_goal": {
-      "x": 1.2106607616593361,
-      "y": 1.481192523478811,
+      "x": 1.2183964569956016,
+      "y": 1.381192523478811,
       "yaw": 2.8809902618424523
     },
     "object_prim_path": "/World/apple",
     "grasp_mode": "auto",
     "object_pose_world": {
-      "x": 0.9106607616593361,
-      "y": 1.561192523478811,
+      "x": 0.9183964569956017,
+      "y": 1.461192523478811,
       "z": 0.81653,
       "yaw": -0.0031590459461097176,
       "roll": -0.04405211032033688,
@@ -44,11 +44,11 @@
     "object_prim_path": "/World/apple",
     "table_prim_path": "/World/table",
     "spawn_region": {
-      "x_min": 0.88,
+      "x_min": 0.9,
       "x_max": 0.93,
-      "y_min": 0.9,
-      "y_max": 1.6,
-      "z": 0.82,
+      "y_min": 1.0,
+      "y_max": 1.5,
+      "z": 0.81653,
       "object_z_offset": 0.0
     },
     "yaw_range_deg": [
@@ -109,24 +109,24 @@
     },
     "attempts_used": 1,
     "selected_base_goal_candidate": {
-      "x": 1.2106607616593361,
-      "y": 1.481192523478811,
+      "x": 1.2183964569956016,
+      "y": 1.381192523478811,
       "yaw": 2.8809902618424523,
       "standoff": 0.31048349392520047,
       "approach_angle_deg": 165.06858282186246,
       "raw_free": true,
       "clearance_free": true,
-      "boundary_clearance_m": 2.0056594669173258,
-      "obstacle_clearance_m": 0.25,
+      "boundary_clearance_m": 1.9979237715810587,
+      "obstacle_clearance_m": 0.30000001192092896,
       "edge_alignment_score": 0.0,
-      "score": -1.5080741014362224,
+      "score": -2.102355559640784,
       "valid": true,
       "rejection_reason": "",
       "path_found": true,
-      "path_length_m": 7.498528137423859,
-      "path_final_heading": 1.5707963267948966,
-      "path_heading_error": 1.3101939350475558,
-      "path_expanded_nodes": 1213
+      "path_length_m": 7.419238815542515,
+      "path_final_heading": 1.1071487177940869,
+      "path_heading_error": 1.7738415440483655,
+      "path_expanded_nodes": 1186
     },
     "candidate_count": 1
   }

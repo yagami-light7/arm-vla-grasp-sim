@@ -62,6 +62,8 @@ NAV_RESULT_JSON = Path(os.environ.get("GO2_X5_NAV_RESULT", "/tmp/go2_x5_nav_resu
 DEFAULT_TASK_JSON = PROJECT_ROOT / "tasks/nav_pick_example.json"
 SETTLE_STEPS = int(os.environ.get("GO2_X5_PICK_SETTLE_STEPS", "120"))
 OBJECT_TARGET_SETTLE_STEPS = int(os.environ.get("GO2_X5_PICK_OBJECT_TARGET_SETTLE_STEPS", "30"))
+OBJECT_RESET_STABILITY_STEPS = int(os.environ.get("GO2_X5_OBJECT_RESET_STABILITY_STEPS", "3"))
+OBJECT_RESET_DRIFT_WARNING_M = float(os.environ.get("GO2_X5_OBJECT_RESET_DRIFT_WARNING_M", "0.01"))
 LINEAR_STABLE_TOLERANCE = 0.05
 ANGULAR_STABLE_TOLERANCE = 0.10
 HANDOFF_CLEARANCE_M = float(os.environ.get("GO2_X5_HANDOFF_CLEARANCE_M", "0.30"))
@@ -384,6 +386,276 @@ def _zero_rigid_body_velocities(prim) -> int:
     return zeroed
 
 
+def _vec3_to_list(value) -> list[float]:
+    if value is None:
+        return [0.0, 0.0, 0.0]
+    try:
+        return [float(value[0]), float(value[1]), float(value[2])]
+    except Exception:
+        return [0.0, 0.0, 0.0]
+
+
+def _vec_norm(values: list[float] | tuple[float, float, float] | None) -> float:
+    if values is None:
+        return 0.0
+    return float(math.sqrt(sum(float(value) * float(value) for value in values)))
+
+
+def _read_vec3_attr(attr) -> list[float]:
+    try:
+        if attr is not None and attr.IsValid():
+            return _vec3_to_list(attr.Get())
+    except Exception:
+        pass
+    return [0.0, 0.0, 0.0]
+
+
+def _read_bool_attr(attr, default: bool) -> bool:
+    try:
+        if attr is not None and attr.IsValid():
+            value = attr.Get()
+            if value is not None:
+                return bool(value)
+    except Exception:
+        pass
+    return bool(default)
+
+
+def _set_vec3_attr(attr, xyz: tuple[float, float, float]) -> None:
+    attr.Set(Gf.Vec3f(*xyz))
+
+
+def _rigid_body_api_attr_or_create(rigid_body, getter_name: str, creator_name: str):
+    attr = _rigid_body_api_attr(rigid_body, getter_name)
+    try:
+        if attr is not None and attr.IsValid():
+            return attr
+    except Exception:
+        pass
+    creator = getattr(rigid_body, creator_name, None)
+    if callable(creator):
+        return creator()
+    return attr
+
+
+def _rigid_body_api_attr(rigid_body, name: str):
+    getter = getattr(rigid_body, name, None)
+    if callable(getter):
+        try:
+            return getter()
+        except Exception:
+            return None
+    return None
+
+
+def _collect_rigid_body_prims(root_prim) -> list:
+    return [prim for prim in Usd.PrimRange(root_prim) if prim.HasAPI(UsdPhysics.RigidBodyAPI)]
+
+
+def _live_reset_rigid_body_velocity(
+    prim_path: str,
+    *,
+    zero_linear_velocity: bool,
+    zero_angular_velocity: bool,
+) -> dict:
+    """Best-effort live PhysX velocity reset through Isaac Sim's rigid prim wrapper."""
+
+    report = {
+        "attempted": True,
+        "success": False,
+        "backend": "isaacsim.core.prims.SingleRigidPrim",
+        "prim_path": prim_path,
+    }
+    try:
+        from isaacsim.core.prims import SingleRigidPrim
+
+        wrapper_name = "go2_x5_object_velocity_reset_" + prim_path.strip("/").replace("/", "_")
+        rigid_prim = SingleRigidPrim(
+            prim_path=prim_path,
+            name=wrapper_name,
+            reset_xform_properties=False,
+        )
+        try:
+            rigid_prim.initialize()
+            report["initialized"] = True
+        except Exception as exc:
+            report["initialized"] = False
+            report["initialize_error"] = str(exc)
+
+        velocity_before = _vec3_to_list(rigid_prim.get_linear_velocity())
+        angular_velocity_before = _vec3_to_list(rigid_prim.get_angular_velocity())
+        if zero_linear_velocity:
+            rigid_prim.set_linear_velocity(np.zeros(3, dtype=np.float32))
+        if zero_angular_velocity:
+            rigid_prim.set_angular_velocity(np.zeros(3, dtype=np.float32))
+        velocity_after = _vec3_to_list(rigid_prim.get_linear_velocity())
+        angular_velocity_after = _vec3_to_list(rigid_prim.get_angular_velocity())
+        report.update(
+            {
+                "success": True,
+                "velocity_before": velocity_before,
+                "angular_velocity_before": angular_velocity_before,
+                "velocity_after": velocity_after,
+                "angular_velocity_after": angular_velocity_after,
+                "linear_velocity_norm_before": _vec_norm(velocity_before),
+                "angular_velocity_norm_before": _vec_norm(angular_velocity_before),
+                "linear_velocity_norm_after": _vec_norm(velocity_after),
+                "angular_velocity_norm_after": _vec_norm(angular_velocity_after),
+            }
+        )
+    except Exception as exc:
+        report["error"] = str(exc)
+    return report
+
+
+def reset_object_physics_state(
+    object_prim_path: str,
+    zero_linear_velocity: bool = True,
+    zero_angular_velocity: bool = True,
+    wake: bool = True,
+) -> dict:
+    """Reset dynamic rigid-body velocities without changing collision or kinematic state."""
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        raise HandoffFailure("stage_not_ready", "No USD stage is open in Isaac Sim.")
+    prim = stage.GetPrimAtPath(object_prim_path)
+    if not prim.IsValid():
+        raise HandoffFailure("stage_not_ready", f"object prim does not exist: {object_prim_path}")
+
+    rigid_body_prims = _collect_rigid_body_prims(prim)
+    if not rigid_body_prims:
+        raise HandoffFailure("object_not_dynamic_rigid_body", f"no RigidBodyAPI under {object_prim_path}")
+
+    body_reports = []
+    dynamic_body_reports = []
+    invalid_reasons = []
+    for body_prim in rigid_body_prims:
+        rigid_body = UsdPhysics.RigidBodyAPI(body_prim)
+        velocity_attr = _rigid_body_api_attr_or_create(
+            rigid_body,
+            "GetVelocityAttr",
+            "CreateVelocityAttr",
+        )
+        angular_velocity_attr = _rigid_body_api_attr_or_create(
+            rigid_body,
+            "GetAngularVelocityAttr",
+            "CreateAngularVelocityAttr",
+        )
+        rigid_body_enabled = _read_bool_attr(
+            _rigid_body_api_attr(rigid_body, "GetRigidBodyEnabledAttr"),
+            True,
+        )
+        kinematic_enabled = _read_bool_attr(
+            _rigid_body_api_attr(rigid_body, "GetKinematicEnabledAttr"),
+            False,
+        )
+        dynamic = bool(rigid_body_enabled and not kinematic_enabled)
+        if not dynamic:
+            invalid_reasons.append(
+                f"{body_prim.GetPath()}: rigid_body_enabled={rigid_body_enabled} "
+                f"kinematic_enabled={kinematic_enabled}"
+            )
+
+        usd_velocity_before = _read_vec3_attr(velocity_attr)
+        usd_angular_velocity_before = _read_vec3_attr(angular_velocity_attr)
+        live_reset_report = None
+        if dynamic and (zero_linear_velocity or zero_angular_velocity):
+            live_reset_report = _live_reset_rigid_body_velocity(
+                str(body_prim.GetPath()),
+                zero_linear_velocity=zero_linear_velocity,
+                zero_angular_velocity=zero_angular_velocity,
+            )
+        if dynamic and zero_linear_velocity:
+            _set_vec3_attr(velocity_attr, (0.0, 0.0, 0.0))
+        if dynamic and zero_angular_velocity:
+            _set_vec3_attr(angular_velocity_attr, (0.0, 0.0, 0.0))
+        starts_asleep_set_false = False
+        if dynamic and wake:
+            starts_asleep_attr = _rigid_body_api_attr(rigid_body, "GetStartsAsleepAttr")
+            try:
+                if starts_asleep_attr is not None and starts_asleep_attr.IsValid():
+                    starts_asleep_attr.Set(False)
+                    starts_asleep_set_false = True
+            except Exception as exc:
+                print(f"[WARN] Failed to clear startsAsleep for {body_prim.GetPath()}: {exc}")
+
+        usd_velocity_after = _read_vec3_attr(velocity_attr)
+        usd_angular_velocity_after = _read_vec3_attr(angular_velocity_attr)
+        live_reset_success = bool(live_reset_report and live_reset_report.get("success", False))
+        velocity_before = (
+            list(live_reset_report["velocity_before"])
+            if live_reset_success
+            else usd_velocity_before
+        )
+        angular_velocity_before = (
+            list(live_reset_report["angular_velocity_before"])
+            if live_reset_success
+            else usd_angular_velocity_before
+        )
+        velocity_after = (
+            list(live_reset_report["velocity_after"])
+            if live_reset_success
+            else usd_velocity_after
+        )
+        angular_velocity_after = (
+            list(live_reset_report["angular_velocity_after"])
+            if live_reset_success
+            else usd_angular_velocity_after
+        )
+        body_report = {
+            "prim_path": str(body_prim.GetPath()),
+            "dynamic": dynamic,
+            "rigid_body_enabled": rigid_body_enabled,
+            "kinematic_enabled": kinematic_enabled,
+            "usd_velocity_before": usd_velocity_before,
+            "usd_angular_velocity_before": usd_angular_velocity_before,
+            "usd_velocity_after": usd_velocity_after,
+            "usd_angular_velocity_after": usd_angular_velocity_after,
+            "live_velocity_reset": live_reset_report,
+            "live_velocity_reset_success": live_reset_success,
+            "velocity_before": velocity_before,
+            "angular_velocity_before": angular_velocity_before,
+            "velocity_after": velocity_after,
+            "angular_velocity_after": angular_velocity_after,
+            "linear_velocity_norm_before": _vec_norm(velocity_before),
+            "angular_velocity_norm_before": _vec_norm(angular_velocity_before),
+            "linear_velocity_norm_after": _vec_norm(velocity_after),
+            "angular_velocity_norm_after": _vec_norm(angular_velocity_after),
+            "starts_asleep_set_false": starts_asleep_set_false,
+        }
+        body_reports.append(body_report)
+        if dynamic:
+            dynamic_body_reports.append(body_report)
+
+    if not dynamic_body_reports:
+        raise HandoffFailure(
+            "object_not_dynamic_rigid_body",
+            f"{object_prim_path} has RigidBodyAPI but no enabled non-kinematic rigid body: {'; '.join(invalid_reasons)}",
+            {"object_prim_path": object_prim_path, "rigid_bodies": body_reports},
+        )
+
+    report = {
+        "applied": True,
+        "object_prim_path": object_prim_path,
+        "zero_linear_velocity": bool(zero_linear_velocity),
+        "zero_angular_velocity": bool(zero_angular_velocity),
+        "wake_requested": bool(wake),
+        "dynamic_rigid_body_count": len(dynamic_body_reports),
+        "rigid_body_count": len(body_reports),
+        "rigid_bodies": body_reports,
+        "velocity_before": {
+            "linear_velocity_norm_max": max(item["linear_velocity_norm_before"] for item in dynamic_body_reports),
+            "angular_velocity_norm_max": max(item["angular_velocity_norm_before"] for item in dynamic_body_reports),
+        },
+        "velocity_after": {
+            "linear_velocity_norm_max": max(item["linear_velocity_norm_after"] for item in dynamic_body_reports),
+            "angular_velocity_norm_max": max(item["angular_velocity_norm_after"] for item in dynamic_body_reports),
+        },
+    }
+    return report
+
+
 def _get_or_add_xform_op(xformable: UsdGeom.Xformable, op_type) -> UsdGeom.XformOp:
     """Return the canonical xform op, reusing existing precision when authored."""
 
@@ -391,6 +663,7 @@ def _get_or_add_xform_op(xformable: UsdGeom.Xformable, op_type) -> UsdGeom.Xform
     attr_name_by_type = {
         UsdGeom.XformOp.TypeTranslate: "xformOp:translate",
         UsdGeom.XformOp.TypeOrient: "xformOp:orient",
+        UsdGeom.XformOp.TypeScale: "xformOp:scale",
     }
     attr_name = attr_name_by_type[op_type]
     attr = prim.GetAttribute(attr_name)
@@ -400,6 +673,8 @@ def _get_or_add_xform_op(xformable: UsdGeom.Xformable, op_type) -> UsdGeom.Xform
         return xformable.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble)
     if op_type == UsdGeom.XformOp.TypeOrient:
         return xformable.AddOrientOp(UsdGeom.XformOp.PrecisionFloat)
+    if op_type == UsdGeom.XformOp.TypeScale:
+        return xformable.AddScaleOp(UsdGeom.XformOp.PrecisionFloat)
     raise ValueError(f"unsupported xform op type: {op_type}")
 
 
@@ -418,6 +693,66 @@ def _set_orient_op(op: UsdGeom.XformOp, quat_wxyz: tuple[float, float, float, fl
         op.Set(Gf.Quatd(w, Gf.Vec3d(x, y, z)))
     else:
         op.Set(Gf.Quatf(w, Gf.Vec3f(x, y, z)))
+
+
+def _matrix_to_nested_list(matrix) -> list[list[float]]:
+    if isinstance(matrix, tuple):
+        matrix = matrix[0]
+    return [[float(matrix[row][col]) for col in range(4)] for row in range(4)]
+
+
+def _xform_op_order_names(xformable: UsdGeom.Xformable) -> list[str]:
+    return [op.GetOpName() for op in xformable.GetOrderedXformOps()]
+
+
+def _saved_scale_from_xform_stack(xformable: UsdGeom.Xformable) -> tuple[float, float, float] | None:
+    """Preserve an explicit scale op when resetting pose ops."""
+
+    for op in xformable.GetOrderedXformOps():
+        if op.GetOpType() != UsdGeom.XformOp.TypeScale:
+            continue
+        try:
+            value = op.Get()
+        except Exception:
+            continue
+        if value is None:
+            continue
+        values = tuple(float(component) for component in value)
+        if len(values) == 3:
+            return values
+    return None
+
+
+def _remove_authored_xform_ops(prim) -> None:
+    for attr in list(prim.GetAttributes()):
+        name = attr.GetName()
+        if name.startswith("xformOp:") or name == "xformOpOrder":
+            prim.RemoveProperty(name)
+
+
+def _reset_pose_xform_stack(
+    xformable: UsdGeom.Xformable,
+    xyz: tuple[float, float, float],
+    quat_wxyz: tuple[float, float, float, float],
+) -> None:
+    """Author an absolute task pose instead of stacking onto existing xform ops."""
+
+    prim = xformable.GetPrim()
+    saved_scale = _saved_scale_from_xform_stack(xformable)
+    xformable.ClearXformOpOrder()
+    _remove_authored_xform_ops(prim)
+    xformable = UsdGeom.Xformable(prim)
+    xformable.ClearXformOpOrder()
+    translate_op = _get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeTranslate)
+    orient_op = _get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeOrient)
+    _set_translate_op(translate_op, xyz)
+    _set_orient_op(orient_op, quat_wxyz)
+    ordered_ops = [translate_op, orient_op]
+    if saved_scale is not None:
+        scale_op = _get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeScale)
+        scale_op.Set(Gf.Vec3f(*saved_scale))
+        ordered_ops.append(scale_op)
+    xformable.SetXformOpOrder(ordered_ops)
 
 
 def _path_is_under(path: str, parent_path: str) -> bool:
@@ -514,7 +849,7 @@ def _show_only_task_object(task) -> dict:
     }
 
 
-def _apply_object_pose_from_task(task) -> dict:
+def _apply_object_pose_from_task(task, *, reset_xform_stack: bool = True) -> dict:
     """Apply task.pick.object_pose_world to the open stage when provided."""
 
     pose = getattr(task.pick, "object_pose_world", None)
@@ -535,21 +870,32 @@ def _apply_object_pose_from_task(task) -> dict:
 
     quat = _rpy_to_quat_wxyz(pose.roll, pose.pitch, pose.yaw)
     xformable = UsdGeom.Xformable(prim)
-    translate_op = _get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeTranslate)
-    orient_op = _get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeOrient)
-    _set_translate_op(translate_op, (pose.x, pose.y, pose.z))
-    _set_orient_op(orient_op, quat)
-    # Preserve authored scale/rotate/transform ops from the scene USD. Randomized
-    # tasks should only update object pose, not discard asset sizing or physics
-    # alignment encoded in the original xform stack.
-    zeroed_count = _zero_rigid_body_velocities(prim)
+    xform_op_order_before = _xform_op_order_names(xformable)
+    if reset_xform_stack:
+        _reset_pose_xform_stack(
+            xformable,
+            (pose.x, pose.y, pose.z),
+            quat,
+        )
+        xformable = UsdGeom.Xformable(prim)
+    else:
+        translate_op = _get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeTranslate)
+        orient_op = _get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeOrient)
+        _set_translate_op(translate_op, (pose.x, pose.y, pose.z))
+        _set_orient_op(orient_op, quat)
+
     report = {
         "applied": True,
         "object_prim_path": object_prim_path,
         "pose_world": pose.to_dict(),
         "quaternion_wxyz": [float(value) for value in quat],
-        "xform_op_order": [op.GetOpName() for op in xformable.GetOrderedXformOps()],
-        "rigid_body_velocity_zeroed_count": zeroed_count,
+        "reset_xform_stack": bool(reset_xform_stack),
+        "xform_op_order_before": xform_op_order_before,
+        "xform_op_order_after": _xform_op_order_names(xformable),
+        "local_transform_after": _matrix_to_nested_list(xformable.GetLocalTransformation()),
+        "world_bbox_after": _compute_world_bbox(stage, object_prim_path),
+        "rigid_body_velocity_zeroed_count": 0,
+        "rigid_body_velocity_zeroed_by_pose_apply": False,
     }
     print(
         "[randomize] applied object pose:",
@@ -680,6 +1026,14 @@ async def _restore_and_settle(world: World, robot: SingleArticulation, nav_resul
     return report
 
 
+def _task_uses_fixed_rpy_policy(task) -> bool:
+    try:
+        policy = getattr(task, "randomization", {}).get("object_pose_policy", {})
+    except Exception:
+        policy = {}
+    return isinstance(policy, dict) and str(policy.get("rpy", "")) == "fixed"
+
+
 def _compute_world_bbox(stage, prim_path: str) -> dict | None:
     prim = stage.GetPrimAtPath(prim_path)
     if not prim.IsValid():
@@ -703,13 +1057,135 @@ def _compute_world_bbox(stage, prim_path: str) -> dict | None:
     }
 
 
-async def _settle_object_before_target(world: World, object_prim_path: str | None) -> dict:
-    """Let lightweight objects settle immediately before reading the target bbox."""
+def _bbox_center_displacement(bbox_before: dict | None, bbox_after: dict | None) -> float | None:
+    if bbox_before is None or bbox_after is None:
+        return None
+    before_center = np.asarray(bbox_before["center_xyz"], dtype=float)
+    after_center = np.asarray(bbox_after["center_xyz"], dtype=float)
+    return float(np.linalg.norm(after_center - before_center))
 
-    steps = max(0, int(_pipeline_context().get("object_target_settle_steps", OBJECT_TARGET_SETTLE_STEPS)))
+
+def _object_reset_stability_steps(context: dict) -> int:
+    raw_value = context.get("object_reset_stability_steps", OBJECT_RESET_STABILITY_STEPS)
+    try:
+        steps = int(raw_value)
+    except (TypeError, ValueError):
+        steps = OBJECT_RESET_STABILITY_STEPS
+    return max(1, min(3, steps))
+
+
+def _fail_on_object_reset_drift(context: dict) -> bool:
+    env_value = _env_bool("GO2_X5_FAIL_ON_OBJECT_RESET_DRIFT")
+    if env_value is not None:
+        return env_value
+    return bool(context.get("fail_on_object_reset_drift", False))
+
+
+async def _stabilize_object_before_target(
+    world: World,
+    object_prim_path: str | None,
+    *,
+    bbox_after_pose_apply: dict | None,
+    context: dict,
+) -> dict:
+    """Clear object velocity around a short physics step before target generation."""
+
     stage = omni.usd.get_context().get_stage()
     if stage is None or not object_prim_path:
-        return {"applied": False, "reason": "stage_or_object_missing", "settle_steps": steps}
+        return {
+            "applied": False,
+            "reason": "stage_or_object_missing",
+            "object_prim_path": object_prim_path,
+        }
+    bbox_before = bbox_after_pose_apply or _compute_world_bbox(stage, object_prim_path)
+    immediate_reset = reset_object_physics_state(
+        object_prim_path,
+        zero_linear_velocity=True,
+        zero_angular_velocity=True,
+        wake=True,
+    )
+    step_count = _object_reset_stability_steps(context)
+    for _ in range(step_count):
+        world.step(render=True)
+        await omni.kit.app.get_app().next_update_async()
+    bbox_after_short_step = _compute_world_bbox(stage, object_prim_path)
+    final_reset = reset_object_physics_state(
+        object_prim_path,
+        zero_linear_velocity=True,
+        zero_angular_velocity=True,
+        wake=True,
+    )
+    bbox_after_final_reset = _compute_world_bbox(stage, object_prim_path)
+    displacement = _bbox_center_displacement(bbox_before, bbox_after_final_reset or bbox_after_short_step)
+    linear_velocity_norm = float(final_reset.get("velocity_after", {}).get("linear_velocity_norm_max", 0.0))
+    angular_velocity_norm = float(final_reset.get("velocity_after", {}).get("angular_velocity_norm_max", 0.0))
+    velocity_reset_before_target = {
+        **final_reset,
+        "immediate_reset": immediate_reset,
+        "velocity_before": immediate_reset.get("velocity_before", {}),
+        "velocity_after": final_reset.get("velocity_after", {}),
+        "linear_velocity_norm": linear_velocity_norm,
+        "angular_velocity_norm": angular_velocity_norm,
+    }
+    report = {
+        "applied": True,
+        "object_prim_path": object_prim_path,
+        "bbox_after_pose_apply": bbox_before,
+        "velocity_reset_immediate": immediate_reset,
+        "velocity_reset_after_short_step": final_reset,
+        "object_velocity_reset_before_target": velocity_reset_before_target,
+        "stability_step_count": step_count,
+        "bbox_after_short_step": bbox_after_short_step,
+        "bbox_after_final_reset": bbox_after_final_reset,
+        "center_displacement_m": displacement,
+        "linear_velocity_norm": linear_velocity_norm,
+        "angular_velocity_norm": angular_velocity_norm,
+        "drift_warning_threshold_m": OBJECT_RESET_DRIFT_WARNING_M,
+    }
+    if displacement is not None and displacement > OBJECT_RESET_DRIFT_WARNING_M:
+        report["warning"] = "object_unstable_after_pose_reset"
+        if _fail_on_object_reset_drift(context):
+            report["failure_reason"] = "object_unstable_after_pose_reset"
+    print(
+        "[handoff] object reset stability:",
+        {
+            "steps": step_count,
+            "center_displacement_m": None if displacement is None else round(displacement, 5),
+            "linear_velocity_norm": round(linear_velocity_norm, 6),
+            "angular_velocity_norm": round(angular_velocity_norm, 6),
+            "warning": report.get("warning"),
+        },
+    )
+    return report
+
+
+async def _settle_object_before_target(
+    world: World,
+    object_prim_path: str | None,
+    *,
+    fixed_rpy_policy: bool | None = None,
+) -> dict:
+    """Let lightweight objects settle immediately before reading the target bbox."""
+
+    context = _pipeline_context()
+    task_policy = context.get("object_pose_policy", {}) if isinstance(context.get("object_pose_policy", {}), dict) else {}
+    if fixed_rpy_policy is None:
+        fixed_rpy_policy = str(task_policy.get("rpy", "")) == "fixed"
+    fixed_rpy_policy = bool(fixed_rpy_policy)
+    if "object_target_settle_steps" in context:
+        steps = max(0, int(context.get("object_target_settle_steps", OBJECT_TARGET_SETTLE_STEPS)))
+    elif fixed_rpy_policy:
+        steps = max(0, int(os.environ.get("GO2_X5_FIXED_RPY_OBJECT_TARGET_SETTLE_STEPS", "0")))
+    else:
+        steps = max(0, int(OBJECT_TARGET_SETTLE_STEPS))
+    stage = omni.usd.get_context().get_stage()
+    if stage is None or not object_prim_path:
+        return {
+            "applied": False,
+            "reason": "stage_or_object_missing",
+            "settle_steps": steps,
+            "fixed_rpy_policy": fixed_rpy_policy,
+        }
 
     bbox_before = _compute_world_bbox(stage, object_prim_path)
     for _ in range(steps):
@@ -725,14 +1201,20 @@ async def _settle_object_before_target(world: World, object_prim_path: str | Non
         "applied": True,
         "object_prim_path": object_prim_path,
         "settle_steps": steps,
+        "fixed_rpy_policy": fixed_rpy_policy,
         "bbox_before": bbox_before,
         "bbox_after": bbox_after,
         "center_displacement_m": displacement,
     }
+    if displacement is not None and displacement > 0.01:
+        report["warning"] = "object_moved_after_pose_apply"
+        if fixed_rpy_policy:
+            report["failure_reason"] = "object_moved_after_pose_apply"
     print(
         "[handoff] object target settle:",
         {
             "steps": steps,
+            "fixed_rpy_policy": fixed_rpy_policy,
             "center_displacement_m": None if displacement is None else round(displacement, 5),
         },
     )
@@ -822,6 +1304,34 @@ async def main() -> None:
             handoff_report["object_pose"] = _apply_object_pose_from_task(task)
         world, robot = await _initialize_robot()
         handoff_report["restore"] = await _restore_and_settle(world, robot, nav_result)
+        object_pose_apply = _apply_object_pose_from_task(task, reset_xform_stack=True)
+        handoff_report["object_pose_applied_before_target"] = object_pose_apply
+        handoff_report["object_pose_reapplied_before_target"] = object_pose_apply
+        handoff_report["object_pose_after_reapply_bbox"] = object_pose_apply.get("world_bbox_after")
+        object_stability = await _stabilize_object_before_target(
+            world,
+            task.pick.object_prim_path,
+            bbox_after_pose_apply=object_pose_apply.get("world_bbox_after"),
+            context=context,
+        )
+        handoff_report["object_velocity_reset_before_target"] = object_stability.get(
+            "object_velocity_reset_before_target",
+            object_stability.get("velocity_reset_after_short_step"),
+        )
+        handoff_report["object_stability_after_reset"] = object_stability
+        handoff_report["object_settle_before_target"] = object_stability
+        handoff_report["center_displacement_m"] = object_stability.get("center_displacement_m")
+        handoff_report["linear_velocity_norm"] = object_stability.get("linear_velocity_norm")
+        handoff_report["angular_velocity_norm"] = object_stability.get("angular_velocity_norm")
+        if object_stability.get("failure_reason"):
+            raise HandoffFailure(
+                str(object_stability["failure_reason"]),
+                (
+                    "object moved after task pose apply and velocity reset before target generation: "
+                    f"center_displacement_m={object_stability.get('center_displacement_m')}"
+                ),
+                object_stability,
+            )
         pipeline = GraspPipeline(recorder=recorder)
         task_spec = GraspTask(
             object_prim_path=task.pick.object_prim_path,
@@ -845,10 +1355,6 @@ async def main() -> None:
             print("[handoff] state JSON:", task_spec.state_json)
             return
 
-        handoff_report["object_settle_before_target"] = await _settle_object_before_target(
-            world,
-            task.pick.object_prim_path,
-        )
         state = await pipeline.export_state(task_spec)
         handoff_report["state_export"] = _state_export_report(state, nav_result)
         target = await pipeline.generate_target(task_spec)

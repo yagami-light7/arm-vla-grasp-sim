@@ -68,6 +68,11 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--side-grasp-fallback-retreat", action="store_true")
     parser.add_argument(
+        "--fail-on-object-reset-drift",
+        action="store_true",
+        help="Fail pick handoff if the object center drifts after target-pose apply and velocity reset.",
+    )
+    parser.add_argument(
         "--keep-window-open",
         action="store_true",
         help="After the handoff run finishes, keep the Isaac Sim window alive until the user closes it.",
@@ -213,7 +218,9 @@ def _write_context(args: argparse.Namespace, task_json: Path, raw_task: dict) ->
         "side_grasp_fallback_retreat": args.side_grasp_fallback_retreat,
         "keep_window_open": args.keep_window_open,
         "show_grasp_trajectory": args.show_grasp_trajectory,
+        "fail_on_object_reset_drift": args.fail_on_object_reset_drift,
         "settle_steps": args.settle_steps,
+        "object_pose_policy": (raw_task.get("randomization") or {}).get("object_pose_policy", {}),
         "dataset_dir": args.dataset_dir,
         "no_record": args.no_record,
     }

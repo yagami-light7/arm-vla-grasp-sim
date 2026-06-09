@@ -6,6 +6,7 @@ import math
 import random
 import tempfile
 import unittest
+from inspect import signature
 
 import numpy as np
 
@@ -16,6 +17,7 @@ from source.data.random_task import (
     generate_base_goal_candidates,
     sample_object_pose,
     select_valid_base_goal,
+    write_random_pick_task,
     _path_final_heading,
     _path_length,
 )
@@ -43,6 +45,12 @@ class RandomTaskGenerationTest(unittest.TestCase):
 
         self.assertAlmostEqual(spawn_region.object_z, 0.82)
         self.assertAlmostEqual(object_pose.z, 0.82)
+        self.assertAlmostEqual(object_pose.yaw, 0.0)
+
+    def test_random_object_yaw_defaults_are_disabled_in_low_level_api(self) -> None:
+        self.assertIs(signature(sample_object_pose).parameters["randomize_object_yaw"].default, False)
+        self.assertIs(signature(generate_random_pick_task).parameters["randomize_object_yaw"].default, False)
+        self.assertIs(signature(write_random_pick_task).parameters["randomize_object_yaw"].default, False)
 
     def test_spawn_region_keeps_explicit_object_z_offset(self) -> None:
         spawn_region = SpawnRegion(
@@ -80,7 +88,6 @@ class RandomTaskGenerationTest(unittest.TestCase):
                 "object_fixed_z": 0.81653,
                 "object_fixed_rpy": (-2.524, -7.822, -0.181),
                 "object_fixed_rpy_unit": "deg",
-                "randomize_object_yaw": False,
                 "edge_margin": None,
                 "clearance_radius": 0.0,
                 "min_boundary_clearance": 0.0,
