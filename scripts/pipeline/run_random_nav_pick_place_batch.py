@@ -32,6 +32,7 @@ DEFAULT_CHECKPOINT = "checkpoints/go2_x5/flat/model_8500.pt"
 DEFAULT_ISAACLAB_LAUNCHER = "/home/light/workspace/IsaacLab/isaaclab.sh"
 DEFAULT_APPLE_FIXED_Z_M = 0.81653
 DEFAULT_APPLE_FIXED_RPY_DEG = (-2.524, -7.822, -0.181)
+DEFAULT_PLACE_TEMPLATE_TASK = "tasks/nav_pick_place_apple_contact.json"
 HANDOFF_MODE = "multi_process_json"
 PHYSICAL_CONTINUITY = False
 
@@ -82,6 +83,11 @@ def _write_summary_line(summary_path: Path, row: dict[str, Any]) -> None:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-task", default="tasks/nav_pick_apple_fast.json")
+    parser.add_argument(
+        "--place-template-task",
+        default=DEFAULT_PLACE_TEMPLATE_TASK,
+        help="Task JSON used as a place-goal template when --base-task is pick-only.",
+    )
     parser.add_argument("--num-episodes", type=int, default=1)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--output-task-dir", default="outputs/random_tasks/nav_pick_place")
@@ -190,6 +196,26 @@ def _parse_args() -> argparse.Namespace:
         "--mvp-reconstruct-place",
         action="store_true",
         help="Legacy/MVP place mode: teleport the object to place_pose_world after nav_to_place.",
+    )
+    parser.add_argument(
+        "--manipulation-backend",
+        choices=("legacy-multiprocess", "single-stage-07"),
+        default="single-stage-07",
+    )
+    parser.add_argument("--single-stage-runner", default="scripts/isaac/07_run_pick_put_demo_from_nav_results.py")
+    parser.add_argument("--single-stage-put-mode", choices=("arm-place", "mvp-reconstruct"), default="arm-place")
+    parser.add_argument(
+        "--single-stage-carry-mode",
+        choices=("none", "logical", "fixed-joint", "kinematic"),
+        default="logical",
+    )
+    parser.add_argument("--single-stage-result-name", default="single_stage_result.json")
+    parser.add_argument("--single-stage-pick-report-name", default="single_stage_pick_handoff_report.json")
+    parser.add_argument("--single-stage-put-result-name", default="single_stage_put_result.json")
+    parser.add_argument(
+        "--skip-nav-place-for-local-arm-place",
+        action=argparse.BooleanOptionalAction,
+        default=False,
     )
     parser.add_argument("--terrain-prim-path", default="/World/scene_collision")
     return parser.parse_args()
@@ -393,6 +419,146 @@ def _place_command(
     return command
 
 
+def _single_stage_07_command(
+    args: argparse.Namespace,
+    *,
+    task_nav_to_pick: Path,
+    nav_pick_result: Path,
+    task_nav_to_place: Path,
+    nav_place_result: Path | None,
+    episode_dir: Path,
+) -> list[str]:
+    single_stage_dir = episode_dir / "single_stage_07"
+    command = [
+        _command_path(args.isaac_python),
+        _command_path(args.single_stage_runner),
+        "--task-nav-to-pick",
+        str(task_nav_to_pick),
+        "--nav-pick-result",
+        str(nav_pick_result),
+        "--task-nav-to-place",
+        str(task_nav_to_place),
+        "--dataset-dir",
+        str(single_stage_dir),
+        "--pick-handoff-report",
+        str(single_stage_dir / args.single_stage_pick_report_name),
+        "--put-result",
+        str(single_stage_dir / args.single_stage_put_result_name),
+        "--result-json",
+        str(single_stage_dir / args.single_stage_result_name),
+        "--carry-mode",
+        args.single_stage_carry_mode,
+        "--put-mode",
+        args.single_stage_put_mode,
+        "--terrain-prim-path",
+        args.terrain_prim_path,
+        "--handoff-clearance-radius",
+        str(args.handoff_clearance_radius),
+        "--settle-steps",
+        str(args.place_settle_steps),
+    ]
+    if nav_place_result is not None:
+        command.extend(["--nav-place-result", str(nav_place_result)])
+    if args.demo_visuals:
+        command.append("--demo-visuals")
+        command.extend(["--viewport-camera-prim", args.viewport_camera_prim])
+    if args.keep_window_open is not None:
+        command.append("--keep-window-open" if args.keep_window_open else "--no-keep-window-open")
+    if args.use_planner_server:
+        command.append("--use-planner-server")
+    if args.side_retreat_only:
+        command.append("--side-retreat-only")
+    if args.allow_retreat_success:
+        command.append("--allow-retreat-success")
+    if args.legacy_side_retreat:
+        command.append("--legacy-side-retreat")
+    if args.side_grasp_fallback_retreat:
+        command.append("--side-grasp-fallback-retreat")
+    if args.show_grasp_trajectory:
+        command.append("--show-grasp-trajectory")
+    return command
+
+
+def _stage_excerpt(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    keys = (
+        "success",
+        "failure_reason",
+        "failure_detail",
+        "put_mode",
+        "arm_place_executed",
+        "object_teleported",
+        "physical_put_execution",
+        "physical_place_continuity",
+        "physical_nav_continuity",
+        "scene_usd",
+        "elapsed_wall_time_s",
+    )
+    return {key: payload[key] for key in keys if key in payload}
+
+
+def _single_stage_result_success(args: argparse.Namespace, returncode: int, result: dict[str, Any] | None) -> tuple[bool, str]:
+    if returncode != 0:
+        return False, str((result or {}).get("failure_reason") or f"returncode_{returncode}")
+    if not result or not result.get("success", False):
+        return False, str((result or {}).get("failure_reason") or "single_stage_result_unsuccessful")
+    put_mode = str(result.get("put_mode") or "")
+    expected_put_mode = str(args.single_stage_put_mode)
+    if put_mode.replace("_", "-") != expected_put_mode:
+        return False, f"unexpected_put_mode_{put_mode or 'missing'}"
+    if expected_put_mode != "arm-place":
+        return True, ""
+    object_teleported = bool(result.get("object_teleported", True))
+    physical_put_execution = bool(result.get("physical_put_execution", False))
+    if object_teleported and not physical_put_execution:
+        return False, "single_stage_object_teleported_without_physical_put_execution"
+    return True, ""
+
+
+def _single_stage_stage_summary(
+    args: argparse.Namespace,
+    *,
+    returncode: int,
+    result_json: Path,
+    pick_handoff_report: Path,
+    put_result: Path,
+    result: dict[str, Any] | None,
+) -> dict[str, Any]:
+    success, failure_reason = _single_stage_result_success(args, returncode, result)
+    result_stages = (result or {}).get("stages") if isinstance(result, dict) else {}
+    if not isinstance(result_stages, dict):
+        result_stages = {}
+    summary = {
+        "success": success,
+        "returncode": returncode,
+        "backend": "single-stage-07",
+        "result_json": str(result_json),
+        "pick_handoff_report": str(pick_handoff_report),
+        "put_result": str(put_result),
+        "put_mode": args.single_stage_put_mode,
+        "carry_mode": args.single_stage_carry_mode,
+        "physical_nav_continuity": False,
+        "physical_put_execution": bool((result or {}).get("physical_put_execution", False)),
+        "object_teleported": bool((result or {}).get("object_teleported", True)),
+        "failure_reason": failure_reason,
+    }
+    if result is not None:
+        summary.update(
+            {
+                "result_failure_reason": str(result.get("failure_reason", "")),
+                "result_failure_detail": str(result.get("failure_detail", "")),
+                "result_put_mode": result.get("put_mode"),
+                "arm_place_executed": result.get("arm_place_executed"),
+                "scene_usd": result.get("scene_usd"),
+                "prepare_object": _stage_excerpt(result_stages.get("prepare_object")),
+                "pick": _stage_excerpt(result_stages.get("pick")),
+                "put": _stage_excerpt(result_stages.get("put")),
+            }
+        )
+    return summary
+
+
 def _base_episode_summary(episode_index: int, seed: int, episode_dir: Path, task_json: Path) -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -402,6 +568,8 @@ def _base_episode_summary(episode_index: int, seed: int, episode_dir: Path, task
         "failure_reason": "",
         "handoff_mode": HANDOFF_MODE,
         "physical_continuity": PHYSICAL_CONTINUITY,
+        "physical_nav_continuity": PHYSICAL_CONTINUITY,
+        "nav_execution_mode": "headless_precomputed",
         "task_json": str(task_json),
         "episode_dir": str(episode_dir),
         "stages": {
@@ -409,13 +577,15 @@ def _base_episode_summary(episode_index: int, seed: int, episode_dir: Path, task
             "pick": {"success": False},
             "nav_to_place": {"success": False},
             "place": {"success": False},
+            "single_stage_manipulation": {"success": False},
         },
         "object_pose_policy": {},
         "notes": [
             "This is a multi-process JSON handoff pipeline.",
             "Object physical state is not continuous between stages.",
-            "Default place reports not_implemented instead of teleporting the object.",
+            "legacy-multiprocess place reports not_implemented unless --mvp-reconstruct-place is passed.",
             "Pass --mvp-reconstruct-place only for the legacy reconstructed-object place smoke test.",
+            "single-stage-07 uses precomputed nav results and runs pick+arm-place in one Isaac Sim stage.",
         ],
     }
 
@@ -463,6 +633,38 @@ def _make_nav_to_place_task(task_original: dict[str, Any], nav_pick_result: dict
         "handoff_mode": HANDOFF_MODE,
     }
     return task_nav_to_place
+
+
+def _has_place_goal(task: dict[str, Any]) -> bool:
+    place = task.get("place")
+    if not isinstance(place, dict):
+        return False
+    return bool(place.get("enabled", False) and place.get("base_goal") and place.get("place_pose_world"))
+
+
+def _load_place_template(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
+    template_path = _project_path(args.place_template_task)
+    template = _read_json_if_exists(template_path)
+    if template is None:
+        raise FileNotFoundError(f"place template task not found: {template_path}")
+    if not _has_place_goal(template):
+        raise ValueError(f"place template task has no enabled place goal: {template_path}")
+    return copy.deepcopy(template["place"]), template_path
+
+
+def _ensure_place_goal(task: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    if _has_place_goal(task):
+        return task
+    place, template_path = _load_place_template(args)
+    task["place"] = place
+    randomization = dict(task.get("randomization") or {})
+    task["randomization"] = randomization
+    randomization["place_template"] = {
+        "enabled": True,
+        "source_task": str(template_path),
+        "reason": "base_task_missing_enabled_place_goal",
+    }
+    return task
 
 
 def _wrap_yaw(yaw: float) -> float:
@@ -525,10 +727,13 @@ def _batch_row_from_summary(summary: dict[str, Any], *, started_at: float, task:
     selected = randomization.get("selected_base_goal_candidate", {})
     stages = summary.get("stages", {})
     nav_pick_alignment = stages.get("nav_to_pick", {}).get("alignment", {})
+    single_stage = stages.get("single_stage_manipulation", {})
     return {
         "episode_index": summary["episode_index"],
         "seed": summary["seed"],
         "task_json": summary["task_json"],
+        "manipulation_backend": summary.get("manipulation_backend"),
+        "nav_execution_mode": summary.get("nav_execution_mode"),
         "object_pose_world": task.get("pick", {}).get("object_pose_world"),
         "object_pose_policy": randomization.get("object_pose_policy"),
         "base_goal": task.get("pick", {}).get("base_goal"),
@@ -545,6 +750,11 @@ def _batch_row_from_summary(summary: dict[str, Any], *, started_at: float, task:
         "pick_success": bool(stages.get("pick", {}).get("success", False)),
         "nav_place_success": bool(stages.get("nav_to_place", {}).get("success", False)),
         "place_success": bool(stages.get("place", {}).get("success", False)),
+        "single_stage_manipulation_success": bool(single_stage.get("success", False)),
+        "single_stage_result_json": summary.get("single_stage_manipulation_result"),
+        "single_stage_put_mode": single_stage.get("put_mode"),
+        "single_stage_object_teleported": single_stage.get("object_teleported"),
+        "single_stage_physical_put_execution": single_stage.get("physical_put_execution"),
         "success": bool(summary.get("success", False)),
         "failure_reason": str(summary.get("failure_reason", "")),
         "elapsed_wall_time_s": time.time() - started_at,
@@ -657,6 +867,10 @@ def _run_episode(args: argparse.Namespace, episode_index: int, episode_seed: int
     nav_place_result_path = episode_dir / "nav_place_result.json"
     place_handoff_report_path = episode_dir / "place_handoff_report.json"
     place_result_path = episode_dir / "place_result.json"
+    single_stage_dir = episode_dir / "single_stage_07"
+    single_stage_result_path = single_stage_dir / args.single_stage_result_name
+    single_stage_pick_report_path = single_stage_dir / args.single_stage_pick_report_name
+    single_stage_put_result_path = single_stage_dir / args.single_stage_put_result_name
 
     spawn_region = SpawnRegion(
         x_min=float(args.table_x_range[0]),
@@ -674,6 +888,7 @@ def _run_episode(args: argparse.Namespace, episode_index: int, episode_seed: int
             episode_seed=episode_seed,
             spawn_region=spawn_region,
         )
+        task = _ensure_place_goal(task, args)
     except (RandomTaskGenerationError, ValueError, FileNotFoundError) as exc:
         summary = _base_episode_summary(episode_index, episode_seed, episode_dir, task_nav_to_pick_path)
         _finalize_failure(summary, "task_generation_failed", str(exc))
@@ -687,6 +902,11 @@ def _run_episode(args: argparse.Namespace, episode_index: int, episode_seed: int
     summary["generated_task_json"] = str(generated_task_json)
     summary["task_original_json"] = str(task_original_path)
     summary["object_pose_policy"] = task.get("randomization", {}).get("object_pose_policy", {})
+    summary["manipulation_backend"] = args.manipulation_backend
+    summary["nav_execution_mode"] = "headless_precomputed"
+    summary["physical_nav_continuity"] = PHYSICAL_CONTINUITY
+    if args.manipulation_backend == "single-stage-07":
+        summary["single_stage_manipulation_result"] = str(single_stage_result_path)
 
     if args.place_only:
         summary["stages"]["nav_to_pick"].update({"success": True, "skipped": True})
@@ -718,32 +938,40 @@ def _run_episode(args: argparse.Namespace, episode_index: int, episode_seed: int
             print(f"[pick-place-batch] episode={episode_index} nav_to_pick failed: {summary['failure_reason']}")
             return False
 
-        pick_command = _pipeline_command(
-            args,
-            task_json=task_nav_to_pick_path,
-            dataset_dir=episode_dir / "pick",
-            nav_result=nav_pick_result_path,
-            handoff_report=pick_handoff_report_path,
-            grasp_only=True,
-        )
-        print(f"[pick-place-batch] episode={episode_index} seed={episode_seed} pick")
-        pick_completed = subprocess.run(pick_command, cwd=str(PROJECT_ROOT), check=False)
-        pick_handoff = _read_json_if_exists(pick_handoff_report_path)
-        pick_success, pick_failure = _handoff_success(pick_completed.returncode, pick_handoff)
-        if pick_handoff is not None:
-            _write_json(pick_summary_path, pick_handoff)
-        summary["stages"]["pick"] = {
-            "success": pick_success,
-            "returncode": pick_completed.returncode,
-            "handoff_report": str(pick_handoff_report_path),
-            "summary": str(pick_summary_path),
-            "failure_reason": pick_failure,
-        }
-        if not pick_success:
-            _finalize_failure(summary, pick_failure or "pick_failed")
-            _write_episode_artifacts(summary, summary_jsonl, task, started_at)
-            print(f"[pick-place-batch] episode={episode_index} pick failed: {summary['failure_reason']}")
-            return False
+        if args.manipulation_backend == "legacy-multiprocess":
+            pick_command = _pipeline_command(
+                args,
+                task_json=task_nav_to_pick_path,
+                dataset_dir=episode_dir / "pick",
+                nav_result=nav_pick_result_path,
+                handoff_report=pick_handoff_report_path,
+                grasp_only=True,
+            )
+            print(f"[pick-place-batch] episode={episode_index} seed={episode_seed} pick")
+            pick_completed = subprocess.run(pick_command, cwd=str(PROJECT_ROOT), check=False)
+            pick_handoff = _read_json_if_exists(pick_handoff_report_path)
+            pick_success, pick_failure = _handoff_success(pick_completed.returncode, pick_handoff)
+            if pick_handoff is not None:
+                _write_json(pick_summary_path, pick_handoff)
+            summary["stages"]["pick"] = {
+                "success": pick_success,
+                "returncode": pick_completed.returncode,
+                "handoff_report": str(pick_handoff_report_path),
+                "summary": str(pick_summary_path),
+                "failure_reason": pick_failure,
+            }
+            if not pick_success:
+                _finalize_failure(summary, pick_failure or "pick_failed")
+                _write_episode_artifacts(summary, summary_jsonl, task, started_at)
+                print(f"[pick-place-batch] episode={episode_index} pick failed: {summary['failure_reason']}")
+                return False
+        else:
+            summary["stages"]["pick"] = {
+                "success": True,
+                "skipped": True,
+                "backend": "single-stage-07",
+                "reason": "pick runs inside 07 single-stage manipulation",
+            }
 
     nav_pick_result = _read_json_if_exists(nav_pick_result_path)
     if nav_pick_result is None:
@@ -761,55 +989,110 @@ def _run_episode(args: argparse.Namespace, episode_index: int, episode_seed: int
         return False
     _write_json(task_nav_to_place_path, task_nav_to_place)
 
-    nav_place_command = _pipeline_command(
-        args,
-        task_json=task_nav_to_place_path,
-        dataset_dir=episode_dir / "nav_place",
-        nav_result=nav_place_result_path,
-        handoff_report=place_handoff_report_path,
-        nav_only=True,
+    skip_nav_place = bool(
+        args.manipulation_backend == "single-stage-07"
+        and args.skip_nav_place_for_local_arm_place
     )
-    print(f"[pick-place-batch] episode={episode_index} seed={episode_seed} nav_to_place")
-    nav_place_completed = subprocess.run(nav_place_command, cwd=str(PROJECT_ROOT), check=False)
-    nav_place_result = _read_json_if_exists(nav_place_result_path)
-    nav_place_success, nav_place_failure = _stage_success(nav_place_completed.returncode, nav_place_result)
-    summary["stages"]["nav_to_place"] = {
-        "success": nav_place_success,
-        "returncode": nav_place_completed.returncode,
-        "task_json": str(task_nav_to_place_path),
-        "nav_result": str(nav_place_result_path),
-        "failure_reason": nav_place_failure,
-    }
-    if not nav_place_success:
-        _finalize_failure(summary, nav_place_failure or "nav_to_place_failed")
-        _write_episode_artifacts(summary, summary_jsonl, task, started_at)
-        print(f"[pick-place-batch] episode={episode_index} nav_to_place failed: {summary['failure_reason']}")
-        return False
+    nav_place_result_for_07: Path | None = nav_place_result_path
+    if skip_nav_place:
+        nav_place_result_for_07 = None
+        summary["stages"]["nav_to_place"] = {
+            "success": True,
+            "skipped": True,
+            "task_json": str(task_nav_to_place_path),
+            "nav_result": None,
+            "reason": "single-stage-07 will use task.place.base_goal",
+        }
+    else:
+        nav_place_command = _pipeline_command(
+            args,
+            task_json=task_nav_to_place_path,
+            dataset_dir=episode_dir / "nav_place",
+            nav_result=nav_place_result_path,
+            handoff_report=place_handoff_report_path,
+            nav_only=True,
+        )
+        print(f"[pick-place-batch] episode={episode_index} seed={episode_seed} nav_to_place")
+        nav_place_completed = subprocess.run(nav_place_command, cwd=str(PROJECT_ROOT), check=False)
+        nav_place_result = _read_json_if_exists(nav_place_result_path)
+        nav_place_success, nav_place_failure = _stage_success(nav_place_completed.returncode, nav_place_result)
+        summary["stages"]["nav_to_place"] = {
+            "success": nav_place_success,
+            "returncode": nav_place_completed.returncode,
+            "task_json": str(task_nav_to_place_path),
+            "nav_result": str(nav_place_result_path),
+            "failure_reason": nav_place_failure,
+        }
+        if not nav_place_success:
+            _finalize_failure(summary, nav_place_failure or "nav_to_place_failed")
+            _write_episode_artifacts(summary, summary_jsonl, task, started_at)
+            print(f"[pick-place-batch] episode={episode_index} nav_to_place failed: {summary['failure_reason']}")
+            return False
 
-    place_command = _place_command(
-        args,
-        task_json=task_nav_to_place_path,
-        dataset_dir=episode_dir / "place",
-        nav_result=nav_place_result_path,
-        place_result=place_result_path,
-        handoff_report=place_handoff_report_path,
-    )
-    print(f"[pick-place-batch] episode={episode_index} seed={episode_seed} place")
-    place_completed = subprocess.run(place_command, cwd=str(PROJECT_ROOT), check=False)
-    place_result = _read_json_if_exists(place_result_path)
-    place_success, place_failure = _stage_success(place_completed.returncode, place_result)
-    summary["stages"]["place"] = {
-        "success": place_success,
-        "returncode": place_completed.returncode,
-        "place_result": str(place_result_path),
-        "handoff_report": str(place_handoff_report_path),
-        "failure_reason": place_failure,
-    }
-    if not place_success:
-        _finalize_failure(summary, place_failure or "place_failed")
-        _write_episode_artifacts(summary, summary_jsonl, task, started_at)
-        print(f"[pick-place-batch] episode={episode_index} place failed: {summary['failure_reason']}")
-        return False
+    if args.manipulation_backend == "single-stage-07":
+        single_stage_command = _single_stage_07_command(
+            args,
+            task_nav_to_pick=task_nav_to_pick_path,
+            nav_pick_result=nav_pick_result_path,
+            task_nav_to_place=task_nav_to_place_path,
+            nav_place_result=nav_place_result_for_07,
+            episode_dir=episode_dir,
+        )
+        print(f"[pick-place-batch] episode={episode_index} seed={episode_seed} single_stage_07")
+        single_stage_completed = subprocess.run(single_stage_command, cwd=str(PROJECT_ROOT), check=False)
+        single_stage_result = _read_json_if_exists(single_stage_result_path)
+        summary["stages"]["single_stage_manipulation"] = _single_stage_stage_summary(
+            args,
+            returncode=single_stage_completed.returncode,
+            result_json=single_stage_result_path,
+            pick_handoff_report=single_stage_pick_report_path,
+            put_result=single_stage_put_result_path,
+            result=single_stage_result,
+        )
+        summary["stages"]["place"] = {
+            "success": bool(summary["stages"]["single_stage_manipulation"]["success"]),
+            "skipped": True,
+            "backend": "single-stage-07",
+            "reason": "place runs inside 07 arm-place",
+        }
+        if not summary["stages"]["single_stage_manipulation"]["success"]:
+            result_failure = str((single_stage_result or {}).get("failure_reason") or "")
+            result_detail = str((single_stage_result or {}).get("failure_detail") or "")
+            detail = result_failure
+            if result_detail:
+                detail = f"{detail}: {result_detail}" if detail else result_detail
+            _finalize_failure(summary, "single_stage_manipulation_failed", detail or None)
+            _write_episode_artifacts(summary, summary_jsonl, task, started_at)
+            print(
+                "[pick-place-batch] episode="
+                f"{episode_index} single_stage_07 failed: {summary['failure_reason']}"
+            )
+            return False
+    else:
+        place_command = _place_command(
+            args,
+            task_json=task_nav_to_place_path,
+            dataset_dir=episode_dir / "place",
+            nav_result=nav_place_result_path,
+            place_result=place_result_path,
+            handoff_report=place_handoff_report_path,
+        )
+        print(f"[pick-place-batch] episode={episode_index} seed={episode_seed} place")
+        place_completed = subprocess.run(place_command, cwd=str(PROJECT_ROOT), check=False)
+        place_result = _read_json_if_exists(place_result_path)
+        place_success, place_failure = _stage_success(place_completed.returncode, place_result)
+        summary["stages"]["place"] = {
+            "success": place_success,
+            "returncode": place_completed.returncode,
+            "place_result": str(place_result_path),
+            "handoff_report": str(place_handoff_report_path),
+            "failure_reason": place_failure,
+        }
+        if not place_success:
+            _finalize_failure(summary, place_failure or "place_failed")
+            _write_episode_artifacts(summary, summary_jsonl, task, started_at)
+            print(f"[pick-place-batch] episode={episode_index} place failed: {summary['failure_reason']}")
+            return False
 
     summary["success"] = True
     summary["failure_reason"] = ""

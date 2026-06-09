@@ -37,6 +37,18 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() not in {"", "0", "false", "no", "off"}
 
 
+def _env_float(name: str, default: float) -> float:
+    """Read a float environment value with a stable fallback."""
+
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return float(default)
+    try:
+        return float(raw)
+    except ValueError:
+        return float(default)
+
+
 @dataclass(frozen=True)
 class GraspTask:
     """Input and output files for one pick attempt."""
@@ -63,6 +75,7 @@ class GraspPipelineConfig:
     planner_host: str = "127.0.0.1"
     planner_port: int = 8765
     planner_timeout_s: float = 30.0
+    one_shot_timeout_s: float = _env_float("GO2_X5_CUROBO_PLAN_TIMEOUT_S", 300.0)
 
 
 class GraspPipeline:
@@ -122,13 +135,42 @@ class GraspPipeline:
                 "GO2_X5_SIDE_GRASP_FALLBACK_RETREAT": os.environ.get("GO2_X5_SIDE_GRASP_FALLBACK_RETREAT", "0"),
             }
         )
-        result = subprocess.run(
-            [self.config.curobo_python, str(self.script_plan)],
-            cwd=str(self.config.workspace),
-            env=env,
-            text=True,
-            capture_output=True,
+        print(
+            "[grasp] one-shot cuRobo planner:",
+            {
+                "state_json": task.state_json,
+                "target_json": task.target_json,
+                "plan_json": task.plan_json,
+                "timeout_s": float(self.config.one_shot_timeout_s),
+            },
+            flush=True,
         )
+        try:
+            result = subprocess.run(
+                [self.config.curobo_python, str(self.script_plan)],
+                cwd=str(self.config.workspace),
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=(
+                    max(1.0, float(self.config.one_shot_timeout_s))
+                    if self.config.one_shot_timeout_s > 0.0
+                    else None
+                ),
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout or ""
+            stderr = exc.stderr or ""
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode("utf-8", errors="replace")
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+            raise RuntimeError(
+                "cuRobo one-shot planner timed out "
+                f"after {float(self.config.one_shot_timeout_s):.1f}s; "
+                f"stdout_tail={str(stdout)[-2000:]!r}; "
+                f"stderr_tail={str(stderr)[-2000:]!r}"
+            ) from exc
         if result.stdout:
             print(result.stdout)
         if result.stderr:

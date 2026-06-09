@@ -224,6 +224,71 @@ class RandomBatchPipelineTest(unittest.TestCase):
         self.assertTrue(args.ignore_goal_yaw)
         self.assertAlmostEqual(args.terminal_yaw_polish_min_wz, 0.45)
         self.assertAlmostEqual(args.terminal_yaw_polish_max_wz, 0.55)
+        self.assertEqual(args.manipulation_backend, "single-stage-07")
+        self.assertEqual(args.single_stage_put_mode, "arm-place")
+        self.assertEqual(args.single_stage_carry_mode, "logical")
+
+    def test_pick_place_batch_single_stage_07_command_forwards_options(self) -> None:
+        with patch(
+            "sys.argv",
+            [
+                "run_random_nav_pick_place_batch.py",
+                "--demo-visuals",
+                "--viewport-camera-prim",
+                "/World/Camera_main",
+                "--no-keep-window-open",
+                "--use-planner-server",
+                "--side-retreat-only",
+                "--allow-retreat-success",
+                "--legacy-side-retreat",
+                "--side-grasp-fallback-retreat",
+                "--show-grasp-trajectory",
+            ],
+        ):
+            args = pick_place_batch._parse_args()
+
+        command = pick_place_batch._single_stage_07_command(
+            args,
+            task_nav_to_pick=Path("/tmp/task_nav_to_pick.json"),
+            nav_pick_result=Path("/tmp/nav_pick_result.json"),
+            task_nav_to_place=Path("/tmp/task_nav_to_place.json"),
+            nav_place_result=Path("/tmp/nav_place_result.json"),
+            episode_dir=Path("/tmp/episode_0000"),
+        )
+
+        self.assertIn("07_run_pick_put_demo_from_nav_results.py", command[1])
+        self.assertEqual(command[command.index("--task-nav-to-pick") + 1], "/tmp/task_nav_to_pick.json")
+        self.assertEqual(command[command.index("--nav-pick-result") + 1], "/tmp/nav_pick_result.json")
+        self.assertEqual(command[command.index("--task-nav-to-place") + 1], "/tmp/task_nav_to_place.json")
+        self.assertEqual(command[command.index("--nav-place-result") + 1], "/tmp/nav_place_result.json")
+        self.assertEqual(command[command.index("--put-mode") + 1], "arm-place")
+        self.assertEqual(command[command.index("--carry-mode") + 1], "logical")
+        self.assertIn("--demo-visuals", command)
+        self.assertIn("--viewport-camera-prim", command)
+        self.assertIn("--no-keep-window-open", command)
+        self.assertIn("--use-planner-server", command)
+        self.assertIn("--side-retreat-only", command)
+        self.assertIn("--allow-retreat-success", command)
+        self.assertIn("--legacy-side-retreat", command)
+        self.assertIn("--side-grasp-fallback-retreat", command)
+        self.assertIn("--show-grasp-trajectory", command)
+
+    def test_pick_place_batch_injects_place_template_for_pick_only_task(self) -> None:
+        with patch("sys.argv", ["run_random_nav_pick_place_batch.py"]):
+            args = pick_place_batch._parse_args()
+
+        task = {
+            "pick": {"base_goal": {"x": 1.0, "y": 1.0, "yaw": 0.0}},
+            "place": {"enabled": False, "base_goal": None, "place_pose_world": None},
+            "randomization": {},
+        }
+
+        patched = pick_place_batch._ensure_place_goal(task, args)
+
+        self.assertTrue(patched["place"]["enabled"])
+        self.assertIsNotNone(patched["place"]["base_goal"])
+        self.assertIsNotNone(patched["place"]["place_pose_world"])
+        self.assertTrue(patched["randomization"]["place_template"]["enabled"])
 
     def test_pick_place_batch_command_forwards_stable_terminal_yaw_options(self) -> None:
         with patch("sys.argv", ["run_random_nav_pick_place_batch.py"]):

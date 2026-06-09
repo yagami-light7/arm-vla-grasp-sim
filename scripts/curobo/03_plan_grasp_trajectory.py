@@ -47,6 +47,7 @@ CUROBO_SOURCE_ROOT = Path(os.environ.get("GO2_X5_CUROBO_SOURCE_ROOT", "/home/lig
 STATE_JSON = Path(os.environ.get("GO2_X5_STATE_JSON", "/tmp/go2_x5_isaac_state.json"))
 TARGET_JSON = Path(os.environ.get("GO2_X5_TARGET_JSON", "/tmp/go2_x5_target_tcp_pose.json"))
 OUTPUT_JSON = Path(os.environ.get("GO2_X5_PLAN_JSON", "/tmp/go2_x5_grasp_plan.json"))
+CUROBO_TASK_MODE = os.environ.get("GO2_X5_CUROBO_TASK_MODE", "grasp").strip().lower()
 
 ROBOT_YAML = WORKSPACE / "source/robot/go2_x5/curobo/go2_x5_arm.yml"
 ROBOT_URDF = WORKSPACE / "source/robot/go2_x5/curobo/go2_x5_arm.urdf"
@@ -125,6 +126,18 @@ SEGMENT_TIMING = {
     },
     # 侧向抓取后不做竖直 lift，而是沿 approach_to_grasp 原路退回 chosen pregrasp。
     "retreat_object": {
+        "min_duration": 1.0,
+        "max_joint_speed": 0.80,
+    },
+    "move_to_pre_place": {
+        "min_duration": 1.0,
+        "max_joint_speed": 0.80,
+    },
+    "approach_to_place": {
+        "min_duration": 0.80,
+        "max_joint_speed": 0.50,
+    },
+    "retreat_place": {
         "min_duration": 1.0,
         "max_joint_speed": 0.80,
     },
@@ -228,6 +241,24 @@ def load_grasp_target() -> dict:
     missing = [name for name in required if name not in data["poses"]]
     if missing:
         raise RuntimeError(f"{TARGET_JSON} 缺少抓取分段目标: {missing}")
+
+    return data
+
+
+def load_place_target() -> dict:
+    """读取 07 arm-place 生成的放置目标。"""
+    data = load_json(
+        TARGET_JSON,
+        "scripts/isaac/07_run_pick_put_demo_from_nav_results.py --put-mode arm-place",
+    )
+
+    if "poses" not in data:
+        raise RuntimeError(f"{TARGET_JSON} 缺少 poses 字段，无法规划 arm-place。")
+
+    required = ["pre_place", "place", "retreat"]
+    missing = [name for name in required if name not in data["poses"]]
+    if missing:
+        raise RuntimeError(f"{TARGET_JSON} 缺少 arm-place 分段目标: {missing}")
 
     return data
 
@@ -1286,21 +1317,151 @@ def plan_grasp_segments(
     return payload
 
 
+def plan_place_segments(
+    planner: MotionPlanner | None = None,
+    destroy_planner: bool = True,
+) -> dict:
+    """执行一次 arm-place 分段规划。
+
+    输入 target JSON 由 07 脚本生成，语义是：
+        current closed-gripper pose -> pre_place -> place -> open_gripper -> retreat
+
+    本函数只规划机械臂 motion 和 gripper open，不瞬移物体、不改变物理属性。
+    """
+    with profile_block("load_inputs"):
+        isaac_state = load_isaac_state()
+        target_data = load_place_target()
+
+    print("[input] state_json:", STATE_JSON)
+    print("[input] target_json:", TARGET_JSON)
+    print("[target] object:", target_data.get("source", {}).get("object_prim_path"))
+    print("[target] sequence:", target_data.get("sequence"))
+    print("[target] mode:", target_data.get("source", {}).get("mode", "arm_place"))
+
+    with profile_block("prepare_state_and_targets"):
+        q_start = get_start_q_from_isaac_state(isaac_state)
+        joint_limits = load_joint_limits_from_urdf(ROBOT_URDF)
+        q_current = clip_q_to_joint_limits(q_start, joint_limits)
+        T_world_base = np.asarray(isaac_state["poses"]["world_base"]["matrix_4x4"], dtype=float)
+        world_scene = make_world_collision_scene(isaac_state)
+
+        pre_place_pos, pre_place_quat = get_named_target_pose(target_data, "pre_place")
+        place_pos, place_quat = get_named_target_pose(target_data, "place")
+        retreat_pos, retreat_quat = get_named_target_pose(target_data, "retreat")
+
+        gripper_info = target_data.get("gripper", {})
+        gripper_joint_names = list(gripper_info.get("joint_names", ["arm_joint7", "arm_joint8"]))
+        gripper_open = float(gripper_info.get("open_m", 0.04))
+
+    owns_planner = planner is None
+    segments = []
+
+    try:
+        if planner is None:
+            with profile_block("create_planner_total"):
+                planner = create_planner()
+
+        update_planner_world(planner, world_scene)
+
+        segment, q_current = build_motion_segment(
+            planner=planner,
+            q_start=q_current,
+            target_name="pre_place",
+            target_position=pre_place_pos,
+            target_quaternion=pre_place_quat,
+            segment_name="move_to_pre_place",
+            T_world_base=T_world_base,
+        )
+        segments.append(segment)
+
+        segment, q_current = build_motion_segment(
+            planner=planner,
+            q_start=q_current,
+            target_name="place",
+            target_position=place_pos,
+            target_quaternion=place_quat,
+            segment_name="approach_to_place",
+            T_world_base=T_world_base,
+        )
+        segments.append(segment)
+
+        segments.append(make_gripper_segment("open_gripper", gripper_open, gripper_joint_names))
+
+        segment, q_current = build_motion_segment(
+            planner=planner,
+            q_start=q_current,
+            target_name="retreat",
+            target_position=retreat_pos,
+            target_quaternion=retreat_quat,
+            segment_name="retreat_place",
+            T_world_base=T_world_base,
+        )
+        segments.append(segment)
+
+    finally:
+        if planner is not None and owns_planner and destroy_planner:
+            with profile_block("planner.destroy"):
+                planner.destroy()
+
+    motion_segments = [segment for segment in segments if segment["type"] == "motion"]
+    total_motion_duration = sum(segment["timing"]["duration_s"] for segment in motion_segments)
+    all_success = all(segment["plan_info"]["planner_success"] for segment in motion_segments)
+
+    payload = {
+        "schema_version": 1,
+        "robot_name": "go2_x5",
+        "planner": "curobo.MotionPlanner.plan_pose arm_place",
+        "source_state_json": str(STATE_JSON),
+        "source_target_json": str(TARGET_JSON),
+        "joint_names": EXPECTED_JOINT_NAMES,
+        "tool_frame": EXPECTED_TOOL_FRAME,
+        "object_prim_path": target_data.get("source", {}).get("object_prim_path"),
+        "place_mode": "arm_place",
+        "segments": segments,
+        "summary": {
+            "num_segments": len(segments),
+            "num_motion_segments": len(motion_segments),
+            "all_motion_segments_success": all_success,
+            "total_motion_duration_s": float(total_motion_duration),
+            "final_q_arm": q_current.tolist(),
+            "place_mode": "arm_place",
+            "target_place_pose_world": target_data.get("source", {}).get("place_pose_world"),
+        },
+    }
+
+    with profile_block("write_output_json"):
+        OUTPUT_JSON.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    return payload
+
+
 def main() -> None:
-    print("========== Go2-X5 Grasp Segments Planning ==========")
+    if CUROBO_TASK_MODE == "place":
+        print("========== Go2-X5 Arm Place Segments Planning ==========")
+    else:
+        print("========== Go2-X5 Grasp Segments Planning ==========")
     PROFILER.add("process_start_to_main", time.perf_counter() - SCRIPT_START_TIME)
 
-    payload = plan_grasp_segments()
+    if CUROBO_TASK_MODE == "place":
+        payload = plan_place_segments()
+    elif CUROBO_TASK_MODE in {"", "grasp"}:
+        payload = plan_grasp_segments()
+    else:
+        raise RuntimeError(f"unknown GO2_X5_CUROBO_TASK_MODE={CUROBO_TASK_MODE!r}")
     summary = payload["summary"]
 
     print_header("Planning Summary")
     print("output:", OUTPUT_JSON)
+    print("task_mode:", CUROBO_TASK_MODE or "grasp")
     print("all_motion_segments_success:", summary["all_motion_segments_success"])
     print("num_segments:", summary["num_segments"])
     print("total_motion_duration_s:", summary["total_motion_duration_s"])
     print("final_q_arm:", np.asarray(summary["final_q_arm"], dtype=np.float32))
     PROFILER.print_summary()
-    print("========== grasp segment planning complete ==========")
+    print("========== segment planning complete ==========")
 
 
 if __name__ == "__main__":

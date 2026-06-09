@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Single-stage pick + MVP put demo from precomputed navigation results.
+"""Single-stage pick + put demo from precomputed navigation results.
 
 This runner intentionally does not run navigation control. It opens one Isaac
-Sim stage, restores the base from nav result JSON files, runs the existing
-pick pipeline, records a logical carry state, then performs an MVP object
-reconstruction at the place pose in the same stage.
+Sim stage, restores the base from the pick navigation result, runs the existing
+pick pipeline, records a logical carry state, then either performs the legacy
+MVP object reconstruction or a real arm-place sequence in the same stage.
 """
 
 from __future__ import annotations
@@ -30,6 +30,9 @@ MODE = "single_stage_pick_put_demo"
 STAGE_PROCESS = "single_isaac_sim_app"
 PHYSICAL_NAV_CONTINUITY = False
 DEFAULT_CONTEXT_JSON = Path("/tmp/go2_x5_single_stage_pick_put_context.json")
+DEFAULT_CUROBO_PYTHON = "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python"
+ARM_PLACE_MAX_TARGET_XY_RADIUS_M = float(os.environ.get("GO2_X5_ARM_PLACE_MAX_TARGET_XY_RADIUS_M", "0.85"))
+ARM_PLACE_MAX_TARGET_RADIUS_3D_M = float(os.environ.get("GO2_X5_ARM_PLACE_MAX_TARGET_RADIUS_3D_M", "1.05"))
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -82,7 +85,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--side-grasp-fallback-retreat", action="store_true")
     parser.add_argument("--show-grasp-trajectory", action="store_true")
     parser.add_argument("--carry-mode", choices=("none", "logical", "fixed-joint", "kinematic"), default="logical")
-    parser.add_argument("--put-mode", choices=("mvp-reconstruct", "release-only"), default="mvp-reconstruct")
+    parser.add_argument("--put-mode", choices=("mvp-reconstruct", "release-only", "arm-place"), default="mvp-reconstruct")
+    parser.add_argument(
+        "--arm-place-plan-timeout-s",
+        type=float,
+        default=300.0,
+        help="Maximum wall time for the external cuRobo arm-place planner subprocess.",
+    )
     parser.add_argument("--timeout-s", type=float, default=900.0)
     AppLauncher.add_app_launcher_args(parser)
     if any(arg in {"-h", "--help"} for arg in RAW_CLI_ARGS):
@@ -115,7 +124,16 @@ def _required_path_text(value: str | None, label: str) -> str:
     return str(Path(value).expanduser().resolve())
 
 
+def _put_mode_result_value(mode: str) -> str:
+    return "arm_place" if mode == "arm-place" else str(mode).replace("-", "_")
+
+
+def _put_mode_teleports_object(mode: str) -> bool:
+    return mode == "mvp-reconstruct"
+
+
 def _base_result(args: argparse.Namespace) -> dict[str, Any]:
+    normalized_put_mode = _put_mode_result_value(args.put_mode)
     return {
         "schema_version": 1,
         "success": False,
@@ -125,7 +143,10 @@ def _base_result(args: argparse.Namespace) -> dict[str, Any]:
         "stage_process": STAGE_PROCESS,
         "physical_nav_continuity": PHYSICAL_NAV_CONTINUITY,
         "carry_mode": args.carry_mode,
-        "put_mode": args.put_mode,
+        "put_mode": normalized_put_mode,
+        "arm_place_executed": False,
+        "object_teleported": _put_mode_teleports_object(args.put_mode),
+        "physical_place_continuity": args.put_mode == "arm-place",
         "task_nav_to_pick": _required_path_text(args.task_nav_to_pick, "task-nav-to-pick"),
         "task_nav_to_place": _required_path_text(args.task_nav_to_place, "task-nav-to-place"),
         "nav_pick_result": _required_path_text(args.nav_pick_result, "nav-pick-result"),
@@ -136,10 +157,10 @@ def _base_result(args: argparse.Namespace) -> dict[str, Any]:
             "nav_execution_in_this_process": False,
             "base_transfer_mode": "restore_from_nav_result",
             "notes": [
-                "This demo opens one Isaac Sim app/stage for pick and MVP put.",
-                "Navigation is precomputed and only used as base pose JSON handoff.",
+                "This demo opens one Isaac Sim app/stage for pick and put.",
+                "Navigation is precomputed and only the pick nav result is restored in arm-place mode.",
                 "Logical carry is metadata only and is not a real physical carry constraint.",
-                "MVP put reconstructs the object at place_pose_world; it is not a full arm put plan.",
+                "MVP put reconstructs the object at place_pose_world; arm-place physically moves the held object with the arm.",
             ],
         },
         "stages": {
@@ -181,12 +202,13 @@ def _validate_full_demo_args(args: argparse.Namespace) -> None:
         "--task-nav-to-pick": args.task_nav_to_pick,
         "--nav-pick-result": args.nav_pick_result,
         "--task-nav-to-place": args.task_nav_to_place,
-        "--nav-place-result": args.nav_place_result,
         "--dataset-dir": args.dataset_dir,
         "--pick-handoff-report": args.pick_handoff_report,
         "--put-result": args.put_result,
         "--result-json": args.result_json,
     }
+    if args.put_mode == "mvp-reconstruct":
+        required["--nav-place-result"] = args.nav_place_result
     missing = [flag for flag, value in required.items() if not value]
     if missing:
         raise DemoFailure("missing_required_args", f"missing required args for full demo: {missing}")
@@ -199,6 +221,11 @@ def _validate_object_pose_debug_args(args: argparse.Namespace) -> None:
 
 def _write_context(args: argparse.Namespace, task_pick: dict[str, Any], scene_usd: Path) -> Path:
     context_path = Path(args.pipeline_context).expanduser().resolve()
+    nav_place_result_json = (
+        str(Path(args.nav_place_result).expanduser().resolve())
+        if args.nav_place_result
+        else None
+    )
     context = {
         "schema_version": 1,
         "mode": MODE,
@@ -208,7 +235,7 @@ def _write_context(args: argparse.Namespace, task_pick: dict[str, Any], scene_us
         "scene_usd": str(scene_usd),
         "nav_result_json": str(Path(args.nav_pick_result).expanduser().resolve()),
         "nav_pick_result_json": str(Path(args.nav_pick_result).expanduser().resolve()),
-        "nav_place_result_json": str(Path(args.nav_place_result).expanduser().resolve()),
+        "nav_place_result_json": nav_place_result_json,
         "handoff_report_json": str(Path(args.pick_handoff_report).expanduser().resolve()),
         "terrain_prim_path": args.terrain_prim_path,
         "handoff_clearance_radius": float(args.handoff_clearance_radius),
@@ -224,6 +251,7 @@ def _write_context(args: argparse.Namespace, task_pick: dict[str, Any], scene_us
         "object_pose_policy": (task_pick.get("randomization") or {}).get("object_pose_policy", {}),
         "physical_nav_continuity": PHYSICAL_NAV_CONTINUITY,
         "base_transfer_mode": "restore_from_nav_result",
+        "put_mode": _put_mode_result_value(args.put_mode),
     }
     context_path.parent.mkdir(parents=True, exist_ok=True)
     context_path.write_text(json.dumps(context, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -250,6 +278,59 @@ def _open_stage(scene_usd: Path, load_updates: int) -> dict[str, Any]:
         "stage_process": STAGE_PROCESS,
         "opened_stage_count": 1,
         "load_updates": max(1, int(load_updates)),
+    }
+
+
+def _ancestor_paths(path: str) -> list[str]:
+    parts = [part for part in str(path).strip("/").split("/") if part]
+    paths: list[str] = []
+    for index in range(1, len(parts) + 1):
+        paths.append("/" + "/".join(parts[:index]))
+    return paths
+
+
+def _ensure_required_prims_active(raw_task_pick: dict[str, Any]) -> dict[str, Any]:
+    import omni.usd
+    from pxr import UsdGeom
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        raise DemoFailure("open_stage_failed", "No USD stage is open while activating required prims.")
+    object_prim_path = str((raw_task_pick.get("pick") or {}).get("object_prim_path") or "/World/apple")
+    required_paths = ["/World/go2_x5", object_prim_path]
+    reports: list[dict[str, Any]] = []
+    for path in required_paths:
+        for prim_path in _ancestor_paths(path):
+            prim = stage.GetPrimAtPath(prim_path)
+            report = {
+                "prim_path": prim_path,
+                "valid": bool(prim.IsValid()),
+            }
+            if not prim.IsValid():
+                reports.append(report)
+                continue
+            was_active = bool(prim.IsActive())
+            if not was_active:
+                prim.SetActive(True)
+            report["was_active"] = was_active
+            report["is_active"] = bool(prim.IsActive())
+            if prim_path == path and prim.IsA(UsdGeom.Imageable):
+                imageable = UsdGeom.Imageable(prim)
+                try:
+                    imageable.MakeVisible()
+                    report["made_visible"] = True
+                except Exception as exc:
+                    report["make_visible_error"] = str(exc)
+            reports.append(report)
+    return {
+        "applied": True,
+        "required_paths": required_paths,
+        "prim_reports": reports,
+        "activated_paths": [
+            item["prim_path"]
+            for item in reports
+            if item.get("valid") and item.get("was_active") is False and item.get("is_active")
+        ],
     }
 
 
@@ -323,6 +404,31 @@ def _validate_nav_result(nav_result: dict[str, Any], *, reason: str) -> None:
         raise DemoFailure(reason, f"navigation result did not succeed: {nav_result.get('failure_reason')}")
     if not isinstance(nav_result.get("final_base_pose_world"), dict):
         raise DemoFailure(reason, "navigation result is missing final_base_pose_world")
+
+
+def _nav_place_result_from_task_base_goal(raw_task_place: dict[str, Any]) -> dict[str, Any]:
+    place = dict(raw_task_place.get("place") or {})
+    base_goal = place.get("base_goal")
+    if not isinstance(base_goal, dict):
+        raise DemoFailure(
+            "missing_place_base_goal",
+            "--nav-place-result was not supplied and task_nav_to_place.place.base_goal is missing.",
+        )
+    missing = [key for key in ("x", "y", "yaw") if key not in base_goal]
+    if missing:
+        raise DemoFailure("missing_place_base_goal", f"place.base_goal is missing keys: {missing}")
+    return {
+        "schema_version": 1,
+        "success": True,
+        "failure_reason": "",
+        "synthetic_from_task_place_base_goal": True,
+        "final_base_pose_world": {
+            "x": float(base_goal["x"]),
+            "y": float(base_goal["y"]),
+            "z": 0.0,
+            "yaw": float(base_goal["yaw"]),
+        },
+    }
 
 
 def _apply_grasp_policy_env(args: argparse.Namespace) -> None:
@@ -1278,6 +1384,1025 @@ def _run_mvp_put(world, raw_task_place: dict[str, Any], args: argparse.Namespace
     return report
 
 
+def _load_script_module(module_prefix: str, path: Path):
+    import types
+
+    if not path.exists():
+        raise FileNotFoundError(path)
+    module_name = f"{module_prefix}_{time.time_ns()}"
+    module = types.ModuleType(module_name)
+    module.__file__ = str(path)
+    sys.modules[module_name] = module
+    exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), module.__dict__)
+    return module
+
+
+def _matrix_from_pose_dict(pose_dict: dict[str, Any]):
+    import numpy as np
+
+    if "matrix_4x4" in pose_dict:
+        return np.asarray(pose_dict["matrix_4x4"], dtype=float)
+    from scripts.math.SE3 import pose_to_matrix
+
+    return pose_to_matrix(pose_dict["position_xyz"], pose_dict["quaternion_wxyz"])
+
+
+def _planar_pose_matrix(x: float, y: float, z: float, yaw: float):
+    import numpy as np
+
+    c = math.cos(float(yaw))
+    s = math.sin(float(yaw))
+    matrix = np.eye(4, dtype=float)
+    matrix[:3, :3] = np.asarray(
+        [
+            [c, -s, 0.0],
+            [s, c, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=float,
+    )
+    matrix[:3, 3] = [float(x), float(y), float(z)]
+    return matrix
+
+
+def _usd_prim_world_matrix(stage, prim_path: str):
+    import numpy as np
+    from pxr import Usd, UsdGeom
+    from scripts.math.SE3 import normalize_quat_wxyz, pose_to_matrix
+
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        raise DemoFailure("stage_not_ready", f"object prim does not exist: {prim_path}")
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    world_matrix = xform_cache.GetLocalToWorldTransform(prim)
+    translation = world_matrix.ExtractTranslation()
+    rotation = world_matrix.ExtractRotationQuat()
+    imaginary = rotation.GetImaginary()
+    return pose_to_matrix(
+        np.asarray([translation[0], translation[1], translation[2]], dtype=float),
+        normalize_quat_wxyz([rotation.GetReal(), imaginary[0], imaginary[1], imaginary[2]]),
+    )
+
+
+def _dynamic_object_world_matrix(stage, prim_path: str):
+    from pxr import Usd, UsdPhysics
+    from scripts.math.SE3 import pose_to_matrix
+
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        raise DemoFailure("stage_not_ready", f"object prim does not exist: {prim_path}")
+    rigid_body_paths = [
+        str(body_prim.GetPath())
+        for body_prim in Usd.PrimRange(prim)
+        if body_prim.HasAPI(UsdPhysics.RigidBodyAPI)
+    ]
+    report: dict[str, Any] = {
+        "object_prim_path": prim_path,
+        "rigid_body_paths": rigid_body_paths,
+        "source": "usd_xform_fallback",
+    }
+    if prim_path in rigid_body_paths:
+        try:
+            from isaacsim.core.prims import SingleRigidPrim
+
+            wrapper_name = "go2_x5_object_pose_read_" + prim_path.strip("/").replace("/", "_")
+            rigid_prim = SingleRigidPrim(
+                prim_path=prim_path,
+                name=wrapper_name,
+                reset_xform_properties=False,
+            )
+            try:
+                rigid_prim.initialize()
+                report["live_initialized"] = True
+            except Exception as exc:
+                report["live_initialized"] = False
+                report["live_initialize_error"] = str(exc)
+            position, orientation = rigid_prim.get_world_pose()
+            report.update(
+                {
+                    "source": "live_rigid_body",
+                    "position_xyz": [float(value) for value in position],
+                    "quaternion_wxyz": [float(value) for value in orientation],
+                }
+            )
+            return pose_to_matrix(position, orientation), report
+        except Exception as exc:
+            report["live_read_error"] = str(exc)
+
+    matrix = _usd_prim_world_matrix(stage, prim_path)
+    from scripts.math.SE3 import matrix_to_pose
+
+    position, orientation = matrix_to_pose(matrix)
+    report.update(
+        {
+            "position_xyz": [float(value) for value in position],
+            "quaternion_wxyz": [float(value) for value in orientation],
+        }
+    )
+    return matrix, report
+
+
+def _transform_bbox_world(bbox: dict[str, Any] | None, transform_world) -> dict[str, Any] | None:
+    import itertools
+    import numpy as np
+
+    if not bbox:
+        return None
+    min_xyz = bbox.get("min_xyz")
+    max_xyz = bbox.get("max_xyz")
+    if not min_xyz or not max_xyz:
+        return None
+    corners = np.asarray(
+        [
+            [x, y, z, 1.0]
+            for x, y, z in itertools.product(
+                [float(min_xyz[0]), float(max_xyz[0])],
+                [float(min_xyz[1]), float(max_xyz[1])],
+                [float(min_xyz[2]), float(max_xyz[2])],
+            )
+        ],
+        dtype=float,
+    )
+    transformed = (np.asarray(transform_world, dtype=float) @ corners.T).T[:, :3]
+    new_min = transformed.min(axis=0)
+    new_max = transformed.max(axis=0)
+    center = 0.5 * (new_min + new_max)
+    return {
+        "min_xyz": [float(value) for value in new_min],
+        "max_xyz": [float(value) for value in new_max],
+        "center_xyz": [float(value) for value in center],
+        "size_xyz": [float(value) for value in (new_max - new_min)],
+        "top_z": float(new_max[2]),
+        "center_z": float(center[2]),
+        "source": "bbox_before_base_restore_transformed_by_carry_delta",
+    }
+
+
+def _set_prim_world_matrix(stage, prim_path: str, target_world_matrix, *, reset_xform_stack: bool = True) -> dict[str, Any]:
+    import numpy as np
+    from pxr import Usd, UsdGeom
+    from scripts.math.SE3 import matrix_to_pose
+    from scripts.isaac import run_pick_from_nav_result as pick_handoff
+
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        raise DemoFailure("stage_not_ready", f"object prim does not exist: {prim_path}")
+    if not prim.IsA(UsdGeom.Xformable):
+        raise DemoFailure("stage_not_ready", f"object prim is not xformable: {prim_path}")
+
+    parent = prim.GetParent()
+    if parent and parent.IsValid():
+        parent_world = _usd_prim_world_matrix(stage, str(parent.GetPath()))
+    else:
+        parent_world = np.eye(4, dtype=float)
+    target_local_matrix = np.linalg.inv(parent_world) @ np.asarray(target_world_matrix, dtype=float)
+    local_position, local_quat = matrix_to_pose(target_local_matrix)
+    world_position, world_quat = matrix_to_pose(target_world_matrix)
+
+    xformable = UsdGeom.Xformable(prim)
+    order_before = pick_handoff._xform_op_order_names(xformable)
+    if reset_xform_stack:
+        pick_handoff._reset_pose_xform_stack(xformable, local_position, local_quat)
+    else:
+        translate_op = pick_handoff._get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeTranslate)
+        orient_op = pick_handoff._get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeOrient)
+        pick_handoff._set_translate_op(translate_op, local_position)
+        pick_handoff._set_orient_op(orient_op, local_quat)
+    xformable = UsdGeom.Xformable(prim)
+    return {
+        "object_prim_path": prim_path,
+        "reset_xform_stack": bool(reset_xform_stack),
+        "parent_prim_path": str(parent.GetPath()) if parent and parent.IsValid() else None,
+        "xform_op_order_before": order_before,
+        "xform_op_order_after": pick_handoff._xform_op_order_names(xformable),
+        "target_world_position_xyz": [float(value) for value in world_position],
+        "target_world_quaternion_wxyz": [float(value) for value in world_quat],
+        "target_local_position_xyz": [float(value) for value in local_position],
+        "target_local_quaternion_wxyz": [float(value) for value in local_quat],
+    }
+
+
+def _set_dynamic_object_world_matrix(
+    stage,
+    prim_path: str,
+    target_world_matrix,
+    *,
+    reset_xform_stack: bool = True,
+) -> dict[str, Any]:
+    import numpy as np
+    from pxr import Usd, UsdGeom, UsdPhysics
+    from scripts.math.SE3 import matrix_to_pose
+    from scripts.isaac import run_pick_from_nav_result as pick_handoff
+
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        raise DemoFailure("stage_not_ready", f"object prim does not exist: {prim_path}")
+
+    xformable = UsdGeom.Xformable(prim) if prim.IsA(UsdGeom.Xformable) else None
+    order_before = pick_handoff._xform_op_order_names(xformable) if xformable else []
+    target_position, target_quaternion = matrix_to_pose(target_world_matrix)
+    rigid_body_paths = [
+        str(body_prim.GetPath())
+        for body_prim in Usd.PrimRange(prim)
+        if body_prim.HasAPI(UsdPhysics.RigidBodyAPI)
+    ]
+    live_apply: dict[str, Any] = {
+        "attempted": False,
+        "success": False,
+        "backend": "isaacsim.core.prims.SingleRigidPrim",
+        "object_prim_path": prim_path,
+        "rigid_body_paths": rigid_body_paths,
+    }
+    if prim_path in rigid_body_paths:
+        live_apply["attempted"] = True
+        try:
+            from isaacsim.core.prims import SingleRigidPrim
+
+            wrapper_name = "go2_x5_object_carry_" + prim_path.strip("/").replace("/", "_")
+            rigid_prim = SingleRigidPrim(
+                prim_path=prim_path,
+                name=wrapper_name,
+                reset_xform_properties=False,
+            )
+            try:
+                rigid_prim.initialize()
+                live_apply["initialized"] = True
+            except Exception as exc:
+                live_apply["initialized"] = False
+                live_apply["initialize_error"] = str(exc)
+
+            try:
+                before_position, before_orientation = rigid_prim.get_world_pose()
+                live_apply["live_pose_before"] = {
+                    "position_xyz": [float(value) for value in before_position],
+                    "quaternion_wxyz": [float(value) for value in before_orientation],
+                }
+            except Exception as exc:
+                live_apply["live_pose_before_error"] = str(exc)
+
+            rigid_prim.set_world_pose(
+                position=np.asarray(target_position, dtype=np.float32),
+                orientation=np.asarray(target_quaternion, dtype=np.float32),
+            )
+            try:
+                rigid_prim.set_linear_velocity(np.zeros(3, dtype=np.float32))
+                rigid_prim.set_angular_velocity(np.zeros(3, dtype=np.float32))
+                live_apply["velocity_zeroed"] = True
+            except Exception as exc:
+                live_apply["velocity_zero_error"] = str(exc)
+            try:
+                after_position, after_orientation = rigid_prim.get_world_pose()
+                live_apply["live_pose_after"] = {
+                    "position_xyz": [float(value) for value in after_position],
+                    "quaternion_wxyz": [float(value) for value in after_orientation],
+                }
+            except Exception as exc:
+                live_apply["live_pose_after_error"] = str(exc)
+            live_apply["success"] = True
+        except Exception as exc:
+            live_apply["error"] = str(exc)
+    else:
+        live_apply["reason"] = "object_root_is_not_rigid_body"
+
+    usd_apply = None
+    if not live_apply.get("success", False):
+        usd_apply = _set_prim_world_matrix(
+            stage,
+            prim_path,
+            target_world_matrix,
+            reset_xform_stack=False,
+        )
+
+    xformable_after = UsdGeom.Xformable(prim) if prim.IsA(UsdGeom.Xformable) else None
+    return {
+        "object_prim_path": prim_path,
+        "target_world_position_xyz": [float(value) for value in target_position],
+        "target_world_quaternion_wxyz": [float(value) for value in target_quaternion],
+        "reset_xform_stack_requested": bool(reset_xform_stack),
+        "xform_op_order_before": order_before,
+        "xform_op_order_after": (
+            pick_handoff._xform_op_order_names(xformable_after) if xformable_after else []
+        ),
+        "live_rigid_pose_apply": live_apply,
+        "usd_fallback_pose_apply": usd_apply,
+    }
+
+
+def _nav_root_report_from_pose(nav_pose: dict[str, Any], root_z: float, *, read_error: str | None = None) -> dict[str, Any]:
+    from source.navigation.adapters.frame_utils import yaw_to_quat_wxyz
+
+    yaw = float(nav_pose["yaw"])
+    report = {
+        "position_xyz": [float(nav_pose["x"]), float(nav_pose["y"]), float(root_z)],
+        "quaternion_wxyz": [float(value) for value in yaw_to_quat_wxyz(yaw)],
+        "yaw": yaw,
+        "linear_velocity_xyz": [0.0, 0.0, 0.0],
+        "angular_velocity_xyz": [0.0, 0.0, 0.0],
+        "linear_speed_xy": 0.0,
+        "angular_speed_z": 0.0,
+        "source": "nav_place_result_target_pose_fallback",
+    }
+    if read_error:
+        report["read_error"] = read_error
+    return report
+
+
+def _named_pose_entry(T_base_pose, T_world_pose) -> dict[str, Any]:
+    from scripts.math.SE3 import matrix_to_pose
+
+    base_position, base_quaternion = matrix_to_pose(T_base_pose)
+    world_position, world_quaternion = matrix_to_pose(T_world_pose)
+    return {
+        "frame": "arm_base_link",
+        "position_xyz": [float(value) for value in base_position],
+        "quaternion_wxyz": [float(value) for value in base_quaternion],
+        "world": {
+            "frame": "world",
+            "position_xyz": [float(value) for value in world_position],
+            "quaternion_wxyz": [float(value) for value in world_quaternion],
+        },
+    }
+
+
+def _place_target_workspace_diagnostics(target_poses: dict[str, Any]) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {}
+    warnings: list[str] = []
+    for name, entry in target_poses.items():
+        position = [float(value) for value in entry["position_xyz"]]
+        xy_radius = float(math.hypot(position[0], position[1]))
+        radius_3d = float(math.sqrt(sum(value * value for value in position)))
+        diagnostics[name] = {
+            "position_xyz": position,
+            "quaternion_wxyz": [float(value) for value in entry["quaternion_wxyz"]],
+            "xy_radius_m": xy_radius,
+            "radius_3d_m": radius_3d,
+            "z_m": float(position[2]),
+        }
+        if xy_radius > 0.75:
+            warnings.append(f"{name} horizontal radius is large for current base: {xy_radius:.3f}m")
+        if radius_3d > 0.95:
+            warnings.append(f"{name} 3D radius is large for current base: {radius_3d:.3f}m")
+    diagnostics["warnings"] = warnings
+    return diagnostics
+
+
+def _validate_arm_place_target_workspace(target: dict[str, Any], *, task_nav_to_place: str | None) -> None:
+    workspace = (target.get("diagnostics") or {}).get("target_workspace_base") or {}
+    violations: list[dict[str, Any]] = []
+    for name in ("pre_place", "place", "retreat"):
+        item = workspace.get(name) or {}
+        xy_radius = item.get("xy_radius_m")
+        radius_3d = item.get("radius_3d_m")
+        if xy_radius is None or radius_3d is None:
+            continue
+        if float(xy_radius) > ARM_PLACE_MAX_TARGET_XY_RADIUS_M or float(radius_3d) > ARM_PLACE_MAX_TARGET_RADIUS_3D_M:
+            violations.append(
+                {
+                    "target": name,
+                    "position_xyz_base": item.get("position_xyz"),
+                    "xy_radius_m": float(xy_radius),
+                    "radius_3d_m": float(radius_3d),
+                }
+            )
+    if not violations:
+        return
+    raise DemoFailure(
+        "place_target_unreachable_from_current_base",
+        (
+            "task_nav_to_place.place.place_pose_world is outside the current arm workspace; "
+            "arm-place mode does not run or restore nav_to_place."
+        ),
+        {
+            "task_nav_to_place": _required_path_text(task_nav_to_place, "task-nav-to-place"),
+            "place_pose_world": (target.get("source") or {}).get("place_pose_world"),
+            "target_workspace_base": workspace,
+            "workspace_limits": {
+                "max_xy_radius_m": ARM_PLACE_MAX_TARGET_XY_RADIUS_M,
+                "max_radius_3d_m": ARM_PLACE_MAX_TARGET_RADIUS_3D_M,
+            },
+            "violations": violations,
+            "object_teleported": False,
+            "arm_place_executed": False,
+            "physical_place_continuity": True,
+            "physical_nav_continuity": PHYSICAL_NAV_CONTINUITY,
+        },
+    )
+
+
+def _gripper_config_from_pick_target(pick_report: dict[str, Any]) -> dict[str, Any]:
+    raw_target_path = (pick_report.get("task_spec") or {}).get("target_json")
+    target_path = Path(raw_target_path).expanduser() if raw_target_path else None
+    if target_path is not None and target_path.exists() and target_path.is_file():
+        try:
+            target = json.loads(target_path.read_text(encoding="utf-8"))
+            gripper = target.get("gripper") or {}
+            return {
+                "open_m": float(gripper.get("open_m", 0.043)),
+                "close_m": float(gripper.get("close_m", 0.0)),
+                "joint_names": list(gripper.get("joint_names", ["arm_joint7", "arm_joint8"])),
+                "source": str(target_path.resolve()),
+            }
+        except Exception as exc:
+            return {
+                "open_m": 0.043,
+                "close_m": 0.0,
+                "joint_names": ["arm_joint7", "arm_joint8"],
+                "source": str(target_path),
+                "warning": f"failed_to_read_pick_target_gripper:{exc}",
+            }
+    return {
+        "open_m": float(os.environ.get("GO2_X5_GRIPPER_OPEN_M", "0.043")),
+        "close_m": float(os.environ.get("GO2_X5_GRIPPER_CLOSE_M", "0.0")),
+        "joint_names": ["arm_joint7", "arm_joint8"],
+        "source": "defaults",
+    }
+
+
+def _make_arm_place_target(
+    state: dict[str, Any],
+    raw_task_place: dict[str, Any],
+    pick_report: dict[str, Any],
+    object_prim_path: str,
+    object_bbox_before_place: dict[str, Any],
+) -> dict[str, Any]:
+    import numpy as np
+
+    place = dict(raw_task_place.get("place") or {})
+    place_pose = place.get("place_pose_world")
+    if not place.get("enabled", False) or not isinstance(place_pose, dict):
+        raise DemoFailure("missing_place_pose_world", "task_nav_to_place.place.place_pose_world is missing or disabled.")
+    missing = [key for key in ("x", "y", "z") if key not in place_pose]
+    if missing:
+        raise DemoFailure("missing_place_pose_world", f"place_pose_world is missing keys: {missing}")
+
+    center = list((object_bbox_before_place or {}).get("center_xyz") or [])
+    if len(center) != 3:
+        raise DemoFailure("arm_place_failed", "object bbox is unavailable before arm-place target generation.")
+
+    T_world_base = _matrix_from_pose_dict(state["poses"]["world_base"])
+    T_world_tcp = _matrix_from_pose_dict(state["poses"]["world_tcp"])
+    tcp_position_world = T_world_tcp[:3, 3].copy()
+    object_center_world = np.asarray(center, dtype=float)
+    tcp_to_object_center_world = object_center_world - tcp_position_world
+
+    place_center_world = np.asarray(
+        [float(place_pose["x"]), float(place_pose["y"]), float(place_pose["z"])],
+        dtype=float,
+    )
+    release_height = float(place.get("release_height", 0.04))
+    retreat_height = float(place.get("retreat_height", 0.12))
+
+    target_object_centers = {
+        "pre_place": place_center_world + np.array([0.0, 0.0, release_height], dtype=float),
+        "place": place_center_world,
+        "retreat": place_center_world + np.array([0.0, 0.0, retreat_height], dtype=float),
+    }
+
+    target_poses: dict[str, Any] = {}
+    target_world_matrices: dict[str, Any] = {}
+    for name, object_center_target in target_object_centers.items():
+        T_world_target_tcp = np.asarray(T_world_tcp, dtype=float).copy()
+        T_world_target_tcp[:3, 3] = object_center_target - tcp_to_object_center_world
+        T_base_target_tcp = np.linalg.inv(T_world_base) @ T_world_target_tcp
+        target_world_matrices[name] = T_world_target_tcp.tolist()
+        target_poses[name] = _named_pose_entry(T_base_target_tcp, T_world_target_tcp)
+
+    gripper = _gripper_config_from_pick_target(pick_report)
+    payload = {
+        "schema_version": 1,
+        "frame": "arm_base_link",
+        "default_target_name": "place",
+        "sequence": ["pre_place", "place", "open_gripper", "retreat"],
+        "poses": target_poses,
+        "gripper": {
+            "open_m": float(gripper["open_m"]),
+            "close_m": float(gripper["close_m"]),
+            "joint_names": list(gripper["joint_names"]),
+            "source": gripper.get("source"),
+        },
+        "source": {
+            "type": "single_stage_arm_place_target",
+            "mode": "arm_place",
+            "object_prim_path": object_prim_path,
+            "place_pose_world": {
+                "x": float(place_pose["x"]),
+                "y": float(place_pose["y"]),
+                "z": float(place_pose["z"]),
+                "roll": float(place_pose.get("roll", 0.0)),
+                "pitch": float(place_pose.get("pitch", 0.0)),
+                "yaw": float(place_pose.get("yaw", 0.0)),
+            },
+            "current_object_bbox_world": object_bbox_before_place,
+            "current_tcp_world": state["poses"]["world_tcp"],
+            "tcp_to_object_center_world_xyz": [float(value) for value in tcp_to_object_center_world],
+            "target_object_centers_world": {
+                name: [float(value) for value in center_xyz]
+                for name, center_xyz in target_object_centers.items()
+            },
+            "target_tcp_matrices_world": target_world_matrices,
+            "release_height_m": release_height,
+            "retreat_height_m": retreat_height,
+            "orientation_rule": "preserve_current_tcp_orientation_after_pick",
+        },
+        "diagnostics": {
+            "target_workspace_base": _place_target_workspace_diagnostics(target_poses),
+        },
+    }
+    return payload
+
+
+async def _export_arm_place_state(state_json: Path, object_prim_path: str | None = None) -> dict[str, Any]:
+    from source.manipulation import GraspPipeline, GraspTask
+
+    if object_prim_path:
+        try:
+            import omni.usd
+
+            selection = omni.usd.get_context().get_selection()
+            selection.set_selected_prim_paths([object_prim_path], True)
+        except Exception as exc:
+            print(f"[arm-place] warning: failed to select object for collision export exclusion: {exc}")
+
+    pipeline = GraspPipeline()
+    task = GraspTask(object_prim_path=None, state_json=str(state_json))
+    return await pipeline.export_state(task)
+
+
+def _plan_arm_place_external(
+    state_json: Path,
+    target_json: Path,
+    plan_json: Path,
+    *,
+    timeout_s: float,
+) -> dict[str, Any]:
+    import subprocess
+
+    script_plan = PROJECT_ROOT / "scripts/curobo/03_plan_grasp_trajectory.py"
+    plan_json.unlink(missing_ok=True)
+    env = os.environ.copy()
+    env.update(
+        {
+            "GO2_X5_WORKSPACE": str(PROJECT_ROOT),
+            "GO2_X5_CUROBO_SOURCE_ROOT": os.environ.get("GO2_X5_CUROBO_SOURCE_ROOT", "/home/light/workspace/curobo"),
+            "GO2_X5_CUROBO_TASK_MODE": "place",
+            "GO2_X5_STATE_JSON": str(state_json),
+            "GO2_X5_TARGET_JSON": str(target_json),
+            "GO2_X5_PLAN_JSON": str(plan_json),
+        }
+    )
+    curobo_python = os.environ.get("GO2_X5_CUROBO_PYTHON", DEFAULT_CUROBO_PYTHON)
+    print(
+        "[arm-place] planning with cuRobo:",
+        {
+            "state_json": str(state_json),
+            "target_json": str(target_json),
+            "plan_json": str(plan_json),
+            "timeout_s": float(timeout_s),
+        },
+        flush=True,
+    )
+    try:
+        result = subprocess.run(
+            [curobo_python, str(script_plan)],
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=max(1.0, float(timeout_s)) if timeout_s > 0.0 else None,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        raise DemoFailure(
+            "place_target_unreachable_from_current_base",
+            f"arm-place cuRobo planning timed out after {float(timeout_s):.1f}s",
+            {
+                "state_json": str(state_json),
+                "target_json": str(target_json),
+                "plan_json": str(plan_json),
+                "planner_timeout_s": float(timeout_s),
+                "stdout_tail": str(stdout)[-4000:],
+                "stderr_tail": str(stderr)[-4000:],
+            },
+        ) from exc
+    if result.stdout:
+        print(result.stdout)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr)
+    if result.returncode != 0 or not plan_json.exists():
+        raise DemoFailure(
+            "place_target_unreachable_from_current_base",
+            f"arm-place cuRobo planning failed with return code {result.returncode}",
+            {
+                "state_json": str(state_json),
+                "target_json": str(target_json),
+                "plan_json": str(plan_json),
+                "stdout_tail": result.stdout[-4000:],
+                "stderr_tail": result.stderr[-4000:],
+            },
+        )
+    return _read_json(plan_json, missing_reason="place_plan_missing")
+
+
+def _arm_place_failure_reason(summary: dict[str, Any]) -> str:
+    if summary.get("planning_failure_reason"):
+        return "place_target_unreachable_from_current_base"
+    if summary.get("tracking_failure_reason"):
+        return "arm_place_execution_failed"
+    if not summary.get("place_success", False):
+        return "object_out_of_place"
+    return ""
+
+
+async def _execute_arm_place_plan(
+    world,
+    robot,
+    plan: dict[str, Any],
+    *,
+    state_json: Path,
+    target_json: Path,
+    plan_json: Path,
+    execution_json: Path,
+    object_prim_path: str,
+    place: dict[str, Any],
+    settle_steps: int,
+) -> dict[str, Any]:
+    import omni.usd
+    import numpy as np
+    from scripts.isaac import run_pick_from_nav_result as pick_handoff
+
+    exec_module = _load_script_module(
+        "go2_x5_execute_arm_place",
+        PROJECT_ROOT / "scripts/isaac/04_execute_grasp_sequence.py",
+    )
+    exec_module.STATE_JSON = state_json
+    exec_module.TARGET_JSON = target_json
+    exec_module.GRASP_PLAN_JSON = plan_json
+    exec_module.OUTPUT_JSON = execution_json
+    exec_module.STRICT_POST_MOTION_WAIT_SEGMENTS = set(exec_module.STRICT_POST_MOTION_WAIT_SEGMENTS) | {
+        "move_to_pre_place",
+        "approach_to_place",
+        "retreat_place",
+    }
+
+    stage = omni.usd.get_context().get_stage()
+    object_bbox_before = pick_handoff._compute_world_bbox(stage, object_prim_path) if stage is not None else None
+    dof_names = exec_module.get_dof_names(robot)
+    arm_indices = exec_module.get_joint_indices(dof_names, plan["joint_names"])
+    gripper_joint_names: list[str] = []
+    for segment in plan.get("segments", []):
+        if segment.get("type") == "gripper":
+            gripper_joint_names = list(segment.get("joint_names", []))
+            break
+    if not gripper_joint_names:
+        raise DemoFailure("arm_place_failed", "arm-place plan has no gripper open segment.")
+    gripper_indices = exec_module.get_joint_indices(dof_names, gripper_joint_names)
+
+    logs: list[dict[str, Any]] = []
+    last_motion_q_final = None
+    object_bbox_at_place_pose = None
+    object_bbox_after_open = None
+    tracking_failure_reason = ""
+    opened_gripper = False
+
+    for segment in plan.get("segments", []):
+        if segment.get("type") == "motion":
+            motion_log = await exec_module.execute_motion_segment(world, robot, arm_indices, segment)
+            logs.append(motion_log)
+            last_motion_q_final = np.asarray(segment["trajectory"]["q"][-1], dtype=float)
+            if segment.get("name") == "approach_to_place":
+                object_bbox_at_place_pose = (
+                    pick_handoff._compute_world_bbox(stage, object_prim_path) if stage is not None else None
+                )
+            if not motion_log.get("motion_converged", True):
+                tracking_failure_reason = f"{segment.get('name')} did not converge before continuing."
+                break
+        elif segment.get("type") == "gripper":
+            if segment.get("name") != "open_gripper":
+                raise DemoFailure("arm_place_failed", f"unexpected arm-place gripper segment: {segment.get('name')}")
+            gripper_log = await exec_module.execute_gripper_segment(
+                world,
+                robot,
+                gripper_indices,
+                segment,
+                arm_indices=arm_indices if last_motion_q_final is not None else None,
+                q_arm_hold=last_motion_q_final,
+            )
+            logs.append(gripper_log)
+            opened_gripper = True
+            object_bbox_after_open = (
+                pick_handoff._compute_world_bbox(stage, object_prim_path) if stage is not None else None
+            )
+        else:
+            raise DemoFailure("arm_place_failed", f"unknown arm-place segment type: {segment.get('type')}")
+
+    if not tracking_failure_reason:
+        await exec_module.hold_final(world, robot, plan.get("segments", []), arm_indices)
+
+    _settle_world(world, settle_steps)
+    object_bbox_after = pick_handoff._compute_world_bbox(stage, object_prim_path) if stage is not None else None
+    verification = _verify_mvp_place(
+        dict(place["place_pose_world"]),
+        object_bbox_after,
+        xy_tolerance=float(place.get("place_xy_tolerance", 0.10)),
+        z_tolerance=float(place.get("place_z_tolerance", 0.08)),
+    )
+    summary = exec_module.summarize_logs(logs)
+    summary.update(
+        {
+            "arm_place_executed": opened_gripper and not bool(tracking_failure_reason),
+            "opened_gripper": opened_gripper,
+            "tracking_failure_reason": tracking_failure_reason,
+            "place_success": bool(verification.get("success", False)) and not bool(tracking_failure_reason),
+            "object_teleported": False,
+            "physical_place_continuity": True,
+            "physical_nav_continuity": PHYSICAL_NAV_CONTINUITY,
+        }
+    )
+    result = {
+        "schema_version": 1,
+        "script": "scripts/isaac/07_run_pick_put_demo_from_nav_results.py",
+        "source_plan": str(plan_json),
+        "source_target": str(target_json),
+        "source_state": str(state_json),
+        "object_prim_path": object_prim_path,
+        "arm_joint_names": plan["joint_names"],
+        "gripper_joint_names": gripper_joint_names,
+        "arm_joint_indices": dict(zip(plan["joint_names"], arm_indices)),
+        "gripper_joint_indices": dict(zip(gripper_joint_names, gripper_indices)),
+        "object_bbox_before": object_bbox_before,
+        "object_bbox_at_place_pose": object_bbox_at_place_pose,
+        "object_bbox_after_open_gripper": object_bbox_after_open,
+        "object_bbox_after": object_bbox_after,
+        "verification": verification,
+        "execution_logs": logs,
+        "summary": summary,
+    }
+    _write_json(execution_json, result)
+    if tracking_failure_reason:
+        raise DemoFailure("arm_place_execution_failed", tracking_failure_reason, result)
+    if not verification.get("success", False):
+        raise DemoFailure("object_out_of_place", "arm-place object did not verify near place_pose_world.", result)
+    return result
+
+
+async def _restore_place_base_with_object_carry(
+    world,
+    robot,
+    nav_place_result: dict[str, Any],
+    object_prim_path: str,
+    *,
+    source_nav_result_path: str | None,
+) -> dict[str, Any]:
+    import omni.kit.app
+    import omni.usd
+    import numpy as np
+    from scripts.isaac import run_pick_from_nav_result as pick_handoff
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        raise DemoFailure("stage_not_ready", "No USD stage is open for arm-place base restore.")
+    if not nav_place_result:
+        raise DemoFailure("missing_nav_place_result", "--nav-place-result is required for arm-place base handoff.")
+
+    root_before = pick_handoff._robot_root_report(robot)
+    object_bbox_before = pick_handoff._compute_world_bbox(stage, object_prim_path)
+    object_matrix_before, object_matrix_before_report = _dynamic_object_world_matrix(stage, object_prim_path)
+    old_root_matrix = _planar_pose_matrix(
+        float(root_before["position_xyz"][0]),
+        float(root_before["position_xyz"][1]),
+        float(root_before["position_xyz"][2]),
+        float(root_before["yaw"]),
+    )
+    nav_pose = nav_place_result["final_base_pose_world"]
+    new_root_matrix = _planar_pose_matrix(
+        float(nav_pose["x"]),
+        float(nav_pose["y"]),
+        float(root_before["position_xyz"][2]),
+        float(nav_pose["yaw"]),
+    )
+    carry_delta_world = new_root_matrix @ np.linalg.inv(old_root_matrix)
+    target_object_matrix = carry_delta_world @ object_matrix_before
+    expected_object_bbox_after = _transform_bbox_world(object_bbox_before, carry_delta_world)
+
+    restore_report = await pick_handoff._restore_and_settle(world, robot, nav_place_result)
+    object_apply = _set_dynamic_object_world_matrix(
+        stage,
+        object_prim_path,
+        target_object_matrix,
+        reset_xform_stack=False,
+    )
+    live_apply = object_apply.get("live_rigid_pose_apply", {})
+    if live_apply.get("attempted") and not live_apply.get("success", False):
+        raise DemoFailure(
+            "object_carry_failed",
+            f"failed to apply live rigid body pose for carried object: {live_apply.get('error')}",
+            object_apply,
+        )
+    velocity_reset = pick_handoff.reset_object_physics_state(
+        object_prim_path,
+        zero_linear_velocity=True,
+        zero_angular_velocity=True,
+        wake=True,
+    )
+    for _ in range(3):
+        world.step(render=True)
+        await omni.kit.app.get_app().next_update_async()
+    velocity_reset_after_short_step = pick_handoff.reset_object_physics_state(
+        object_prim_path,
+        zero_linear_velocity=True,
+        zero_angular_velocity=True,
+        wake=True,
+    )
+    object_bbox_after_usd = pick_handoff._compute_world_bbox(stage, object_prim_path)
+    object_bbox_after = expected_object_bbox_after or object_bbox_after_usd
+    root_after_report_fallback = False
+    try:
+        root_after = pick_handoff._robot_root_report(robot)
+    except Exception as exc:
+        root_after_report_fallback = True
+        root_after = _nav_root_report_from_pose(
+            nav_pose,
+            float(root_before["position_xyz"][2]),
+            read_error=str(exc),
+        )
+    report = {
+        "success": True,
+        "base_transfer_mode": "restore_nav_place_result_with_object_carry_teleport",
+        "base_restore_source": (
+            "nav_place_result.final_base_pose_world"
+            if source_nav_result_path
+            else "task_nav_to_place.place.base_goal"
+        ),
+        "synthetic_nav_place_result_from_task_base_goal": bool(
+            nav_place_result.get("synthetic_from_task_place_base_goal", False)
+        ),
+        "physical_nav_continuity": PHYSICAL_NAV_CONTINUITY,
+        "physical_carry_nav": False,
+        "object_carried_with_base_teleport": True,
+        "object_teleported_to_place_pose": False,
+        "source_nav_result": _required_path_text(source_nav_result_path, "nav-place-result"),
+        "restore": restore_report,
+        "root_before": root_before,
+        "root_after": root_after,
+        "root_after_report_fallback": root_after_report_fallback,
+        "object_prim_path": object_prim_path,
+        "object_bbox_before_base_restore": object_bbox_before,
+        "object_bbox_after_base_restore": object_bbox_after,
+        "object_bbox_after_base_restore_usd": object_bbox_after_usd,
+        "object_bbox_after_base_restore_source": (
+            "expected_carry_delta" if expected_object_bbox_after else "usd_bbox"
+        ),
+        "object_matrix_before_base_restore": object_matrix_before_report,
+        "object_carry_transform": {
+            "old_root_xyyaw": [
+                float(root_before["position_xyz"][0]),
+                float(root_before["position_xyz"][1]),
+                float(root_before["yaw"]),
+            ],
+            "new_root_xyyaw": [
+                float(nav_pose["x"]),
+                float(nav_pose["y"]),
+                float(nav_pose["yaw"]),
+            ],
+            "delta_matrix_world": np.asarray(carry_delta_world, dtype=float).tolist(),
+        },
+        "object_pose_apply_after_base_restore": object_apply,
+        "object_velocity_reset_after_base_restore": velocity_reset,
+        "object_velocity_reset_after_short_step": velocity_reset_after_short_step,
+    }
+    print(
+        "[arm-place] restored nav_place base and carried object:",
+        {
+            "object": object_prim_path,
+            "old_root": report["object_carry_transform"]["old_root_xyyaw"],
+            "new_root": report["object_carry_transform"]["new_root_xyyaw"],
+            "object_bbox_after": object_bbox_after,
+        },
+        flush=True,
+    )
+    return report
+
+
+async def _run_arm_place_put(
+    world,
+    robot,
+    raw_task_place: dict[str, Any],
+    pick_report: dict[str, Any],
+    args: argparse.Namespace,
+    restore_place_report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    import omni.usd
+    from scripts.isaac import run_pick_from_nav_result as pick_handoff
+
+    place = dict(raw_task_place.get("place") or {})
+    place_pose = place.get("place_pose_world")
+    if not place.get("enabled", False) or not place_pose:
+        raise DemoFailure("missing_place_pose_world", "task_nav_to_place.place.place_pose_world is missing or disabled.")
+
+    object_prim_path = str((raw_task_place.get("pick") or {}).get("object_prim_path") or "")
+    if not object_prim_path:
+        object_prim_path = str((pick_report.get("task_spec") or {}).get("object_prim_path") or "")
+    if not object_prim_path:
+        raise DemoFailure("missing_place_pose_world", "object_prim_path is required for arm-place.")
+
+    started_at = time.time()
+    output_dir = Path(args.dataset_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state_json = output_dir / "arm_place_state.json"
+    target_json = output_dir / "arm_place_target.json"
+    plan_json = output_dir / "arm_place_plan.json"
+    execution_json = output_dir / "arm_place_execution_result.json"
+
+    stage = omni.usd.get_context().get_stage()
+    object_bbox_before_place_usd = pick_handoff._compute_world_bbox(stage, object_prim_path) if stage is not None else None
+    object_bbox_before_place = (
+        (restore_place_report or {}).get("object_bbox_after_base_restore")
+        or object_bbox_before_place_usd
+    )
+    state = await _export_arm_place_state(state_json, object_prim_path)
+    target = _make_arm_place_target(
+        state,
+        raw_task_place,
+        pick_report,
+        object_prim_path,
+        object_bbox_before_place,
+    )
+    _write_json(target_json, target)
+    _validate_arm_place_target_workspace(target, task_nav_to_place=args.task_nav_to_place)
+    try:
+        plan = _plan_arm_place_external(
+            state_json,
+            target_json,
+            plan_json,
+            timeout_s=float(args.arm_place_plan_timeout_s),
+        )
+    except DemoFailure:
+        raise
+    except Exception as exc:
+        raise DemoFailure(
+            "place_target_unreachable_from_current_base",
+            str(exc),
+            {
+                "state_json": str(state_json),
+                "target_json": str(target_json),
+                "plan_json": str(plan_json),
+                "target": target,
+            },
+        ) from exc
+
+    settle_steps = int(place.get("settle_steps", args.settle_steps))
+    execution = await _execute_arm_place_plan(
+        world,
+        robot,
+        plan,
+        state_json=state_json,
+        target_json=target_json,
+        plan_json=plan_json,
+        execution_json=execution_json,
+        object_prim_path=object_prim_path,
+        place=place,
+        settle_steps=settle_steps,
+    )
+    verification = execution.get("verification", {})
+    summary = execution.get("summary", {})
+    report = {
+        "success": bool(summary.get("place_success", False)),
+        "failure_reason": _arm_place_failure_reason(summary),
+        "put_mode": "arm_place",
+        "arm_place_executed": bool(summary.get("arm_place_executed", False)),
+        "object_teleported": False,
+        "physical_place_continuity": True,
+        "physical_nav_continuity": PHYSICAL_NAV_CONTINUITY,
+        "execution_backend": "curobo_arm_place_same_stage",
+        "physical_put_execution": True,
+        "place_target": target,
+        "plan_summary": plan.get("summary", plan),
+        "execution_summary": summary,
+        "execution_result_json": str(execution_json),
+        "state_json": str(state_json),
+        "target_json": str(target_json),
+        "plan_json": str(plan_json),
+        "object_bbox_before_place": object_bbox_before_place,
+        "object_bbox_before_place_usd": object_bbox_before_place_usd,
+        "object_bbox_before_place_source": (
+            "restore_place_base.object_bbox_after_base_restore"
+            if (restore_place_report or {}).get("object_bbox_after_base_restore")
+            else "usd_bbox"
+        ),
+        "object_bbox_after": execution.get("object_bbox_after"),
+        "verification": verification,
+        "elapsed_wall_time_s": time.time() - started_at,
+    }
+    if not report["success"]:
+        raise DemoFailure(report["failure_reason"] or "put_failed", "arm-place did not complete successfully.", report)
+    return report
+
+
 async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> dict[str, Any]:
     from source.data import EpisodeRecorder, load_task
 
@@ -1286,9 +2411,13 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
     raw_task_pick = _read_json(task_pick_path, missing_reason="missing_task_nav_to_pick")
     raw_task_place = _read_json(task_place_path, missing_reason="missing_task_nav_to_place")
     nav_pick_result = _read_json(args.nav_pick_result, missing_reason="missing_nav_pick_result")
-    nav_place_result = _read_json(args.nav_place_result, missing_reason="missing_nav_place_result")
     _validate_nav_result(nav_pick_result, reason="missing_nav_pick_result")
-    _validate_nav_result(nav_place_result, reason="missing_nav_place_result")
+    nav_place_result = None
+    if args.put_mode == "mvp-reconstruct" or args.nav_place_result:
+        nav_place_result = _read_json(args.nav_place_result, missing_reason="missing_nav_place_result")
+        _validate_nav_result(nav_place_result, reason="missing_nav_place_result")
+    elif args.put_mode == "arm-place":
+        nav_place_result = _nav_place_result_from_task_base_goal(raw_task_place)
 
     scene_usd = _project_path(args.scene_usd or raw_task_pick["scene_usd"])
     if raw_task_place.get("scene_usd") and _project_path(raw_task_place["scene_usd"]) != scene_usd:
@@ -1308,6 +2437,7 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
     from scripts.isaac import run_pick_from_nav_result as pick_handoff
 
     result["stages"]["open_stage"] = _open_stage(scene_usd, args.stage_load_updates)
+    result["stages"]["open_stage"]["required_prims_active"] = _ensure_required_prims_active(raw_task_pick)
     if args.demo_visuals:
         result["stages"]["open_stage"]["viewport_camera_set"] = _set_viewport_stage_camera(args.viewport_camera_prim)
 
@@ -1353,21 +2483,52 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
     carry_state = _carry_state(args, task_pick.pick.object_prim_path)
     result["stages"]["carry_state"] = carry_state
 
-    try:
-        result["stages"]["restore_place_base"] = await pick_handoff._restore_and_settle(world, robot, nav_place_result)
-    except Exception as exc:
-        raise DemoFailure("restore_place_base_failed", str(exc), getattr(exc, "report", None)) from exc
-    result["stages"]["restore_place_base"].update(
-        {
+    if args.put_mode == "mvp-reconstruct":
+        try:
+            result["stages"]["restore_place_base"] = await pick_handoff._restore_and_settle(world, robot, nav_place_result)
+        except Exception as exc:
+            raise DemoFailure("restore_place_base_failed", str(exc), getattr(exc, "report", None)) from exc
+        result["stages"]["restore_place_base"].update(
+            {
+                "success": True,
+                "base_transfer_mode": "restore_from_nav_result",
+                "physical_nav_continuity": PHYSICAL_NAV_CONTINUITY,
+                "source_nav_result": str(Path(args.nav_place_result).expanduser().resolve()),
+            }
+        )
+    elif args.put_mode == "arm-place":
+        try:
+            result["stages"]["restore_place_base"] = await _restore_place_base_with_object_carry(
+                world,
+                robot,
+                nav_place_result,
+                task_pick.pick.object_prim_path,
+                source_nav_result_path=args.nav_place_result,
+            )
+        except Exception as exc:
+            raise DemoFailure("restore_place_base_failed", str(exc), getattr(exc, "report", None)) from exc
+    else:
+        result["stages"]["restore_place_base"] = {
             "success": True,
-            "base_transfer_mode": "restore_from_nav_result",
+            "skipped": True,
+            "reason": f"put_mode={args.put_mode} has no place-base restore implementation",
             "physical_nav_continuity": PHYSICAL_NAV_CONTINUITY,
-            "source_nav_result": str(Path(args.nav_place_result).expanduser().resolve()),
         }
-    )
 
     try:
-        put_report = _run_mvp_put(world, raw_task_place, args)
+        if args.put_mode == "mvp-reconstruct":
+            put_report = _run_mvp_put(world, raw_task_place, args)
+        elif args.put_mode == "arm-place":
+            put_report = await _run_arm_place_put(
+                world,
+                robot,
+                raw_task_place,
+                pick_report,
+                args,
+                restore_place_report=result["stages"].get("restore_place_base"),
+            )
+        else:
+            raise DemoFailure("put_mode_not_implemented", f"put_mode={args.put_mode!r} is not implemented.")
     except DemoFailure as exc:
         _write_json(
             args.put_result,
@@ -1388,6 +2549,11 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
             "success": True,
             "failure_reason": "",
             "failure_detail": "",
+            "put_mode": _put_mode_result_value(args.put_mode),
+            "arm_place_executed": bool(put_report.get("arm_place_executed", False)),
+            "object_teleported": bool(put_report.get("object_teleported", _put_mode_teleports_object(args.put_mode))),
+            "physical_place_continuity": bool(put_report.get("physical_place_continuity", args.put_mode == "arm-place")),
+            "physical_nav_continuity": PHYSICAL_NAV_CONTINUITY,
             "updated_at": time.time(),
             "scene_usd": str(scene_usd),
             "pipeline_context": str(context_path),
@@ -1464,6 +2630,10 @@ def _run() -> int:
             "missing_place_pose_world",
             "put_failed",
             "put_mode_not_implemented",
+            "place_target_unreachable_from_current_base",
+            "arm_place_failed",
+            "arm_place_execution_failed",
+            "object_out_of_place",
         }:
             stage_name_by_reason = {
                 "open_stage_failed": "open_stage",
@@ -1475,6 +2645,10 @@ def _run() -> int:
                 "missing_place_pose_world": "put",
                 "put_failed": "put",
                 "put_mode_not_implemented": "put",
+                "place_target_unreachable_from_current_base": "put",
+                "arm_place_failed": "put",
+                "arm_place_execution_failed": "put",
+                "object_out_of_place": "put",
             }
             stage_name = stage_name_by_reason.get(reason)
         _write_failure_result(args, result, str(reason), detail, stage_name=stage_name, report=report)
