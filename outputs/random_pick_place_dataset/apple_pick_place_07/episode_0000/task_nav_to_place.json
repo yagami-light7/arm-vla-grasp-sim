@@ -11,9 +11,9 @@
   },
   "pick": {
     "base_goal": {
-      "x": -1.813,
-      "y": 3.315,
-      "yaw": 3.054
+      "x": 1.2495111616914338,
+      "y": 1.3594823496423172,
+      "yaw": 2.91688148517515
     },
     "object_prim_path": "/World/apple",
     "grasp_mode": "auto",
@@ -29,17 +29,17 @@
   "place": {
     "enabled": true,
     "base_goal": {
-      "x": -1.813,
-      "y": 3.315,
-      "yaw": 3.054
+      "x": 1.2495111616914338,
+      "y": 1.3594823496423172,
+      "yaw": 2.91688148517515
     },
     "place_pose_world": {
-      "x": -2.56,
-      "y": 3.38,
-      "z": 0.827,
-      "yaw": 0.0,
-      "roll": 0.0,
-      "pitch": 0.0
+      "x": 0.8995111616914339,
+      "y": 1.4394823496423172,
+      "z": 0.81653,
+      "roll": -0.04405211032033688,
+      "pitch": -0.13651965409099645,
+      "yaw": -0.0031590459461097176
     },
     "release_height": 0.04,
     "retreat_height": 0.12,
@@ -149,6 +149,14 @@
       "enabled": true,
       "source_task": "/home/light/workspace/arm_vla/tasks/nav_pick_place_apple_contact.json",
       "reason": "base_task_missing_enabled_place_goal"
+    },
+    "local_arm_place_goal": {
+      "enabled": true,
+      "reason": "single-stage-07 的 arm-place 第一版跳过 nav_to_place，因此使用 apple 附近的局部放置点。",
+      "place_offset_from_object_xy_m": [
+        0.15,
+        0.0
+      ]
     }
   },
   "handoff": {

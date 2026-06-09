@@ -31,8 +31,8 @@ STAGE_PROCESS = "single_isaac_sim_app"
 PHYSICAL_NAV_CONTINUITY = False
 DEFAULT_CONTEXT_JSON = Path("/tmp/go2_x5_single_stage_pick_put_context.json")
 DEFAULT_CUROBO_PYTHON = "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python"
-ARM_PLACE_MAX_TARGET_XY_RADIUS_M = float(os.environ.get("GO2_X5_ARM_PLACE_MAX_TARGET_XY_RADIUS_M", "0.85"))
-ARM_PLACE_MAX_TARGET_RADIUS_3D_M = float(os.environ.get("GO2_X5_ARM_PLACE_MAX_TARGET_RADIUS_3D_M", "1.05"))
+ARM_PLACE_MAX_TARGET_XY_RADIUS_M = float(os.environ.get("GO2_X5_ARM_PLACE_MAX_TARGET_XY_RADIUS_M", "0.75"))
+ARM_PLACE_MAX_TARGET_RADIUS_3D_M = float(os.environ.get("GO2_X5_ARM_PLACE_MAX_TARGET_RADIUS_3D_M", "0.95"))
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -91,7 +91,27 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--replay-nav-real-time", action="store_true")
     parser.add_argument("--replay-nav-speed", type=float, default=1.0)
     parser.add_argument("--replay-before-pick-object-prepare", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--replay-nav-place-with-carried-object", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--replay-nav-place-with-carried-object",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "是否在回放 nav_to_place 时尝试携带物体。"
+            "默认关闭，当前先验证局部 arm-place，"
+            "不做连续导航搬运。"
+        ),
+    )
+
+    parser.add_argument(
+        "--restore-nav-place-for-arm-place",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "在 arm-place 阶段是否把 Go2-X5 的 base 恢复到 nav_to_place 的结果位姿。"
+            "默认关闭，"
+            "调试好原地抓取再打开"
+        ),
+    )
     parser.add_argument(
         "--arm-place-plan-timeout-s",
         type=float,
@@ -1647,6 +1667,8 @@ def _set_dynamic_object_world_matrix(
         try:
             from isaacsim.core.prims import SingleRigidPrim
 
+            object_is_kinematic = _object_has_kinematic_enabled(stage, prim_path)
+            live_apply["object_is_kinematic"] = bool(object_is_kinematic)
             wrapper_name = "go2_x5_object_carry_" + live_body_path.strip("/").replace("/", "_")
             rigid_prim = SingleRigidPrim(
                 prim_path=live_body_path,
@@ -1673,12 +1695,21 @@ def _set_dynamic_object_world_matrix(
                 position=np.asarray(target_position, dtype=np.float32),
                 orientation=np.asarray(target_quaternion, dtype=np.float32),
             )
-            try:
-                rigid_prim.set_linear_velocity(np.zeros(3, dtype=np.float32))
-                rigid_prim.set_angular_velocity(np.zeros(3, dtype=np.float32))
-                live_apply["velocity_zeroed"] = True
-            except Exception as exc:
-                live_apply["velocity_zero_error"] = str(exc)
+            if object_is_kinematic:
+                live_apply["velocity_zeroed"] = False
+                live_apply["velocity_zero_skipped_because_kinematic"] = True
+                live_apply["object_velocity_zero_skipped_because_kinematic"] = True
+                live_apply["velocity_zero_skip_reason"] = "body_is_kinematic"
+                live_apply["velocity_zero_skipped_reason"] = "body_is_kinematic"
+            else:
+                try:
+                    rigid_prim.set_linear_velocity(np.zeros(3, dtype=np.float32))
+                    rigid_prim.set_angular_velocity(np.zeros(3, dtype=np.float32))
+                    live_apply["velocity_zeroed"] = True
+                    live_apply["velocity_zero_skipped_because_kinematic"] = False
+                    live_apply["object_velocity_zero_skipped_because_kinematic"] = False
+                except Exception as exc:
+                    live_apply["velocity_zero_error"] = str(exc)
             try:
                 after_position, after_orientation = rigid_prim.get_world_pose()
                 live_apply["live_pose_after"] = {
@@ -1885,6 +1916,15 @@ def _restore_object_kinematic_enabled(stage, freeze_report: dict[str, Any]) -> d
 
 
 def _zero_object_velocity_best_effort(stage, object_prim_path: str) -> dict[str, Any]:
+    """
+    尽力把物体速度清零。
+
+    注意：
+    1. dynamic 刚体可以调用 PhysX live API 清速度；
+    2. kinematic 刚体不能调用 set_linear_velocity / set_angular_velocity；
+    3. 所以如果检测到物体仍是 kinematic，直接跳过 velocity reset；
+       kinematic carry 期间只 clamp pose，不写 velocity。
+    """
     import numpy as np
     from pxr import UsdPhysics
 
@@ -1894,12 +1934,46 @@ def _zero_object_velocity_best_effort(stage, object_prim_path: str) -> dict[str,
         "rigid_body_paths": body_paths,
         "rigid_bodies": [],
         "success": False,
+        "object_is_kinematic": False,
+        "object_velocity_zero_skipped_because_kinematic": False,
     }
+
     for body_path in body_paths:
         body_report: dict[str, Any] = {"prim_path": body_path}
         body_prim = stage.GetPrimAtPath(body_path)
+
+        # 先读取这个刚体是不是 kinematic。
+        # kinematic=True 表示它的位置通常由我们显式设置，而不是由 PhysX 动力学积分驱动。
+        is_kinematic = False
         try:
             rigid_body = UsdPhysics.RigidBodyAPI(body_prim)
+            kinematic_attr = rigid_body.GetKinematicEnabledAttr()
+            is_kinematic = _read_bool_attr_value(kinematic_attr, False)
+            body_report["kinematic_enabled"] = bool(is_kinematic)
+            report["object_is_kinematic"] = bool(report["object_is_kinematic"] or is_kinematic)
+        except Exception as exc:
+            body_report["kinematic_read_error"] = str(exc)
+
+        # kinematic=True 时不要写 USD velocity，也不要调用 live velocity API。
+        # 每帧 carry/clamp 时只设置 pose；否则 PhysX 会刷：
+        # PxRigidDynamic::setLinearVelocity: Body must be non-kinematic!
+        if is_kinematic:
+            body_report["usd_velocity_zeroed"] = False
+            body_report["usd_velocity_zero_skipped"] = True
+            body_report["live_velocity_zeroed"] = False
+            body_report["live_velocity_zero_skipped"] = True
+            body_report["live_velocity_zero_skipped_because_kinematic"] = True
+            body_report["live_velocity_zero_skip_reason"] = "body_is_kinematic"
+            body_report["live_velocity_zero_skipped_reason"] = "body_is_kinematic"
+            body_report["success"] = False
+            report["object_velocity_zero_skipped_because_kinematic"] = True
+            report["rigid_bodies"].append(body_report)
+            continue
+
+        # 第一层：写 dynamic USD velocity 属性。
+        try:
+            rigid_body = UsdPhysics.RigidBodyAPI(body_prim)
+
             velocity_attr, _ = _rigid_body_attr_or_create(
                 rigid_body,
                 "GetVelocityAttr",
@@ -1910,16 +1984,21 @@ def _zero_object_velocity_best_effort(stage, object_prim_path: str) -> dict[str,
                 "GetAngularVelocityAttr",
                 "CreateAngularVelocityAttr",
             )
+
             try:
                 body_report["usd_velocity_before"] = list(velocity_attr.Get() or [])
                 body_report["usd_angular_velocity_before"] = list(angular_velocity_attr.Get() or [])
             except Exception:
                 pass
+
             velocity_attr.Set((0.0, 0.0, 0.0))
             angular_velocity_attr.Set((0.0, 0.0, 0.0))
             body_report["usd_velocity_zeroed"] = True
+
         except Exception as exc:
             body_report["usd_velocity_zero_error"] = str(exc)
+
+        # 第二层：dynamic 物体才允许调用 PhysX live API 清速度。
         try:
             from isaacsim.core.prims import SingleRigidPrim
 
@@ -1928,31 +2007,333 @@ def _zero_object_velocity_best_effort(stage, object_prim_path: str) -> dict[str,
                 name="go2_x5_object_velocity_zero_" + body_path.strip("/").replace("/", "_"),
                 reset_xform_properties=False,
             )
+
             try:
                 rigid_prim.initialize()
                 body_report["live_initialized"] = True
             except Exception as exc:
                 body_report["live_initialized"] = False
                 body_report["live_initialize_error"] = str(exc)
+
             rigid_prim.set_linear_velocity(np.zeros(3, dtype=np.float32))
             rigid_prim.set_angular_velocity(np.zeros(3, dtype=np.float32))
             body_report["live_velocity_zeroed"] = True
+
         except Exception as exc:
             body_report["live_velocity_zero_error"] = str(exc)
+
         body_report["success"] = bool(
             body_report.get("usd_velocity_zeroed") or body_report.get("live_velocity_zeroed")
         )
         report["success"] = bool(report["success"] or body_report["success"])
         report["rigid_bodies"].append(body_report)
+
     if not body_paths:
         report["warning"] = "no_rigid_body_api_under_object_root"
+
     return report
+
+def _object_has_kinematic_enabled(stage, object_prim_path: str) -> bool:
+    """
+    判断目标物体或其子 prim 中是否存在 kinematicEnabled=True 的刚体。
+
+    背景：
+        PhysX 不允许对 kinematic rigid body 调用 setLinearVelocity/setAngularVelocity。
+        如果强行清速度，会刷屏：
+        PxRigidDynamic::setLinearVelocity: Body must be non-kinematic!
+    """
+    from pxr import Usd, UsdPhysics
+
+    root_prim = stage.GetPrimAtPath(object_prim_path)
+    if not root_prim.IsValid():
+        return False
+
+    for prim in Usd.PrimRange(root_prim):
+        if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            continue
+
+        rb_api = UsdPhysics.RigidBodyAPI(prim)
+        attr = rb_api.GetKinematicEnabledAttr()
+        if attr and bool(attr.Get()):
+            return True
+
+    return False
+
+
+def _zero_object_velocity_if_dynamic(stage, object_prim_path: str, *, label: str) -> dict[str, Any]:
+    """
+    只在物体是 dynamic 刚体时清速度。
+
+    如果物体当前是 kinematic，直接跳过。
+    因为 kinematic 物体由我们直接设置 pose 控制，不应该再设置线速度/角速度。
+    """
+    if _object_has_kinematic_enabled(stage, object_prim_path):
+        return {
+            "applied": False,
+            "skipped": True,
+            "reason": "object_is_kinematic_do_not_call_set_velocity",
+            "label": label,
+            "object_prim_path": object_prim_path,
+            "object_is_kinematic": True,
+            "live_velocity_zeroed": False,
+            "live_velocity_zero_skipped": True,
+            "live_velocity_zero_skipped_reason": "body_is_kinematic",
+            "object_velocity_zero_skipped_because_kinematic": True,
+        }
+
+    return _zero_object_velocity_best_effort(stage, object_prim_path)
+
+
+def _velocity_report_skipped_because_kinematic(report: dict[str, Any] | None) -> bool:
+    if not isinstance(report, dict):
+        return False
+    if report.get("object_velocity_zero_skipped_because_kinematic"):
+        return True
+    if report.get("live_velocity_zero_skipped_because_kinematic"):
+        return True
+    for body in report.get("rigid_bodies", []) or []:
+        if isinstance(body, dict) and (
+            body.get("live_velocity_zero_skipped_because_kinematic")
+            or body.get("live_velocity_zero_skipped")
+        ):
+            return True
+    return False
 
 
 def _matrix_translation_error_m(a, b) -> float:
     import numpy as np
 
     return float(np.linalg.norm(np.asarray(a, dtype=float)[:3, 3] - np.asarray(b, dtype=float)[:3, 3]))
+
+
+def _joint_indices_for_existing_names(dof_names: list[str], names: list[str]) -> tuple[list[int], list[str], list[str]]:
+    indices: list[int] = []
+    found: list[str] = []
+    missing: list[str] = []
+    for name in names:
+        if name in dof_names:
+            indices.append(dof_names.index(name))
+            found.append(name)
+        else:
+            missing.append(name)
+    return indices, found, missing
+
+
+def _capture_arm_gripper_hold_state(robot) -> dict[str, Any]:
+    import numpy as np
+
+    try:
+        dof_names = list(robot.dof_names)
+    except Exception:
+        view = getattr(robot, "_articulation_view", None)
+        dof_names = list(getattr(view, "dof_names", [])) if view is not None else []
+    if not dof_names:
+        return {"available": False, "reason": "missing_dof_names"}
+
+    q_full = np.asarray(robot.get_joint_positions(), dtype=float)
+    try:
+        dq_full = np.asarray(robot.get_joint_velocities(), dtype=float)
+    except Exception:
+        dq_full = np.zeros_like(q_full)
+
+    arm_indices, arm_names, missing_arm = _joint_indices_for_existing_names(
+        dof_names,
+        [f"arm_joint{index}" for index in range(1, 7)],
+    )
+    gripper_indices, gripper_names, missing_gripper = _joint_indices_for_existing_names(
+        dof_names,
+        ["arm_joint7", "arm_joint8"],
+    )
+    return {
+        "available": True,
+        "dof_names": dof_names,
+        "arm_indices": arm_indices,
+        "arm_joint_names": arm_names,
+        "missing_arm_joint_names": missing_arm,
+        "q_arm_hold": q_full[arm_indices].tolist() if arm_indices else [],
+        "dq_arm_before_hold": dq_full[arm_indices].tolist() if arm_indices else [],
+        "gripper_indices": gripper_indices,
+        "gripper_joint_names": gripper_names,
+        "missing_gripper_joint_names": missing_gripper,
+        "q_gripper_hold": q_full[gripper_indices].tolist() if gripper_indices else [],
+        "dq_gripper_before_hold": dq_full[gripper_indices].tolist() if gripper_indices else [],
+    }
+
+
+def _set_joint_positions_best_effort(robot, values, indices: list[int]) -> dict[str, Any]:
+    import numpy as np
+
+    report: dict[str, Any] = {"requested": bool(indices), "success": False, "indices": list(indices)}
+    if not indices:
+        report["reason"] = "no_joint_indices"
+        return report
+    values_array = np.asarray(values, dtype=float)
+    try:
+        robot.set_joint_positions(values_array, joint_indices=list(indices))
+        report["success"] = True
+        report["backend"] = "set_joint_positions_subset_kw"
+        return report
+    except Exception as exc:
+        report["subset_kw_error"] = str(exc)
+    try:
+        robot.set_joint_positions(values_array, list(indices))
+        report["success"] = True
+        report["backend"] = "set_joint_positions_subset_positional"
+        return report
+    except Exception as exc:
+        report["subset_positional_error"] = str(exc)
+    try:
+        q_full = np.asarray(robot.get_joint_positions(), dtype=float)
+        q_full[np.asarray(indices, dtype=int)] = values_array
+        robot.set_joint_positions(q_full)
+        report["success"] = True
+        report["backend"] = "set_joint_positions_full"
+        return report
+    except Exception as exc:
+        report["full_error"] = str(exc)
+    try:
+        from isaacsim.core.utils.types import ArticulationAction
+
+        robot.apply_action(
+            ArticulationAction(
+                joint_positions=values_array,
+                joint_indices=list(indices),
+            )
+        )
+        report["success"] = True
+        report["backend"] = "apply_action_subset"
+    except Exception as exc:
+        report["apply_action_error"] = str(exc)
+    return report
+
+
+def _set_joint_velocities_best_effort(robot, values, indices: list[int]) -> dict[str, Any]:
+    import numpy as np
+
+    report: dict[str, Any] = {"requested": bool(indices), "success": False, "indices": list(indices)}
+    if not indices:
+        report["reason"] = "no_joint_indices"
+        return report
+    values_array = np.asarray(values, dtype=float)
+    try:
+        robot.set_joint_velocities(values_array, joint_indices=list(indices))
+        report["success"] = True
+        report["backend"] = "set_joint_velocities_subset_kw"
+        return report
+    except Exception as exc:
+        report["subset_kw_error"] = str(exc)
+    try:
+        robot.set_joint_velocities(values_array, list(indices))
+        report["success"] = True
+        report["backend"] = "set_joint_velocities_subset_positional"
+        return report
+    except Exception as exc:
+        report["subset_positional_error"] = str(exc)
+    try:
+        qd_full = np.zeros_like(np.asarray(robot.get_joint_positions(), dtype=float))
+        qd_full[np.asarray(indices, dtype=int)] = values_array
+        robot.set_joint_velocities(qd_full)
+        report["success"] = True
+        report["backend"] = "set_joint_velocities_full"
+    except Exception as exc:
+        report["full_error"] = str(exc)
+    return report
+
+
+def _apply_arm_gripper_hold(robot, hold_state: dict[str, Any]) -> dict[str, Any]:
+    import numpy as np
+
+    report: dict[str, Any] = {"available": bool(hold_state.get("available", False))}
+    if not report["available"]:
+        report["reason"] = hold_state.get("reason", "hold_state_unavailable")
+        return report
+    arm_indices = list(hold_state.get("arm_indices") or [])
+    gripper_indices = list(hold_state.get("gripper_indices") or [])
+    q_arm = np.asarray(hold_state.get("q_arm_hold") or [], dtype=float)
+    q_gripper = np.asarray(hold_state.get("q_gripper_hold") or [], dtype=float)
+    report["arm_position_hold"] = _set_joint_positions_best_effort(robot, q_arm, arm_indices)
+    report["arm_velocity_zero"] = _set_joint_velocities_best_effort(robot, np.zeros_like(q_arm), arm_indices)
+    report["gripper_position_hold"] = _set_joint_positions_best_effort(robot, q_gripper, gripper_indices)
+    report["gripper_velocity_zero"] = _set_joint_velocities_best_effort(
+        robot,
+        np.zeros_like(q_gripper),
+        gripper_indices,
+    )
+    return report
+
+
+def _set_robot_root_to_nav_pose(robot, nav_pose: dict[str, Any], root_z: float) -> dict[str, Any]:
+    import numpy as np
+    from source.navigation.adapters.frame_utils import yaw_to_quat_wxyz
+
+    report = {
+        "position_xyz": [float(nav_pose["x"]), float(nav_pose["y"]), float(root_z)],
+        "yaw": float(nav_pose["yaw"]),
+    }
+    robot.set_world_pose(
+        position=np.asarray(report["position_xyz"], dtype=float),
+        orientation=np.asarray(yaw_to_quat_wxyz(report["yaw"]), dtype=float),
+    )
+    robot.set_linear_velocity(np.zeros(3, dtype=float))
+    robot.set_angular_velocity(np.zeros(3, dtype=float))
+    report["success"] = True
+    return report
+
+
+def _make_tcp_relative_object_clamp(stage, object_prim_path: str, tcp_to_object_matrix, *, sample_limit: int = 12):
+    import numpy as np
+
+    state: dict[str, Any] = {
+        "enabled": True,
+        "object_prim_path": object_prim_path,
+        "object_carried_relative_to": "tcp",
+        "tcp_to_object_transform": _matrix_pose_report(tcp_to_object_matrix, frame="tcp"),
+        "clamp_count": 0,
+        "max_pre_clamp_error_m": 0.0,
+        "samples": [],
+    }
+    T_tcp_object = np.asarray(tcp_to_object_matrix, dtype=float)
+
+    async def clamp_callback(**kwargs):
+        if not state.get("enabled", False):
+            return
+        segment_name = str(kwargs.get("segment_name", ""))
+        T_tcp_current, tcp_report = _tcp_world_matrix(stage)
+        T_object_target = T_tcp_current @ T_tcp_object
+        try:
+            T_object_pre, object_pre_report = _dynamic_object_world_matrix(stage, object_prim_path)
+            pre_error_m = _matrix_translation_error_m(T_object_pre, T_object_target)
+            state["max_pre_clamp_error_m"] = max(float(state["max_pre_clamp_error_m"]), pre_error_m)
+        except Exception as exc:
+            object_pre_report = {"error": str(exc)}
+            pre_error_m = None
+        object_apply = _set_dynamic_object_world_matrix(
+            stage,
+            object_prim_path,
+            T_object_target,
+            reset_xform_stack=False,
+        )
+        velocity_zero = _zero_object_velocity_if_dynamic(
+            stage,
+            object_prim_path,
+            label=f"tcp_relative_clamp:{segment_name}",
+        )
+        state["clamp_count"] += 1
+        if len(state["samples"]) < sample_limit or (pre_error_m is not None and pre_error_m > 0.04):
+            state["samples"].append(
+                {
+                    "phase": kwargs.get("phase"),
+                    "segment_name": segment_name,
+                    "step_index": kwargs.get("step_index"),
+                    "pre_clamp_error_m": pre_error_m,
+                    "tcp": tcp_report,
+                    "object_pre_clamp": object_pre_report,
+                    "object_pose_apply": object_apply,
+                    "velocity_zero": velocity_zero,
+                }
+            )
+
+    return state, clamp_callback
 
 
 def _named_pose_entry(T_base_pose, T_world_pose) -> dict[str, Any]:
@@ -1994,7 +2375,12 @@ def _place_target_workspace_diagnostics(target_poses: dict[str, Any]) -> dict[st
     return diagnostics
 
 
-def _validate_arm_place_target_workspace(target: dict[str, Any], *, task_nav_to_place: str | None) -> None:
+def _validate_arm_place_target_workspace(
+    target: dict[str, Any],
+    *,
+    task_nav_to_place: str | None,
+    nav_place_result_final_base_pose_world: dict[str, Any] | None = None,
+) -> None:
     workspace = (target.get("diagnostics") or {}).get("target_workspace_base") or {}
     violations: list[dict[str, Any]] = []
     for name in ("pre_place", "place", "retreat"):
@@ -2018,10 +2404,13 @@ def _validate_arm_place_target_workspace(target: dict[str, Any], *, task_nav_to_
         "place_target_unreachable_from_current_base",
         (
             "task_nav_to_place.place.place_pose_world is outside the current arm workspace; "
-            "arm-place mode does not run or restore nav_to_place."
+            "arm-place planning is skipped before calling cuRobo."
         ),
         {
             "task_nav_to_place": _required_path_text(task_nav_to_place, "task-nav-to-place"),
+            "nav_place_result": {
+                "final_base_pose_world": nav_place_result_final_base_pose_world,
+            },
             "place_pose_world": (target.get("source") or {}).get("place_pose_world"),
             "target_workspace_base": workspace,
             "workspace_limits": {
@@ -2278,6 +2667,7 @@ async def _execute_arm_place_plan(
     object_prim_path: str,
     place: dict[str, Any],
     settle_steps: int,
+    restore_place_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     import omni.usd
     import numpy as np
@@ -2299,8 +2689,14 @@ async def _execute_arm_place_plan(
 
     stage = omni.usd.get_context().get_stage()
     object_bbox_before = pick_handoff._compute_world_bbox(stage, object_prim_path) if stage is not None else None
+    try:
+        root_before_arm_place = pick_handoff._robot_root_report(robot)
+    except Exception as exc:
+        root_before_arm_place = {"read_error": str(exc)}
     dof_names = exec_module.get_dof_names(robot)
     arm_indices = exec_module.get_joint_indices(dof_names, plan["joint_names"])
+    if hasattr(exec_module, "require_joint_indices"):
+        arm_indices = exec_module.require_joint_indices(arm_indices, label="arm_place:arm_indices")
     gripper_joint_names: list[str] = []
     for segment in plan.get("segments", []):
         if segment.get("type") == "gripper":
@@ -2309,6 +2705,11 @@ async def _execute_arm_place_plan(
     if not gripper_joint_names:
         raise DemoFailure("arm_place_failed", "arm-place plan has no gripper open segment.")
     gripper_indices = exec_module.get_joint_indices(dof_names, gripper_joint_names)
+    if hasattr(exec_module, "require_joint_indices"):
+        gripper_indices = exec_module.require_joint_indices(
+            gripper_indices,
+            label="arm_place:gripper_indices",
+        )
 
     logs: list[dict[str, Any]] = []
     last_motion_q_final = None
@@ -2316,10 +2717,73 @@ async def _execute_arm_place_plan(
     object_bbox_after_open = None
     tracking_failure_reason = ""
     opened_gripper = False
+    object_kinematic_until_release = bool((restore_place_report or {}).get("object_kinematic_until_release", False))
+    release_dynamic_restore = None
+    release_velocity_reset = None
+    clamp_state = None
+    clamp_callback = None
+    if object_kinematic_until_release and stage is not None:
+        tcp_to_object_matrix = ((restore_place_report or {}).get("tcp_to_object_transform_before") or {}).get("matrix_4x4")
+        if tcp_to_object_matrix is None:
+            T_tcp_now, _ = _tcp_world_matrix(stage)
+            T_object_now, _ = _dynamic_object_world_matrix(stage, object_prim_path)
+            tcp_to_object_matrix = (np.linalg.inv(T_tcp_now) @ T_object_now).tolist()
+        clamp_state, clamp_callback = _make_tcp_relative_object_clamp(
+            stage,
+            object_prim_path,
+            tcp_to_object_matrix,
+        )
+    object_carry_step_callback_enabled = bool(clamp_callback is not None)
 
     for segment in plan.get("segments", []):
         if segment.get("type") == "motion":
-            motion_log = await exec_module.execute_motion_segment(world, robot, arm_indices, segment)
+            segment_name = str(segment.get("name") or "")
+            step_callback = (
+                clamp_callback
+                if clamp_callback is not None and segment_name in {"move_to_pre_place", "approach_to_place"}
+                else None
+            )
+            # 读取当前完整关节状态。
+            q_full_hold = exec_module.get_joint_positions_checked(
+                robot,
+                min_size=exec_module.required_joint_vector_size(arm_indices),
+                label="arm_place_before_execute",
+            )
+
+            # 获取夹爪关节索引。
+            # arm_joint7 / arm_joint8 是夹爪，不应该当作狗腿保持关节。
+            dof_names = exec_module.get_dof_names(robot)
+            gripper_indices = exec_module.get_joint_indices(
+                dof_names,
+                ["arm_joint7", "arm_joint8"],
+            )
+
+            # 四足腿部关节 = 全部关节 - 机械臂关节 - 夹爪关节。
+            controlled = set(int(i) for i in arm_indices) | set(int(i) for i in gripper_indices)
+            support_indices = [
+                i for i in range(q_full_hold.size)
+                if i not in controlled
+            ]
+
+            support_positions = q_full_hold[support_indices].copy()
+
+            print(
+                "[arm-place] hold support joints:",
+                {
+                    "support_indices": support_indices,
+                    "support_positions": support_positions.tolist(),
+                },
+                flush=True,
+            )
+            motion_log = await exec_module.execute_motion_segment(
+                world,
+                robot,
+                arm_indices,
+                segment,
+                hold_indices=support_indices,
+                hold_positions=support_positions,
+                step_callback=step_callback,
+            )
             logs.append(motion_log)
             last_motion_q_final = np.asarray(segment["trajectory"]["q"][-1], dtype=float)
             if segment.get("name") == "approach_to_place":
@@ -2332,6 +2796,47 @@ async def _execute_arm_place_plan(
         elif segment.get("type") == "gripper":
             if segment.get("name") != "open_gripper":
                 raise DemoFailure("arm_place_failed", f"unexpected arm-place gripper segment: {segment.get('name')}")
+            if object_kinematic_until_release and release_dynamic_restore is None:
+                if clamp_callback is not None:
+                    await clamp_callback(
+                        phase="before_open_gripper_release",
+                        segment_name=str(segment.get("name") or "open_gripper"),
+                        step_index=-1,
+                    )
+                freeze_report = (restore_place_report or {}).get("object_freeze_report")
+                if not isinstance(freeze_report, dict):
+                    raise DemoFailure(
+                        "arm_place_failed",
+                        "object_kinematic_until_release=true but restore_place_report.object_freeze_report is missing.",
+                        {"restore_place_report": restore_place_report or {}},
+                    )
+                release_dynamic_restore = _restore_object_kinematic_enabled(stage, freeze_report)
+                if clamp_state is not None:
+                    clamp_state["enabled"] = False
+                dynamic_restored = any(
+                    bool(item.get("success", False))
+                    and not bool(item.get("kinematic_enabled_after_restore", True))
+                    for item in release_dynamic_restore.get("rigid_bodies", [])
+                )
+                if not dynamic_restored:
+                    raise DemoFailure(
+                        "arm_place_failed",
+                        "failed to restore object dynamic before open_gripper release.",
+                        {"object_dynamic_restore_before_release": release_dynamic_restore},
+                    )
+                try:
+                    release_velocity_reset = pick_handoff.reset_object_physics_state(
+                        object_prim_path,
+                        zero_linear_velocity=True,
+                        zero_angular_velocity=True,
+                        wake=True,
+                    )
+                except Exception as exc:
+                    release_velocity_reset = {
+                        "applied": False,
+                        "error": str(exc),
+                        "warning": "reset_object_physics_state_failed_before_open_gripper",
+                    }
             gripper_log = await exec_module.execute_gripper_segment(
                 world,
                 robot,
@@ -2353,6 +2858,10 @@ async def _execute_arm_place_plan(
 
     _settle_world(world, settle_steps)
     object_bbox_after = pick_handoff._compute_world_bbox(stage, object_prim_path) if stage is not None else None
+    try:
+        root_after_arm_place = pick_handoff._robot_root_report(robot)
+    except Exception as exc:
+        root_after_arm_place = {"read_error": str(exc)}
     verification = _verify_mvp_place(
         dict(place["place_pose_world"]),
         object_bbox_after,
@@ -2369,6 +2878,12 @@ async def _execute_arm_place_plan(
             "object_teleported": False,
             "physical_place_continuity": True,
             "physical_nav_continuity": PHYSICAL_NAV_CONTINUITY,
+            "object_kinematic_until_release": object_kinematic_until_release,
+            "object_dynamic_restored_before_release": bool(
+                release_dynamic_restore and release_dynamic_restore.get("applied", False)
+            ),
+            "object_carry_step_callback_enabled": object_carry_step_callback_enabled,
+            "robot_root_pose_modified_during_arm_place": False,
         }
     )
     result = {
@@ -2383,9 +2898,21 @@ async def _execute_arm_place_plan(
         "arm_joint_indices": dict(zip(plan["joint_names"], arm_indices)),
         "gripper_joint_indices": dict(zip(gripper_joint_names, gripper_indices)),
         "object_bbox_before": object_bbox_before,
+        "root_before_arm_place": root_before_arm_place,
+        "root_after_arm_place": root_after_arm_place,
+        "robot_root_pose_modified_during_arm_place": False,
         "object_bbox_at_place_pose": object_bbox_at_place_pose,
         "object_bbox_after_open_gripper": object_bbox_after_open,
         "object_bbox_after": object_bbox_after,
+        "object_pose_clamped_to_tcp": object_carry_step_callback_enabled,
+        "object_carry_step_callback_enabled": object_carry_step_callback_enabled,
+        "max_tcp_object_error_m": (
+            clamp_state.get("max_pre_clamp_error_m") if isinstance(clamp_state, dict) else None
+        ),
+        "object_kinematic_until_release": object_kinematic_until_release,
+        "object_dynamic_restore_before_release": release_dynamic_restore,
+        "object_velocity_reset_before_release": release_velocity_reset,
+        "object_tcp_clamp_during_arm_place": clamp_state,
         "verification": verification,
         "execution_logs": logs,
         "summary": summary,
@@ -2411,7 +2938,6 @@ async def _restore_place_base_with_kinematic_object_carry(
     import omni.kit.app
     import omni.usd
     from scripts.isaac import run_pick_from_nav_result as pick_handoff
-    from source.navigation.adapters.frame_utils import yaw_to_quat_wxyz
 
     stage = omni.usd.get_context().get_stage()
     if stage is None:
@@ -2426,6 +2952,7 @@ async def _restore_place_base_with_kinematic_object_carry(
     T_object_before, object_before_report = _dynamic_object_world_matrix(stage, object_prim_path)
     T_tcp_object = np.linalg.inv(T_tcp_before) @ T_object_before
     object_bbox_before = pick_handoff._compute_world_bbox(stage, object_prim_path)
+    joint_hold_state = _capture_arm_gripper_hold_state(robot)
 
     old_root_matrix = _planar_pose_matrix(
         float(root_before["position_xyz"][0]),
@@ -2443,14 +2970,14 @@ async def _restore_place_base_with_kinematic_object_carry(
     fallback_tcp_after_root_restore = root_delta_world @ T_tcp_before
 
     freeze_report = _set_object_kinematic_enabled(stage, object_prim_path, True)
-    velocity_zero_before_restore = _zero_object_velocity_best_effort(stage, object_prim_path)
-
-    robot.set_world_pose(
-        position=np.asarray([float(nav_pose["x"]), float(nav_pose["y"]), root_z], dtype=float),
-        orientation=np.asarray(yaw_to_quat_wxyz(float(nav_pose["yaw"])), dtype=float),
+    velocity_zero_before_restore = _zero_object_velocity_if_dynamic(
+        stage,
+        object_prim_path,
+        label="after_freeze_before_base_restore",
     )
-    robot.set_linear_velocity(np.zeros(3, dtype=float))
-    robot.set_angular_velocity(np.zeros(3, dtype=float))
+
+    initial_root_hold = _set_robot_root_to_nav_pose(robot, nav_pose, root_z)
+    initial_joint_hold = _apply_arm_gripper_hold(robot, joint_hold_state)
 
     def _current_tcp_or_fallback(label: str) -> tuple[Any, dict[str, Any]]:
         try:
@@ -2495,7 +3022,11 @@ async def _restore_place_base_with_kinematic_object_carry(
         T_object_initial_target,
         reset_xform_stack=False,
     )
-    initial_velocity_zero = _zero_object_velocity_best_effort(stage, object_prim_path)
+    initial_velocity_zero = _zero_object_velocity_if_dynamic(
+        stage,
+        object_prim_path,
+        label="initial_after_root_set",
+    )
 
     clamp_samples: list[dict[str, Any]] = []
     tcp_sample_reports: list[dict[str, Any]] = [tcp_initial_report]
@@ -2506,6 +3037,8 @@ async def _restore_place_base_with_kinematic_object_carry(
     sample_steps = {0, 1, 2, max(0, requested_settle_steps - 1)}
     app = omni.kit.app.get_app()
     for step_index in range(requested_settle_steps):
+        root_hold_report = _set_robot_root_to_nav_pose(robot, nav_pose, root_z)
+        joint_hold_report = _apply_arm_gripper_hold(robot, joint_hold_state)
         T_tcp_current, tcp_current_report = _current_tcp_or_fallback(f"settle_step_{step_index}")
         T_object_target = T_tcp_current @ T_tcp_object
         try:
@@ -2526,12 +3059,18 @@ async def _restore_place_base_with_kinematic_object_carry(
             max_live_apply_failed
             or not (object_apply.get("live_rigid_pose_apply") or {}).get("success", False)
         )
-        velocity_zero = _zero_object_velocity_best_effort(stage, object_prim_path)
+        velocity_zero = _zero_object_velocity_if_dynamic(
+            stage,
+            object_prim_path,
+            label=f"kinematic_carry_step_{step_index}",
+        )
         if step_index in sample_steps:
             clamp_samples.append(
                 {
                     "step_index": step_index,
                     "tcp": tcp_current_report,
+                    "root_hold": root_hold_report,
+                    "joint_hold": joint_hold_report,
                     "object_pre_clamp": object_pre_report,
                     "pre_clamp_error_m": pre_clamp_error_m,
                     "object_pose_apply": object_apply,
@@ -2559,7 +3098,11 @@ async def _restore_place_base_with_kinematic_object_carry(
         T_object_final_target,
         reset_xform_stack=False,
     )
-    final_velocity_zero = _zero_object_velocity_best_effort(stage, object_prim_path)
+    final_velocity_zero = _zero_object_velocity_if_dynamic(
+        stage,
+        object_prim_path,
+        label="kinematic_carry_final_clamp",
+    )
 
     try:
         T_object_after_clamp, object_after_clamp_report = _dynamic_object_world_matrix(stage, object_prim_path)
@@ -2575,25 +3118,6 @@ async def _restore_place_base_with_kinematic_object_carry(
         object_bbox_before,
         np.asarray(T_object_after_clamp, dtype=float) @ np.linalg.inv(T_object_before),
     )
-
-    restore_kinematic_report = _restore_object_kinematic_enabled(stage, freeze_report)
-    object_dynamic_restored = all(
-        not bool(item.get("kinematic_enabled_after_restore", item.get("kinematic_enabled_restored_to", True)))
-        for item in restore_kinematic_report.get("rigid_bodies", [])
-    )
-    try:
-        velocity_reset_after_dynamic_restore = pick_handoff.reset_object_physics_state(
-            object_prim_path,
-            zero_linear_velocity=True,
-            zero_angular_velocity=True,
-            wake=True,
-        )
-    except Exception as exc:
-        velocity_reset_after_dynamic_restore = {
-            "applied": False,
-            "error": str(exc),
-            "warning": "reset_object_physics_state_failed_after_dynamic_restore",
-        }
 
     root_after_report_fallback = False
     try:
@@ -2612,6 +3136,16 @@ async def _restore_place_base_with_kinematic_object_carry(
         final_relative_error_m is not None and final_relative_error_m <= transform_preserve_threshold_m
     )
     live_success_final = bool((final_object_apply.get("live_rigid_pose_apply") or {}).get("success", False))
+    object_is_kinematic = _object_has_kinematic_enabled(stage, object_prim_path)
+    object_velocity_zero_skipped_because_kinematic = any(
+        _velocity_report_skipped_because_kinematic(item)
+        for item in (
+            velocity_zero_before_restore,
+            initial_velocity_zero,
+            final_velocity_zero,
+            *(sample.get("velocity_zero") for sample in clamp_samples if isinstance(sample, dict)),
+        )
+    )
     report = {
         "success": True,
         "base_transfer_mode": "restore_nav_place_result_with_kinematic_tcp_relative_object_carry",
@@ -2620,6 +3154,12 @@ async def _restore_place_base_with_kinematic_object_carry(
             if source_nav_result_path
             else "task_nav_to_place.place.base_goal"
         ),
+        "nav_place_result_final_base_pose_world": {
+            "x": float(nav_pose["x"]),
+            "y": float(nav_pose["y"]),
+            "z": float(root_z),
+            "yaw": float(nav_pose["yaw"]),
+        },
         "synthetic_nav_place_result_from_task_base_goal": bool(
             nav_place_result.get("synthetic_from_task_place_base_goal", False)
         ),
@@ -2630,11 +3170,17 @@ async def _restore_place_base_with_kinematic_object_carry(
         "object_freeze_before_base_restore": True,
         "object_freeze_backend": "UsdPhysics.RigidBodyAPI.kinematicEnabled+pose_clamp_each_step",
         "object_pose_synced_during_base_restore": True,
+        "object_pose_clamped_to_tcp": True,
         "object_carried_relative_to": "tcp",
+        "object_is_kinematic": bool(object_is_kinematic),
+        "object_velocity_zero_skipped_because_kinematic": bool(
+            object_velocity_zero_skipped_because_kinematic
+        ),
         "object_dropped_during_base_restore": object_dropped,
         "carried_object_clamped_after_base_restore": True,
-        "object_dynamic_restored_before_arm_place": bool(object_dynamic_restored),
-        "object_kinematic_until_place": bool(not object_dynamic_restored),
+        "object_dynamic_restored_before_arm_place": False,
+        "object_kinematic_until_place": True,
+        "object_kinematic_until_release": True,
         "object_teleported_to_place_pose": False,
         "object_carried_with_base_teleport": True,
         "source_nav_result": _required_path_text(source_nav_result_path, "nav-place-result"),
@@ -2642,6 +3188,9 @@ async def _restore_place_base_with_kinematic_object_carry(
         "root_before": root_before,
         "root_after": root_after,
         "root_after_report_fallback": root_after_report_fallback,
+        "initial_root_hold": initial_root_hold,
+        "joint_hold_state_before_base_restore": joint_hold_state,
+        "initial_joint_hold": initial_joint_hold,
         "object_prim_path": object_prim_path,
         "object_bbox_before_base_restore": object_bbox_before,
         "object_bbox_after_base_restore": expected_bbox_after_clamp or object_bbox_after_clamp_usd,
@@ -2667,13 +3216,19 @@ async def _restore_place_base_with_kinematic_object_carry(
         "object_matrix_before_base_restore": object_before_report,
         "object_matrix_after_carry_clamp": object_after_clamp_report,
         "object_freeze_report": freeze_report,
-        "object_kinematic_restore_report": restore_kinematic_report,
+        "object_kinematic_restore_report": None,
         "object_velocity_zero_before_base_restore": velocity_zero_before_restore,
         "object_velocity_zero_initial_after_root_set": initial_velocity_zero,
         "object_velocity_zero_after_carry_clamp": final_velocity_zero,
-        "object_velocity_reset_after_dynamic_restore": velocity_reset_after_dynamic_restore,
+        "object_velocity_reset_after_dynamic_restore": None,
         "pose_clamp_samples": clamp_samples,
+        "object_carry_step_callback_enabled": False,
+        "robot_root_velocity_zeroed_after_restore": True,
+        "robot_root_pose_modified_during_arm_place": False,
         "live_rigid_body_pose_apply_success": live_success_final and not max_live_apply_failed,
+        "max_tcp_object_error_m": (
+            float(max_pre_clamp_error_m) if pre_clamp_error_count > 0 else None
+        ),
         "root_carry_transform": {
             "old_root_xyyaw": [
                 float(root_before["position_xyz"][0]),
@@ -2698,6 +3253,7 @@ async def _restore_place_base_with_kinematic_object_carry(
             "object_dropped": report["object_dropped_during_base_restore"],
             "max_tcp_error_m": report["max_object_tcp_relative_error_m"],
             "dynamic_restored": report["object_dynamic_restored_before_arm_place"],
+            "kinematic_until_release": report["object_kinematic_until_release"],
         },
         flush=True,
     )
@@ -2887,7 +3443,13 @@ async def _run_arm_place_put(
         object_bbox_before_place,
     )
     _write_json(target_json, target)
-    _validate_arm_place_target_workspace(target, task_nav_to_place=args.task_nav_to_place)
+    _validate_arm_place_target_workspace(
+        target,
+        task_nav_to_place=args.task_nav_to_place,
+        nav_place_result_final_base_pose_world=(restore_place_report or {}).get(
+            "nav_place_result_final_base_pose_world"
+        ),
+    )
     try:
         plan = _plan_arm_place_external(
             state_json,
@@ -2921,6 +3483,7 @@ async def _run_arm_place_put(
         object_prim_path=object_prim_path,
         place=place,
         settle_steps=settle_steps,
+        restore_place_report=restore_place_report,
     )
     verification = execution.get("verification", {})
     summary = execution.get("summary", {})
@@ -2948,6 +3511,9 @@ async def _run_arm_place_put(
             if (restore_place_report or {}).get("object_bbox_after_base_restore")
             else "usd_bbox"
         ),
+        "object_kinematic_until_release": execution.get("object_kinematic_until_release"),
+        "object_dynamic_restore_before_release": execution.get("object_dynamic_restore_before_release"),
+        "object_tcp_clamp_during_arm_place": execution.get("object_tcp_clamp_during_arm_place"),
         "object_bbox_after": execution.get("object_bbox_after"),
         "verification": verification,
         "elapsed_wall_time_s": time.time() - started_at,
@@ -2966,12 +3532,27 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
     raw_task_place = _read_json(task_place_path, missing_reason="missing_task_nav_to_place")
     nav_pick_result = _read_json(args.nav_pick_result, missing_reason="missing_nav_pick_result")
     _validate_nav_result(nav_pick_result, reason="missing_nav_pick_result")
+
     nav_place_result = None
-    if args.put_mode == "mvp-reconstruct" or args.nav_place_result:
+
+    if args.put_mode == "mvp-reconstruct":
+        # MVP reconstruct 需要 place base，因为它本质是把物体重建到 place_pose_world。
         nav_place_result = _read_json(args.nav_place_result, missing_reason="missing_nav_place_result")
         _validate_nav_result(nav_place_result, reason="missing_nav_place_result")
-    elif args.put_mode == "arm-place":
-        nav_place_result = _nav_place_result_from_task_base_goal(raw_task_place)
+
+    elif args.put_mode == "arm-place" and args.restore_nav_place_for_arm_place:
+        # 只有显式打开 restore-nav-place-for-arm-place 时，
+        # 才允许 arm-place 使用 nav_place_result 或 task.place.base_goal。
+        if args.nav_place_result:
+            nav_place_result = _read_json(args.nav_place_result, missing_reason="missing_nav_place_result")
+            _validate_nav_result(nav_place_result, reason="missing_nav_place_result")
+        else:
+            nav_place_result = _nav_place_result_from_task_base_goal(raw_task_place)
+
+    else:
+        # 默认 local arm-place：
+        # 不合成 nav_place_result，避免后面误触发 base restore。
+        nav_place_result = None
 
     scene_usd = _project_path(args.scene_usd or raw_task_pick["scene_usd"])
     if raw_task_place.get("scene_usd") and _project_path(raw_task_place["scene_usd"]) != scene_usd:
@@ -3081,12 +3662,52 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
             "executed": False,
             "replay_trajectory_path": (nav_place_result or {}).get("replay_trajectory_path"),
             "reason": (
-                "not_implemented_first_version_uses_tcp_relative_carried_restore_only"
-                if args.replay_nav_to_place
-                else "disabled"
+                "restore_nav_place_for_arm_place_enabled"
+                if args.restore_nav_place_for_arm_place
+                else "disabled_for_local_arm_place"
             ),
             "replay_nav_place_with_carried_object": bool(args.replay_nav_place_with_carried_object),
         }
+
+        if args.restore_nav_place_for_arm_place:
+            # 显式打开时才执行：恢复 place base + TCP 相对物体携带。
+            try:
+                result["stages"]["restore_place_base"] = await _restore_place_base_with_kinematic_object_carry(
+                    world,
+                    robot,
+                    nav_place_result,
+                    task_pick.pick.object_prim_path,
+                    source_nav_result_path=args.nav_place_result,
+                    settle_steps=int(args.settle_steps),
+                )
+            except Exception as exc:
+                raise DemoFailure("restore_place_base_failed", str(exc), getattr(exc, "report", None)) from exc
+        else:
+            # 默认路线：不恢复 place base，不做 kinematic carry。
+            result["stages"]["restore_place_base"] = {
+                "success": True,
+                "skipped": True,
+                "reason": "local_arm_place_keeps_current_pick_base",
+                "base_transfer_mode": "no_base_transfer_for_local_arm_place",
+                "physical_nav_continuity": PHYSICAL_NAV_CONTINUITY,
+                "physical_carry_nav": False,
+                "stable_carry_implemented": False,
+                "fixed_joint_carry_implemented": False,
+                "object_freeze_before_base_restore": False,
+                "object_pose_synced_during_base_restore": False,
+                "object_carried_relative_to": "none",
+                "object_dropped_during_base_restore": False,
+                "object_kinematic_until_place": False,
+                "object_kinematic_until_release": False,
+                "object_carried_with_base_teleport": False,
+                "object_pose_clamped_to_tcp": False,
+                "object_carry_step_callback_enabled": False,
+                "object_is_kinematic": False,
+                "object_velocity_zero_skipped_because_kinematic": False,
+                "robot_root_velocity_zeroed_after_restore": False,
+                "robot_root_pose_modified_during_arm_place": False,
+                "max_tcp_object_error_m": None,
+            }
         if args.replay_nav_to_place:
             result.setdefault("warnings", []).append(
                 {
@@ -3094,17 +3715,6 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
                     "detail": "First stable arm-place version uses TCP-relative carried restore instead of replaying nav_to_place.",
                 }
             )
-        try:
-            result["stages"]["restore_place_base"] = await _restore_place_base_with_kinematic_object_carry(
-                world,
-                robot,
-                nav_place_result,
-                task_pick.pick.object_prim_path,
-                source_nav_result_path=args.nav_place_result,
-                settle_steps=int(args.settle_steps),
-            )
-        except Exception as exc:
-            raise DemoFailure("restore_place_base_failed", str(exc), getattr(exc, "report", None)) from exc
     else:
         result["stages"]["restore_place_base"] = {
             "success": True,
@@ -3162,6 +3772,12 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
             "object_dropped_during_base_restore": restore_place_stage.get("object_dropped_during_base_restore"),
             "carried_object_clamped_after_base_restore": restore_place_stage.get("carried_object_clamped_after_base_restore"),
             "object_dynamic_restored_before_arm_place": restore_place_stage.get("object_dynamic_restored_before_arm_place"),
+            "object_kinematic_until_release": restore_place_stage.get("object_kinematic_until_release"),
+            "object_dynamic_restored_before_release": (
+                (put_report.get("execution_summary") or {}).get("object_dynamic_restored_before_release")
+                if isinstance(put_report.get("execution_summary"), dict)
+                else None
+            ),
             "stable_carry_implemented": bool(restore_place_stage.get("stable_carry_implemented", False)),
             "fixed_joint_carry_implemented": bool(restore_place_stage.get("fixed_joint_carry_implemented", False)),
             "updated_at": time.time(),

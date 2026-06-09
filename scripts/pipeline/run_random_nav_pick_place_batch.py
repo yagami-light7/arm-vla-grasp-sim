@@ -219,7 +219,23 @@ def _parse_args() -> argparse.Namespace:
         "--skip-nav-place-for-local-arm-place",
         action=argparse.BooleanOptionalAction,
         default=False,
+        help=(
+            "当使用 single-stage-07 + arm-place 时，是否跳过 nav_to_place。"
+            "默认不跳过：nav_to_place 仍 headless 预计算，是否在 07 中恢复到 place base "
+            "由 --restore-nav-place-for-arm-place 单独控制。"
+        ),
     )
+    parser.add_argument(
+        "--restore-nav-place-for-arm-place",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "arm-place 阶段是否恢复到 nav_to_place 的 base 位姿。"
+            "默认关闭。关闭后，07 会在 pick 后的当前 base 位姿附近做局部放置，"
+            "不会把四足恢复/瞬移到 place base，也不会启用携带物体的 base restore。"
+        ),
+    )
+
     parser.add_argument("--terrain-prim-path", default="/World/scene_collision")
     return parser.parse_args()
 
@@ -489,6 +505,16 @@ def _single_stage_07_command(
         command.append("--side-grasp-fallback-retreat")
     if args.show_grasp_trajectory:
         command.append("--show-grasp-trajectory")
+    if args.single_stage_put_mode == "arm-place":
+        if args.restore_nav_place_for_arm_place:
+            command.append("--restore-nav-place-for-arm-place")
+        else:
+            # 当前默认路线：
+            # pick 后保持当前四足 base，不恢复 nav_to_place base。
+            command.append("--no-restore-nav-place-for-arm-place")
+
+            # 不做“带着苹果回放/恢复 nav_to_place”的实验逻辑。
+            command.append("--no-replay-nav-place-with-carried-object")
     return command
 
 
@@ -512,6 +538,8 @@ def _stage_excerpt(payload: dict[str, Any] | None) -> dict[str, Any]:
         "object_dropped_during_base_restore",
         "carried_object_clamped_after_base_restore",
         "object_dynamic_restored_before_arm_place",
+        "object_kinematic_until_release",
+        "object_dynamic_restored_before_release",
         "physical_carry_nav",
         "stable_carry_implemented",
         "fixed_joint_carry_implemented",
@@ -583,6 +611,10 @@ def _single_stage_stage_summary(
                 "object_dropped_during_base_restore": result.get("object_dropped_during_base_restore")
                 if "object_dropped_during_base_restore" in result
                 else (result_stages.get("restore_place_base") or {}).get("object_dropped_during_base_restore"),
+                "object_kinematic_until_release": result.get("object_kinematic_until_release")
+                if "object_kinematic_until_release" in result
+                else (result_stages.get("restore_place_base") or {}).get("object_kinematic_until_release"),
+                "object_dynamic_restored_before_release": result.get("object_dynamic_restored_before_release"),
             }
         )
     return summary
@@ -789,6 +821,8 @@ def _batch_row_from_summary(summary: dict[str, Any], *, started_at: float, task:
         "single_stage_physical_put_execution": single_stage.get("physical_put_execution"),
         "base_transfer_mode": single_stage.get("base_transfer_mode"),
         "object_dropped_during_base_restore": single_stage.get("object_dropped_during_base_restore"),
+        "object_kinematic_until_release": single_stage.get("object_kinematic_until_release"),
+        "object_dynamic_restored_before_release": single_stage.get("object_dynamic_restored_before_release"),
         "success": bool(summary.get("success", False)),
         "failure_reason": str(summary.get("failure_reason", "")),
         "elapsed_wall_time_s": time.time() - started_at,
@@ -922,7 +956,15 @@ def _run_episode(args: argparse.Namespace, episode_index: int, episode_seed: int
             episode_seed=episode_seed,
             spawn_region=spawn_region,
         )
+        # 确保place字段存在
         task = _ensure_place_goal(task, args)
+        # 是否跳过nav_to_place
+        if(
+            args.manipulation_backend == "single-stage-07"
+            and args.single_stage_put_mode == "arm-place"
+            and args.skip_nav_place_for_local_arm_place
+        ):
+            task = _make_local_arm_place_goal(task)
     except (RandomTaskGenerationError, ValueError, FileNotFoundError) as exc:
         summary = _base_episode_summary(episode_index, episode_seed, episode_dir, task_nav_to_pick_path)
         _finalize_failure(summary, "task_generation_failed", str(exc))
@@ -1142,6 +1184,67 @@ def _run_episode(args: argparse.Namespace, episode_index: int, episode_seed: int
     print(f"[pick-place-batch] episode={episode_index} success")
     return True
 
+# pick之后put苹果在原来位姿附近，仅测试place能力
+def _make_local_arm_place_goal(task: dict[str, Any]) -> dict[str, Any]:
+    #拷贝原字段
+    task = copy.deepcopy(task)
+
+    # 取出 pick 字段。
+    pick = dict(task.get("pick") or {})
+    place = dict(task.get("place") or {})
+
+    # 读取 apple 的世界坐标。
+    object_pose = dict(pick.get("object_pose_world") or {})
+
+    # 读取 pick base goal。
+    base_goal = dict(pick.get("base_goal") or {})
+
+    # 如果没有字段就跳过
+    if not {"x", "y", "z"}.issubset(object_pose):
+        return task
+
+    # 局部放置点：放回原处
+    place_x = float(object_pose["x"])
+    place_y = float(object_pose["y"])
+    place_z = float(object_pose["z"])
+
+    # 启用 place，并写入局部 place_pose_world。
+    place["enabled"] = True
+    place["place_pose_world"] = {
+        "x": place_x,
+        "y": place_y,
+        "z": place_z,
+
+        "roll": float(object_pose.get("roll", 0.0)),
+        "pitch": float(object_pose.get("pitch", 0.0)),
+        "yaw": float(object_pose.get("yaw", 0.0)),
+    }
+
+    place["base_goal"] = {
+        "x": float(base_goal.get("x", place_x)),
+        "y": float(base_goal.get("y", place_y)),
+        "yaw": float(base_goal.get("yaw", 0.0)),
+    }
+
+    # 放置相关容差。
+    place["release_height"] = float(place.get("release_height", 0.04))
+    place["retreat_height"] = float(place.get("retreat_height", 0.12))
+    place["place_xy_tolerance"] = float(place.get("place_xy_tolerance", 0.10))
+    place["place_z_tolerance"] = float(place.get("place_z_tolerance", 0.08))
+
+    task["place"] = place
+
+    # 在 randomization 里记录这次 place 目标是脚本自动生成的。
+    # 这样以后看 summary/result 时能知道当前不是远处 place，而是局部 place。
+    randomization = dict(task.get("randomization") or {})
+    randomization["local_arm_place_goal"] = {
+        "enabled": True,
+        "reason": "single-stage-07 的 arm-place 第一版跳过 nav_to_place，因此使用 apple 附近的局部放置点。",
+        "place_offset_from_object_xy_m": [0.15, 0.0],
+    }
+    task["randomization"] = randomization
+
+    return task
 
 def main() -> int:
     args = _parse_args()
@@ -1154,7 +1257,6 @@ def main() -> int:
         args.goal_yaw_tolerance = math.pi
         args.terminal_yaw_tolerance = math.pi
         args.final_yaw_tolerance_margin = 0.0
-
     output_task_dir = Path(args.output_task_dir).expanduser().resolve()
     dataset_root = Path(args.dataset_root).expanduser().resolve()
     summary_jsonl = dataset_root / "batch_summary.jsonl"

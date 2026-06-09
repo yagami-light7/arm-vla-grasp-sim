@@ -29,6 +29,7 @@ Go2-X5 抓取序列执行 demo。
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 from pathlib import Path
@@ -222,6 +223,51 @@ def make_partial_action(target_positions, joint_indices, q_full_current):
         q_full_target = np.asarray(q_full_current, dtype=float).copy()
         q_full_target[joint_indices_list] = target_positions
         return ArticulationAction(joint_positions=q_full_target)
+
+
+async def maybe_run_step_callback(step_callback, **kwargs):
+    if step_callback is None:
+        return None
+    try:
+        signature = inspect.signature(step_callback)
+        accepts_keywords = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
+        has_named_parameters = any(
+            parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+            for parameter in signature.parameters.values()
+        )
+    except (TypeError, ValueError):
+        accepts_keywords = True
+        has_named_parameters = True
+    if accepts_keywords or has_named_parameters:
+        result = step_callback(**kwargs)
+    else:
+        result = step_callback()
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+def required_joint_vector_size(*index_groups) -> int:
+    indices = []
+    for group in index_groups:
+        if group is None:
+            continue
+        indices.extend(int(index) for index in group)
+    if not indices:
+        return 0
+    return max(indices) + 1
+
+
+def require_joint_indices(joint_indices, *, label: str) -> list[int]:
+    if joint_indices is None:
+        raise RuntimeError(f"{label}: joint_indices is None")
+    indices = [int(index) for index in joint_indices]
+    if not indices:
+        raise RuntimeError(f"{label}: joint_indices is empty")
+    return indices
 
 
 def make_gripper_action_with_optional_arm_hold(
@@ -504,9 +550,14 @@ def draw_motion_segments(stage, segments):
             UsdGeom.Gprim(sphere.GetPrim()).CreateDisplayColorAttr([Gf.Vec3f(*color)])
 
 
-async def settle_arm_to_start(world, robot, arm_indices, q_start, label: str):
+async def settle_arm_to_start(world, robot, arm_indices, q_start, label: str, step_callback=None):
     """执行某段轨迹前，平滑移动到该段起点，避免规划状态和当前仿真状态有小偏差。"""
-    q_full_initial = safe_numpy(robot.get_joint_positions()).copy()
+    arm_indices = require_joint_indices(arm_indices, label=f"{label}:settle_arm_to_start")
+    q_full_initial = get_joint_positions_checked(
+        robot,
+        min_size=required_joint_vector_size(arm_indices),
+        label=f"{label}:settle_initial",
+    ).copy()
     q_arm_initial = q_full_initial[arm_indices].copy()
     q_start = np.asarray(q_start, dtype=float)
 
@@ -519,17 +570,38 @@ async def settle_arm_to_start(world, robot, arm_indices, q_start, label: str):
         s = smoothstep5(u)
         q_target = (1.0 - s) * q_arm_initial + s * q_start
 
-        q_full_now = safe_numpy(robot.get_joint_positions()).copy()
+        q_full_now = get_joint_positions_checked(
+            robot,
+            min_size=required_joint_vector_size(arm_indices),
+            label=f"{label}:before_apply_action",
+        ).copy()
         action = make_partial_action(q_target, arm_indices, q_full_now)
 
         robot.apply_action(action)
         world.step(render=True)
+        await maybe_run_step_callback(
+            step_callback,
+            phase="settle_arm_to_start",
+            segment_name=label,
+            step_index=step,
+            q_arm_target=q_target,
+        )
         await omni.kit.app.get_app().next_update_async()
 
 
-async def execute_motion_segment(world, robot, arm_indices, segment):
+async def execute_motion_segment(
+    world,
+    robot,
+    arm_indices,
+    segment,
+    *,
+    hold_indices=None,
+    hold_positions=None,
+    step_callback=None,
+):
     """执行一个 arm motion segment。"""
     name = segment["name"]
+    arm_indices = require_joint_indices(arm_indices, label=f"{name}:execute_motion_segment")
     traj = segment["trajectory"]
 
     time_from_start = np.asarray(traj["time_from_start"], dtype=float)
@@ -539,7 +611,7 @@ async def execute_motion_segment(world, robot, arm_indices, segment):
     if q_traj.shape[0] != time_from_start.shape[0]:
         raise RuntimeError(f"{name}: q 和 time_from_start 长度不一致。")
 
-    await settle_arm_to_start(world, robot, arm_indices, q_traj[0], name)
+    await settle_arm_to_start(world, robot, arm_indices, q_traj[0], name, step_callback=step_callback)
 
     duration = float(time_from_start[-1])
     num_steps = int(np.ceil(duration / SIM_DT)) + 1
@@ -564,14 +636,36 @@ async def execute_motion_segment(world, robot, arm_indices, segment):
         if step % command_period_steps == 0 or step == num_steps - 1:
             q_target = sample_cubic_hermite(time_from_start, q_traj, qd_traj, t)
 
-        q_full_now = safe_numpy(robot.get_joint_positions()).copy()
-        action = make_partial_action(q_target, arm_indices, q_full_now)
+        q_full_now = get_joint_positions_checked(
+            robot,
+            min_size=required_joint_vector_size(arm_indices, hold_indices),
+            label=f"{name}:before_apply_action",
+        ).copy()
+        action = make_partial_action_with_hold(
+            q_target,
+            arm_indices,
+            q_full_now,
+            hold_indices=hold_indices,
+            hold_positions=hold_positions,
+        )
 
         robot.apply_action(action)
         world.step(render=True)
+        await maybe_run_step_callback(
+            step_callback,
+            phase="execute_motion_segment",
+            segment_name=name,
+            step_index=step,
+            t=float(t),
+            q_arm_target=q_target,
+        )
         await omni.kit.app.get_app().next_update_async()
 
-        q_full_actual = safe_numpy(robot.get_joint_positions())
+        q_full_actual = get_joint_positions_checked(
+            robot,
+            min_size=required_joint_vector_size(arm_indices),
+            label=f"{name}:after_world_step",
+        )
         q_actual = q_full_actual[arm_indices]
         error = float(np.linalg.norm(q_actual - q_target))
 
@@ -591,6 +685,7 @@ async def execute_motion_segment(world, robot, arm_indices, segment):
             arm_indices=arm_indices,
             q_target=q_final,
             label=name,
+            step_callback=step_callback,
         )
     else:
         wait_log = {
@@ -721,13 +816,14 @@ async def execute_return_home_motion(world, robot, arm_indices, q_home):
     return log
 
 
-async def wait_until_arm_reaches_target(world, robot, arm_indices, q_target, label: str):
+async def wait_until_arm_reaches_target(world, robot, arm_indices, q_target, label: str, step_callback=None):
     """
     保持某段 motion 的最终关节目标，等待真实关节追上。
 
     这一步对抓取很重要：
         approach_to_grasp 结束后必须真正到位，才能 close_gripper。
     """
+    arm_indices = require_joint_indices(arm_indices, label=f"{label}:wait_until_arm_reaches_target")
     q_target = np.asarray(q_target, dtype=float)
     max_steps = max(1, int(POST_MOTION_CONVERGENCE_TIMEOUT / SIM_DT))
 
@@ -745,9 +841,20 @@ async def wait_until_arm_reaches_target(world, robot, arm_indices, q_target, lab
 
         robot.apply_action(action)
         world.step(render=True)
+        await maybe_run_step_callback(
+            step_callback,
+            phase="wait_until_arm_reaches_target",
+            segment_name=label,
+            step_index=step,
+            q_arm_target=q_target,
+        )
         await omni.kit.app.get_app().next_update_async()
 
-        q_full_actual = safe_numpy(robot.get_joint_positions())
+        q_full_actual = get_joint_positions_checked(
+            robot,
+            min_size=required_joint_vector_size(arm_indices),
+            label=f"{label}:after_world_step",
+        )
         q_actual = q_full_actual[arm_indices]
         error = float(np.linalg.norm(q_actual - q_target))
 
@@ -797,12 +904,21 @@ async def execute_gripper_segment(
     segment,
     arm_indices=None,
     q_arm_hold=None,
+    step_callback=None,
 ):
     """执行一个 gripper segment。"""
     name = segment["name"]
     q_target = np.asarray(segment["target_position"], dtype=float)
+    if q_arm_hold is not None and arm_indices is None:
+        raise RuntimeError(f"{name}: q_arm_hold was provided but arm_indices is None.")
+    if arm_indices is not None and q_arm_hold is None:
+        raise RuntimeError(f"{name}: arm_indices were provided but q_arm_hold is None.")
 
-    q_full_start = safe_numpy(robot.get_joint_positions()).copy()
+    q_full_start = get_joint_positions_checked(
+        robot,
+        min_size=required_joint_vector_size(gripper_indices),
+        label=f"{name}:gripper_start_read",
+    ).copy()
     q_start = q_full_start[gripper_indices].copy()
 
     num_steps = max(2, int(GRIPPER_MOVE_DURATION / SIM_DT))
@@ -850,9 +966,25 @@ async def execute_gripper_segment(
             q_arm_hold=q_arm_hold,
         )
         world.step(render=True)
+        await maybe_run_step_callback(
+            step_callback,
+            phase="execute_gripper_segment",
+            segment_name=name,
+            step_index=step,
+            q_gripper_target=q_cmd,
+        )
         await omni.kit.app.get_app().next_update_async()
 
-        q_full_actual = safe_numpy(robot.get_joint_positions())
+        if arm_indices is not None and q_arm_hold is not None:
+            active_indices = list(arm_indices) + list(gripper_indices)
+        else:
+            active_indices = list(gripper_indices)
+
+        q_full_actual = get_joint_positions_checked(
+            robot,
+            min_size=required_joint_vector_size(active_indices),
+            label=f"{name}:after_world_step",
+        )
         q_actual = q_full_actual[gripper_indices]
         error = float(np.linalg.norm(q_actual - q_cmd))
 
@@ -875,9 +1007,21 @@ async def execute_gripper_segment(
             q_arm_hold=q_arm_hold,
         )
         world.step(render=True)
+        await maybe_run_step_callback(
+            step_callback,
+            phase="execute_gripper_hold",
+            segment_name=name,
+            step_index=_,
+            q_gripper_target=q_target,
+        )
         await omni.kit.app.get_app().next_update_async()
 
-    q_final = safe_numpy(robot.get_joint_positions())[gripper_indices]
+    q_final_full = get_joint_positions_checked(
+        robot,
+        min_size=required_joint_vector_size(gripper_indices),
+        label=f"{name}:final_gripper_read",
+    )
+    q_final = q_final_full[gripper_indices]
     final_error = float(np.linalg.norm(q_final - q_target))
 
     log["final_q_gripper"] = q_final.tolist()
@@ -948,6 +1092,70 @@ def summarize_logs(logs):
         "mean_gripper_error_norm": float(np.mean(gripper_errors)) if gripper_errors else None,
     }
     return summary
+
+
+def get_joint_positions_checked(robot, *, min_size: int, label: str) -> np.ndarray:
+    """
+    安全读取 articulation 关节角。
+
+    为什么需要这个函数：
+        当机器人翻倒、physics view 失效、或 articulation 没初始化好时，
+        robot.get_joint_positions() 可能返回 None 或 0 维数组。
+        如果直接 q_full[arm_indices]，会报：
+        too many indices for array: array is 0-dimensional
+    """
+    raw = robot.get_joint_positions()
+
+    if raw is None:
+        raise RuntimeError(f"{label}: robot.get_joint_positions() returned None")
+
+    q = safe_numpy(raw)
+
+    if q.ndim != 1:
+        raise RuntimeError(
+            f"{label}: joint position must be 1-D, got shape={q.shape}"
+        )
+
+    if q.size < min_size:
+        raise RuntimeError(
+            f"{label}: joint position size too small, got {q.size}, expected at least {min_size}"
+        )
+
+    return q
+
+
+def make_partial_action_with_hold(
+    target_positions,
+    joint_indices,
+    q_full_current,
+    *,
+    hold_indices=None,
+    hold_positions=None,
+):
+    """
+    构造“主控制关节 + 保持关节”的 ArticulationAction。
+
+    用途：
+        arm-place 执行时，主控制关节是机械臂 arm_joint1~6；
+        hold 关节是四足狗腿关节。
+        这样机械臂运动时，狗腿会持续保持当前站姿，不会因为没有命令而软掉。
+    """
+    target_positions = np.asarray(target_positions, dtype=float)
+    joint_indices_list = [int(index) for index in joint_indices]
+
+    if hold_indices is None or hold_positions is None:
+        return make_partial_action(target_positions, joint_indices_list, q_full_current)
+
+    hold_indices_list = [int(index) for index in hold_indices]
+    hold_positions = np.asarray(hold_positions, dtype=float)
+
+    combined_indices = hold_indices_list + joint_indices_list
+    combined_targets = np.concatenate([hold_positions, target_positions])
+
+    return ArticulationAction(
+        joint_positions=combined_targets,
+        joint_indices=combined_indices,
+    )
 
 
 async def main():

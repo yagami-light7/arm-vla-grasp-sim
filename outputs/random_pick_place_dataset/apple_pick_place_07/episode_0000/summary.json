@@ -46,10 +46,10 @@
     },
     "nav_to_place": {
       "success": true,
-      "returncode": 0,
+      "skipped": true,
       "task_json": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/task_nav_to_place.json",
-      "nav_result": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/nav_place_result.json",
-      "failure_reason": ""
+      "nav_result": null,
+      "reason": "single-stage-07 will use task.place.base_goal"
     },
     "place": {
       "success": false,
@@ -81,18 +81,17 @@
       "pick": {
         "success": true,
         "failure_reason": "",
-        "elapsed_wall_time_s": 12.732087135314941
+        "elapsed_wall_time_s": 13.384159326553345
       },
       "restore_place_base": {
         "success": true,
         "physical_nav_continuity": false,
-        "base_transfer_mode": "restore_nav_place_result_with_kinematic_tcp_relative_object_carry",
-        "object_freeze_before_base_restore": true,
-        "object_pose_synced_during_base_restore": true,
-        "object_carried_relative_to": "tcp",
-        "object_dropped_during_base_restore": true,
-        "carried_object_clamped_after_base_restore": true,
-        "object_dynamic_restored_before_arm_place": true,
+        "base_transfer_mode": "no_base_transfer_for_local_arm_place",
+        "object_freeze_before_base_restore": false,
+        "object_pose_synced_during_base_restore": false,
+        "object_carried_relative_to": "none",
+        "object_dropped_during_base_restore": false,
+        "object_kinematic_until_release": false,
         "physical_carry_nav": false,
         "stable_carry_implemented": false,
         "fixed_joint_carry_implemented": false
@@ -102,8 +101,10 @@
         "failure_reason": "place_target_unreachable_from_current_base",
         "failure_detail": "arm-place cuRobo planning failed with return code 1"
       },
-      "base_transfer_mode": "restore_nav_place_result_with_kinematic_tcp_relative_object_carry",
-      "object_dropped_during_base_restore": true
+      "base_transfer_mode": "no_base_transfer_for_local_arm_place",
+      "object_dropped_during_base_restore": false,
+      "object_kinematic_until_release": false,
+      "object_dynamic_restored_before_release": null
     }
   },
   "object_pose_policy": {
@@ -134,7 +135,7 @@
   "single_stage_07_visualization": true,
   "single_stage_replay_nav": false,
   "single_stage_manipulation_result": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/single_stage_07/single_stage_result.json",
-  "base_transfer_mode": "restore_nav_place_result_with_kinematic_tcp_relative_object_carry",
-  "object_dropped_during_base_restore": true,
+  "base_transfer_mode": "no_base_transfer_for_local_arm_place",
+  "object_dropped_during_base_restore": false,
   "failure_detail": "place_target_unreachable_from_current_base: arm-place cuRobo planning failed with return code 1"
 }

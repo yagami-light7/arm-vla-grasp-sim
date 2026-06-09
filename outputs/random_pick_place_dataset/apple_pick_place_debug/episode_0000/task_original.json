@@ -11,9 +11,9 @@
   },
   "pick": {
     "base_goal": {
-      "x": 1.2495111616914338,
-      "y": 1.3594823496423172,
-      "yaw": 2.91688148517515
+      "x": 1.1795111616914338,
+      "y": 1.3194823496423171,
+      "yaw": 2.736700867304709
     },
     "object_prim_path": "/World/apple",
     "grasp_mode": "auto",
@@ -27,9 +27,25 @@
     }
   },
   "place": {
-    "enabled": false,
-    "base_goal": null,
-    "place_pose_world": null
+    "enabled": true,
+    "base_goal": {
+      "x": 1.1795111616914338,
+      "y": 1.3194823496423171,
+      "yaw": 2.736700867304709
+    },
+    "place_pose_world": {
+      "x": 0.8995111616914339,
+      "y": 1.4394823496423172,
+      "z": 0.81653,
+      "roll": -0.04405211032033688,
+      "pitch": -0.13651965409099645,
+      "yaw": -0.0031590459461097176
+    },
+    "release_height": 0.04,
+    "retreat_height": 0.12,
+    "settle_steps": 120,
+    "place_xy_tolerance": 0.1,
+    "place_z_tolerance": 0.08
   },
   "recording": {
     "dataset_dir": "episodes",
@@ -86,14 +102,14 @@
     "base_goal_generation": {
       "mode": "object_offset",
       "base_goal_offset_xy": [
-        0.35,
-        -0.08
+        0.28,
+        -0.12
       ],
       "standoff_candidates": [
-        0.3590264614203248
+        0.30463092423455634
       ],
       "approach_angle_candidates_deg": [
-        167.12499844038751
+        156.80140948635182
       ],
       "clearance_radius": 0.2,
       "min_boundary_clearance": 0.25,
@@ -109,25 +125,38 @@
     },
     "attempts_used": 1,
     "selected_base_goal_candidate": {
-      "x": 1.2495111616914338,
-      "y": 1.3594823496423172,
-      "yaw": 2.91688148517515,
-      "standoff": 0.3590264614203248,
-      "approach_angle_deg": 167.12499844038751,
+      "x": 1.1795111616914338,
+      "y": 1.3194823496423171,
+      "yaw": 2.736700867304709,
+      "standoff": 0.30463092423455634,
+      "approach_angle_deg": 156.80140948635182,
       "raw_free": true,
       "clearance_free": true,
-      "boundary_clearance_m": 1.9668090668852276,
-      "obstacle_clearance_m": 0.30000001192092896,
+      "boundary_clearance_m": 2.036809066885228,
+      "obstacle_clearance_m": 0.25,
       "edge_alignment_score": 1.0,
-      "score": -1.6652574752152345,
+      "score": -0.7760510149794837,
       "valid": true,
       "rejection_reason": "",
       "path_found": true,
-      "path_length_m": 7.419238815542515,
-      "path_final_heading": 1.1071487177940869,
-      "path_heading_error": 1.809732767381063,
-      "path_expanded_nodes": 1186
+      "path_length_m": 7.34852813742386,
+      "path_final_heading": 1.5707963267948966,
+      "path_heading_error": 1.1659045405098123,
+      "path_expanded_nodes": 1157
     },
-    "candidate_count": 1
+    "candidate_count": 1,
+    "place_template": {
+      "enabled": true,
+      "source_task": "/home/light/workspace/arm_vla/tasks/nav_pick_place_apple_contact.json",
+      "reason": "base_task_missing_enabled_place_goal"
+    },
+    "local_arm_place_goal": {
+      "enabled": true,
+      "reason": "single-stage-07 的 arm-place 第一版跳过 nav_to_place，因此使用 apple 附近的局部放置点。",
+      "place_offset_from_object_xy_m": [
+        0.15,
+        0.0
+      ]
+    }
   }
 }
