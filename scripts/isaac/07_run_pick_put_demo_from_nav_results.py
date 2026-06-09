@@ -86,6 +86,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--show-grasp-trajectory", action="store_true")
     parser.add_argument("--carry-mode", choices=("none", "logical", "fixed-joint", "kinematic"), default="logical")
     parser.add_argument("--put-mode", choices=("mvp-reconstruct", "release-only", "arm-place"), default="mvp-reconstruct")
+    parser.add_argument("--replay-nav-to-pick", action="store_true")
+    parser.add_argument("--replay-nav-to-place", action="store_true")
+    parser.add_argument("--replay-nav-real-time", action="store_true")
+    parser.add_argument("--replay-nav-speed", type=float, default=1.0)
+    parser.add_argument("--replay-before-pick-object-prepare", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--replay-nav-place-with-carried-object", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--arm-place-plan-timeout-s",
         type=float,
@@ -156,19 +162,25 @@ def _base_result(args: argparse.Namespace) -> dict[str, Any]:
             "complete_physical_nav_carry": False,
             "nav_execution_in_this_process": False,
             "base_transfer_mode": "restore_from_nav_result",
+            "replay_nav_to_pick_requested": bool(args.replay_nav_to_pick),
+            "replay_nav_to_place_requested": bool(args.replay_nav_to_place),
+            "replay_nav_to_pick_executed": False,
+            "replay_nav_to_place_executed": False,
             "notes": [
                 "This demo opens one Isaac Sim app/stage for pick and put.",
-                "Navigation is precomputed and only the pick nav result is restored in arm-place mode.",
+                "Navigation is precomputed; pick/place base poses are restored from nav results or task place.base_goal.",
                 "Logical carry is metadata only and is not a real physical carry constraint.",
                 "MVP put reconstructs the object at place_pose_world; arm-place physically moves the held object with the arm.",
             ],
         },
         "stages": {
             "open_stage": {},
+            "replay_nav_to_pick": {},
             "restore_pick_base": {},
             "prepare_object": {},
             "pick": {},
             "carry_state": {},
+            "replay_nav_to_place": {},
             "restore_place_base": {},
             "put": {},
         },
@@ -1232,7 +1244,8 @@ def _carry_state(args: argparse.Namespace, object_prim_path: str) -> dict[str, A
         "logical_only": args.carry_mode == "logical",
         "notes": [
             "Logical carry is metadata only.",
-            "No fixed joint, kinematic hold, or true continuous nav carry is active in phase 1.",
+            "No fixed joint or true continuous nav carry is active in phase 1.",
+            "arm-place base restore may temporarily freeze and TCP-clamp the object as a handoff stabilization step.",
         ],
     }
 
@@ -1444,30 +1457,47 @@ def _usd_prim_world_matrix(stage, prim_path: str):
     )
 
 
-def _dynamic_object_world_matrix(stage, prim_path: str):
+def _rigid_body_paths_under(stage, prim_path: str) -> list[str]:
     from pxr import Usd, UsdPhysics
+
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        return []
+    return [
+        str(body_prim.GetPath())
+        for body_prim in Usd.PrimRange(prim)
+        if body_prim.HasAPI(UsdPhysics.RigidBodyAPI)
+    ]
+
+
+def _preferred_rigid_body_path(stage, object_prim_path: str) -> str | None:
+    rigid_body_paths = _rigid_body_paths_under(stage, object_prim_path)
+    if object_prim_path in rigid_body_paths:
+        return object_prim_path
+    return rigid_body_paths[0] if rigid_body_paths else None
+
+
+def _dynamic_object_world_matrix(stage, prim_path: str):
     from scripts.math.SE3 import pose_to_matrix
 
     prim = stage.GetPrimAtPath(prim_path)
     if not prim.IsValid():
         raise DemoFailure("stage_not_ready", f"object prim does not exist: {prim_path}")
-    rigid_body_paths = [
-        str(body_prim.GetPath())
-        for body_prim in Usd.PrimRange(prim)
-        if body_prim.HasAPI(UsdPhysics.RigidBodyAPI)
-    ]
+    rigid_body_paths = _rigid_body_paths_under(stage, prim_path)
+    live_body_path = _preferred_rigid_body_path(stage, prim_path)
     report: dict[str, Any] = {
         "object_prim_path": prim_path,
         "rigid_body_paths": rigid_body_paths,
+        "live_rigid_body_prim_path": live_body_path,
         "source": "usd_xform_fallback",
     }
-    if prim_path in rigid_body_paths:
+    if live_body_path:
         try:
             from isaacsim.core.prims import SingleRigidPrim
 
-            wrapper_name = "go2_x5_object_pose_read_" + prim_path.strip("/").replace("/", "_")
+            wrapper_name = "go2_x5_object_pose_read_" + live_body_path.strip("/").replace("/", "_")
             rigid_prim = SingleRigidPrim(
-                prim_path=prim_path,
+                prim_path=live_body_path,
                 name=wrapper_name,
                 reset_xform_properties=False,
             )
@@ -1481,6 +1511,7 @@ def _dynamic_object_world_matrix(stage, prim_path: str):
             report.update(
                 {
                     "source": "live_rigid_body",
+                    "live_rigid_body_prim_path": live_body_path,
                     "position_xyz": [float(value) for value in position],
                     "quaternion_wxyz": [float(value) for value in orientation],
                 }
@@ -1590,7 +1621,7 @@ def _set_dynamic_object_world_matrix(
     reset_xform_stack: bool = True,
 ) -> dict[str, Any]:
     import numpy as np
-    from pxr import Usd, UsdGeom, UsdPhysics
+    from pxr import UsdGeom
     from scripts.math.SE3 import matrix_to_pose
     from scripts.isaac import run_pick_from_nav_result as pick_handoff
 
@@ -1601,26 +1632,24 @@ def _set_dynamic_object_world_matrix(
     xformable = UsdGeom.Xformable(prim) if prim.IsA(UsdGeom.Xformable) else None
     order_before = pick_handoff._xform_op_order_names(xformable) if xformable else []
     target_position, target_quaternion = matrix_to_pose(target_world_matrix)
-    rigid_body_paths = [
-        str(body_prim.GetPath())
-        for body_prim in Usd.PrimRange(prim)
-        if body_prim.HasAPI(UsdPhysics.RigidBodyAPI)
-    ]
+    rigid_body_paths = _rigid_body_paths_under(stage, prim_path)
+    live_body_path = _preferred_rigid_body_path(stage, prim_path)
     live_apply: dict[str, Any] = {
         "attempted": False,
         "success": False,
         "backend": "isaacsim.core.prims.SingleRigidPrim",
         "object_prim_path": prim_path,
         "rigid_body_paths": rigid_body_paths,
+        "live_rigid_body_prim_path": live_body_path,
     }
-    if prim_path in rigid_body_paths:
+    if live_body_path:
         live_apply["attempted"] = True
         try:
             from isaacsim.core.prims import SingleRigidPrim
 
-            wrapper_name = "go2_x5_object_carry_" + prim_path.strip("/").replace("/", "_")
+            wrapper_name = "go2_x5_object_carry_" + live_body_path.strip("/").replace("/", "_")
             rigid_prim = SingleRigidPrim(
-                prim_path=prim_path,
+                prim_path=live_body_path,
                 name=wrapper_name,
                 reset_xform_properties=False,
             )
@@ -1662,9 +1691,10 @@ def _set_dynamic_object_world_matrix(
         except Exception as exc:
             live_apply["error"] = str(exc)
     else:
-        live_apply["reason"] = "object_root_is_not_rigid_body"
+        live_apply["reason"] = "no_rigid_body_api_under_object_root"
 
     usd_apply = None
+    warning = None
     if not live_apply.get("success", False):
         usd_apply = _set_prim_world_matrix(
             stage,
@@ -1672,6 +1702,7 @@ def _set_dynamic_object_world_matrix(
             target_world_matrix,
             reset_xform_stack=False,
         )
+        warning = "live_rigid_body_pose_not_updated"
 
     xformable_after = UsdGeom.Xformable(prim) if prim.IsA(UsdGeom.Xformable) else None
     return {
@@ -1684,7 +1715,11 @@ def _set_dynamic_object_world_matrix(
             pick_handoff._xform_op_order_names(xformable_after) if xformable_after else []
         ),
         "live_rigid_pose_apply": live_apply,
-        "usd_fallback_pose_apply": usd_apply,
+        "usd_fallback_pose_apply": {
+            "used": usd_apply is not None,
+            "report": usd_apply,
+        },
+        "warning": warning,
     }
 
 
@@ -1705,6 +1740,219 @@ def _nav_root_report_from_pose(nav_pose: dict[str, Any], root_z: float, *, read_
     if read_error:
         report["read_error"] = read_error
     return report
+
+
+def _matrix_pose_report(matrix, *, frame: str = "world") -> dict[str, Any]:
+    import numpy as np
+    from scripts.math.SE3 import matrix_to_pose
+
+    pose_matrix = np.asarray(matrix, dtype=float)
+    position, quaternion = matrix_to_pose(pose_matrix)
+    return {
+        "frame": frame,
+        "position_xyz": [float(value) for value in position],
+        "quaternion_wxyz": [float(value) for value in quaternion],
+        "matrix_4x4": pose_matrix.tolist(),
+    }
+
+
+def _find_first_prim_by_name(stage, name: str, *, under_path: str | None = None) -> str | None:
+    root = stage.GetPrimAtPath(under_path) if under_path else stage.GetPseudoRoot()
+    if root is None or not root.IsValid():
+        return None
+    from pxr import Usd
+
+    for prim in Usd.PrimRange(root):
+        if prim.GetName() == name:
+            return str(prim.GetPath())
+    return None
+
+
+def _resolve_tcp_prim_path(stage) -> str:
+    candidates = (
+        "/World/go2_x5/arm_link6/grasp_tcp_link",
+        "/World/go2_x5/grasp_tcp_link",
+    )
+    for prim_path in candidates:
+        prim = stage.GetPrimAtPath(prim_path)
+        if prim.IsValid():
+            return prim_path
+    resolved = _find_first_prim_by_name(stage, "grasp_tcp_link", under_path="/World/go2_x5")
+    if resolved:
+        return resolved
+    resolved = _find_first_prim_by_name(stage, "grasp_tcp_link")
+    if resolved:
+        return resolved
+    raise DemoFailure("stage_not_ready", "grasp_tcp_link prim could not be resolved for carried base transfer.")
+
+
+def _tcp_world_matrix(stage) -> tuple[Any, dict[str, Any]]:
+    tcp_path = _resolve_tcp_prim_path(stage)
+    matrix = _usd_prim_world_matrix(stage, tcp_path)
+    report = _matrix_pose_report(matrix, frame="world")
+    report.update({"tcp_prim_path": tcp_path, "source": "usd_xform"})
+    return matrix, report
+
+
+def _read_bool_attr_value(attr, default: bool | None = None) -> bool | None:
+    try:
+        if attr is not None and attr.IsValid():
+            value = attr.Get()
+            if value is not None:
+                return bool(value)
+    except Exception:
+        pass
+    return default
+
+
+def _rigid_body_attr_or_create(api, get_name: str, create_name: str):
+    attr = getattr(api, get_name)()
+    if attr is not None and attr.IsValid():
+        return attr, False
+    return getattr(api, create_name)(), True
+
+
+def _set_object_kinematic_enabled(stage, object_prim_path: str, enabled: bool) -> dict[str, Any]:
+    from pxr import UsdPhysics
+
+    body_paths = _rigid_body_paths_under(stage, object_prim_path)
+    report: dict[str, Any] = {
+        "object_prim_path": object_prim_path,
+        "requested_kinematic_enabled": bool(enabled),
+        "rigid_body_paths": body_paths,
+        "rigid_bodies": [],
+        "applied": False,
+    }
+    for body_path in body_paths:
+        body_prim = stage.GetPrimAtPath(body_path)
+        body_report: dict[str, Any] = {"prim_path": body_path}
+        try:
+            rigid_body = UsdPhysics.RigidBodyAPI(body_prim)
+            kinematic_attr = rigid_body.GetKinematicEnabledAttr()
+            body_report["kinematic_attr_was_valid"] = bool(kinematic_attr and kinematic_attr.IsValid())
+            if not body_report["kinematic_attr_was_valid"]:
+                kinematic_attr = rigid_body.CreateKinematicEnabledAttr()
+            before = _read_bool_attr_value(kinematic_attr, False)
+            body_report["kinematic_enabled_before"] = before
+            kinematic_attr.Set(bool(enabled))
+            body_report["kinematic_enabled_after"] = _read_bool_attr_value(kinematic_attr, bool(enabled))
+            disable_gravity_attr = rigid_body.GetDisableGravityAttr()
+            body_report["disable_gravity_before"] = _read_bool_attr_value(disable_gravity_attr, None)
+            body_report["success"] = True
+            report["applied"] = True
+        except Exception as exc:
+            body_report["success"] = False
+            body_report["error"] = str(exc)
+        report["rigid_bodies"].append(body_report)
+    if not body_paths:
+        report["warning"] = "no_rigid_body_api_under_object_root"
+    return report
+
+
+def _restore_object_kinematic_enabled(stage, freeze_report: dict[str, Any]) -> dict[str, Any]:
+    from pxr import UsdPhysics
+
+    report: dict[str, Any] = {
+        "object_prim_path": freeze_report.get("object_prim_path"),
+        "rigid_bodies": [],
+        "applied": False,
+    }
+    for body in freeze_report.get("rigid_bodies", []):
+        body_path = str(body.get("prim_path") or "")
+        body_report: dict[str, Any] = {"prim_path": body_path}
+        if not body_path:
+            body_report["success"] = False
+            body_report["error"] = "missing_prim_path"
+            report["rigid_bodies"].append(body_report)
+            continue
+        try:
+            body_prim = stage.GetPrimAtPath(body_path)
+            rigid_body = UsdPhysics.RigidBodyAPI(body_prim)
+            kinematic_attr = rigid_body.GetKinematicEnabledAttr()
+            if not kinematic_attr or not kinematic_attr.IsValid():
+                kinematic_attr = rigid_body.CreateKinematicEnabledAttr()
+            restore_value = bool(body.get("kinematic_enabled_before", False))
+            kinematic_attr.Set(restore_value)
+            body_report["kinematic_enabled_restored_to"] = restore_value
+            body_report["kinematic_enabled_after_restore"] = _read_bool_attr_value(kinematic_attr, restore_value)
+            body_report["success"] = True
+            report["applied"] = True
+        except Exception as exc:
+            body_report["success"] = False
+            body_report["error"] = str(exc)
+        report["rigid_bodies"].append(body_report)
+    return report
+
+
+def _zero_object_velocity_best_effort(stage, object_prim_path: str) -> dict[str, Any]:
+    import numpy as np
+    from pxr import UsdPhysics
+
+    body_paths = _rigid_body_paths_under(stage, object_prim_path)
+    report: dict[str, Any] = {
+        "object_prim_path": object_prim_path,
+        "rigid_body_paths": body_paths,
+        "rigid_bodies": [],
+        "success": False,
+    }
+    for body_path in body_paths:
+        body_report: dict[str, Any] = {"prim_path": body_path}
+        body_prim = stage.GetPrimAtPath(body_path)
+        try:
+            rigid_body = UsdPhysics.RigidBodyAPI(body_prim)
+            velocity_attr, _ = _rigid_body_attr_or_create(
+                rigid_body,
+                "GetVelocityAttr",
+                "CreateVelocityAttr",
+            )
+            angular_velocity_attr, _ = _rigid_body_attr_or_create(
+                rigid_body,
+                "GetAngularVelocityAttr",
+                "CreateAngularVelocityAttr",
+            )
+            try:
+                body_report["usd_velocity_before"] = list(velocity_attr.Get() or [])
+                body_report["usd_angular_velocity_before"] = list(angular_velocity_attr.Get() or [])
+            except Exception:
+                pass
+            velocity_attr.Set((0.0, 0.0, 0.0))
+            angular_velocity_attr.Set((0.0, 0.0, 0.0))
+            body_report["usd_velocity_zeroed"] = True
+        except Exception as exc:
+            body_report["usd_velocity_zero_error"] = str(exc)
+        try:
+            from isaacsim.core.prims import SingleRigidPrim
+
+            rigid_prim = SingleRigidPrim(
+                prim_path=body_path,
+                name="go2_x5_object_velocity_zero_" + body_path.strip("/").replace("/", "_"),
+                reset_xform_properties=False,
+            )
+            try:
+                rigid_prim.initialize()
+                body_report["live_initialized"] = True
+            except Exception as exc:
+                body_report["live_initialized"] = False
+                body_report["live_initialize_error"] = str(exc)
+            rigid_prim.set_linear_velocity(np.zeros(3, dtype=np.float32))
+            rigid_prim.set_angular_velocity(np.zeros(3, dtype=np.float32))
+            body_report["live_velocity_zeroed"] = True
+        except Exception as exc:
+            body_report["live_velocity_zero_error"] = str(exc)
+        body_report["success"] = bool(
+            body_report.get("usd_velocity_zeroed") or body_report.get("live_velocity_zeroed")
+        )
+        report["success"] = bool(report["success"] or body_report["success"])
+        report["rigid_bodies"].append(body_report)
+    if not body_paths:
+        report["warning"] = "no_rigid_body_api_under_object_root"
+    return report
+
+
+def _matrix_translation_error_m(a, b) -> float:
+    import numpy as np
+
+    return float(np.linalg.norm(np.asarray(a, dtype=float)[:3, 3] - np.asarray(b, dtype=float)[:3, 3]))
 
 
 def _named_pose_entry(T_base_pose, T_world_pose) -> dict[str, Any]:
@@ -2150,6 +2398,312 @@ async def _execute_arm_place_plan(
     return result
 
 
+async def _restore_place_base_with_kinematic_object_carry(
+    world,
+    robot,
+    nav_place_result: dict[str, Any],
+    object_prim_path: str,
+    *,
+    source_nav_result_path: str | None,
+    settle_steps: int,
+) -> dict[str, Any]:
+    import numpy as np
+    import omni.kit.app
+    import omni.usd
+    from scripts.isaac import run_pick_from_nav_result as pick_handoff
+    from source.navigation.adapters.frame_utils import yaw_to_quat_wxyz
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        raise DemoFailure("stage_not_ready", "No USD stage is open for arm-place base restore.")
+    if not nav_place_result:
+        raise DemoFailure("missing_nav_place_result", "--nav-place-result is required for arm-place base handoff.")
+    nav_pose = nav_place_result["final_base_pose_world"]
+
+    root_before = pick_handoff._robot_root_report(robot)
+    root_z = float(root_before["position_xyz"][2])
+    T_tcp_before, tcp_before_report = _tcp_world_matrix(stage)
+    T_object_before, object_before_report = _dynamic_object_world_matrix(stage, object_prim_path)
+    T_tcp_object = np.linalg.inv(T_tcp_before) @ T_object_before
+    object_bbox_before = pick_handoff._compute_world_bbox(stage, object_prim_path)
+
+    old_root_matrix = _planar_pose_matrix(
+        float(root_before["position_xyz"][0]),
+        float(root_before["position_xyz"][1]),
+        root_z,
+        float(root_before["yaw"]),
+    )
+    new_root_matrix = _planar_pose_matrix(
+        float(nav_pose["x"]),
+        float(nav_pose["y"]),
+        root_z,
+        float(nav_pose["yaw"]),
+    )
+    root_delta_world = new_root_matrix @ np.linalg.inv(old_root_matrix)
+    fallback_tcp_after_root_restore = root_delta_world @ T_tcp_before
+
+    freeze_report = _set_object_kinematic_enabled(stage, object_prim_path, True)
+    velocity_zero_before_restore = _zero_object_velocity_best_effort(stage, object_prim_path)
+
+    robot.set_world_pose(
+        position=np.asarray([float(nav_pose["x"]), float(nav_pose["y"]), root_z], dtype=float),
+        orientation=np.asarray(yaw_to_quat_wxyz(float(nav_pose["yaw"])), dtype=float),
+    )
+    robot.set_linear_velocity(np.zeros(3, dtype=float))
+    robot.set_angular_velocity(np.zeros(3, dtype=float))
+
+    def _current_tcp_or_fallback(label: str) -> tuple[Any, dict[str, Any]]:
+        try:
+            matrix, tcp_report = _tcp_world_matrix(stage)
+            fallback_delta_m = _matrix_translation_error_m(matrix, fallback_tcp_after_root_restore)
+            if fallback_delta_m > 0.25:
+                fallback_report = _matrix_pose_report(fallback_tcp_after_root_restore, frame="world")
+                fallback_report.update(
+                    {
+                        "tcp_prim_path": tcp_report.get("tcp_prim_path"),
+                        "source": "root_delta_fallback",
+                        "fallback_used": True,
+                        "fallback_reason": "usd_tcp_pose_far_from_root_delta_prediction",
+                        "usd_tcp_pose": tcp_report,
+                        "usd_vs_root_delta_translation_error_m": fallback_delta_m,
+                        "label": label,
+                    }
+                )
+                return fallback_tcp_after_root_restore, fallback_report
+            tcp_report["fallback_used"] = False
+            tcp_report["usd_vs_root_delta_translation_error_m"] = fallback_delta_m
+            tcp_report["label"] = label
+            return matrix, tcp_report
+        except Exception as exc:
+            tcp_report = _matrix_pose_report(fallback_tcp_after_root_restore, frame="world")
+            tcp_report.update(
+                {
+                    "tcp_prim_path": None,
+                    "source": "root_delta_fallback",
+                    "fallback_used": True,
+                    "label": label,
+                    "read_error": str(exc),
+                }
+            )
+            return fallback_tcp_after_root_restore, tcp_report
+
+    T_tcp_initial, tcp_initial_report = _current_tcp_or_fallback("after_robot_root_set_before_settle")
+    T_object_initial_target = T_tcp_initial @ T_tcp_object
+    initial_object_apply = _set_dynamic_object_world_matrix(
+        stage,
+        object_prim_path,
+        T_object_initial_target,
+        reset_xform_stack=False,
+    )
+    initial_velocity_zero = _zero_object_velocity_best_effort(stage, object_prim_path)
+
+    clamp_samples: list[dict[str, Any]] = []
+    tcp_sample_reports: list[dict[str, Any]] = [tcp_initial_report]
+    max_pre_clamp_error_m = 0.0
+    pre_clamp_error_count = 0
+    max_live_apply_failed = False
+    requested_settle_steps = max(0, int(settle_steps))
+    sample_steps = {0, 1, 2, max(0, requested_settle_steps - 1)}
+    app = omni.kit.app.get_app()
+    for step_index in range(requested_settle_steps):
+        T_tcp_current, tcp_current_report = _current_tcp_or_fallback(f"settle_step_{step_index}")
+        T_object_target = T_tcp_current @ T_tcp_object
+        try:
+            T_object_pre_clamp, object_pre_report = _dynamic_object_world_matrix(stage, object_prim_path)
+            pre_clamp_error_m = _matrix_translation_error_m(T_object_pre_clamp, T_object_target)
+            max_pre_clamp_error_m = max(max_pre_clamp_error_m, pre_clamp_error_m)
+            pre_clamp_error_count += 1
+        except Exception as exc:
+            object_pre_report = {"error": str(exc)}
+            pre_clamp_error_m = None
+        object_apply = _set_dynamic_object_world_matrix(
+            stage,
+            object_prim_path,
+            T_object_target,
+            reset_xform_stack=False,
+        )
+        max_live_apply_failed = bool(
+            max_live_apply_failed
+            or not (object_apply.get("live_rigid_pose_apply") or {}).get("success", False)
+        )
+        velocity_zero = _zero_object_velocity_best_effort(stage, object_prim_path)
+        if step_index in sample_steps:
+            clamp_samples.append(
+                {
+                    "step_index": step_index,
+                    "tcp": tcp_current_report,
+                    "object_pre_clamp": object_pre_report,
+                    "pre_clamp_error_m": pre_clamp_error_m,
+                    "object_pose_apply": object_apply,
+                    "velocity_zero": velocity_zero,
+                }
+            )
+        elif tcp_current_report.get("fallback_used"):
+            tcp_sample_reports.append(tcp_current_report)
+        world.step(render=True)
+        await app.next_update_async()
+
+    T_tcp_final, tcp_final_report = _current_tcp_or_fallback("after_settle_before_final_clamp")
+    T_object_final_target = T_tcp_final @ T_tcp_object
+    try:
+        T_object_pre_final, object_pre_final_report = _dynamic_object_world_matrix(stage, object_prim_path)
+        pre_final_error_m = _matrix_translation_error_m(T_object_pre_final, T_object_final_target)
+        max_pre_clamp_error_m = max(max_pre_clamp_error_m, pre_final_error_m)
+        pre_clamp_error_count += 1
+    except Exception as exc:
+        object_pre_final_report = {"error": str(exc)}
+        pre_final_error_m = None
+    final_object_apply = _set_dynamic_object_world_matrix(
+        stage,
+        object_prim_path,
+        T_object_final_target,
+        reset_xform_stack=False,
+    )
+    final_velocity_zero = _zero_object_velocity_best_effort(stage, object_prim_path)
+
+    try:
+        T_object_after_clamp, object_after_clamp_report = _dynamic_object_world_matrix(stage, object_prim_path)
+        T_tcp_object_after = np.linalg.inv(T_tcp_final) @ T_object_after_clamp
+        final_relative_error_m = _matrix_translation_error_m(T_tcp_object_after, T_tcp_object)
+    except Exception as exc:
+        T_object_after_clamp = T_object_final_target
+        object_after_clamp_report = {"error": str(exc), "source": "final_target_fallback"}
+        final_relative_error_m = None
+
+    object_bbox_after_clamp_usd = pick_handoff._compute_world_bbox(stage, object_prim_path)
+    expected_bbox_after_clamp = _transform_bbox_world(
+        object_bbox_before,
+        np.asarray(T_object_after_clamp, dtype=float) @ np.linalg.inv(T_object_before),
+    )
+
+    restore_kinematic_report = _restore_object_kinematic_enabled(stage, freeze_report)
+    object_dynamic_restored = all(
+        not bool(item.get("kinematic_enabled_after_restore", item.get("kinematic_enabled_restored_to", True)))
+        for item in restore_kinematic_report.get("rigid_bodies", [])
+    )
+    try:
+        velocity_reset_after_dynamic_restore = pick_handoff.reset_object_physics_state(
+            object_prim_path,
+            zero_linear_velocity=True,
+            zero_angular_velocity=True,
+            wake=True,
+        )
+    except Exception as exc:
+        velocity_reset_after_dynamic_restore = {
+            "applied": False,
+            "error": str(exc),
+            "warning": "reset_object_physics_state_failed_after_dynamic_restore",
+        }
+
+    root_after_report_fallback = False
+    try:
+        root_after = pick_handoff._robot_root_report(robot)
+    except Exception as exc:
+        root_after_report_fallback = True
+        root_after = _nav_root_report_from_pose(nav_pose, root_z, read_error=str(exc))
+
+    drop_threshold_m = 0.04
+    transform_preserve_threshold_m = 0.02
+    object_dropped = bool(
+        max_pre_clamp_error_m > drop_threshold_m
+        or (final_relative_error_m is not None and final_relative_error_m > drop_threshold_m)
+    )
+    tcp_transform_preserved = bool(
+        final_relative_error_m is not None and final_relative_error_m <= transform_preserve_threshold_m
+    )
+    live_success_final = bool((final_object_apply.get("live_rigid_pose_apply") or {}).get("success", False))
+    report = {
+        "success": True,
+        "base_transfer_mode": "restore_nav_place_result_with_kinematic_tcp_relative_object_carry",
+        "base_restore_source": (
+            "nav_place_result.final_base_pose_world"
+            if source_nav_result_path
+            else "task_nav_to_place.place.base_goal"
+        ),
+        "synthetic_nav_place_result_from_task_base_goal": bool(
+            nav_place_result.get("synthetic_from_task_place_base_goal", False)
+        ),
+        "physical_nav_continuity": PHYSICAL_NAV_CONTINUITY,
+        "physical_carry_nav": False,
+        "stable_carry_implemented": False,
+        "fixed_joint_carry_implemented": False,
+        "object_freeze_before_base_restore": True,
+        "object_freeze_backend": "UsdPhysics.RigidBodyAPI.kinematicEnabled+pose_clamp_each_step",
+        "object_pose_synced_during_base_restore": True,
+        "object_carried_relative_to": "tcp",
+        "object_dropped_during_base_restore": object_dropped,
+        "carried_object_clamped_after_base_restore": True,
+        "object_dynamic_restored_before_arm_place": bool(object_dynamic_restored),
+        "object_kinematic_until_place": bool(not object_dynamic_restored),
+        "object_teleported_to_place_pose": False,
+        "object_carried_with_base_teleport": True,
+        "source_nav_result": _required_path_text(source_nav_result_path, "nav-place-result"),
+        "requested_settle_steps": requested_settle_steps,
+        "root_before": root_before,
+        "root_after": root_after,
+        "root_after_report_fallback": root_after_report_fallback,
+        "object_prim_path": object_prim_path,
+        "object_bbox_before_base_restore": object_bbox_before,
+        "object_bbox_after_base_restore": expected_bbox_after_clamp or object_bbox_after_clamp_usd,
+        "object_bbox_after_base_restore_usd": object_bbox_after_clamp_usd,
+        "object_bbox_after_carry_clamp": expected_bbox_after_clamp or object_bbox_after_clamp_usd,
+        "object_bbox_after_carry_clamp_usd": object_bbox_after_clamp_usd,
+        "object_bbox_after_base_restore_source": (
+            "live_body_transform_of_pre_restore_bbox" if expected_bbox_after_clamp else "usd_bbox"
+        ),
+        "tcp_pose_before_base_restore": tcp_before_report,
+        "tcp_pose_after_base_restore": tcp_final_report,
+        "tcp_pose_initial_after_root_set": tcp_initial_report,
+        "tcp_pose_fallback_reports": tcp_sample_reports,
+        "tcp_to_object_transform_before": _matrix_pose_report(T_tcp_object, frame="tcp"),
+        "tcp_to_object_transform_preserved": tcp_transform_preserved,
+        "max_object_tcp_relative_error_m": (
+            float(max_pre_clamp_error_m) if pre_clamp_error_count > 0 else None
+        ),
+        "final_object_tcp_relative_error_m": final_relative_error_m,
+        "pre_final_clamp_error_m": pre_final_error_m,
+        "object_pose_apply_initial_base_restore": initial_object_apply,
+        "object_pose_apply_after_base_restore": final_object_apply,
+        "object_matrix_before_base_restore": object_before_report,
+        "object_matrix_after_carry_clamp": object_after_clamp_report,
+        "object_freeze_report": freeze_report,
+        "object_kinematic_restore_report": restore_kinematic_report,
+        "object_velocity_zero_before_base_restore": velocity_zero_before_restore,
+        "object_velocity_zero_initial_after_root_set": initial_velocity_zero,
+        "object_velocity_zero_after_carry_clamp": final_velocity_zero,
+        "object_velocity_reset_after_dynamic_restore": velocity_reset_after_dynamic_restore,
+        "pose_clamp_samples": clamp_samples,
+        "live_rigid_body_pose_apply_success": live_success_final and not max_live_apply_failed,
+        "root_carry_transform": {
+            "old_root_xyyaw": [
+                float(root_before["position_xyz"][0]),
+                float(root_before["position_xyz"][1]),
+                float(root_before["yaw"]),
+            ],
+            "new_root_xyyaw": [
+                float(nav_pose["x"]),
+                float(nav_pose["y"]),
+                float(nav_pose["yaw"]),
+            ],
+            "delta_matrix_world": np.asarray(root_delta_world, dtype=float).tolist(),
+        },
+        "replay_nav_to_place_executed": False,
+        "replay_nav_to_place_with_carried_object": False,
+    }
+    print(
+        "[arm-place] restored place base with TCP-relative object carry:",
+        {
+            "object": object_prim_path,
+            "base_transfer_mode": report["base_transfer_mode"],
+            "object_dropped": report["object_dropped_during_base_restore"],
+            "max_tcp_error_m": report["max_object_tcp_relative_error_m"],
+            "dynamic_restored": report["object_dynamic_restored_before_arm_place"],
+        },
+        flush=True,
+    )
+    return report
+
+
 async def _restore_place_base_with_object_carry(
     world,
     robot,
@@ -2444,6 +2998,25 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
     task_pick = load_task(task_pick_path)
     world, robot = await pick_handoff._initialize_robot()
 
+    result["stages"]["replay_nav_to_pick"] = {
+        "requested": bool(args.replay_nav_to_pick),
+        "executed": False,
+        "replay_trajectory_path": nav_pick_result.get("replay_trajectory_path"),
+        "reason": (
+            "not_implemented_first_version_uses_restore_only"
+            if args.replay_nav_to_pick
+            else "disabled"
+        ),
+        "replay_before_pick_object_prepare": bool(args.replay_before_pick_object_prepare),
+    }
+    if args.replay_nav_to_pick:
+        result.setdefault("warnings", []).append(
+            {
+                "warning": "replay_nav_to_pick_not_executed",
+                "detail": "First stable arm-place version keeps nav replay disabled and restores the final pick base pose.",
+            }
+        )
+
     try:
         result["stages"]["restore_pick_base"] = await pick_handoff._restore_and_settle(world, robot, nav_pick_result)
     except Exception as exc:
@@ -2484,6 +3057,12 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
     result["stages"]["carry_state"] = carry_state
 
     if args.put_mode == "mvp-reconstruct":
+        result["stages"]["replay_nav_to_place"] = {
+            "requested": bool(args.replay_nav_to_place),
+            "executed": False,
+            "replay_trajectory_path": (nav_place_result or {}).get("replay_trajectory_path"),
+            "reason": "mvp_reconstruct_uses_final_base_restore_only",
+        }
         try:
             result["stages"]["restore_place_base"] = await pick_handoff._restore_and_settle(world, robot, nav_place_result)
         except Exception as exc:
@@ -2497,13 +3076,32 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
             }
         )
     elif args.put_mode == "arm-place":
+        result["stages"]["replay_nav_to_place"] = {
+            "requested": bool(args.replay_nav_to_place),
+            "executed": False,
+            "replay_trajectory_path": (nav_place_result or {}).get("replay_trajectory_path"),
+            "reason": (
+                "not_implemented_first_version_uses_tcp_relative_carried_restore_only"
+                if args.replay_nav_to_place
+                else "disabled"
+            ),
+            "replay_nav_place_with_carried_object": bool(args.replay_nav_place_with_carried_object),
+        }
+        if args.replay_nav_to_place:
+            result.setdefault("warnings", []).append(
+                {
+                    "warning": "replay_nav_to_place_not_executed",
+                    "detail": "First stable arm-place version uses TCP-relative carried restore instead of replaying nav_to_place.",
+                }
+            )
         try:
-            result["stages"]["restore_place_base"] = await _restore_place_base_with_object_carry(
+            result["stages"]["restore_place_base"] = await _restore_place_base_with_kinematic_object_carry(
                 world,
                 robot,
                 nav_place_result,
                 task_pick.pick.object_prim_path,
                 source_nav_result_path=args.nav_place_result,
+                settle_steps=int(args.settle_steps),
             )
         except Exception as exc:
             raise DemoFailure("restore_place_base_failed", str(exc), getattr(exc, "report", None)) from exc
@@ -2544,6 +3142,7 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
         raise
     result["stages"]["put"] = put_report
     _write_json(args.put_result, {"schema_version": 1, "mode": MODE, **put_report})
+    restore_place_stage = result["stages"].get("restore_place_base") or {}
     result.update(
         {
             "success": True,
@@ -2552,8 +3151,19 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
             "put_mode": _put_mode_result_value(args.put_mode),
             "arm_place_executed": bool(put_report.get("arm_place_executed", False)),
             "object_teleported": bool(put_report.get("object_teleported", _put_mode_teleports_object(args.put_mode))),
+            "physical_put_execution": bool(put_report.get("physical_put_execution", False)),
             "physical_place_continuity": bool(put_report.get("physical_place_continuity", args.put_mode == "arm-place")),
             "physical_nav_continuity": PHYSICAL_NAV_CONTINUITY,
+            "physical_carry_nav": bool(restore_place_stage.get("physical_carry_nav", False)),
+            "base_transfer_mode": restore_place_stage.get("base_transfer_mode"),
+            "object_freeze_before_base_restore": restore_place_stage.get("object_freeze_before_base_restore"),
+            "object_pose_synced_during_base_restore": restore_place_stage.get("object_pose_synced_during_base_restore"),
+            "object_carried_relative_to": restore_place_stage.get("object_carried_relative_to"),
+            "object_dropped_during_base_restore": restore_place_stage.get("object_dropped_during_base_restore"),
+            "carried_object_clamped_after_base_restore": restore_place_stage.get("carried_object_clamped_after_base_restore"),
+            "object_dynamic_restored_before_arm_place": restore_place_stage.get("object_dynamic_restored_before_arm_place"),
+            "stable_carry_implemented": bool(restore_place_stage.get("stable_carry_implemented", False)),
+            "fixed_joint_carry_implemented": bool(restore_place_stage.get("fixed_joint_carry_implemented", False)),
             "updated_at": time.time(),
             "scene_usd": str(scene_usd),
             "pipeline_context": str(context_path),

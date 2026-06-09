@@ -6,15 +6,15 @@
     "success": true,
     "failure_reason": "",
     "final_base_pose_world": {
-      "x": 1.252241611480713,
-      "y": 1.3664448261260986,
-      "z": 0.3347170650959015,
-      "yaw": 1.587135377287105,
+      "x": 1.2690132856369019,
+      "y": 1.383381962776184,
+      "z": 0.3348556160926819,
+      "yaw": 1.5809663918300734,
       "quat_wxyz": [
-        0.7013053297996521,
-        0.001291163731366396,
-        0.0016902710776776075,
-        0.7128578424453735
+        0.7035014629364014,
+        -0.0010443165665492415,
+        0.0052182856015861034,
+        0.710673987865448
       ]
     },
     "goal_xyyaw": [
@@ -22,8 +22,8 @@
       1.3594823496423172,
       2.91688148517515
     ],
-    "final_goal_distance": 0.007478732167886733,
-    "yaw_error": 1.3297461078880453,
+    "final_goal_distance": 0.030846788266088585,
+    "yaw_error": 1.3359150933450765,
     "goal_tolerance": 0.15,
     "goal_yaw_tolerance": 3.141592653589793,
     "terminal_position_tolerance": 0.08,
@@ -38,9 +38,9 @@
     "base_stable_linear_tolerance": 0.06,
     "base_stable_angular_tolerance": 0.2,
     "final_body_velocity": {
-      "vx": 0.005905605852603912,
-      "vy": 0.023107141256332397,
-      "wz": -0.005681064445525408
+      "vx": -0.013411218300461769,
+      "vy": 0.011449601501226425,
+      "wz": 0.0004466816026251763
     },
     "path_length": 7.434754728643588,
     "timeout": false,
@@ -48,12 +48,12 @@
     "yaw_align_stall_detected": false,
     "terminal_recovery_count": 0,
     "yaw_settle_success": true,
-    "yaw_settle_steps": 60,
+    "yaw_settle_steps": 59,
     "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/nav_pick/2/7",
-    "elapsed_wall_time_s": 48.91401124000549,
+    "elapsed_wall_time_s": 20.686413526535034,
     "replay_trajectory_path": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/nav_pick/2/7/replay/trajectory.jsonl",
-    "replay_frame_count": 557
+    "replay_frame_count": 540
   },
-  "updated_at": 1781008621.2958813,
+  "updated_at": 1781012262.903673,
   "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/nav_pick/2/7"
 }

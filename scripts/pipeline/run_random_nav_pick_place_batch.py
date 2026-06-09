@@ -212,6 +212,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--single-stage-result-name", default="single_stage_result.json")
     parser.add_argument("--single-stage-pick-report-name", default="single_stage_pick_handoff_report.json")
     parser.add_argument("--single-stage-put-result-name", default="single_stage_put_result.json")
+    parser.add_argument("--single-stage-replay-nav", action="store_true")
+    parser.add_argument("--single-stage-replay-nav-real-time", action="store_true")
+    parser.add_argument("--single-stage-replay-nav-speed", type=float, default=1.0)
     parser.add_argument(
         "--skip-nav-place-for-local-arm-place",
         action=argparse.BooleanOptionalAction,
@@ -241,6 +244,9 @@ def _pipeline_command(
     grasp_only: bool = False,
 ) -> list[str]:
     nav_clearance_radius = _nav_clearance_radius(args)
+    single_stage_nav_only = bool(
+        nav_only and getattr(args, "manipulation_backend", "") == "single-stage-07"
+    )
     command = [
         _command_path(args.pipeline_python),
         str(PROJECT_ROOT / "scripts/pipeline/run_nav_then_pick.py"),
@@ -326,7 +332,7 @@ def _pipeline_command(
     ]
     if args.nav_map:
         command.extend(["--nav-map", args.nav_map])
-    if args.nav_headless or (args.precompute_nav_first and nav_only):
+    if args.nav_headless or (args.precompute_nav_first and nav_only) or single_stage_nav_only:
         command.append("--nav-headless")
     if args.brisk_nav:
         command.append("--brisk-nav")
@@ -349,14 +355,15 @@ def _pipeline_command(
         if args.replay_nav_real_time:
             command.append("--replay-nav-real-time")
         command.extend(["--replay-nav-speed", str(args.replay_nav_speed)])
-    if args.demo_visuals:
-        command.append("--demo-visuals")
-    command.extend(["--follow-camera-mode", args.follow_camera_mode])
-    command.extend(["--viewport-camera-prim", args.viewport_camera_prim])
-    if args.keep_window_open is not None:
-        command.append("--keep-window-open" if args.keep_window_open else "--no-keep-window-open")
-    if args.show_grasp_trajectory:
-        command.append("--show-grasp-trajectory")
+    if not single_stage_nav_only:
+        if args.demo_visuals:
+            command.append("--demo-visuals")
+        command.extend(["--follow-camera-mode", args.follow_camera_mode])
+        command.extend(["--viewport-camera-prim", args.viewport_camera_prim])
+        if args.keep_window_open is not None:
+            command.append("--keep-window-open" if args.keep_window_open else "--no-keep-window-open")
+        if args.show_grasp_trajectory:
+            command.append("--show-grasp-trajectory")
     if args.allow_retreat_success:
         command.append("--allow-retreat-success")
     if args.legacy_side_retreat:
@@ -462,6 +469,12 @@ def _single_stage_07_command(
     if args.demo_visuals:
         command.append("--demo-visuals")
         command.extend(["--viewport-camera-prim", args.viewport_camera_prim])
+    if args.single_stage_replay_nav:
+        command.append("--replay-nav-to-pick")
+        command.append("--replay-nav-to-place")
+        command.extend(["--replay-nav-speed", str(args.single_stage_replay_nav_speed)])
+        if args.single_stage_replay_nav_real_time:
+            command.append("--replay-nav-real-time")
     if args.keep_window_open is not None:
         command.append("--keep-window-open" if args.keep_window_open else "--no-keep-window-open")
     if args.use_planner_server:
@@ -492,6 +505,16 @@ def _stage_excerpt(payload: dict[str, Any] | None) -> dict[str, Any]:
         "physical_put_execution",
         "physical_place_continuity",
         "physical_nav_continuity",
+        "base_transfer_mode",
+        "object_freeze_before_base_restore",
+        "object_pose_synced_during_base_restore",
+        "object_carried_relative_to",
+        "object_dropped_during_base_restore",
+        "carried_object_clamped_after_base_restore",
+        "object_dynamic_restored_before_arm_place",
+        "physical_carry_nav",
+        "stable_carry_implemented",
+        "fixed_joint_carry_implemented",
         "scene_usd",
         "elapsed_wall_time_s",
     )
@@ -553,7 +576,13 @@ def _single_stage_stage_summary(
                 "scene_usd": result.get("scene_usd"),
                 "prepare_object": _stage_excerpt(result_stages.get("prepare_object")),
                 "pick": _stage_excerpt(result_stages.get("pick")),
+                "restore_place_base": _stage_excerpt(result_stages.get("restore_place_base")),
                 "put": _stage_excerpt(result_stages.get("put")),
+                "base_transfer_mode": result.get("base_transfer_mode")
+                or (result_stages.get("restore_place_base") or {}).get("base_transfer_mode"),
+                "object_dropped_during_base_restore": result.get("object_dropped_during_base_restore")
+                if "object_dropped_during_base_restore" in result
+                else (result_stages.get("restore_place_base") or {}).get("object_dropped_during_base_restore"),
             }
         )
     return summary
@@ -734,6 +763,9 @@ def _batch_row_from_summary(summary: dict[str, Any], *, started_at: float, task:
         "task_json": summary["task_json"],
         "manipulation_backend": summary.get("manipulation_backend"),
         "nav_execution_mode": summary.get("nav_execution_mode"),
+        "nav_visualization_in_batch": summary.get("nav_visualization_in_batch"),
+        "single_stage_07_visualization": summary.get("single_stage_07_visualization"),
+        "single_stage_replay_nav": summary.get("single_stage_replay_nav"),
         "object_pose_world": task.get("pick", {}).get("object_pose_world"),
         "object_pose_policy": randomization.get("object_pose_policy"),
         "base_goal": task.get("pick", {}).get("base_goal"),
@@ -755,6 +787,8 @@ def _batch_row_from_summary(summary: dict[str, Any], *, started_at: float, task:
         "single_stage_put_mode": single_stage.get("put_mode"),
         "single_stage_object_teleported": single_stage.get("object_teleported"),
         "single_stage_physical_put_execution": single_stage.get("physical_put_execution"),
+        "base_transfer_mode": single_stage.get("base_transfer_mode"),
+        "object_dropped_during_base_restore": single_stage.get("object_dropped_during_base_restore"),
         "success": bool(summary.get("success", False)),
         "failure_reason": str(summary.get("failure_reason", "")),
         "elapsed_wall_time_s": time.time() - started_at,
@@ -905,6 +939,9 @@ def _run_episode(args: argparse.Namespace, episode_index: int, episode_seed: int
     summary["manipulation_backend"] = args.manipulation_backend
     summary["nav_execution_mode"] = "headless_precomputed"
     summary["physical_nav_continuity"] = PHYSICAL_CONTINUITY
+    summary["nav_visualization_in_batch"] = bool(args.manipulation_backend != "single-stage-07" and args.demo_visuals)
+    summary["single_stage_07_visualization"] = bool(args.manipulation_backend == "single-stage-07" and args.demo_visuals)
+    summary["single_stage_replay_nav"] = bool(args.manipulation_backend == "single-stage-07" and args.single_stage_replay_nav)
     if args.manipulation_backend == "single-stage-07":
         summary["single_stage_manipulation_result"] = str(single_stage_result_path)
 
@@ -1048,6 +1085,10 @@ def _run_episode(args: argparse.Namespace, episode_index: int, episode_seed: int
             pick_handoff_report=single_stage_pick_report_path,
             put_result=single_stage_put_result_path,
             result=single_stage_result,
+        )
+        summary["base_transfer_mode"] = summary["stages"]["single_stage_manipulation"].get("base_transfer_mode")
+        summary["object_dropped_during_base_restore"] = summary["stages"]["single_stage_manipulation"].get(
+            "object_dropped_during_base_restore"
         )
         summary["stages"]["place"] = {
             "success": bool(summary["stages"]["single_stage_manipulation"]["success"]),

@@ -3,15 +3,15 @@
   "success": true,
   "failure_reason": "",
   "final_base_pose_world": {
-    "x": -1.6564838886260986,
-    "y": 3.2530105113983154,
-    "z": 0.33319923281669617,
-    "yaw": 2.7020009674953767,
+    "x": -1.6646993160247803,
+    "y": 3.2490668296813965,
+    "z": 0.33329927921295166,
+    "yaw": 2.695264833111498,
     "quat_wxyz": [
-      0.21802572906017303,
-      -0.001888076076284051,
-      -0.002523715142160654,
-      0.9759380221366882
+      0.22133071720600128,
+      -0.006672393064945936,
+      0.004556449130177498,
+      0.9751653671264648
     ]
   },
   "goal_xyyaw": [
@@ -19,8 +19,8 @@
     3.315,
     3.054
   ],
-  "final_goal_distance": 0.16834485384681605,
-  "yaw_error": 0.35199903250462317,
+  "final_goal_distance": 0.16229687555766423,
+  "yaw_error": 0.35873516688850193,
   "goal_tolerance": 0.15,
   "goal_yaw_tolerance": 3.141592653589793,
   "terminal_position_tolerance": 0.08,
@@ -35,19 +35,19 @@
   "base_stable_linear_tolerance": 0.06,
   "base_stable_angular_tolerance": 0.2,
   "final_body_velocity": {
-    "vx": 0.0055982377380132675,
-    "vy": -0.02963697910308838,
-    "wz": -0.015265206806361675
+    "vx": 0.024303598329424858,
+    "vy": 0.003513132221996784,
+    "wz": -0.008421572856605053
   },
-  "path_length": 4.121320343559643,
+  "path_length": 4.142031021678297,
   "timeout": false,
   "stall_detected": false,
   "yaw_align_stall_detected": false,
   "terminal_recovery_count": 0,
   "yaw_settle_success": true,
-  "yaw_settle_steps": 35,
+  "yaw_settle_steps": 37,
   "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/nav_place/2/7",
-  "elapsed_wall_time_s": 28.7238826751709,
+  "elapsed_wall_time_s": 12.900383949279785,
   "replay_trajectory_path": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/nav_place/2/7/replay/trajectory.jsonl",
-  "replay_frame_count": 329
+  "replay_frame_count": 345
 }

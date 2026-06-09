@@ -243,6 +243,10 @@ class RandomBatchPipelineTest(unittest.TestCase):
                 "--legacy-side-retreat",
                 "--side-grasp-fallback-retreat",
                 "--show-grasp-trajectory",
+                "--single-stage-replay-nav",
+                "--single-stage-replay-nav-real-time",
+                "--single-stage-replay-nav-speed",
+                "1.5",
             ],
         ):
             args = pick_place_batch._parse_args()
@@ -272,6 +276,10 @@ class RandomBatchPipelineTest(unittest.TestCase):
         self.assertIn("--legacy-side-retreat", command)
         self.assertIn("--side-grasp-fallback-retreat", command)
         self.assertIn("--show-grasp-trajectory", command)
+        self.assertIn("--replay-nav-to-pick", command)
+        self.assertIn("--replay-nav-to-place", command)
+        self.assertIn("--replay-nav-real-time", command)
+        self.assertEqual(command[command.index("--replay-nav-speed") + 1], "1.5")
 
     def test_pick_place_batch_injects_place_template_for_pick_only_task(self) -> None:
         with patch("sys.argv", ["run_random_nav_pick_place_batch.py"]):
@@ -291,7 +299,7 @@ class RandomBatchPipelineTest(unittest.TestCase):
         self.assertTrue(patched["randomization"]["place_template"]["enabled"])
 
     def test_pick_place_batch_command_forwards_stable_terminal_yaw_options(self) -> None:
-        with patch("sys.argv", ["run_random_nav_pick_place_batch.py"]):
+        with patch("sys.argv", ["run_random_nav_pick_place_batch.py", "--demo-visuals"]):
             args = pick_place_batch._parse_args()
 
         command = pick_place_batch._pipeline_command(
@@ -304,6 +312,10 @@ class RandomBatchPipelineTest(unittest.TestCase):
         )
 
         self.assertIn("--nav-only", command)
+        self.assertIn("--nav-headless", command)
+        self.assertNotIn("--demo-visuals", command)
+        self.assertNotIn("--follow-camera-mode", command)
+        self.assertNotIn("--viewport-camera-prim", command)
         self.assertIn("--yaw-align-vx", command)
         self.assertEqual(command[command.index("--yaw-align-vx") + 1], "0.35")
         self.assertIn("--yaw-align-lateral-deadband", command)

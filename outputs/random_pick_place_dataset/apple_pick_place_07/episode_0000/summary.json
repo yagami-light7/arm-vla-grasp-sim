@@ -19,23 +19,23 @@
       "alignment": {
         "available": true,
         "warning": "",
-        "final_goal_distance_m": 0.007478732167886733,
-        "yaw_error_rad": 1.3297461078880453,
+        "final_goal_distance_m": 0.030846788266088585,
+        "yaw_error_rad": 1.3359150933450765,
         "final_position_reached": true,
         "final_yaw_aligned": true,
         "base_stable": true,
         "final_base_pose_xyyaw": {
-          "x": 1.252241611480713,
-          "y": 1.3664448261260986,
-          "yaw": 1.587135377287105
+          "x": 1.2690132856369019,
+          "y": 1.383381962776184,
+          "yaw": 1.5809663918300734
         },
         "object_xy": {
           "x": 0.8995111616914339,
           "y": 1.4394823496423172
         },
-        "final_base_to_object_distance_m": 0.36021278440656335,
-        "base_goal_xy_error_m": 0.007478732167886733,
-        "base_goal_yaw_error_rad": 1.3297461078880448
+        "final_base_to_object_distance_m": 0.3737366358904915,
+        "base_goal_xy_error_m": 0.030846788266088585,
+        "base_goal_yaw_error_rad": 1.3359150933450765
       }
     },
     "pick": {
@@ -81,13 +81,29 @@
       "pick": {
         "success": true,
         "failure_reason": "",
-        "elapsed_wall_time_s": 13.113523483276367
+        "elapsed_wall_time_s": 12.732087135314941
+      },
+      "restore_place_base": {
+        "success": true,
+        "physical_nav_continuity": false,
+        "base_transfer_mode": "restore_nav_place_result_with_kinematic_tcp_relative_object_carry",
+        "object_freeze_before_base_restore": true,
+        "object_pose_synced_during_base_restore": true,
+        "object_carried_relative_to": "tcp",
+        "object_dropped_during_base_restore": true,
+        "carried_object_clamped_after_base_restore": true,
+        "object_dynamic_restored_before_arm_place": true,
+        "physical_carry_nav": false,
+        "stable_carry_implemented": false,
+        "fixed_joint_carry_implemented": false
       },
       "put": {
         "success": false,
         "failure_reason": "place_target_unreachable_from_current_base",
         "failure_detail": "arm-place cuRobo planning failed with return code 1"
-      }
+      },
+      "base_transfer_mode": "restore_nav_place_result_with_kinematic_tcp_relative_object_carry",
+      "object_dropped_during_base_restore": true
     }
   },
   "object_pose_policy": {
@@ -114,6 +130,11 @@
   "generated_task_json": "/home/light/workspace/arm_vla/outputs/random_tasks/apple_pick_place_07/apple_seed_0007.json",
   "task_original_json": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/task_original.json",
   "manipulation_backend": "single-stage-07",
+  "nav_visualization_in_batch": false,
+  "single_stage_07_visualization": true,
+  "single_stage_replay_nav": false,
   "single_stage_manipulation_result": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/single_stage_07/single_stage_result.json",
+  "base_transfer_mode": "restore_nav_place_result_with_kinematic_tcp_relative_object_carry",
+  "object_dropped_during_base_restore": true,
   "failure_detail": "place_target_unreachable_from_current_base: arm-place cuRobo planning failed with return code 1"
 }
