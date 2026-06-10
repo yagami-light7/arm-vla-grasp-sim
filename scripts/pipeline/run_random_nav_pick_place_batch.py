@@ -1184,49 +1184,33 @@ def _run_episode(args: argparse.Namespace, episode_index: int, episode_seed: int
     print(f"[pick-place-batch] episode={episode_index} success")
     return True
 
-# pick之后put苹果在原来位姿附近，仅测试place能力
 def _make_local_arm_place_goal(task: dict[str, Any]) -> dict[str, Any]:
-    #拷贝原字段
     task = copy.deepcopy(task)
-
-    # 取出 pick 字段。
     pick = dict(task.get("pick") or {})
     place = dict(task.get("place") or {})
-
-    # 读取 apple 的世界坐标。
     object_pose = dict(pick.get("object_pose_world") or {})
-
-    # 读取 pick base goal。
     base_goal = dict(pick.get("base_goal") or {})
-
-    # 如果没有字段就跳过
     if not {"x", "y", "z"}.issubset(object_pose):
         return task
 
-    # 局部放置点：放回原处
-    place_x = float(object_pose["x"])
-    place_y = float(object_pose["y"])
-    place_z = float(object_pose["z"])
+    place_pose_world_before_update = copy.deepcopy(place.get("place_pose_world"))
+    restored_place_pose = copy.deepcopy(object_pose)
+    restored_place_pose["x"] = float(restored_place_pose["x"])
+    restored_place_pose["y"] = float(restored_place_pose["y"])
+    restored_place_pose["z"] = float(restored_place_pose["z"])
+    restored_place_pose["roll"] = float(restored_place_pose.get("roll", 0.0))
+    restored_place_pose["pitch"] = float(restored_place_pose.get("pitch", 0.0))
+    restored_place_pose["yaw"] = float(restored_place_pose.get("yaw", 0.0))
 
-    # 启用 place，并写入局部 place_pose_world。
     place["enabled"] = True
-    place["place_pose_world"] = {
-        "x": place_x,
-        "y": place_y,
-        "z": place_z,
-
-        "roll": float(object_pose.get("roll", 0.0)),
-        "pitch": float(object_pose.get("pitch", 0.0)),
-        "yaw": float(object_pose.get("yaw", 0.0)),
-    }
+    place["place_pose_world"] = restored_place_pose
 
     place["base_goal"] = {
-        "x": float(base_goal.get("x", place_x)),
-        "y": float(base_goal.get("y", place_y)),
+        "x": float(base_goal.get("x", restored_place_pose["x"])),
+        "y": float(base_goal.get("y", restored_place_pose["y"])),
         "yaw": float(base_goal.get("yaw", 0.0)),
     }
 
-    # 放置相关容差。
     place["release_height"] = float(place.get("release_height", 0.04))
     place["retreat_height"] = float(place.get("retreat_height", 0.12))
     place["place_xy_tolerance"] = float(place.get("place_xy_tolerance", 0.10))
@@ -1239,8 +1223,12 @@ def _make_local_arm_place_goal(task: dict[str, Any]) -> dict[str, Any]:
     randomization = dict(task.get("randomization") or {})
     randomization["local_arm_place_goal"] = {
         "enabled": True,
-        "reason": "single-stage-07 的 arm-place 第一版跳过 nav_to_place，因此使用 apple 附近的局部放置点。",
-        "place_offset_from_object_xy_m": [0.15, 0.0],
+        "mode": "restore_pick_pose",
+        "reason": "place object back to its original pre-pick pose; no x/y offset because +0.15 may fall off table",
+        "place_pose_world_before_update": place_pose_world_before_update,
+        "pick_object_pose_world": copy.deepcopy(object_pose),
+        "place_pose_world_after_update": copy.deepcopy(restored_place_pose),
+        "place_offset_from_object_xy_m": [0.0, 0.0],
     }
     task["randomization"] = randomization
 

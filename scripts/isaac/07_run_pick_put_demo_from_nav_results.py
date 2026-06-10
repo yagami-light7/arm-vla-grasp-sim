@@ -2455,6 +2455,87 @@ def _gripper_config_from_pick_target(pick_report: dict[str, Any]) -> dict[str, A
     }
 
 
+def _pick_task_spec_from_report(pick_report: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(pick_report.get("task_spec"), dict):
+        return dict(pick_report["task_spec"])
+    nested_pick = pick_report.get("pick")
+    if isinstance(nested_pick, dict) and isinstance(nested_pick.get("task_spec"), dict):
+        return dict(nested_pick["task_spec"])
+    return {}
+
+
+def _resolve_pick_target_path_from_report(pick_report: dict[str, Any]) -> Path | None:
+    raw_target_path = _pick_task_spec_from_report(pick_report).get("target_json")
+    if not raw_target_path:
+        return None
+    target_path = Path(str(raw_target_path)).expanduser()
+    if not target_path.is_absolute():
+        target_path = PROJECT_ROOT / target_path
+    return target_path
+
+
+def _normalize_quat_wxyz_list(value) -> list[float] | None:
+    import numpy as np
+
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    try:
+        quat = np.asarray([float(item) for item in value], dtype=float)
+    except Exception:
+        return None
+    norm = float(np.linalg.norm(quat))
+    if not math.isfinite(norm) or norm < 1.0e-9:
+        return None
+    return [float(item) for item in (quat / norm)]
+
+
+def _pick_grasp_quat_base_report(pick_report: dict[str, Any]) -> dict[str, Any]:
+    target_path = _resolve_pick_target_path_from_report(pick_report)
+    report: dict[str, Any] = {
+        "available": False,
+        "target_json": str(target_path) if target_path is not None else None,
+        "orientation_source": None,
+        "quaternion_wxyz": None,
+        "warnings": [],
+    }
+    if target_path is None:
+        report["warnings"].append("missing_pick_report_task_spec_target_json")
+        return report
+    if not target_path.exists() or not target_path.is_file():
+        report["warnings"].append("pick_target_json_not_found")
+        return report
+    try:
+        target = json.loads(target_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        report["warnings"].append(f"failed_to_read_pick_target_json:{exc}")
+        return report
+
+    candidates = [
+        ("pick_target.poses.grasp.quaternion_wxyz", ((target.get("poses") or {}).get("grasp") or {}).get("quaternion_wxyz")),
+        ("pick_target.quaternion_wxyz", target.get("quaternion_wxyz")),
+    ]
+    for source, raw_quat in candidates:
+        quat = _normalize_quat_wxyz_list(raw_quat)
+        if quat is None:
+            report["warnings"].append(f"{source}:missing_or_invalid_quaternion")
+            continue
+        report.update(
+            {
+                "available": True,
+                "orientation_source": source,
+                "quaternion_wxyz": quat,
+            }
+        )
+        return report
+    return report
+
+
+def _read_pick_grasp_quat_base_from_report(pick_report: dict[str, Any]) -> list[float] | None:
+    report = _pick_grasp_quat_base_report(pick_report)
+    quat = report.get("quaternion_wxyz")
+    return list(quat) if isinstance(quat, list) and len(quat) == 4 else None
+
+
 def _make_arm_place_target(
     state: dict[str, Any],
     raw_task_place: dict[str, Any],
@@ -2495,16 +2576,61 @@ def _make_arm_place_target(
         "retreat": place_center_world + np.array([0.0, 0.0, retreat_height], dtype=float),
     }
 
+    from scripts.math.SE3 import pose_to_matrix
+
+    pick_grasp_orientation = _pick_grasp_quat_base_report(pick_report)
+    pick_grasp_quat_base = (
+        list(pick_grasp_orientation["quaternion_wxyz"])
+        if pick_grasp_orientation.get("available")
+        else None
+    )
+    orientation_rule = (
+        "reuse_pick_target_grasp_orientation"
+        if pick_grasp_quat_base is not None
+        else "preserve_current_tcp_orientation_after_pick"
+    )
+    orientation_source = (
+        pick_grasp_orientation.get("orientation_source")
+        if pick_grasp_quat_base is not None
+        else "fallback_current_tcp_orientation_after_pick"
+    )
+
     target_poses: dict[str, Any] = {}
     target_world_matrices: dict[str, Any] = {}
+    inv_world_base = np.linalg.inv(T_world_base)
     for name, object_center_target in target_object_centers.items():
-        T_world_target_tcp = np.asarray(T_world_tcp, dtype=float).copy()
-        T_world_target_tcp[:3, 3] = object_center_target - tcp_to_object_center_world
-        T_base_target_tcp = np.linalg.inv(T_world_base) @ T_world_target_tcp
+        target_tcp_world_pos = object_center_target - tcp_to_object_center_world
+        if pick_grasp_quat_base is not None:
+            target_tcp_base_pos = (inv_world_base @ np.asarray([*target_tcp_world_pos, 1.0], dtype=float))[:3]
+            T_base_target_tcp = pose_to_matrix(target_tcp_base_pos, pick_grasp_quat_base)
+            T_world_target_tcp = T_world_base @ T_base_target_tcp
+        else:
+            T_world_target_tcp = np.asarray(T_world_tcp, dtype=float).copy()
+            T_world_target_tcp[:3, 3] = target_tcp_world_pos
+            T_base_target_tcp = inv_world_base @ T_world_target_tcp
         target_world_matrices[name] = T_world_target_tcp.tolist()
         target_poses[name] = _named_pose_entry(T_base_target_tcp, T_world_target_tcp)
 
     gripper = _gripper_config_from_pick_target(pick_report)
+    task_pick_pose = dict((raw_task_place.get("pick") or {}).get("object_pose_world") or {})
+    randomization = dict(raw_task_place.get("randomization") or {})
+    local_arm_place_goal = dict(randomization.get("local_arm_place_goal") or {})
+    place_pose_from_pick_object_pose = bool(
+        task_pick_pose
+        and all(abs(float(place_pose.get(key, 0.0)) - float(task_pick_pose.get(key, 0.0))) < 1.0e-6 for key in ("x", "y", "z"))
+    )
+    actual_place_offset_xy = [None, None]
+    place_uses_xy_offset = False
+    if task_pick_pose:
+        actual_place_offset_xy = [
+            float(place_pose.get("x", 0.0)) - float(task_pick_pose.get("x", 0.0)),
+            float(place_pose.get("y", 0.0)) - float(task_pick_pose.get("y", 0.0)),
+        ]
+        place_uses_xy_offset = bool(abs(actual_place_offset_xy[0]) > 1.0e-6 or abs(actual_place_offset_xy[1]) > 1.0e-6)
+    target_pose_quaternions = {
+        name: list(entry["quaternion_wxyz"])
+        for name, entry in target_poses.items()
+    }
     payload = {
         "schema_version": 1,
         "frame": "arm_base_link",
@@ -2539,10 +2665,33 @@ def _make_arm_place_target(
             "target_tcp_matrices_world": target_world_matrices,
             "release_height_m": release_height,
             "retreat_height_m": retreat_height,
-            "orientation_rule": "preserve_current_tcp_orientation_after_pick",
+            "orientation_rule": orientation_rule,
+            "orientation_source": orientation_source,
+            "pick_grasp_quaternion_base": pick_grasp_quat_base,
+            "pick_grasp_quaternion_base_report": pick_grasp_orientation,
+            "place_pose_from_pick_object_pose": place_pose_from_pick_object_pose,
+            "place_uses_xy_offset": place_uses_xy_offset,
+            "place_offset_from_pick_object_xy_m": actual_place_offset_xy,
+            "local_arm_place_goal": local_arm_place_goal,
         },
         "diagnostics": {
             "target_workspace_base": _place_target_workspace_diagnostics(target_poses),
+            "current_tcp_base": state["poses"].get("base_tcp"),
+            "current_tcp_world": state["poses"].get("world_tcp"),
+            "pick_grasp_quaternion_base": pick_grasp_quat_base,
+            "pick_grasp_quaternion_base_report": pick_grasp_orientation,
+            "target_quaternion_base": target_pose_quaternions,
+            "orientation_rule": orientation_rule,
+            "orientation_source": orientation_source,
+            "place_pose_source": {
+                "from_pick_object_pose": place_pose_from_pick_object_pose,
+                "uses_xy_offset": place_uses_xy_offset,
+                "place_offset_from_pick_object_xy_m": actual_place_offset_xy,
+                "declared_place_offset_from_object_xy_m": local_arm_place_goal.get("place_offset_from_object_xy_m"),
+                "pick_object_pose_world": task_pick_pose,
+                "place_pose_world": dict(place_pose),
+                "local_arm_place_goal": local_arm_place_goal,
+            },
         },
     }
     return payload

@@ -1,9 +1,5 @@
 {
   "schema_version": 1,
-  "mode": "single_stage_pick_put_demo",
-  "success": false,
-  "failure_reason": "object_out_of_place",
-  "failure_detail": "arm-place object did not verify near place_pose_world.",
   "script": "scripts/isaac/07_run_pick_put_demo_from_nav_results.py",
   "source_plan": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/single_stage_07/arm_place_plan.json",
   "source_target": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/single_stage_07/arm_place_target.json",

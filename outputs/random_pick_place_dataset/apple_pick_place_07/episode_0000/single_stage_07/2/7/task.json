@@ -37,9 +37,9 @@
       "x": 0.8995111616914339,
       "y": 1.4394823496423172,
       "z": 0.81653,
+      "yaw": -0.0031590459461097176,
       "roll": -0.04405211032033688,
-      "pitch": -0.13651965409099645,
-      "yaw": -0.0031590459461097176
+      "pitch": -0.13651965409099645
     },
     "release_height": 0.04,
     "retreat_height": 0.12,
@@ -152,9 +152,34 @@
     },
     "local_arm_place_goal": {
       "enabled": true,
-      "reason": "single-stage-07 的 arm-place 第一版跳过 nav_to_place，因此使用 apple 附近的局部放置点。",
+      "mode": "restore_pick_pose",
+      "reason": "place object back to its original pre-pick pose; no x/y offset because +0.15 may fall off table",
+      "place_pose_world_before_update": {
+        "x": -2.56,
+        "y": 3.38,
+        "z": 0.827,
+        "yaw": 0.0,
+        "roll": 0.0,
+        "pitch": 0.0
+      },
+      "pick_object_pose_world": {
+        "x": 0.8995111616914339,
+        "y": 1.4394823496423172,
+        "z": 0.81653,
+        "yaw": -0.0031590459461097176,
+        "roll": -0.04405211032033688,
+        "pitch": -0.13651965409099645
+      },
+      "place_pose_world_after_update": {
+        "x": 0.8995111616914339,
+        "y": 1.4394823496423172,
+        "z": 0.81653,
+        "yaw": -0.0031590459461097176,
+        "roll": -0.04405211032033688,
+        "pitch": -0.13651965409099645
+      },
       "place_offset_from_object_xy_m": [
-        0.15,
+        0.0,
         0.0
       ]
     }

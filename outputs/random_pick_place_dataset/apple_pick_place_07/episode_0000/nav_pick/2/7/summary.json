@@ -50,10 +50,10 @@
     "yaw_settle_success": true,
     "yaw_settle_steps": 59,
     "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/nav_pick/2/7",
-    "elapsed_wall_time_s": 22.70531129837036,
+    "elapsed_wall_time_s": 21.53399658203125,
     "replay_trajectory_path": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/nav_pick/2/7/replay/trajectory.jsonl",
     "replay_frame_count": 540
   },
-  "updated_at": 1781022290.4623487,
+  "updated_at": 1781063851.1159081,
   "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/nav_pick/2/7"
 }

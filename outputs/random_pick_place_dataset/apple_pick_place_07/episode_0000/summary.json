@@ -69,9 +69,9 @@
       "physical_nav_continuity": false,
       "physical_put_execution": false,
       "object_teleported": false,
-      "failure_reason": "place_target_unreachable_from_current_base",
-      "result_failure_reason": "place_target_unreachable_from_current_base",
-      "result_failure_detail": "arm-place cuRobo planning failed with return code 1",
+      "failure_reason": "object_out_of_place",
+      "result_failure_reason": "object_out_of_place",
+      "result_failure_detail": "arm-place object did not verify near place_pose_world.",
       "result_put_mode": "arm_place",
       "arm_place_executed": false,
       "scene_usd": null,
@@ -81,7 +81,7 @@
       "pick": {
         "success": true,
         "failure_reason": "",
-        "elapsed_wall_time_s": 13.384159326553345
+        "elapsed_wall_time_s": 18.26354956626892
       },
       "restore_place_base": {
         "success": true,
@@ -98,8 +98,9 @@
       },
       "put": {
         "success": false,
-        "failure_reason": "place_target_unreachable_from_current_base",
-        "failure_detail": "arm-place cuRobo planning failed with return code 1"
+        "failure_reason": "object_out_of_place",
+        "failure_detail": "arm-place object did not verify near place_pose_world.",
+        "object_kinematic_until_release": false
       },
       "base_transfer_mode": "no_base_transfer_for_local_arm_place",
       "object_dropped_during_base_restore": false,
@@ -137,5 +138,5 @@
   "single_stage_manipulation_result": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/single_stage_07/single_stage_result.json",
   "base_transfer_mode": "no_base_transfer_for_local_arm_place",
   "object_dropped_during_base_restore": false,
-  "failure_detail": "place_target_unreachable_from_current_base: arm-place cuRobo planning failed with return code 1"
+  "failure_detail": "object_out_of_place: arm-place object did not verify near place_pose_world."
 }

@@ -868,6 +868,64 @@ def build_motion_segment(
     )
 
 
+def build_motion_segment_with_orientation_fallback(
+    planner: MotionPlanner,
+    q_start: np.ndarray,
+    target_name: str,
+    target_position: np.ndarray,
+    target_quaternion: np.ndarray,
+    segment_name: str,
+    T_world_base: np.ndarray,
+) -> tuple[dict, np.ndarray]:
+    """Place-only wrapper that retries equivalent TCP roll orientations."""
+
+    candidate_errors: list[dict] = []
+    candidates: list[tuple[str, np.ndarray]] = []
+    for roll_deg in TCP_ROLL_FALLBACK_DEG:
+        if abs(float(roll_deg)) < 1.0e-6:
+            label = "original"
+            candidate_quat = normalize_quat_wxyz(target_quaternion)
+        else:
+            label = f"tcp_roll_{roll_deg:+.0f}deg"
+            candidate_quat = quat_roll_about_local_x(target_quaternion, roll_deg)
+        if any(np.allclose(candidate_quat, old_quat, atol=1.0e-5) for _, old_quat in candidates):
+            continue
+        candidates.append((label, candidate_quat))
+
+    for label, candidate_quat in candidates:
+        try:
+            segment, q_next = build_motion_segment(
+                planner=planner,
+                q_start=q_start,
+                target_name=target_name,
+                target_position=target_position,
+                target_quaternion=candidate_quat,
+                segment_name=segment_name,
+                T_world_base=T_world_base,
+            )
+            segment["orientation_fallback"] = {
+                "used": label != "original",
+                "selected": label,
+                "requested_quaternion_wxyz": normalize_quat_wxyz(target_quaternion).tolist(),
+                "selected_quaternion_wxyz": candidate_quat.tolist(),
+                "failed_candidates": candidate_errors,
+            }
+            return segment, q_next
+        except Exception as exc:
+            candidate_errors.append(
+                {
+                    "candidate": label,
+                    "quaternion_wxyz": candidate_quat.tolist(),
+                    "error": str(exc),
+                }
+            )
+
+    raise RuntimeError(
+        f"{segment_name}: all place orientation fallback candidates failed: "
+        f"{json.dumps(candidate_errors, ensure_ascii=False)}"
+    )
+
+
 def build_pregrasp_to_grasp_segment(
     planner: MotionPlanner,
     q_start: np.ndarray,
@@ -1363,7 +1421,7 @@ def plan_place_segments(
 
         update_planner_world(planner, world_scene)
 
-        segment, q_current = build_motion_segment(
+        segment, q_current = build_motion_segment_with_orientation_fallback(
             planner=planner,
             q_start=q_current,
             target_name="pre_place",
@@ -1374,7 +1432,7 @@ def plan_place_segments(
         )
         segments.append(segment)
 
-        segment, q_current = build_motion_segment(
+        segment, q_current = build_motion_segment_with_orientation_fallback(
             planner=planner,
             q_start=q_current,
             target_name="place",
@@ -1387,7 +1445,7 @@ def plan_place_segments(
 
         segments.append(make_gripper_segment("open_gripper", gripper_open, gripper_joint_names))
 
-        segment, q_current = build_motion_segment(
+        segment, q_current = build_motion_segment_with_orientation_fallback(
             planner=planner,
             q_start=q_current,
             target_name="retreat",
@@ -1426,6 +1484,12 @@ def plan_place_segments(
             "final_q_arm": q_current.tolist(),
             "place_mode": "arm_place",
             "target_place_pose_world": target_data.get("source", {}).get("place_pose_world"),
+            "place_orientation_rule": (target_data.get("source") or {}).get("orientation_rule"),
+            "place_orientation_source": (target_data.get("source") or {}).get("orientation_source"),
+            "orientation_fallback": {
+                segment["name"]: segment.get("orientation_fallback")
+                for segment in motion_segments
+            },
         },
     }
 
