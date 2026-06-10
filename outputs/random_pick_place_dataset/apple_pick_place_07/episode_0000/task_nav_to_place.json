@@ -11,9 +11,9 @@
   },
   "pick": {
     "base_goal": {
-      "x": 1.2495111616914338,
-      "y": 1.3594823496423172,
-      "yaw": 2.91688148517515
+      "x": -1.813,
+      "y": 3.315,
+      "yaw": 3.054
     },
     "object_prim_path": "/World/apple",
     "grasp_mode": "auto",
@@ -29,17 +29,17 @@
   "place": {
     "enabled": true,
     "base_goal": {
-      "x": 1.2495111616914338,
-      "y": 1.3594823496423172,
-      "yaw": 2.91688148517515
+      "x": -1.813,
+      "y": 3.315,
+      "yaw": 3.054
     },
     "place_pose_world": {
-      "x": 0.8995111616914339,
-      "y": 1.4394823496423172,
-      "z": 0.81653,
-      "yaw": -0.0031590459461097176,
-      "roll": -0.04405211032033688,
-      "pitch": -0.13651965409099645
+      "x": -2.56,
+      "y": 3.38,
+      "z": 0.827,
+      "yaw": 0.0,
+      "roll": 0.0,
+      "pitch": 0.0
     },
     "release_height": 0.04,
     "retreat_height": 0.12,
@@ -149,39 +149,6 @@
       "enabled": true,
       "source_task": "/home/light/workspace/arm_vla/tasks/nav_pick_place_apple_contact.json",
       "reason": "base_task_missing_enabled_place_goal"
-    },
-    "local_arm_place_goal": {
-      "enabled": true,
-      "mode": "restore_pick_pose",
-      "reason": "place object back to its original pre-pick pose; no x/y offset because +0.15 may fall off table",
-      "place_pose_world_before_update": {
-        "x": -2.56,
-        "y": 3.38,
-        "z": 0.827,
-        "yaw": 0.0,
-        "roll": 0.0,
-        "pitch": 0.0
-      },
-      "pick_object_pose_world": {
-        "x": 0.8995111616914339,
-        "y": 1.4394823496423172,
-        "z": 0.81653,
-        "yaw": -0.0031590459461097176,
-        "roll": -0.04405211032033688,
-        "pitch": -0.13651965409099645
-      },
-      "place_pose_world_after_update": {
-        "x": 0.8995111616914339,
-        "y": 1.4394823496423172,
-        "z": 0.81653,
-        "yaw": -0.0031590459461097176,
-        "roll": -0.04405211032033688,
-        "pitch": -0.13651965409099645
-      },
-      "place_offset_from_object_xy_m": [
-        0.0,
-        0.0
-      ]
     }
   },
   "handoff": {

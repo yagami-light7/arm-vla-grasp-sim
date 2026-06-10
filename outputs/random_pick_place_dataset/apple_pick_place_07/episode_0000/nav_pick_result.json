@@ -47,7 +47,7 @@
   "yaw_settle_success": true,
   "yaw_settle_steps": 59,
   "episode_dir": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/nav_pick/2/7",
-  "elapsed_wall_time_s": 21.924692153930664,
+  "elapsed_wall_time_s": 23.04170560836792,
   "replay_trajectory_path": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/nav_pick/2/7/replay/trajectory.jsonl",
   "replay_frame_count": 540
 }

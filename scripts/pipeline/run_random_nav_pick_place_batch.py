@@ -505,16 +505,20 @@ def _single_stage_07_command(
         command.append("--side-grasp-fallback-retreat")
     if args.show_grasp_trajectory:
         command.append("--show-grasp-trajectory")
+
     if args.single_stage_put_mode == "arm-place":
         if args.restore_nav_place_for_arm_place:
             command.append("--restore-nav-place-for-arm-place")
-        else:
-            # 当前默认路线：
-            # pick 后保持当前四足 base，不恢复 nav_to_place base。
-            command.append("--no-restore-nav-place-for-arm-place")
-
-            # 不做“带着苹果回放/恢复 nav_to_place”的实验逻辑。
             command.append("--no-replay-nav-place-with-carried-object")
+        else:
+            command.append("--no-restore-nav-place-for-arm-place")
+            if args.single_stage_replay_nav:
+                # stable carry replay v1.2：
+                # 不瞬移恢复 place base，而是在 07 单进程里 replay nav_to_place，
+                # 并在 replay 过程中让 object 以 TCP-relative 方式跟随夹爪。
+                command.append("--replay-nav-place-with-carried-object")
+            else:
+                command.append("--no-replay-nav-place-with-carried-object")
     return command
 
 

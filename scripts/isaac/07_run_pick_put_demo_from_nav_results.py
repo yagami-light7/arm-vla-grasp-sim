@@ -1458,6 +1458,21 @@ def _planar_pose_matrix(x: float, y: float, z: float, yaw: float):
     return matrix
 
 
+def _planar_matrix_to_nav_pose(T, *, root_z: float) -> dict[str, float]:
+    """把 4x4 平面位姿矩阵转成 nav_pose dict。"""
+    import math
+    import numpy as np
+
+    M = np.asarray(T, dtype=float)
+    yaw = math.atan2(float(M[1, 0]), float(M[0, 0]))
+    return {
+        "x": float(M[0, 3]),
+        "y": float(M[1, 3]),
+        "z": float(root_z),
+        "yaw": float(yaw),
+    }
+
+
 def _usd_prim_world_matrix(stage, prim_path: str):
     import numpy as np
     from pxr import Usd, UsdGeom
@@ -1475,6 +1490,10 @@ def _usd_prim_world_matrix(stage, prim_path: str):
         np.asarray([translation[0], translation[1], translation[2]], dtype=float),
         normalize_quat_wxyz([rotation.GetReal(), imaginary[0], imaginary[1], imaginary[2]]),
     )
+
+
+def _usd_object_root_world_matrix(stage, object_prim_path: str):
+    return _usd_prim_world_matrix(stage, object_prim_path)
 
 
 def _rigid_body_paths_under(stage, prim_path: str) -> list[str]:
@@ -2262,6 +2281,27 @@ def _apply_arm_gripper_hold(robot, hold_state: dict[str, Any]) -> dict[str, Any]
     return report
 
 
+def _zero_arm_gripper_velocity_from_hold_state(robot, hold_state: dict[str, Any]) -> dict[str, Any]:
+    import numpy as np
+
+    indices: list[int] = []
+    indices.extend(int(index) for index in (hold_state.get("arm_indices") or []))
+    indices.extend(int(index) for index in (hold_state.get("gripper_indices") or []))
+    indices = sorted(set(indices))
+    if not indices:
+        return {
+            "applied": False,
+            "reason": "missing_arm_gripper_indices",
+        }
+    report = _set_joint_velocities_best_effort(
+        robot,
+        np.zeros(len(indices), dtype=float),
+        indices,
+    )
+    report["applied"] = bool(report.get("success", False))
+    return report
+
+
 def _set_robot_root_to_nav_pose(robot, nav_pose: dict[str, Any], root_z: float) -> dict[str, Any]:
     import numpy as np
     from source.navigation.adapters.frame_utils import yaw_to_quat_wxyz
@@ -2929,6 +2969,28 @@ async def _execute_arm_place_plan(
     release_velocity_reset = None
     clamp_state = None
     clamp_callback = None
+    root_support_hold_state = None
+    root_support_hold_callback = None
+    root_hold_during_arm_place = bool((restore_place_report or {}).get("root_hold_during_arm_place", False))
+    if root_hold_during_arm_place:
+        root_hold_nav_pose = (restore_place_report or {}).get("root_hold_nav_pose")
+        root_hold_z = (restore_place_report or {}).get("root_hold_z")
+        support_hold_state = (restore_place_report or {}).get("support_hold_state")
+        if isinstance(root_hold_nav_pose, dict) and root_hold_z is not None and isinstance(support_hold_state, dict):
+            root_support_hold_state, root_support_hold_callback = _make_root_support_hold_callback(
+                robot,
+                root_hold_nav_pose,
+                float(root_hold_z),
+                support_hold_state,
+            )
+        else:
+            root_support_hold_state = {
+                "enabled": False,
+                "reason": "restore_place_report_missing_root_or_support_hold_state",
+                "root_hold_nav_pose": root_hold_nav_pose,
+                "root_hold_z": root_hold_z,
+                "support_hold_state": support_hold_state,
+            }
     if object_kinematic_until_release and stage is not None:
         tcp_to_object_matrix = ((restore_place_report or {}).get("tcp_to_object_transform_before") or {}).get("matrix_4x4")
         if tcp_to_object_matrix is None:
@@ -2942,12 +3004,78 @@ async def _execute_arm_place_plan(
         )
     object_carry_step_callback_enabled = bool(clamp_callback is not None)
 
+    async def root_support_hold_from_report_callback(**kwargs):
+        root_support_report = _apply_root_support_hold_from_report(
+            robot,
+            restore_place_report or {},
+        )
+        if isinstance(root_support_hold_state, dict) and root_support_report.get("applied", False):
+            root_support_hold_state["hold_count"] = int(root_support_hold_state.get("hold_count", 0)) + 1
+            samples = root_support_hold_state.setdefault("samples", [])
+            should_sample = len(samples) < 16
+            step_index = kwargs.get("step_index")
+            if isinstance(step_index, int) and step_index >= 0 and step_index % 50 == 0:
+                should_sample = True
+            if should_sample:
+                samples.append(
+                    {
+                        "phase": kwargs.get("phase"),
+                        "segment_name": kwargs.get("segment_name"),
+                        "step_index": step_index,
+                        "root_support": root_support_report,
+                    }
+                )
+        if isinstance(clamp_state, dict):
+            samples = clamp_state.setdefault("root_support_hold_during_arm_place_samples", [])
+            if len(samples) < 8:
+                samples.append(
+                    {
+                        "phase": kwargs.get("phase"),
+                        "segment_name": kwargs.get("segment_name"),
+                        "step_index": kwargs.get("step_index"),
+                        "root_support": root_support_report,
+                    }
+                )
+        return root_support_report
+
     for segment in plan.get("segments", []):
         if segment.get("type") == "motion":
             segment_name = str(segment.get("name") or "")
+            object_clamp_enabled_for_segment = (
+                clamp_callback is not None and segment_name in {"move_to_pre_place", "approach_to_place"}
+            )
+
+            async def combined_step_callback(**kwargs):
+                root_support_before = await root_support_hold_from_report_callback(
+                    **{
+                        **kwargs,
+                        "phase": f"{kwargs.get('phase', 'motion')}:root_support_pre_object",
+                    }
+                )
+                if object_clamp_enabled_for_segment and clamp_callback is not None:
+                    await clamp_callback(**kwargs)
+                root_support_after = await root_support_hold_from_report_callback(
+                    **{
+                        **kwargs,
+                        "phase": f"{kwargs.get('phase', 'motion')}:root_support_post_object",
+                    }
+                )
+                if isinstance(clamp_state, dict):
+                    samples = clamp_state.setdefault("root_support_hold_during_arm_place_samples", [])
+                    if len(samples) < 8:
+                        samples.append(
+                            {
+                                "phase": kwargs.get("phase"),
+                                "segment_name": kwargs.get("segment_name"),
+                                "step_index": kwargs.get("step_index"),
+                                "root_support_before": root_support_before,
+                                "root_support_after": root_support_after,
+                            }
+                        )
+
             step_callback = (
-                clamp_callback
-                if clamp_callback is not None and segment_name in {"move_to_pre_place", "approach_to_place"}
+                combined_step_callback
+                if object_clamp_enabled_for_segment or root_hold_during_arm_place
                 else None
             )
             # 读取当前完整关节状态。
@@ -2967,21 +3095,42 @@ async def _execute_arm_place_plan(
 
             # 四足腿部关节 = 全部关节 - 机械臂关节 - 夹爪关节。
             controlled = set(int(i) for i in arm_indices) | set(int(i) for i in gripper_indices)
-            support_indices = [
-                i for i in range(q_full_hold.size)
-                if i not in controlled
-            ]
-
-            support_positions = q_full_hold[support_indices].copy()
+            restore_support_hold = (restore_place_report or {}).get("support_hold_state") or {}
+            if root_support_hold_callback is not None and restore_support_hold.get("available", False):
+                support_indices = [int(index) for index in (restore_support_hold.get("support_indices") or [])]
+                support_positions = np.asarray(restore_support_hold.get("q_support_hold") or [], dtype=float)
+                if len(support_indices) != int(support_positions.size):
+                    support_indices = [
+                        i for i in range(q_full_hold.size)
+                        if i not in controlled
+                    ]
+                    support_positions = q_full_hold[support_indices].copy()
+                    support_hold_source = "current_joint_positions_support_hold_size_mismatch"
+                else:
+                    support_hold_source = "restore_place_report.support_hold_state"
+            else:
+                support_indices = [
+                    i for i in range(q_full_hold.size)
+                    if i not in controlled
+                ]
+                support_positions = q_full_hold[support_indices].copy()
+                support_hold_source = "current_joint_positions"
 
             print(
                 "[arm-place] hold support joints:",
                 {
                     "support_indices": support_indices,
                     "support_positions": support_positions.tolist(),
+                    "source": support_hold_source,
                 },
                 flush=True,
             )
+            if step_callback is not None:
+                await step_callback(
+                    phase="before_execute_motion_segment",
+                    segment_name=segment_name,
+                    step_index=-1,
+                )
             motion_log = await exec_module.execute_motion_segment(
                 world,
                 robot,
@@ -3044,6 +3193,13 @@ async def _execute_arm_place_plan(
                         "error": str(exc),
                         "warning": "reset_object_physics_state_failed_before_open_gripper",
                     }
+            gripper_step_callback = root_support_hold_from_report_callback if root_hold_during_arm_place else None
+            if gripper_step_callback is not None:
+                await gripper_step_callback(
+                    phase="before_execute_gripper_segment",
+                    segment_name=str(segment.get("name") or "open_gripper"),
+                    step_index=-1,
+                )
             gripper_log = await exec_module.execute_gripper_segment(
                 world,
                 robot,
@@ -3051,6 +3207,7 @@ async def _execute_arm_place_plan(
                 segment,
                 arm_indices=arm_indices if last_motion_q_final is not None else None,
                 q_arm_hold=last_motion_q_final,
+                step_callback=gripper_step_callback,
             )
             logs.append(gripper_log)
             opened_gripper = True
@@ -3122,6 +3279,8 @@ async def _execute_arm_place_plan(
                 release_dynamic_restore and release_dynamic_restore.get("applied", False)
             ),
             "object_carry_step_callback_enabled": object_carry_step_callback_enabled,
+            "root_support_hold_step_callback_enabled": bool(root_support_hold_callback is not None),
+            "root_hold_during_arm_place": bool(root_support_hold_callback is not None),
             "robot_root_pose_modified_during_arm_place": False,
             "return_home_executed": bool(
                 return_home_log
@@ -3154,6 +3313,7 @@ async def _execute_arm_place_plan(
         "object_bbox_after": object_bbox_after,
         "object_pose_clamped_to_tcp": object_carry_step_callback_enabled,
         "object_carry_step_callback_enabled": object_carry_step_callback_enabled,
+        "root_support_hold_during_arm_place": root_support_hold_state,
         "max_tcp_object_error_m": (
             clamp_state.get("max_pre_clamp_error_m") if isinstance(clamp_state, dict) else None
         ),
@@ -3173,6 +3333,1084 @@ async def _execute_arm_place_plan(
         raise DemoFailure("object_out_of_place", "arm-place object did not verify near place_pose_world.", result)
     return result
 
+
+def _read_nav_replay_frames(nav_result: dict[str, Any]) -> tuple[list[dict[str, Any]], Path]:
+    """读取 nav_to_place 预计算出的 replay trajectory.jsonl。"""
+
+    replay_path_raw = nav_result.get("replay_trajectory_path")
+    if not replay_path_raw:
+        raise DemoFailure(
+            "missing_nav_replay_trajectory",
+            "nav_place_result.replay_trajectory_path is missing.",
+            {"nav_place_result_keys": sorted(nav_result.keys())},
+        )
+
+    replay_path = Path(str(replay_path_raw)).expanduser()
+    if not replay_path.is_absolute():
+        replay_path = (PROJECT_ROOT / replay_path).resolve()
+    else:
+        replay_path = replay_path.resolve()
+
+    if not replay_path.exists():
+        raise DemoFailure(
+            "missing_nav_replay_trajectory",
+            f"replay trajectory does not exist: {replay_path}",
+            {"replay_trajectory_path": str(replay_path)},
+        )
+
+    frames: list[dict[str, Any]] = []
+    with replay_path.open("r", encoding="utf-8") as handle:
+        for line_index, line in enumerate(handle):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                frame = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise DemoFailure(
+                    "invalid_nav_replay_trajectory",
+                    f"invalid jsonl at line {line_index + 1}: {exc}",
+                    {"replay_trajectory_path": str(replay_path)},
+                ) from exc
+
+            if "root_pos_w" not in frame or "root_quat_w" not in frame:
+                continue
+            frames.append(frame)
+
+    if not frames:
+        raise DemoFailure(
+            "empty_nav_replay_trajectory",
+            f"no valid replay frames in: {replay_path}",
+            {"replay_trajectory_path": str(replay_path)},
+        )
+
+    return frames, replay_path
+
+
+def _yaw_from_quat_wxyz(quat_wxyz) -> float:
+    w, x, y, z = [float(value) for value in quat_wxyz]
+    return math.atan2(
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z),
+    )
+
+
+def _nav_replay_frame_pose(frame: dict[str, Any], *, root_z: float) -> dict[str, Any]:
+    root_pos = frame.get("root_pos_w")
+    root_quat = frame.get("root_quat_w")
+    if not isinstance(root_pos, (list, tuple)) or len(root_pos) < 2:
+        raise DemoFailure("invalid_nav_replay_trajectory", "replay frame root_pos_w is invalid.", {"frame": frame})
+    if not isinstance(root_quat, (list, tuple)) or len(root_quat) != 4:
+        raise DemoFailure("invalid_nav_replay_trajectory", "replay frame root_quat_w is invalid.", {"frame": frame})
+    return {
+        "x": float(root_pos[0]),
+        "y": float(root_pos[1]),
+        "z": float(root_z),
+        "yaw": _yaw_from_quat_wxyz(root_quat),
+    }
+
+
+def _robot_dof_names_for_replay(robot) -> list[str]:
+    for attr_name in ("dof_names", "joint_names"):
+        try:
+            names = getattr(robot, attr_name, None)
+            if callable(names):
+                names = names()
+            if names is not None:
+                return [str(name) for name in names]
+        except Exception:
+            pass
+    try:
+        view = getattr(robot, "_articulation_view", None)
+        names = getattr(view, "dof_names", None) if view is not None else None
+        if callable(names):
+            names = names()
+        if names is not None:
+            return [str(name) for name in names]
+    except Exception:
+        pass
+    return []
+
+
+def _map_replay_joint_positions_for_carry(
+    robot,
+    frame: dict[str, Any],
+    hold_state: dict[str, Any],
+) -> list[float] | None:
+    import numpy as np
+
+    current_joint_positions = robot.get_joint_positions()
+    if current_joint_positions is None:
+        return None
+    current = [float(value) for value in np.asarray(current_joint_positions, dtype=float).reshape(-1)]
+    recorded_raw = frame.get("joint_pos")
+    if not isinstance(recorded_raw, (list, tuple)):
+        return None
+    recorded = [float(value) for value in recorded_raw]
+    if not recorded:
+        return None
+
+    target = current[:]
+    dof_names = _robot_dof_names_for_replay(robot)
+    recorded_names = [str(name) for name in (frame.get("joint_names") or [])]
+    common = 0
+    if dof_names and recorded_names:
+        recorded_by_name = {name: index for index, name in enumerate(recorded_names)}
+        for index, name in enumerate(dof_names):
+            recorded_index = recorded_by_name.get(name)
+            if recorded_index is None or recorded_index >= len(recorded):
+                continue
+            target[index] = recorded[recorded_index]
+            common += 1
+        if common == 0:
+            return None
+    elif len(recorded) == len(current):
+        target = recorded[:]
+        common = len(recorded)
+    else:
+        return None
+
+    for indices_key, values_key in (
+        ("arm_indices", "q_arm_hold"),
+        ("gripper_indices", "q_gripper_hold"),
+    ):
+        indices = [int(index) for index in (hold_state.get(indices_key) or [])]
+        values = [float(value) for value in (hold_state.get(values_key) or [])]
+        for local_index, joint_index in enumerate(indices):
+            if 0 <= joint_index < len(target) and local_index < len(values):
+                target[joint_index] = values[local_index]
+
+    return target if common > 0 else None
+
+
+def _apply_visual_replay_frame_with_carry_hold(
+    robot,
+    frame: dict[str, Any],
+    hold_state: dict[str, Any],
+    *,
+    root_z: float,
+    apply_root_velocity: bool = False,
+    stage=None,
+    nav_pose: dict[str, Any] | None = None,
+    visual_root_xform_fallback: bool = False,
+    robot_root_prim_path: str = "/World/go2_x5",
+) -> dict[str, Any]:
+    import numpy as np
+    from isaacsim.core.utils.types import ArticulationAction
+    from source.navigation.adapters.frame_utils import yaw_to_quat_wxyz
+
+    nav_pose = nav_pose if isinstance(nav_pose, dict) else _nav_replay_frame_pose(frame, root_z=root_z)
+    position = np.asarray([nav_pose["x"], nav_pose["y"], root_z], dtype=float)
+    orientation = np.asarray(yaw_to_quat_wxyz(float(nav_pose["yaw"])), dtype=float)
+    report: dict[str, Any] = {
+        "nav_pose": nav_pose,
+        "root_pos_w_applied": position.tolist(),
+        "root_quat_w_applied": orientation.tolist(),
+    }
+
+    robot.set_world_pose(position=position, orientation=orientation)
+    if visual_root_xform_fallback:
+        if stage is None:
+            report["visual_root_xform_apply"] = {
+                "applied": False,
+                "reason": "missing_stage",
+            }
+        else:
+            report["visual_root_xform_apply"] = _set_robot_visual_root_xform_for_replay(
+                stage,
+                nav_pose,
+                robot_root_prim_path=robot_root_prim_path,
+            )
+    else:
+        report["visual_root_xform_apply"] = {
+            "applied": False,
+            "reason": "disabled",
+        }
+
+    if apply_root_velocity:
+        try:
+            root_lin_vel = np.asarray(frame.get("root_lin_vel_w", [0.0, 0.0, 0.0]), dtype=float)
+            root_ang_vel = np.asarray(frame.get("root_ang_vel_w", [0.0, 0.0, 0.0]), dtype=float)
+            linear_velocity = np.asarray(
+                [
+                    float(root_lin_vel[0]) if root_lin_vel.size > 0 else 0.0,
+                    float(root_lin_vel[1]) if root_lin_vel.size > 1 else 0.0,
+                    0.0,
+                ],
+                dtype=float,
+            )
+            angular_velocity = np.asarray(
+                [
+                    0.0,
+                    0.0,
+                    float(root_ang_vel[2]) if root_ang_vel.size > 2 else 0.0,
+                ],
+                dtype=float,
+            )
+            robot.set_linear_velocity(linear_velocity)
+            robot.set_angular_velocity(angular_velocity)
+            report["root_velocity_applied"] = True
+            report["root_linear_velocity_applied"] = linear_velocity.tolist()
+            report["root_angular_velocity_applied"] = angular_velocity.tolist()
+        except Exception as exc:
+            report["root_velocity_applied"] = False
+            report["root_velocity_error"] = str(exc)
+    else:
+        report["root_velocity_applied"] = False
+        report["root_velocity_skipped_reason"] = "physics_paused_visual_replay"
+
+    target_joint_positions = _map_replay_joint_positions_for_carry(robot, frame, hold_state)
+    if target_joint_positions is not None:
+        try:
+            robot.apply_action(ArticulationAction(joint_positions=np.asarray(target_joint_positions, dtype=float)))
+            report["joint_replay_applied"] = True
+            report["joint_replay_mode"] = "root_and_leg_joint_visual_replay_arm_gripper_overridden"
+        except Exception as exc:
+            report["joint_replay_applied"] = False
+            report["joint_replay_error"] = str(exc)
+    else:
+        report["joint_replay_applied"] = False
+        report["joint_replay_mode"] = "root_only_replay_no_valid_joint_mapping"
+
+    report["arm_gripper_hold"] = _apply_arm_gripper_hold(robot, hold_state)
+    return report
+
+
+def _set_robot_visual_root_xform_for_replay(
+    stage,
+    nav_pose: dict[str, Any],
+    *,
+    robot_root_prim_path: str = "/World/go2_x5",
+) -> dict[str, Any]:
+    T_world_root = _planar_pose_matrix(
+        float(nav_pose["x"]),
+        float(nav_pose["y"]),
+        float(nav_pose["z"]),
+        float(nav_pose["yaw"]),
+    )
+    report = _set_prim_world_matrix(
+        stage,
+        robot_root_prim_path,
+        T_world_root,
+        reset_xform_stack=False,
+    )
+    report["applied"] = True
+    report["purpose"] = "paused_visual_replay_viewport_refresh_fallback"
+    return report
+
+
+def _capture_support_hold_state(robot, hold_state: dict[str, Any]) -> dict[str, Any]:
+    import numpy as np
+
+    dof_names = _robot_dof_names_for_replay(robot)
+    q_full = robot.get_joint_positions()
+    if q_full is None:
+        return {"available": False, "reason": "missing_joint_positions"}
+    q_full = np.asarray(q_full, dtype=float).reshape(-1)
+    held_indices = set(int(index) for index in (hold_state.get("arm_indices") or []))
+    held_indices.update(int(index) for index in (hold_state.get("gripper_indices") or []))
+    support_indices = [index for index in range(q_full.size) if index not in held_indices]
+    return {
+        "available": True,
+        "support_indices": support_indices,
+        "support_joint_names": [
+            dof_names[index] if index < len(dof_names) else f"joint_{index}"
+            for index in support_indices
+        ],
+        "q_support_hold": q_full[support_indices].tolist(),
+    }
+
+
+def _apply_support_hold(robot, support_hold_state: dict[str, Any]) -> dict[str, Any]:
+    import numpy as np
+
+    report: dict[str, Any] = {"available": bool(support_hold_state.get("available", False))}
+    if not report["available"]:
+        report["reason"] = support_hold_state.get("reason", "support_hold_unavailable")
+        return report
+    support_indices = [int(index) for index in (support_hold_state.get("support_indices") or [])]
+    q_support = np.asarray(support_hold_state.get("q_support_hold") or [], dtype=float)
+    report["support_position_hold"] = _set_joint_positions_best_effort(robot, q_support, support_indices)
+    report["support_velocity_zero"] = _set_joint_velocities_best_effort(
+        robot,
+        np.zeros_like(q_support),
+        support_indices,
+    )
+    return report
+
+
+def _apply_stable_handoff_robot_hold(
+    robot,
+    nav_pose: dict[str, Any],
+    *,
+    root_z: float,
+    hold_state: dict[str, Any],
+    support_hold_state: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "root_hold": _set_robot_root_to_nav_pose(robot, nav_pose, root_z),
+        "support_hold": _apply_support_hold(robot, support_hold_state),
+        "arm_gripper_hold": _apply_arm_gripper_hold(robot, hold_state),
+    }
+
+
+def _make_root_support_hold_callback(
+    robot,
+    nav_pose: dict[str, Any],
+    root_z: float,
+    support_hold_state: dict[str, Any],
+    *,
+    sample_limit: int = 16,
+):
+    state: dict[str, Any] = {
+        "enabled": True,
+        "root_hold_during_arm_place": True,
+        "root_hold_nav_pose": dict(nav_pose),
+        "root_hold_z": float(root_z),
+        "support_hold_state": support_hold_state,
+        "hold_count": 0,
+        "samples": [],
+    }
+
+    async def root_support_hold_callback(**kwargs):
+        root_report = _set_robot_root_to_nav_pose(robot, nav_pose, root_z)
+        support_report = _apply_support_hold(robot, support_hold_state)
+        state["hold_count"] += 1
+        step_index = kwargs.get("step_index")
+        should_sample = len(state["samples"]) < sample_limit
+        if isinstance(step_index, int) and step_index >= 0 and step_index % 50 == 0:
+            should_sample = True
+        if should_sample:
+            state["samples"].append(
+                {
+                    "phase": kwargs.get("phase"),
+                    "segment_name": kwargs.get("segment_name"),
+                    "step_index": step_index,
+                    "root_hold": root_report,
+                    "support_hold": support_report,
+                }
+            )
+
+    return state, root_support_hold_callback
+
+
+def _apply_root_support_hold_from_report(robot, restore_place_report: dict[str, Any]) -> dict[str, Any]:
+    if not restore_place_report.get("root_hold_during_arm_place", False):
+        return {
+            "applied": False,
+            "reason": "root_hold_disabled",
+        }
+    nav_pose = restore_place_report.get("root_hold_nav_pose")
+    root_z = restore_place_report.get("root_hold_z")
+    support_hold_state = restore_place_report.get("support_hold_state")
+    if not isinstance(nav_pose, dict) or root_z is None:
+        return {
+            "applied": False,
+            "reason": "missing_root_hold_pose",
+            "root_hold_nav_pose": nav_pose,
+            "root_hold_z": root_z,
+        }
+    root_report = _set_robot_root_to_nav_pose(robot, nav_pose, float(root_z))
+    support_report = (
+        _apply_support_hold(robot, support_hold_state)
+        if isinstance(support_hold_state, dict)
+        else {
+            "available": False,
+            "reason": "missing_support_hold_state",
+        }
+    )
+    return {
+        "applied": True,
+        "root": root_report,
+        "support": support_report,
+    }
+
+
+async def _set_world_playing_best_effort(world, *, playing: bool) -> dict[str, Any]:
+    import inspect
+
+    async_name = "play_async" if playing else "pause_async"
+    sync_name = "play" if playing else "pause"
+    report: dict[str, Any] = {
+        "requested_playing": bool(playing),
+        "async_method": async_name,
+        "sync_method": sync_name,
+        "success": False,
+    }
+    async_method = getattr(world, async_name, None)
+    if callable(async_method):
+        try:
+            result = async_method()
+            if inspect.isawaitable(result):
+                await result
+            report["success"] = True
+            report["backend"] = async_name
+            return report
+        except Exception as exc:
+            report["async_error"] = str(exc)
+    sync_method = getattr(world, sync_name, None)
+    if callable(sync_method):
+        try:
+            sync_method()
+            report["success"] = True
+            report["backend"] = sync_name
+            return report
+        except Exception as exc:
+            report["sync_error"] = str(exc)
+    report["warning"] = "world_play_pause_method_unavailable_or_failed"
+    return report
+
+
+async def _render_paused_replay_frame(world, app) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "render_step_attempted": True,
+        "success": False,
+    }
+    try:
+        world.step(render=True)
+        report["success"] = True
+        report["backend"] = "world.step(render=True)"
+    except Exception as exc:
+        report["step_error"] = str(exc)
+    try:
+        await app.next_update_async()
+        report["next_update_success"] = True
+    except Exception as exc:
+        report["next_update_success"] = False
+        report["next_update_error"] = str(exc)
+    return report
+
+
+def _set_carried_object_root_world_matrix(
+    stage,
+    object_prim_path: str,
+    target_world_matrix,
+    *,
+    label: str = "carried_object_root_world_matrix",
+) -> dict[str, Any]:
+    report = _set_prim_world_matrix(
+        stage,
+        object_prim_path,
+        target_world_matrix,
+        reset_xform_stack=False,
+    )
+    report["velocity_zero"] = _zero_object_velocity_if_dynamic(
+        stage,
+        object_prim_path,
+        label=label,
+    )
+    return report
+
+
+def _should_sample_carry_frame(frame_index: int, frame_count: int, pre_clamp_error_m: float | None) -> bool:
+    if frame_index in {0, 1, 2, max(0, frame_count - 1)}:
+        return True
+    sample_stride = max(1, frame_count // 10)
+    if frame_index % sample_stride == 0:
+        return True
+    return bool(pre_clamp_error_m is not None and pre_clamp_error_m > 0.04)
+
+
+async def _replay_nav_to_place_with_tcp_object_carry(
+    world,
+    robot,
+    nav_place_result: dict[str, Any],
+    object_prim_path: str,
+    *,
+    settle_steps: int,
+    real_time: bool = False,
+    replay_speed: float = 1.0,
+) -> dict[str, Any]:
+    """
+    stable carry replay v1.2:
+    - 不执行真实 contact carry，也不做 fixed joint；
+    - 使用 nav_to_place replay 的 root + leg joint 作为视觉 carry；
+    - arm/gripper 始终保持 pick 后姿态；
+    - apple 临时保持 kinematic，并按 pick 后 T_tcp_object 每帧 clamp 到 TCP；
+    - replay 完成后进入 stable handoff：固定最终 root/support/arm/gripper，再交给 arm-place。
+    """
+
+    import numpy as np
+    import omni.kit.app
+    import omni.usd
+    from scripts.isaac import run_pick_from_nav_result as pick_handoff
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        raise DemoFailure("stage_not_ready", "No USD stage is open for nav replay carry.")
+
+    frames, replay_path = _read_nav_replay_frames(nav_place_result)
+
+    root_before = pick_handoff._robot_root_report(robot)
+    root_z = float(root_before["position_xyz"][2])
+    object_bbox_before = pick_handoff._compute_world_bbox(stage, object_prim_path)
+
+    T_tcp_before, tcp_before_report = _tcp_world_matrix(stage)
+    T_object_before, object_before_report = _dynamic_object_world_matrix(stage, object_prim_path)
+    T_tcp_object = np.linalg.inv(T_tcp_before) @ T_object_before
+
+    # replay trajectory 的第一帧未必和 pick 后当前真实 root 完全一致。
+    # 用 SE(2) 对齐，避免 replay 一开始突然转向或跳变。
+    T_live_start = _planar_pose_matrix(
+        float(root_before["position_xyz"][0]),
+        float(root_before["position_xyz"][1]),
+        root_z,
+        float(root_before["yaw"]),
+    )
+
+    first_replay_pose = _nav_replay_frame_pose(frames[0], root_z=root_z)
+    T_replay_start = _planar_pose_matrix(
+        float(first_replay_pose["x"]),
+        float(first_replay_pose["y"]),
+        root_z,
+        float(first_replay_pose["yaw"]),
+    )
+
+    T_replay_align = T_live_start @ np.linalg.inv(T_replay_start)
+
+    hold_state = _capture_arm_gripper_hold_state(robot)
+    root_start_matrix = T_live_start
+    root_start_matrix_inv = np.linalg.inv(root_start_matrix)
+
+    freeze_report = _set_object_kinematic_enabled(stage, object_prim_path, True)
+    velocity_zero_before_replay = _zero_object_velocity_if_dynamic(
+        stage,
+        object_prim_path,
+        label="after_freeze_before_nav_replay_carry",
+    )
+
+    app = omni.kit.app.get_app()
+    frame_count = len(frames)
+    final_nav_pose = _nav_replay_frame_pose(frames[-1], root_z=root_z)
+    playback_speed = max(float(replay_speed), 1.0e-6)
+    visual_root_xform_fallback_enabled = os.environ.get(
+        "GO2_X5_CARRY_VISUAL_ROOT_XFORM_FALLBACK",
+        "1",
+    ).lower() in {"1", "true", "yes", "on"}
+    handoff_physics_settle_enabled = os.environ.get(
+        "GO2_X5_CARRY_HANDOFF_PHYSICS_SETTLE",
+        "0",
+    ).lower() in {"1", "true", "yes", "on"}
+    pose_clamp_samples: list[dict[str, Any]] = []
+    stable_handoff_samples: list[dict[str, Any]] = []
+    max_pre_clamp_error_m = 0.0
+    max_post_clamp_usd_error_m = 0.0
+    clamp_count = 0
+    usd_root_pose_apply_failed_count = 0
+
+    def _predicted_tcp_from_nav_pose(nav_pose: dict[str, Any]):
+        root_matrix = _planar_pose_matrix(
+            float(nav_pose["x"]),
+            float(nav_pose["y"]),
+            root_z,
+            float(nav_pose["yaw"]),
+        )
+        return root_matrix @ root_start_matrix_inv @ T_tcp_before
+
+    def _current_tcp_or_root_delta_fallback(label: str, nav_pose: dict[str, Any]):
+        fallback_tcp = _predicted_tcp_from_nav_pose(nav_pose)
+        try:
+            matrix, tcp_report = _tcp_world_matrix(stage)
+            fallback_delta_m = _matrix_translation_error_m(matrix, fallback_tcp)
+            if fallback_delta_m > 0.25:
+                fallback_report = _matrix_pose_report(fallback_tcp, frame="world")
+                fallback_report.update(
+                    {
+                        "tcp_prim_path": tcp_report.get("tcp_prim_path"),
+                        "source": "root_delta_fallback",
+                        "fallback_used": True,
+                        "fallback_reason": "usd_tcp_pose_far_from_root_delta_prediction",
+                        "usd_tcp_pose": tcp_report,
+                        "usd_vs_root_delta_translation_error_m": fallback_delta_m,
+                        "label": label,
+                    }
+                )
+                return fallback_tcp, fallback_report
+            tcp_report["fallback_used"] = False
+            tcp_report["usd_vs_root_delta_translation_error_m"] = fallback_delta_m
+            tcp_report["label"] = label
+            return matrix, tcp_report
+        except Exception as exc:
+            fallback_report = _matrix_pose_report(fallback_tcp, frame="world")
+            fallback_report.update(
+                {
+                    "tcp_prim_path": None,
+                    "source": "root_delta_fallback",
+                    "fallback_used": True,
+                    "fallback_reason": "tcp_world_matrix_read_failed",
+                    "label": label,
+                    "read_error": str(exc),
+                }
+            )
+            return fallback_tcp, fallback_report
+
+    def _clamp_object_to_tcp(label: str, T_tcp_current):
+        nonlocal clamp_count
+        nonlocal max_pre_clamp_error_m
+        nonlocal max_post_clamp_usd_error_m
+        nonlocal usd_root_pose_apply_failed_count
+
+        T_object_target = T_tcp_current @ T_tcp_object
+        try:
+            T_object_pre, object_pre_report = _dynamic_object_world_matrix(stage, object_prim_path)
+            pre_clamp_error_m = _matrix_translation_error_m(T_object_pre, T_object_target)
+            max_pre_clamp_error_m = max(max_pre_clamp_error_m, pre_clamp_error_m)
+        except Exception as exc:
+            object_pre_report = {"error": str(exc)}
+            pre_clamp_error_m = None
+
+        object_apply = _set_carried_object_root_world_matrix(
+            stage,
+            object_prim_path,
+            T_object_target,
+            label=label,
+        )
+        if "target_world_position_xyz" not in object_apply:
+            usd_root_pose_apply_failed_count += 1
+        try:
+            T_object_usd_after = _usd_object_root_world_matrix(stage, object_prim_path)
+            post_clamp_usd_error_m = _matrix_translation_error_m(T_object_usd_after, T_object_target)
+            max_post_clamp_usd_error_m = max(max_post_clamp_usd_error_m, post_clamp_usd_error_m)
+            object_usd_after_report = _matrix_pose_report(T_object_usd_after, frame="world")
+            object_usd_after_error = None
+        except Exception as exc:
+            post_clamp_usd_error_m = None
+            object_usd_after_report = None
+            object_usd_after_error = str(exc)
+        clamp_count += 1
+        return {
+            "target": _matrix_pose_report(T_object_target, frame="world"),
+            "object_pre_clamp": object_pre_report,
+            "pre_clamp_error_m": pre_clamp_error_m,
+            "pre_clamp_live_error_m": pre_clamp_error_m,
+            "post_clamp_usd_error_m": post_clamp_usd_error_m,
+            "object_usd_after_clamp": object_usd_after_report,
+            "object_usd_after_clamp_error": object_usd_after_error,
+            "object_pose_apply": object_apply,
+        }
+
+    print(
+        "[carry-replay] start:",
+        {
+            "frames": frame_count,
+            "replay": str(replay_path),
+            "object": object_prim_path,
+            "mode": "paused_rendered_visual_replay_then_root_support_hold",
+            "real_time": bool(real_time),
+            "replay_speed": playback_speed,
+        },
+        flush=True,
+    )
+
+    visual_pause_report = await _set_world_playing_best_effort(world, playing=False)
+    previous_frame: dict[str, Any] | None = None
+
+    for frame_index, frame in enumerate(frames):
+        if real_time:
+            if previous_frame is None:
+                delay = 0.0
+            else:
+                delay = max(
+                    0.0,
+                    float(frame.get("timestamp", 0.0)) - float(previous_frame.get("timestamp", 0.0)),
+                ) / playback_speed
+            if delay > 0.0:
+                await asyncio.sleep(delay)
+        previous_frame = frame
+
+        raw_nav_pose = _nav_replay_frame_pose(frame, root_z=root_z)
+        T_replay_raw = _planar_pose_matrix(
+            float(raw_nav_pose["x"]),
+            float(raw_nav_pose["y"]),
+            root_z,
+            float(raw_nav_pose["yaw"]),
+        )
+
+        T_visual_root = T_replay_align @ T_replay_raw
+        nav_pose = _planar_matrix_to_nav_pose(T_visual_root, root_z=root_z)
+        
+        frame_report = _apply_visual_replay_frame_with_carry_hold(
+            robot,
+            frame,
+            hold_state,
+            root_z=root_z,
+            apply_root_velocity=False,
+            stage=stage,
+            nav_pose=nav_pose,
+            visual_root_xform_fallback=visual_root_xform_fallback_enabled,
+        )
+
+        T_tcp_current, tcp_current_report = _current_tcp_or_root_delta_fallback(
+            f"visual_replay_frame_{frame_index}",
+            nav_pose,
+        )
+        clamp_report = _clamp_object_to_tcp(f"visual_carry_frame_{frame_index}", T_tcp_current)
+        pre_clamp_error_m = clamp_report.get("pre_clamp_error_m")
+
+        should_sample = _should_sample_carry_frame(frame_index, frame_count, pre_clamp_error_m)
+        sample: dict[str, Any] | None = None
+        if should_sample:
+            sample = {
+                "phase": "visual_replay",
+                "frame_index": frame_index,
+                "timestamp": frame.get("timestamp"),
+                "step": frame.get("step"),
+                "nav_pose": nav_pose,
+                "root_and_joint_replay": frame_report,
+                "tcp": tcp_current_report,
+                **clamp_report,
+            }
+            pose_clamp_samples.append(sample)
+
+        render_report = await _render_paused_replay_frame(world, app)
+
+        post_frame_report = _apply_visual_replay_frame_with_carry_hold(
+            robot,
+            frame,
+            hold_state,
+            root_z=root_z,
+            apply_root_velocity=False,
+            stage=stage,
+            nav_pose=nav_pose,
+            visual_root_xform_fallback=visual_root_xform_fallback_enabled,
+        )
+        T_tcp_post, tcp_post_report = _current_tcp_or_root_delta_fallback(
+            f"visual_replay_frame_{frame_index}_post_step",
+            nav_pose,
+        )
+        post_clamp_report = _clamp_object_to_tcp(
+            f"visual_carry_frame_{frame_index}_post_step",
+            T_tcp_post,
+        )
+        if sample is not None:
+            sample["post_step"] = {
+                "render": render_report,
+                "root_and_joint_replay": post_frame_report,
+                "tcp": tcp_post_report,
+                **post_clamp_report,
+            }
+
+        if frame_index % 50 == 0 or frame_index == frame_count - 1:
+            print(
+                "[carry-replay]",
+                {
+                    "frame": frame_index,
+                    "frames": frame_count,
+                    "pre_clamp_error_m": None if pre_clamp_error_m is None else round(pre_clamp_error_m, 4),
+                },
+                flush=True,
+            )
+
+    visual_final_root_hold = _apply_visual_replay_frame_with_carry_hold(
+        robot,
+        frames[-1],
+        hold_state,
+        root_z=root_z,
+        apply_root_velocity=False,
+        stage=stage,
+        nav_pose=final_nav_pose,
+        visual_root_xform_fallback=visual_root_xform_fallback_enabled,
+    )
+    visual_final_arm_gripper_hold = _apply_arm_gripper_hold(robot, hold_state)
+    T_tcp_visual_final, tcp_visual_final_report = _current_tcp_or_root_delta_fallback(
+        "visual_replay_final_before_play",
+        final_nav_pose,
+    )
+    visual_final_clamp = _clamp_object_to_tcp("visual_replay_final_before_play", T_tcp_visual_final)
+
+    requested_settle_steps = max(0, int(settle_steps))
+    if handoff_physics_settle_enabled:
+        stable_play_report = await _set_world_playing_best_effort(world, playing=True)
+        handoff_steps = requested_settle_steps
+    else:
+        stable_play_report = {
+            "requested": False,
+            "reason": "physics_settle_disabled_for_stable_carry",
+        }
+        handoff_steps = 0
+
+    stable_pre_capture_root_hold = _set_robot_root_to_nav_pose(robot, final_nav_pose, root_z)
+    stable_pre_capture_arm_gripper_hold = _apply_arm_gripper_hold(robot, hold_state)
+    support_hold_state = _capture_support_hold_state(robot, hold_state)
+    initial_stable_hold = _apply_stable_handoff_robot_hold(
+        robot,
+        final_nav_pose,
+        root_z=root_z,
+        hold_state=hold_state,
+        support_hold_state=support_hold_state,
+    )
+    T_tcp_final, tcp_final_report = _current_tcp_or_root_delta_fallback(
+        "stable_handoff_initial",
+        final_nav_pose,
+    )
+    initial_stable_clamp = _clamp_object_to_tcp("stable_handoff_initial", T_tcp_final)
+
+    if handoff_steps == 0:
+        for settle_index in range(2):
+            stable_hold_report = _apply_stable_handoff_robot_hold(
+                robot,
+                final_nav_pose,
+                root_z=root_z,
+                hold_state=hold_state,
+                support_hold_state=support_hold_state,
+            )
+            T_tcp_settle, tcp_settle_report = _current_tcp_or_root_delta_fallback(
+                f"static_handoff_{settle_index}",
+                final_nav_pose,
+            )
+            settle_clamp_report = _clamp_object_to_tcp(f"static_handoff_{settle_index}", T_tcp_settle)
+            velocity_zero_report = _zero_arm_gripper_velocity_from_hold_state(robot, hold_state)
+            sample = {
+                "phase": "static_handoff",
+                "settle_index": settle_index,
+                "nav_pose": final_nav_pose,
+                "robot_hold": stable_hold_report,
+                "arm_gripper_velocity_zero": velocity_zero_report,
+                "tcp": tcp_settle_report,
+                **settle_clamp_report,
+            }
+            stable_handoff_samples.append(sample)
+            await app.next_update_async()
+            post_stable_hold_report = _apply_stable_handoff_robot_hold(
+                robot,
+                final_nav_pose,
+                root_z=root_z,
+                hold_state=hold_state,
+                support_hold_state=support_hold_state,
+            )
+            T_tcp_post_settle, tcp_post_settle_report = _current_tcp_or_root_delta_fallback(
+                f"static_handoff_{settle_index}_post_update",
+                final_nav_pose,
+            )
+            post_settle_clamp_report = _clamp_object_to_tcp(
+                f"static_handoff_{settle_index}_post_update",
+                T_tcp_post_settle,
+            )
+            post_velocity_zero_report = _zero_arm_gripper_velocity_from_hold_state(robot, hold_state)
+            sample["post_step"] = {
+                "robot_hold": post_stable_hold_report,
+                "arm_gripper_velocity_zero": post_velocity_zero_report,
+                "tcp": tcp_post_settle_report,
+                **post_settle_clamp_report,
+            }
+
+    for settle_index in range(handoff_steps):
+        stable_hold_report = _apply_stable_handoff_robot_hold(
+            robot,
+            final_nav_pose,
+            root_z=root_z,
+            hold_state=hold_state,
+            support_hold_state=support_hold_state,
+        )
+        T_tcp_settle, tcp_settle_report = _current_tcp_or_root_delta_fallback(
+            f"stable_handoff_{settle_index}",
+            final_nav_pose,
+        )
+        settle_clamp_report = _clamp_object_to_tcp(f"stable_handoff_{settle_index}", T_tcp_settle)
+        pre_clamp_error_m = settle_clamp_report.get("pre_clamp_error_m")
+        should_sample = (
+            settle_index in {0, 1, 2, max(0, requested_settle_steps - 1)}
+            or settle_index % max(1, requested_settle_steps // 10 or 1) == 0
+            or bool(pre_clamp_error_m is not None and pre_clamp_error_m > 0.04)
+        )
+        sample = None
+        if should_sample:
+            sample = {
+                "phase": "stable_handoff",
+                "settle_index": settle_index,
+                "nav_pose": final_nav_pose,
+                "robot_hold": stable_hold_report,
+                "tcp": tcp_settle_report,
+                **settle_clamp_report,
+            }
+            stable_handoff_samples.append(sample)
+        world.step(render=True)
+        await app.next_update_async()
+        post_stable_hold_report = _apply_stable_handoff_robot_hold(
+            robot,
+            final_nav_pose,
+            root_z=root_z,
+            hold_state=hold_state,
+            support_hold_state=support_hold_state,
+        )
+        T_tcp_post_settle, tcp_post_settle_report = _current_tcp_or_root_delta_fallback(
+            f"stable_handoff_{settle_index}_post_step",
+            final_nav_pose,
+        )
+        post_settle_clamp_report = _clamp_object_to_tcp(
+            f"stable_handoff_{settle_index}_post_step",
+            T_tcp_post_settle,
+        )
+        if sample is not None:
+            sample["post_step"] = {
+                "robot_hold": post_stable_hold_report,
+                "tcp": tcp_post_settle_report,
+                **post_settle_clamp_report,
+            }
+
+    arm_gripper_velocity_zero = _zero_arm_gripper_velocity_from_hold_state(robot, hold_state)
+    final_stable_hold = _apply_stable_handoff_robot_hold(
+        robot,
+        final_nav_pose,
+        root_z=root_z,
+        hold_state=hold_state,
+        support_hold_state=support_hold_state,
+    )
+    T_tcp_after, tcp_after_report = _current_tcp_or_root_delta_fallback(
+        "after_stable_handoff",
+        final_nav_pose,
+    )
+    final_clamp_report = _clamp_object_to_tcp("nav_replay_carry_final_clamp", T_tcp_after)
+    pre_final_clamp_error_m = final_clamp_report.get("pre_clamp_error_m")
+    object_pre_final_report = final_clamp_report.get("object_pre_clamp")
+    final_object_apply = final_clamp_report.get("object_pose_apply")
+    final_velocity_zero = (final_object_apply or {}).get("velocity_zero")
+
+    try:
+        T_object_after = _usd_object_root_world_matrix(stage, object_prim_path)
+        object_after_report = _matrix_pose_report(T_object_after, frame="world")
+        object_after_report["source"] = "usd_object_root_world_matrix"
+    except Exception as exc:
+        T_object_after, object_after_report = _dynamic_object_world_matrix(stage, object_prim_path)
+        object_after_report["usd_root_read_error"] = str(exc)
+    T_tcp_object_after = np.linalg.inv(T_tcp_after) @ T_object_after
+    final_relative_error_m = _matrix_translation_error_m(T_tcp_object_after, T_tcp_object)
+    max_pre_clamp_error_m = max(max_pre_clamp_error_m, final_relative_error_m)
+
+    object_bbox_after = pick_handoff._compute_world_bbox(stage, object_prim_path)
+    try:
+        root_after = pick_handoff._robot_root_report(robot)
+        root_after_report_fallback = False
+    except Exception as exc:
+        root_after = _nav_root_report_from_pose(final_nav_pose, root_z, read_error=str(exc))
+        root_after_report_fallback = True
+
+    max_usd_tcp_relative_error_m = max(float(max_post_clamp_usd_error_m), float(final_relative_error_m))
+    object_dropped = bool(max_usd_tcp_relative_error_m > 0.04)
+
+    report = {
+        "success": True,
+        "skipped": False,
+        "base_transfer_mode": "replay_nav_to_place_with_kinematic_tcp_relative_object_carry",
+        "carry_backend": "paused_visual_replay_with_robot_xform_fallback_then_static_handoff",
+        "carry_replay_mode": "paused_rendered_visual_replay_then_root_support_hold",
+        "physical_nav_continuity": PHYSICAL_NAV_CONTINUITY,
+        "physical_carry_nav": True,
+        "stable_carry_implemented": True,
+        "fixed_joint_carry_implemented": False,
+        "object_carried_with_base_teleport": False,
+        "object_teleported_to_place_pose": False,
+        "nav_place_result_final_base_pose_world": nav_place_result.get("final_base_pose_world"),
+        "real_time_replay": bool(real_time),
+        "replay_speed": float(replay_speed),
+
+        "replay_trajectory_path": str(replay_path),
+        "replay_frame_count": frame_count,
+        "visual_replay_frame_count": frame_count,
+        "visual_replay_physics_paused": bool(visual_pause_report.get("success", False)),
+        "visual_replay_world_pause": visual_pause_report,
+        "visual_replay_uses_world_step": True,
+        "visual_replay_world_step_purpose": "render_flush_while_physics_paused",
+        "visual_root_xform_fallback_enabled": bool(visual_root_xform_fallback_enabled),
+        "visual_replay_root_velocity_applied": False,
+        "stable_handoff_world_play": stable_play_report,
+        "play_report_before_handoff": stable_play_report,
+        "settle_steps": requested_settle_steps,
+        "stable_handoff_steps": handoff_steps,
+        "handoff_physics_settle_enabled": bool(handoff_physics_settle_enabled),
+        "handoff_physics_settle_requested_steps": requested_settle_steps,
+        "handoff_physics_settle_executed_steps": handoff_steps,
+        "handoff_static_write_passes": 2 if handoff_steps == 0 else 0,
+
+        "object_prim_path": object_prim_path,
+        "object_carried_relative_to": "tcp",
+        "object_pose_clamped_to_tcp": True,
+        "object_carry_step_callback_enabled": True,
+        "object_kinematic_until_place": True,
+        "object_kinematic_until_release": True,
+        "object_dynamic_restored_before_arm_place": False,
+        "object_is_kinematic": _object_has_kinematic_enabled(stage, object_prim_path),
+        "object_velocity_zero_skipped_because_kinematic": any(
+            _velocity_report_skipped_because_kinematic(item)
+            for item in (
+                velocity_zero_before_replay,
+                final_velocity_zero,
+            )
+        ),
+
+        "object_dropped_during_carry": object_dropped,
+        "object_dropped_during_base_restore": object_dropped,
+        "carried_object_clamped_after_base_restore": True,
+
+        # 这个字段后面 arm-place 打开夹爪前会用来恢复 dynamic。
+        "object_freeze_report": freeze_report,
+        "object_kinematic_restore_report": None,
+
+        # 这个字段后面 arm-place 继续用来做 TCP-relative clamp。
+        "tcp_to_object_transform_before": _matrix_pose_report(T_tcp_object, frame="tcp"),
+        "tcp_to_object_transform_preserved": bool(final_relative_error_m <= 0.04),
+        "max_tcp_object_error_m": float(max_usd_tcp_relative_error_m),
+        "max_object_tcp_relative_error_m": float(max_usd_tcp_relative_error_m),
+        "max_pre_clamp_live_error_m": float(max_pre_clamp_error_m),
+        "max_post_clamp_usd_error_m": float(max_post_clamp_usd_error_m),
+        "final_object_tcp_relative_error_m": float(final_relative_error_m),
+        "pre_final_clamp_error_m": pre_final_clamp_error_m,
+
+        "root_before": root_before,
+        "root_after": root_after,
+        "root_after_report_fallback": root_after_report_fallback,
+        "root_z_fixed_m": root_z,
+        "final_nav_pose": final_nav_pose,
+        "root_hold_during_arm_place": True,
+        "root_hold_nav_pose": final_nav_pose,
+        "root_hold_z": root_z,
+        "tcp_pose_before_replay": tcp_before_report,
+        "tcp_pose_after_replay": tcp_after_report,
+        "tcp_pose_visual_final_before_play": tcp_visual_final_report,
+        "object_matrix_before_replay": object_before_report,
+        "object_matrix_after_replay": object_after_report,
+        "object_bbox_before_base_restore": object_bbox_before,
+        "object_bbox_after_base_restore": object_bbox_after,
+        "object_bbox_after_carry_clamp": object_bbox_after,
+
+        "object_velocity_zero_before_replay": velocity_zero_before_replay,
+        "object_velocity_zero_after_carry_clamp": final_velocity_zero,
+        "object_pose_apply_final": final_object_apply,
+        "object_pre_final_clamp": object_pre_final_report,
+
+        "hold_state": hold_state,
+        "support_hold_state": support_hold_state,
+        "visual_final_root_hold": visual_final_root_hold,
+        "visual_final_arm_gripper_hold": visual_final_arm_gripper_hold,
+        "visual_final_clamp": visual_final_clamp,
+        "stable_pre_capture_root_hold": stable_pre_capture_root_hold,
+        "stable_pre_capture_arm_gripper_hold": stable_pre_capture_arm_gripper_hold,
+        "initial_stable_hold": initial_stable_hold,
+        "initial_stable_clamp": initial_stable_clamp,
+        "final_stable_hold": final_stable_hold,
+        "arm_gripper_velocity_zero_before_arm_place": arm_gripper_velocity_zero,
+
+        "live_rigid_body_pose_apply_failed_count": 0,
+        "usd_root_pose_apply_failed_count": usd_root_pose_apply_failed_count,
+        "pose_clamp_samples": pose_clamp_samples,
+        "visual_replay_samples": pose_clamp_samples,
+        "stable_handoff_samples": stable_handoff_samples,
+
+        "robot_root_pose_modified_during_arm_place": False,
+    }
+
+    print(
+        "[carry-replay] complete:",
+        {
+            "frames": frame_count,
+            "final_relative_error_m": round(final_relative_error_m, 5),
+            "max_post_clamp_usd_error_m": round(max_post_clamp_usd_error_m, 5),
+            "object_dropped": object_dropped,
+        },
+        flush=True,
+    )
+
+    return report
 
 async def _restore_place_base_with_kinematic_object_carry(
     world,
@@ -3789,12 +5027,17 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
         nav_place_result = _read_json(args.nav_place_result, missing_reason="missing_nav_place_result")
         _validate_nav_result(nav_place_result, reason="missing_nav_place_result")
 
-    elif args.put_mode == "arm-place" and args.restore_nav_place_for_arm_place:
-        # 只有显式打开 restore-nav-place-for-arm-place 时，
-        # 才允许 arm-place 使用 nav_place_result 或 task.place.base_goal。
+    elif args.put_mode == "arm-place" and (args.restore_nav_place_for_arm_place or args.replay_nav_place_with_carried_object):
+        # restore-nav-place-for-arm-place: 旧的瞬移/恢复 place base 分支。
+        # replay-nav-place-with-carried-object: 新的连续 carry replay 分支。
         if args.nav_place_result:
             nav_place_result = _read_json(args.nav_place_result, missing_reason="missing_nav_place_result")
             _validate_nav_result(nav_place_result, reason="missing_nav_place_result")
+        elif args.replay_nav_place_with_carried_object:
+            raise DemoFailure(
+                "missing_nav_place_result",
+                "--replay-nav-place-with-carried-object requires --nav-place-result with replay_trajectory_path.",
+            )
         else:
             nav_place_result = _nav_place_result_from_task_base_goal(raw_task_place)
 
@@ -3843,7 +5086,10 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
         result.setdefault("warnings", []).append(
             {
                 "warning": "replay_nav_to_pick_not_executed",
-                "detail": "First stable arm-place version keeps nav replay disabled and restores the final pick base pose.",
+                "detail": (
+                    "Current stable-carry stage still restores the final pick base pose. "
+                    "Only nav_to_place replay carry is implemented in this phase."
+                ),
             }
         )
 
@@ -3918,8 +5164,45 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
             "replay_nav_place_with_carried_object": bool(args.replay_nav_place_with_carried_object),
         }
 
-        if args.restore_nav_place_for_arm_place:
-            # 显式打开时才执行：恢复 place base + TCP 相对物体携带。
+        if args.replay_nav_to_place and args.replay_nav_place_with_carried_object:
+            if nav_place_result is None:
+                raise DemoFailure(
+                    "missing_nav_place_result",
+                    "nav_place_result is required for replay_nav_to_place_with_carried_object.",
+                )
+
+            try:
+                carry_replay_report = await _replay_nav_to_place_with_tcp_object_carry(
+                    world,
+                    robot,
+                    nav_place_result,
+                    task_pick.pick.object_prim_path,
+                    settle_steps=int(args.settle_steps),
+                    real_time=bool(args.replay_nav_real_time),
+                    replay_speed=float(args.replay_nav_speed),
+                )
+            except DemoFailure:
+                raise
+            except Exception as exc:
+                raise DemoFailure(
+                    "replay_nav_to_place_failed",
+                    str(exc),
+                    getattr(exc, "report", None),
+                ) from exc
+
+            result["stages"]["replay_nav_to_place"] = carry_replay_report
+
+            # 兼容后面的 _run_arm_place_put(... restore_place_report=...)
+            # 这里不是瞬移 restore，而是 replay carry 后 base 已经连续到达 place 附近。
+            result["stages"]["restore_place_base"] = {
+                **carry_replay_report,
+                "stage_alias": "replay_nav_to_place",
+                "restore_place_base_skipped": True,
+                "reason": "base_already_moved_by_replay_nav_to_place_with_carried_object",
+            }
+
+        elif args.restore_nav_place_for_arm_place:
+            # 旧分支：瞬移/恢复 place base。不作为主线 carry 使用。
             try:
                 result["stages"]["restore_place_base"] = await _restore_place_base_with_kinematic_object_carry(
                     world,
@@ -3931,6 +5214,7 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
                 )
             except Exception as exc:
                 raise DemoFailure("restore_place_base_failed", str(exc), getattr(exc, "report", None)) from exc
+
         else:
             # 默认路线：不恢复 place base，不做 kinematic carry。
             result["stages"]["restore_place_base"] = {
@@ -3957,11 +5241,11 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
                 "robot_root_pose_modified_during_arm_place": False,
                 "max_tcp_object_error_m": None,
             }
-        if args.replay_nav_to_place:
+        if args.replay_nav_to_place and not result["stages"].get("replay_nav_to_place", {}).get("success", False):
             result.setdefault("warnings", []).append(
                 {
                     "warning": "replay_nav_to_place_not_executed",
-                    "detail": "First stable arm-place version uses TCP-relative carried restore instead of replaying nav_to_place.",
+                    "detail": "replay_nav_to_place was requested but no successful replay carry report was produced.",
                 }
             )
     else:
@@ -4040,7 +5324,7 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
             await app.next_update_async()
     except Exception:
         pass
-    
+
     return result
 
 
@@ -4116,6 +5400,10 @@ def _run() -> int:
             "arm_place_failed",
             "arm_place_execution_failed",
             "object_out_of_place",
+            "replay_nav_to_place_failed",
+            "missing_nav_replay_trajectory",
+            "invalid_nav_replay_trajectory",
+            "empty_nav_replay_trajectory",
         }:
             stage_name_by_reason = {
                 "open_stage_failed": "open_stage",
@@ -4131,6 +5419,10 @@ def _run() -> int:
                 "arm_place_failed": "put",
                 "arm_place_execution_failed": "put",
                 "object_out_of_place": "put",
+                "replay_nav_to_place_failed": "replay_nav_to_place",
+                "missing_nav_replay_trajectory": "replay_nav_to_place",
+                "invalid_nav_replay_trajectory": "replay_nav_to_place",
+                "empty_nav_replay_trajectory": "replay_nav_to_place",
             }
             stage_name = stage_name_by_reason.get(reason)
         _write_failure_result(args, result, str(reason), detail, stage_name=stage_name, report=report)
