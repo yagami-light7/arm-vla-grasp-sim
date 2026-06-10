@@ -80,7 +80,9 @@ WORLD_COLLISION_CACHE = {
     "primitive": 64,
     "mesh": 1,
 }
-WORLD_COLLISION_ACTIVATION_DISTANCE_M = 0.02
+WORLD_COLLISION_ACTIVATION_DISTANCE_M = float(
+    os.environ.get("GO2_X5_WORLD_COLLISION_ACTIVATION_DISTANCE_M", "0.10")
+)
 
 # pregrasp 是避开物体的安全点，但目标物体被放高、或者固定底座后
 # arm_base_link 变低时，默认 10 cm 上方的 pregrasp 可能比 grasp 本身更难到达。

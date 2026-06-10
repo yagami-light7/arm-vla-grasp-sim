@@ -2567,13 +2567,59 @@ def _make_arm_place_target(
         [float(place_pose["x"]), float(place_pose["y"]), float(place_pose["z"])],
         dtype=float,
     )
-    release_height = float(place.get("release_height", 0.04))
-    retreat_height = float(place.get("retreat_height", 0.12))
+    
+    # 三个高度都相对于最终希望苹果中心到达的 place_center_world。
+    # pre_place_clearance：先到一个更高的安全点，减少移动到放置区域时碰桌风险。
+    # place_release_clearance：真正松开夹爪时比目标高度高多少，用来平衡“轻放”和“避碰”。
+    # retreat_clearance：松开后向上撤离的高度。
+    place_release_clearance = float(
+        place.get(
+            "release_clearance",
+            os.environ.get("GO2_X5_ARM_PLACE_RELEASE_CLEARANCE_M", "0.002"),
+        )
+    )
+    place_release_clearance = max(0.0, place_release_clearance)
+
+
+    # 到 pre_place 时的安全高度。
+    # 这个值主要用于避免 move_to_pre_place 和 approach 前半段贴桌面。
+    pre_place_clearance = float(
+        place.get(
+            "pre_place_clearance",
+            os.environ.get("GO2_X5_ARM_PRE_PLACE_CLEARANCE_M", "0.08"),
+        )
+    )
+    pre_place_clearance = max(place_release_clearance, pre_place_clearance)
+
+    # retreat 时的安全高度。
+    retreat_clearance = float(
+        place.get(
+            "retreat_clearance",
+            os.environ.get("GO2_X5_ARM_PLACE_RETREAT_CLEARANCE_M", "0.10"),
+        )
+    )
+    retreat_clearance = max(place_release_clearance, retreat_clearance)
+
+    
+    release_center_world = place_center_world + np.array(
+        [0.0, 0.0, place_release_clearance],
+        dtype=float,
+    )
+
+    pre_place_center_world = place_center_world + np.array(
+        [0.0, 0.0, pre_place_clearance],
+        dtype=float,
+    )
+
+    retreat_center_world = place_center_world + np.array(
+        [0.0, 0.0, retreat_clearance],
+        dtype=float,
+    )
 
     target_object_centers = {
-        "pre_place": place_center_world + np.array([0.0, 0.0, release_height], dtype=float),
-        "place": place_center_world,
-        "retreat": place_center_world + np.array([0.0, 0.0, retreat_height], dtype=float),
+        "pre_place": pre_place_center_world,
+        "place": release_center_world,
+        "retreat": retreat_center_world,
     }
 
     from scripts.math.SE3 import pose_to_matrix
@@ -2663,8 +2709,20 @@ def _make_arm_place_target(
                 for name, center_xyz in target_object_centers.items()
             },
             "target_tcp_matrices_world": target_world_matrices,
-            "release_height_m": release_height,
-            "retreat_height_m": retreat_height,
+            "place_strategy": "vertical_clearance_place",
+            "place_clearances_m": {
+                "pre_place": pre_place_clearance,
+                "release": place_release_clearance,
+                "retreat": retreat_clearance,
+            },
+            "target_object_centers_world": {
+                name: [float(value) for value in center_xyz]
+                for name, center_xyz in target_object_centers.items()
+            },
+            "desired_final_object_center_world": [float(value) for value in place_center_world],
+            "release_object_center_world": [float(value) for value in release_center_world],
+            "pre_place_object_center_world": [float(value) for value in pre_place_center_world],
+            "retreat_object_center_world": [float(value) for value in retreat_center_world],
             "orientation_rule": orientation_rule,
             "orientation_source": orientation_source,
             "pick_grasp_quaternion_base": pick_grasp_quat_base,
@@ -3002,8 +3060,40 @@ async def _execute_arm_place_plan(
         else:
             raise DemoFailure("arm_place_failed", f"unknown arm-place segment type: {segment.get('type')}")
 
+    return_home_log = {
+        "skipped": True,
+        "reason": "not started",
+    }
+
     if not tracking_failure_reason:
-        await exec_module.hold_final(world, robot, plan.get("segments", []), arm_indices)
+        q_home = exec_module.get_task_home_q_arm(plan.get("segments", []))
+
+        if q_home is not None:
+            print(
+                "[arm-place] return arm to home:",
+                {
+                    "q_home": q_home.tolist(),
+                },
+                flush=True,
+            )
+
+            return_home_log = await exec_module.execute_return_home_motion(
+                world,
+                robot,
+                arm_indices,
+                q_home,
+            )
+            logs.append(return_home_log)
+        else:
+            return_home_log = {
+                "skipped": True,
+                "reason": "missing_home_q_from_plan",
+            }
+    elif not tracking_failure_reason:
+        return_home_log = {
+            "skipped": True,
+            "reason": "open_gripper_not_executed",
+        }
 
     _settle_world(world, settle_steps)
     object_bbox_after = pick_handoff._compute_world_bbox(stage, object_prim_path) if stage is not None else None
@@ -3033,6 +3123,15 @@ async def _execute_arm_place_plan(
             ),
             "object_carry_step_callback_enabled": object_carry_step_callback_enabled,
             "robot_root_pose_modified_during_arm_place": False,
+            "return_home_executed": bool(
+                return_home_log
+                and not return_home_log.get("skipped", False)
+            ),
+            "return_home_converged": bool(
+                return_home_log
+                and return_home_log.get("motion_converged", False)
+            ),
+
         }
     )
     result = {
@@ -3064,6 +3163,7 @@ async def _execute_arm_place_plan(
         "object_tcp_clamp_during_arm_place": clamp_state,
         "verification": verification,
         "execution_logs": logs,
+        "return_home": return_home_log,
         "summary": summary,
     }
     _write_json(execution_json, result)
@@ -3934,6 +4034,13 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
             "pipeline_context": str(context_path),
         }
     )
+    try:
+        app = omni.kit.app.get_app()
+        for _ in range(30):
+            await app.next_update_async()
+    except Exception:
+        pass
+    
     return result
 
 

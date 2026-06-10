@@ -1,10 +1,13 @@
 project_status.json
+object_pose_debug_report.json
 .vscode/
 .agents/
 .codex/
+.pytest_cache/
 AGENTS.md
 tutorial/**/README.md
 episodes/
+outputs/
 *.pt
 __pycache__/
 *.py[cod]

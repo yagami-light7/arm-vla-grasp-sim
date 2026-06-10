@@ -2,8 +2,8 @@
   "schema_version": 1,
   "episode_index": 0,
   "seed": 7,
-  "success": false,
-  "failure_reason": "single_stage_manipulation_failed",
+  "success": true,
+  "failure_reason": "",
   "handoff_mode": "multi_process_json",
   "physical_continuity": false,
   "physical_nav_continuity": false,
@@ -52,13 +52,13 @@
       "reason": "single-stage-07 will use task.place.base_goal"
     },
     "place": {
-      "success": false,
+      "success": true,
       "skipped": true,
       "backend": "single-stage-07",
       "reason": "place runs inside 07 arm-place"
     },
     "single_stage_manipulation": {
-      "success": false,
+      "success": true,
       "returncode": 0,
       "backend": "single-stage-07",
       "result_json": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/single_stage_07/single_stage_result.json",
@@ -67,21 +67,21 @@
       "put_mode": "arm-place",
       "carry_mode": "logical",
       "physical_nav_continuity": false,
-      "physical_put_execution": false,
+      "physical_put_execution": true,
       "object_teleported": false,
-      "failure_reason": "object_out_of_place",
-      "result_failure_reason": "object_out_of_place",
-      "result_failure_detail": "arm-place object did not verify near place_pose_world.",
+      "failure_reason": "",
+      "result_failure_reason": "",
+      "result_failure_detail": "",
       "result_put_mode": "arm_place",
-      "arm_place_executed": false,
-      "scene_usd": null,
+      "arm_place_executed": true,
+      "scene_usd": "/home/light/workspace/arm_vla/source/scene/839920_go2_x5.usd",
       "prepare_object": {
         "success": true
       },
       "pick": {
         "success": true,
         "failure_reason": "",
-        "elapsed_wall_time_s": 18.26354956626892
+        "elapsed_wall_time_s": 18.27865719795227
       },
       "restore_place_base": {
         "success": true,
@@ -97,15 +97,21 @@
         "fixed_joint_carry_implemented": false
       },
       "put": {
-        "success": false,
-        "failure_reason": "object_out_of_place",
-        "failure_detail": "arm-place object did not verify near place_pose_world.",
-        "object_kinematic_until_release": false
+        "success": true,
+        "failure_reason": "",
+        "put_mode": "arm_place",
+        "arm_place_executed": true,
+        "object_teleported": false,
+        "physical_put_execution": true,
+        "physical_place_continuity": true,
+        "physical_nav_continuity": false,
+        "object_kinematic_until_release": false,
+        "elapsed_wall_time_s": 32.26484513282776
       },
       "base_transfer_mode": "no_base_transfer_for_local_arm_place",
       "object_dropped_during_base_restore": false,
       "object_kinematic_until_release": false,
-      "object_dynamic_restored_before_release": null
+      "object_dynamic_restored_before_release": false
     }
   },
   "object_pose_policy": {
@@ -138,5 +144,5 @@
   "single_stage_manipulation_result": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/single_stage_07/single_stage_result.json",
   "base_transfer_mode": "no_base_transfer_for_local_arm_place",
   "object_dropped_during_base_restore": false,
-  "failure_detail": "object_out_of_place: arm-place object did not verify near place_pose_world."
+  "elapsed_wall_time_s": 123.02689099311829
 }
