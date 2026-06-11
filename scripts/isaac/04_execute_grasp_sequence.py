@@ -95,6 +95,9 @@ def env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() not in {"", "0", "false", "no", "off"}
 
 
+DIRECT_ARM_STATE_REPLAY = env_bool("GO2_X5_DIRECT_ARM_STATE_REPLAY", False)
+
+
 # VLA collection should not silently count a side drag as a successful pick.
 # Set GO2_X5_REQUIRE_OBJECT_LIFT_SUCCESS=0 only for legacy retreat debugging.
 REQUIRE_OBJECT_LIFT_SUCCESS = env_bool("GO2_X5_REQUIRE_OBJECT_LIFT_SUCCESS", True)
@@ -577,7 +580,12 @@ async def settle_arm_to_start(world, robot, arm_indices, q_start, label: str, st
         ).copy()
         action = make_partial_action(q_target, arm_indices, q_full_now)
 
-        robot.apply_action(action)
+        apply_arm_motion_command(
+            robot,
+            action,
+            q_target,
+            arm_indices,
+        )
         world.step(render=True)
         await maybe_run_step_callback(
             step_callback,
@@ -586,6 +594,8 @@ async def settle_arm_to_start(world, robot, arm_indices, q_start, label: str, st
             step_index=step,
             q_arm_target=q_target,
         )
+        if DIRECT_ARM_STATE_REPLAY:
+            _set_joint_state_direct_best_effort(robot, q_target, arm_indices)
         await omni.kit.app.get_app().next_update_async()
 
 
@@ -649,7 +659,14 @@ async def execute_motion_segment(
             hold_positions=hold_positions,
         )
 
-        robot.apply_action(action)
+        command_report = apply_arm_motion_command(
+            robot,
+            action,
+            q_target,
+            arm_indices,
+            hold_indices=hold_indices,
+            hold_positions=hold_positions,
+        )
         world.step(render=True)
         await maybe_run_step_callback(
             step_callback,
@@ -659,6 +676,12 @@ async def execute_motion_segment(
             t=float(t),
             q_arm_target=q_target,
         )
+        if DIRECT_ARM_STATE_REPLAY:
+            command_report["post_step_direct_set"] = _set_joint_state_direct_best_effort(
+                robot,
+                q_target,
+                arm_indices,
+            )
         await omni.kit.app.get_app().next_update_async()
 
         q_full_actual = get_joint_positions_checked(
@@ -673,6 +696,8 @@ async def execute_motion_segment(
         log["target_q_arm"].append(q_target.tolist())
         log["actual_q_arm"].append(q_actual.tolist())
         log["joint_error_norm"].append(error)
+        if DIRECT_ARM_STATE_REPLAY and step < 8:
+            log.setdefault("direct_state_command_reports", []).append(command_report)
 
         if step % TRACK_LOG_EVERY_N_STEPS == 0 or step == num_steps - 1:
             print(f"[motion:{name}] t={t:.3f}/{duration:.3f}, joint_error={error:.6f}")
@@ -788,8 +813,15 @@ async def execute_return_home_motion(world, robot, arm_indices, q_home):
 
         q_full_now = safe_numpy(robot.get_joint_positions()).copy()
         action = make_partial_action(q_target, arm_indices, q_full_now)
-        robot.apply_action(action)
+        apply_arm_motion_command(
+            robot,
+            action,
+            q_target,
+            arm_indices,
+        )
         world.step(render=True)
+        if DIRECT_ARM_STATE_REPLAY:
+            _set_joint_state_direct_best_effort(robot, q_target, arm_indices)
         await omni.kit.app.get_app().next_update_async()
 
         q_actual = safe_numpy(robot.get_joint_positions())[arm_indices]
@@ -839,7 +871,12 @@ async def wait_until_arm_reaches_target(world, robot, arm_indices, q_target, lab
         q_full_now = safe_numpy(robot.get_joint_positions()).copy()
         action = make_partial_action(q_target, arm_indices, q_full_now)
 
-        robot.apply_action(action)
+        apply_arm_motion_command(
+            robot,
+            action,
+            q_target,
+            arm_indices,
+        )
         world.step(render=True)
         await maybe_run_step_callback(
             step_callback,
@@ -848,6 +885,8 @@ async def wait_until_arm_reaches_target(world, robot, arm_indices, q_target, lab
             step_index=step,
             q_arm_target=q_target,
         )
+        if DIRECT_ARM_STATE_REPLAY:
+            _set_joint_state_direct_best_effort(robot, q_target, arm_indices)
         await omni.kit.app.get_app().next_update_async()
 
         q_full_actual = get_joint_positions_checked(
@@ -1156,6 +1195,71 @@ def make_partial_action_with_hold(
         joint_positions=combined_targets,
         joint_indices=combined_indices,
     )
+
+
+def _set_joint_state_direct_best_effort(robot, positions, joint_indices, *, zero_velocity: bool = True) -> dict:
+    """Directly write selected joint positions for visual/kinematic arm-place replay."""
+    positions = np.asarray(positions, dtype=float).reshape(-1)
+    indices = [int(index) for index in joint_indices]
+    report = {
+        "enabled": bool(DIRECT_ARM_STATE_REPLAY),
+        "requested": bool(indices),
+        "success": False,
+        "joint_indices": indices,
+    }
+    if not DIRECT_ARM_STATE_REPLAY or not indices:
+        report["reason"] = "direct_arm_state_replay_disabled_or_empty_indices"
+        return report
+    try:
+        robot.set_joint_positions(positions, joint_indices=indices)
+        report["success"] = True
+        report["backend"] = "set_joint_positions_subset_kw"
+    except Exception as exc:
+        report["set_joint_positions_error"] = str(exc)
+        try:
+            q_full = safe_numpy(robot.get_joint_positions()).copy()
+            q_full[np.asarray(indices, dtype=int)] = positions
+            robot.set_joint_positions(q_full)
+            report["success"] = True
+            report["backend"] = "set_joint_positions_full"
+        except Exception as full_exc:
+            report["set_joint_positions_full_error"] = str(full_exc)
+    if zero_velocity and report["success"]:
+        try:
+            robot.set_joint_velocities(np.zeros_like(positions), joint_indices=indices)
+            report["velocity_zeroed"] = True
+        except Exception as exc:
+            report["velocity_zero_error"] = str(exc)
+    return report
+
+
+def apply_arm_motion_command(
+    robot,
+    action,
+    target_positions,
+    joint_indices,
+    *,
+    hold_indices=None,
+    hold_positions=None,
+) -> dict:
+    """Apply a normal action, optionally followed by direct joint-state writeback."""
+    report = {"direct_arm_state_replay": bool(DIRECT_ARM_STATE_REPLAY)}
+    robot.apply_action(action)
+    report["apply_action"] = True
+    if not DIRECT_ARM_STATE_REPLAY:
+        return report
+
+    indices = [int(index) for index in joint_indices]
+    positions = np.asarray(target_positions, dtype=float).reshape(-1)
+    if hold_indices is not None and hold_positions is not None:
+        indices = [int(index) for index in hold_indices] + indices
+        positions = np.concatenate([np.asarray(hold_positions, dtype=float).reshape(-1), positions])
+    report["direct_set"] = _set_joint_state_direct_best_effort(
+        robot,
+        positions,
+        indices,
+    )
+    return report
 
 
 async def main():

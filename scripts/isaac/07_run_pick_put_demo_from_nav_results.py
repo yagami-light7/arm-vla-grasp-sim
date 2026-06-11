@@ -38,6 +38,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 class DemoFailure(RuntimeError):
     """Failure with a stable reason and optional stage report."""
 
@@ -2961,11 +2968,27 @@ async def _execute_arm_place_plan(
     exec_module.TARGET_JSON = target_json
     exec_module.GRASP_PLAN_JSON = plan_json
     exec_module.OUTPUT_JSON = execution_json
+    arm_place_direct_joint_state = _env_flag("GO2_X5_ARM_PLACE_DIRECT_JOINT_STATE", True)
+    exec_module.DIRECT_ARM_STATE_REPLAY = bool(arm_place_direct_joint_state)
+    if "GO2_X5_ARM_PLACE_COMMAND_DT" in os.environ:
+        exec_module.ARM_COMMAND_DT = float(os.environ["GO2_X5_ARM_PLACE_COMMAND_DT"])
+    if "GO2_X5_ARM_PLACE_POST_MOTION_TIMEOUT_S" in os.environ:
+        exec_module.POST_MOTION_CONVERGENCE_TIMEOUT = float(os.environ["GO2_X5_ARM_PLACE_POST_MOTION_TIMEOUT_S"])
+    if "GO2_X5_ARM_PLACE_POST_MOTION_JOINT_ERROR_TOL" in os.environ:
+        exec_module.POST_MOTION_JOINT_ERROR_TOL = float(os.environ["GO2_X5_ARM_PLACE_POST_MOTION_JOINT_ERROR_TOL"])
     exec_module.STRICT_POST_MOTION_WAIT_SEGMENTS = set(exec_module.STRICT_POST_MOTION_WAIT_SEGMENTS) | {
         "move_to_pre_place",
         "approach_to_place",
         "retreat_place",
     }
+    arm_place_execution_config = {
+        "direct_joint_state_replay": bool(exec_module.DIRECT_ARM_STATE_REPLAY),
+        "command_dt": float(exec_module.ARM_COMMAND_DT),
+        "sim_dt": float(exec_module.SIM_DT),
+        "post_motion_timeout_s": float(exec_module.POST_MOTION_CONVERGENCE_TIMEOUT),
+        "post_motion_joint_error_tol": float(exec_module.POST_MOTION_JOINT_ERROR_TOL),
+    }
+    print("[arm-place] execution config:", arm_place_execution_config, flush=True)
 
     stage = omni.usd.get_context().get_stage()
     object_bbox_before = pick_handoff._compute_world_bbox(stage, object_prim_path) if stage is not None else None
@@ -3005,6 +3028,7 @@ async def _execute_arm_place_plan(
     root_support_hold_state = None
     root_support_hold_callback = None
     root_hold_during_arm_place = bool((restore_place_report or {}).get("root_hold_during_arm_place", False))
+    root_hold_every_arm_step = _env_flag("GO2_X5_ARM_PLACE_HOLD_ROOT_EVERY_STEP", False)
     if root_hold_during_arm_place:
         root_hold_nav_pose = (restore_place_report or {}).get("root_hold_nav_pose")
         root_hold_z = (restore_place_report or {}).get("root_hold_z")
@@ -3038,9 +3062,18 @@ async def _execute_arm_place_plan(
     object_carry_step_callback_enabled = bool(clamp_callback is not None)
 
     async def root_support_hold_from_report_callback(**kwargs):
+        phase = str(kwargs.get("phase") or "")
+        step_index = kwargs.get("step_index")
+        apply_root_pose = bool(
+            root_hold_every_arm_step
+            or step_index == -1
+            or phase.startswith("before_execute")
+            or phase.startswith("after_execute")
+        )
         root_support_report = _apply_root_support_hold_from_report(
             robot,
             restore_place_report or {},
+            apply_root_pose=apply_root_pose,
         )
         if isinstance(root_support_hold_state, dict) and root_support_report.get("applied", False):
             root_support_hold_state["hold_count"] = int(root_support_hold_state.get("hold_count", 0)) + 1
@@ -3314,6 +3347,8 @@ async def _execute_arm_place_plan(
             "object_carry_step_callback_enabled": object_carry_step_callback_enabled,
             "root_support_hold_step_callback_enabled": bool(root_support_hold_callback is not None),
             "root_hold_during_arm_place": bool(root_support_hold_callback is not None),
+            "root_hold_every_arm_step": bool(root_hold_every_arm_step),
+            "arm_place_direct_joint_state_replay": bool(exec_module.DIRECT_ARM_STATE_REPLAY),
             "robot_root_pose_modified_during_arm_place": False,
             "return_home_executed": bool(
                 return_home_log
@@ -3347,6 +3382,7 @@ async def _execute_arm_place_plan(
         "object_pose_clamped_to_tcp": object_carry_step_callback_enabled,
         "object_carry_step_callback_enabled": object_carry_step_callback_enabled,
         "root_support_hold_during_arm_place": root_support_hold_state,
+        "arm_place_execution_config": arm_place_execution_config,
         "max_tcp_object_error_m": (
             clamp_state.get("max_pre_clamp_error_m") if isinstance(clamp_state, dict) else None
         ),
@@ -4081,7 +4117,12 @@ def _make_root_support_hold_callback(
     return state, root_support_hold_callback
 
 
-def _apply_root_support_hold_from_report(robot, restore_place_report: dict[str, Any]) -> dict[str, Any]:
+def _apply_root_support_hold_from_report(
+    robot,
+    restore_place_report: dict[str, Any],
+    *,
+    apply_root_pose: bool = True,
+) -> dict[str, Any]:
     if not restore_place_report.get("root_hold_during_arm_place", False):
         return {
             "applied": False,
@@ -4097,7 +4138,14 @@ def _apply_root_support_hold_from_report(robot, restore_place_report: dict[str, 
             "root_hold_nav_pose": nav_pose,
             "root_hold_z": root_z,
         }
-    root_report = _set_robot_root_to_nav_pose(robot, nav_pose, float(root_z))
+    if apply_root_pose:
+        root_report = _set_robot_root_to_nav_pose(robot, nav_pose, float(root_z))
+    else:
+        root_report = {
+            "success": False,
+            "skipped": True,
+            "reason": "root_pose_hold_skipped_during_arm_motion_step",
+        }
     support_report = (
         _apply_support_hold(robot, support_hold_state)
         if isinstance(support_hold_state, dict)
@@ -4110,6 +4158,7 @@ def _apply_root_support_hold_from_report(robot, restore_place_report: dict[str, 
         "applied": True,
         "root": root_report,
         "support": support_report,
+        "root_pose_hold_applied": bool(apply_root_pose),
     }
 
 
@@ -4720,7 +4769,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
             nav_pose=nav_pose,
             visual_root_xform_fallback=visual_root_xform_sync_enabled,
             robot_root_prim_path=visual_root_prim_path,
-            apply_live_root_pose=not visual_root_xform_fallback_enabled,
+            apply_live_root_pose=not visual_root_xform_sync_enabled,
             root_pose_override=aligned_root_pose,
             visual_root_world_matrix=visual_root_sync_matrix,
             visual_root_world_matrix_source=visual_root_sync_source,
@@ -4774,7 +4823,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
             nav_pose=nav_pose,
             visual_root_xform_fallback=visual_root_xform_sync_enabled,
             robot_root_prim_path=visual_root_prim_path,
-            apply_live_root_pose=not visual_root_xform_fallback_enabled,
+            apply_live_root_pose=not visual_root_xform_sync_enabled,
             root_pose_override=aligned_root_pose,
             visual_root_world_matrix=visual_root_sync_matrix,
             visual_root_world_matrix_source=visual_root_sync_source,
@@ -4821,7 +4870,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
         nav_pose=final_nav_pose,
         visual_root_xform_fallback=visual_root_xform_sync_enabled,
         robot_root_prim_path=visual_root_prim_path,
-        apply_live_root_pose=not visual_root_xform_fallback_enabled,
+        apply_live_root_pose=not visual_root_xform_sync_enabled,
         root_pose_override=(
             _aligned_full_root_pose_from_frame(frames[-1])
             if live_articulation_replay_enabled and use_full_recorded_root_pose
