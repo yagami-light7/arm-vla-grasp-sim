@@ -5,7 +5,7 @@
   "pick": {
     "success": true,
     "failure_reason": "",
-    "elapsed_wall_time_s": 19.52057147026062,
+    "elapsed_wall_time_s": 19.28144121170044,
     "task_spec": {
       "object_prim_path": "/World/apple",
       "grasp_mode": "auto",

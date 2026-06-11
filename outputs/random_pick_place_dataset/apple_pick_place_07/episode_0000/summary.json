@@ -81,19 +81,21 @@
       "pick": {
         "success": true,
         "failure_reason": "",
-        "elapsed_wall_time_s": 19.52057147026062
+        "elapsed_wall_time_s": 19.28144121170044
       },
       "restore_place_base": {
         "success": true,
         "physical_nav_continuity": false,
-        "base_transfer_mode": "replay_nav_to_place_with_kinematic_tcp_relative_object_carry",
+        "base_transfer_mode": "restore_nav_place_result_with_kinematic_tcp_relative_object_carry",
+        "object_freeze_before_base_restore": true,
+        "object_pose_synced_during_base_restore": true,
         "object_carried_relative_to": "tcp",
         "object_dropped_during_base_restore": false,
         "carried_object_clamped_after_base_restore": true,
         "object_dynamic_restored_before_arm_place": false,
         "object_kinematic_until_release": true,
-        "physical_carry_nav": true,
-        "stable_carry_implemented": true,
+        "physical_carry_nav": false,
+        "stable_carry_implemented": false,
         "fixed_joint_carry_implemented": false
       },
       "put": {
@@ -105,7 +107,7 @@
         "physical_place_continuity": true,
         "physical_nav_continuity": false
       },
-      "base_transfer_mode": "replay_nav_to_place_with_kinematic_tcp_relative_object_carry",
+      "base_transfer_mode": "restore_nav_place_result_with_kinematic_tcp_relative_object_carry",
       "object_dropped_during_base_restore": false,
       "object_kinematic_until_release": true,
       "object_dynamic_restored_before_release": null
@@ -137,9 +139,9 @@
   "manipulation_backend": "single-stage-07",
   "nav_visualization_in_batch": false,
   "single_stage_07_visualization": true,
-  "single_stage_replay_nav": true,
+  "single_stage_replay_nav": false,
   "single_stage_manipulation_result": "/home/light/workspace/arm_vla/outputs/random_pick_place_dataset/apple_pick_place_07/episode_0000/single_stage_07/single_stage_result.json",
-  "base_transfer_mode": "replay_nav_to_place_with_kinematic_tcp_relative_object_carry",
+  "base_transfer_mode": "restore_nav_place_result_with_kinematic_tcp_relative_object_carry",
   "object_dropped_during_base_restore": false,
   "failure_detail": "place_target_unreachable_from_current_base: task_nav_to_place.place.place_pose_world is outside the current arm workspace; arm-place planning is skipped before calling cuRobo."
 }
