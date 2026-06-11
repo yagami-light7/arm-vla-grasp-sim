@@ -54,6 +54,7 @@ DEBUG_ROOT_PATH = "/World/debug_go2_x5_grasp_sequence"
 
 SIM_DT = 1.0 / 50.0
 ARM_COMMAND_DT = 0.05
+ARM_PLACE_EXEC_TIME_SCALE = max(1.0e-6, float(os.environ.get("GO2_X5_ARM_PLACE_EXEC_TIME_SCALE", "1.0")))
 GRIPPER_COMMAND_DT = SIM_DT
 SETTLE_TO_SEGMENT_START_DURATION = 0.10
 GRIPPER_MOVE_DURATION = 0.70
@@ -120,6 +121,15 @@ def safe_numpy(value) -> np.ndarray:
     if arr.ndim > 1 and arr.shape[0] == 1:
         arr = arr[0]
     return arr.astype(float, copy=False)
+
+
+def _segment_exec_time_scale(segment_name: str) -> float:
+    """Apply the arm-place time scale only to place motion segments."""
+    name = str(segment_name or "")
+    place_segments = {"move_to_pre_place", "approach_to_place", "retreat_place"}
+    if name in place_segments:
+        return float(ARM_PLACE_EXEC_TIME_SCALE)
+    return 1.0
 
 
 def load_grasp_plan() -> dict:
@@ -623,8 +633,10 @@ async def execute_motion_segment(
 
     await settle_arm_to_start(world, robot, arm_indices, q_traj[0], name, step_callback=step_callback)
 
-    duration = float(time_from_start[-1])
-    num_steps = int(np.ceil(duration / SIM_DT)) + 1
+    plan_duration = float(time_from_start[-1])
+    exec_time_scale = _segment_exec_time_scale(name)
+    exec_duration = plan_duration * exec_time_scale
+    num_steps = int(np.ceil(exec_duration / SIM_DT)) + 1
     command_period_steps = max(1, int(round(ARM_COMMAND_DT / SIM_DT)))
     q_target = q_traj[0].copy()
 
@@ -633,18 +645,26 @@ async def execute_motion_segment(
         "type": "motion",
         "sim_dt": SIM_DT,
         "command_dt": ARM_COMMAND_DT,
+        "plan_duration_s": plan_duration,
+        "exec_duration_s": exec_duration,
+        "exec_time_scale": exec_time_scale,
         "time": [],
+        "plan_time": [],
         "target_q_arm": [],
         "actual_q_arm": [],
         "joint_error_norm": [],
     }
 
-    print(f"[motion:{name}] duration={duration:.3f}s, sim_steps={num_steps}")
+    print(
+        f"[motion:{name}] plan_duration={plan_duration:.3f}s, "
+        f"exec_duration={exec_duration:.3f}s, time_scale={exec_time_scale:.3f}, sim_steps={num_steps}"
+    )
 
     for step in range(num_steps):
-        t = min(step * SIM_DT, duration)
+        t_exec = min(step * SIM_DT, exec_duration)
+        t_plan = min(t_exec / exec_time_scale, plan_duration)
         if step % command_period_steps == 0 or step == num_steps - 1:
-            q_target = sample_cubic_hermite(time_from_start, q_traj, qd_traj, t)
+            q_target = sample_cubic_hermite(time_from_start, q_traj, qd_traj, t_plan)
 
         q_full_now = get_joint_positions_checked(
             robot,
@@ -673,7 +693,9 @@ async def execute_motion_segment(
             phase="execute_motion_segment",
             segment_name=name,
             step_index=step,
-            t=float(t),
+            t=float(t_exec),
+            t_exec=float(t_exec),
+            t_plan=float(t_plan),
             q_arm_target=q_target,
         )
         if DIRECT_ARM_STATE_REPLAY:
@@ -692,7 +714,8 @@ async def execute_motion_segment(
         q_actual = q_full_actual[arm_indices]
         error = float(np.linalg.norm(q_actual - q_target))
 
-        log["time"].append(float(t))
+        log["time"].append(float(t_exec))
+        log["plan_time"].append(float(t_plan))
         log["target_q_arm"].append(q_target.tolist())
         log["actual_q_arm"].append(q_actual.tolist())
         log["joint_error_norm"].append(error)
@@ -700,7 +723,10 @@ async def execute_motion_segment(
             log.setdefault("direct_state_command_reports", []).append(command_report)
 
         if step % TRACK_LOG_EVERY_N_STEPS == 0 or step == num_steps - 1:
-            print(f"[motion:{name}] t={t:.3f}/{duration:.3f}, joint_error={error:.6f}")
+            print(
+                f"[motion:{name}] t={t_exec:.3f}/{exec_duration:.3f}, "
+                f"plan_t={t_plan:.3f}/{plan_duration:.3f}, joint_error={error:.6f}"
+            )
 
     q_final = q_traj[-1]
     if name in STRICT_POST_MOTION_WAIT_SEGMENTS:

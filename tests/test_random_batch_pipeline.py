@@ -218,15 +218,57 @@ class RandomBatchPipelineTest(unittest.TestCase):
         with patch("sys.argv", ["run_random_nav_pick_place_batch.py"]):
             args = pick_place_batch._parse_args()
 
+        self.assertEqual(args.base_task, "tasks/nav_pick_apple_fast.json")
+        self.assertEqual(args.place_template_task, "tasks/nav_pick_place_apple_contact.json")
+        self.assertEqual(args.output_task_dir, "outputs/random_tasks/apple_pick_place_07_far_manual")
+        self.assertEqual(args.dataset_root, "outputs/random_pick_place_dataset/apple_pick_place_07_far_manual")
         self.assertEqual(args.base_goal_mode, "object-offset")
-        self.assertEqual(tuple(args.base_goal_offset_xy), (0.28, -0.08))
+        self.assertEqual(tuple(args.base_goal_offset_xy), (0.35, -0.08))
         self.assertAlmostEqual(args.clearance_radius, 0.20)
+        self.assertAlmostEqual(args.handoff_clearance_radius, 0.20)
+        self.assertTrue(args.brisk_nav)
+        self.assertTrue(args.fast_dwa)
+        self.assertEqual(args.max_nav_steps, 3000)
         self.assertTrue(args.ignore_goal_yaw)
+        self.assertTrue(args.edge_biased)
+        self.assertAlmostEqual(args.edge_min_clearance, 0.03)
+        self.assertAlmostEqual(args.object_support_clearance, 0.0)
+        self.assertFalse(args.randomize_object_yaw)
         self.assertAlmostEqual(args.terminal_yaw_polish_min_wz, 0.45)
         self.assertAlmostEqual(args.terminal_yaw_polish_max_wz, 0.55)
         self.assertEqual(args.manipulation_backend, "single-stage-07")
         self.assertEqual(args.single_stage_put_mode, "arm-place")
         self.assertEqual(args.single_stage_carry_mode, "logical")
+        self.assertTrue(args.single_stage_replay_nav)
+        self.assertTrue(args.single_stage_replay_nav_real_time)
+        self.assertAlmostEqual(args.single_stage_replay_nav_speed, 1.0)
+        self.assertFalse(args.restore_nav_place_for_arm_place)
+        self.assertTrue(args.demo_visuals)
+        self.assertEqual(args.follow_camera_mode, "stage")
+        self.assertEqual(args.viewport_camera_prim, "/World/Camera_main")
+        self.assertFalse(args.keep_window_open)
+        self.assertTrue(args.side_retreat_only)
+        self.assertTrue(args.use_planner_server)
+        self.assertTrue(args.restart_planner_server)
+        self.assertTrue(args.single_stage_stable_defaults)
+
+    def test_pick_place_batch_single_stage_stable_env_defaults(self) -> None:
+        with patch("sys.argv", ["run_random_nav_pick_place_batch.py"]):
+            args = pick_place_batch._parse_args()
+
+        env = pick_place_batch._single_stage_07_env(args)
+
+        self.assertIsNotNone(env)
+        self.assertEqual(env["GO2_X5_CARRY_REPLAY_BACKEND"], "visual_root_only")
+        self.assertEqual(env["GO2_X5_CARRY_REPLAY_JOINTS"], "0")
+        self.assertEqual(env["GO2_X5_CARRY_REPLAY_FULL_ROOT_POSE"], "0")
+        self.assertEqual(env["GO2_X5_ARM_PLACE_HOLD_SUPPORT_JOINTS"], "0")
+        self.assertEqual(env["GO2_X5_ARM_PLACE_DIRECT_JOINT_STATE"], "1")
+        self.assertEqual(env["GO2_X5_ARM_PLACE_EXEC_TIME_SCALE"], "1.50")
+
+        with patch("sys.argv", ["run_random_nav_pick_place_batch.py", "--no-single-stage-stable-defaults"]):
+            args = pick_place_batch._parse_args()
+        self.assertIsNone(pick_place_batch._single_stage_07_env(args))
 
     def test_pick_place_batch_single_stage_07_command_forwards_options(self) -> None:
         with patch(

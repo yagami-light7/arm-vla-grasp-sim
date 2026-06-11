@@ -33,6 +33,10 @@ DEFAULT_CONTEXT_JSON = Path("/tmp/go2_x5_single_stage_pick_put_context.json")
 DEFAULT_CUROBO_PYTHON = "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python"
 ARM_PLACE_MAX_TARGET_XY_RADIUS_M = float(os.environ.get("GO2_X5_ARM_PLACE_MAX_TARGET_XY_RADIUS_M", "0.75"))
 ARM_PLACE_MAX_TARGET_RADIUS_3D_M = float(os.environ.get("GO2_X5_ARM_PLACE_MAX_TARGET_RADIUS_3D_M", "0.95"))
+DEFAULT_CARRY_REPLAY_BACKEND = "visual_root_only"
+DEFAULT_ARM_PLACE_COMMAND_DT = 0.02
+DEFAULT_ARM_PLACE_SETTLE_TO_START_DURATION = 0.50
+DEFAULT_ARM_PLACE_EXEC_TIME_SCALE = 1.50
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -2655,7 +2659,7 @@ def _make_arm_place_target(
     place_release_clearance = float(
         place.get(
             "release_clearance",
-            os.environ.get("GO2_X5_ARM_PLACE_RELEASE_CLEARANCE_M", "0.002"),
+            os.environ.get("GO2_X5_ARM_PLACE_RELEASE_CLEARANCE_M", "0.02"),
         )
     )
     place_release_clearance = max(0.0, place_release_clearance)
@@ -2968,25 +2972,62 @@ async def _execute_arm_place_plan(
     exec_module.TARGET_JSON = target_json
     exec_module.GRASP_PLAN_JSON = plan_json
     exec_module.OUTPUT_JSON = execution_json
-    arm_place_direct_joint_state = _env_flag("GO2_X5_ARM_PLACE_DIRECT_JOINT_STATE", True)
-    exec_module.DIRECT_ARM_STATE_REPLAY = bool(arm_place_direct_joint_state)
-    if "GO2_X5_ARM_PLACE_COMMAND_DT" in os.environ:
-        exec_module.ARM_COMMAND_DT = float(os.environ["GO2_X5_ARM_PLACE_COMMAND_DT"])
+    arm_place_direct_joint_state_requested = _env_flag("GO2_X5_ARM_PLACE_DIRECT_JOINT_STATE", True)
+    arm_place_direct_joint_state = bool(arm_place_direct_joint_state_requested)
+    exec_module.ARM_COMMAND_DT = float(
+        os.environ.get("GO2_X5_ARM_PLACE_COMMAND_DT", str(DEFAULT_ARM_PLACE_COMMAND_DT))
+    )
+    exec_module.SETTLE_TO_SEGMENT_START_DURATION = float(
+        os.environ.get(
+            "GO2_X5_ARM_PLACE_SETTLE_TO_START_DURATION",
+            str(DEFAULT_ARM_PLACE_SETTLE_TO_START_DURATION),
+        )
+    )
+    exec_module.ARM_PLACE_EXEC_TIME_SCALE = max(
+        1.0e-6,
+        float(os.environ.get("GO2_X5_ARM_PLACE_EXEC_TIME_SCALE", str(DEFAULT_ARM_PLACE_EXEC_TIME_SCALE))),
+    )
     if "GO2_X5_ARM_PLACE_POST_MOTION_TIMEOUT_S" in os.environ:
         exec_module.POST_MOTION_CONVERGENCE_TIMEOUT = float(os.environ["GO2_X5_ARM_PLACE_POST_MOTION_TIMEOUT_S"])
     if "GO2_X5_ARM_PLACE_POST_MOTION_JOINT_ERROR_TOL" in os.environ:
         exec_module.POST_MOTION_JOINT_ERROR_TOL = float(os.environ["GO2_X5_ARM_PLACE_POST_MOTION_JOINT_ERROR_TOL"])
+    arm_place_hold_support_joints = _env_flag("GO2_X5_ARM_PLACE_HOLD_SUPPORT_JOINTS", False)
+    arm_place_direct_joint_state_auto_enabled_reason = ""
+    if (
+        not arm_place_direct_joint_state
+        and not arm_place_hold_support_joints
+        and not _env_flag("GO2_X5_ARM_PLACE_ALLOW_NON_DIRECT_WITHOUT_SUPPORT_HOLD", False)
+    ):
+        arm_place_direct_joint_state = True
+        arm_place_direct_joint_state_auto_enabled_reason = (
+            "support_joint_hold_disabled_with_non_direct_arm_action_is_unstable; "
+            "set GO2_X5_ARM_PLACE_ALLOW_NON_DIRECT_WITHOUT_SUPPORT_HOLD=1 to force the old A/B mode"
+        )
+        print(
+            "[arm-place] direct joint state replay auto-enabled",
+            {
+                "requested": bool(arm_place_direct_joint_state_requested),
+                "reason": arm_place_direct_joint_state_auto_enabled_reason,
+            },
+            flush=True,
+        )
+    exec_module.DIRECT_ARM_STATE_REPLAY = bool(arm_place_direct_joint_state)
     exec_module.STRICT_POST_MOTION_WAIT_SEGMENTS = set(exec_module.STRICT_POST_MOTION_WAIT_SEGMENTS) | {
         "move_to_pre_place",
         "approach_to_place",
         "retreat_place",
     }
     arm_place_execution_config = {
+        "direct_joint_state_replay_requested": bool(arm_place_direct_joint_state_requested),
         "direct_joint_state_replay": bool(exec_module.DIRECT_ARM_STATE_REPLAY),
+        "direct_joint_state_auto_enabled_reason": arm_place_direct_joint_state_auto_enabled_reason,
         "command_dt": float(exec_module.ARM_COMMAND_DT),
         "sim_dt": float(exec_module.SIM_DT),
+        "settle_to_segment_start_duration_s": float(exec_module.SETTLE_TO_SEGMENT_START_DURATION),
+        "exec_time_scale": float(getattr(exec_module, "ARM_PLACE_EXEC_TIME_SCALE", 1.0)),
         "post_motion_timeout_s": float(exec_module.POST_MOTION_CONVERGENCE_TIMEOUT),
         "post_motion_joint_error_tol": float(exec_module.POST_MOTION_JOINT_ERROR_TOL),
+        "hold_support_joints": bool(arm_place_hold_support_joints),
     }
     print("[arm-place] execution config:", arm_place_execution_config, flush=True)
 
@@ -3029,6 +3070,14 @@ async def _execute_arm_place_plan(
     root_support_hold_callback = None
     root_hold_during_arm_place = bool((restore_place_report or {}).get("root_hold_during_arm_place", False))
     root_hold_every_arm_step = _env_flag("GO2_X5_ARM_PLACE_HOLD_ROOT_EVERY_STEP", False)
+    support_hold_source = "disabled"
+    support_indices_report: list[int] = []
+    support_hold_disabled_reason = (
+        ""
+        if arm_place_hold_support_joints
+        else "GO2_X5_ARM_PLACE_HOLD_SUPPORT_JOINTS=0"
+    )
+    support_hold_disabled_logged = False
     if root_hold_during_arm_place:
         root_hold_nav_pose = (restore_place_report or {}).get("root_hold_nav_pose")
         root_hold_z = (restore_place_report or {}).get("root_hold_z")
@@ -3039,6 +3088,7 @@ async def _execute_arm_place_plan(
                 root_hold_nav_pose,
                 float(root_hold_z),
                 support_hold_state,
+                apply_support_joints=arm_place_hold_support_joints,
             )
         else:
             root_support_hold_state = {
@@ -3074,6 +3124,7 @@ async def _execute_arm_place_plan(
             robot,
             restore_place_report or {},
             apply_root_pose=apply_root_pose,
+            apply_support_joints=arm_place_hold_support_joints,
         )
         if isinstance(root_support_hold_state, dict) and root_support_report.get("applied", False):
             root_support_hold_state["hold_count"] = int(root_support_hold_state.get("hold_count", 0)) + 1
@@ -3144,53 +3195,66 @@ async def _execute_arm_place_plan(
                 if object_clamp_enabled_for_segment or root_hold_during_arm_place
                 else None
             )
-            # 读取当前完整关节状态。
-            q_full_hold = exec_module.get_joint_positions_checked(
-                robot,
-                min_size=exec_module.required_joint_vector_size(arm_indices),
-                label="arm_place_before_execute",
-            )
+            support_indices = []
+            support_positions = None
+            if arm_place_hold_support_joints:
+                # 读取当前完整关节状态。
+                q_full_hold = exec_module.get_joint_positions_checked(
+                    robot,
+                    min_size=exec_module.required_joint_vector_size(arm_indices),
+                    label="arm_place_before_execute",
+                )
 
-            # 获取夹爪关节索引。
-            # arm_joint7 / arm_joint8 是夹爪，不应该当作狗腿保持关节。
-            dof_names = exec_module.get_dof_names(robot)
-            gripper_indices = exec_module.get_joint_indices(
-                dof_names,
-                ["arm_joint7", "arm_joint8"],
-            )
+                # 获取夹爪关节索引。
+                # arm_joint7 / arm_joint8 是夹爪，不应该当作狗腿保持关节。
+                dof_names = exec_module.get_dof_names(robot)
+                local_gripper_indices = exec_module.get_joint_indices(
+                    dof_names,
+                    ["arm_joint7", "arm_joint8"],
+                )
 
-            # 四足腿部关节 = 全部关节 - 机械臂关节 - 夹爪关节。
-            controlled = set(int(i) for i in arm_indices) | set(int(i) for i in gripper_indices)
-            restore_support_hold = (restore_place_report or {}).get("support_hold_state") or {}
-            if root_support_hold_callback is not None and restore_support_hold.get("available", False):
-                support_indices = [int(index) for index in (restore_support_hold.get("support_indices") or [])]
-                support_positions = np.asarray(restore_support_hold.get("q_support_hold") or [], dtype=float)
-                if len(support_indices) != int(support_positions.size):
+                # 四足腿部关节 = 全部关节 - 机械臂关节 - 夹爪关节。
+                controlled = set(int(i) for i in arm_indices) | set(int(i) for i in local_gripper_indices)
+                restore_support_hold = (restore_place_report or {}).get("support_hold_state") or {}
+                if root_support_hold_callback is not None and restore_support_hold.get("available", False):
+                    support_indices = [int(index) for index in (restore_support_hold.get("support_indices") or [])]
+                    support_positions = np.asarray(restore_support_hold.get("q_support_hold") or [], dtype=float)
+                    if len(support_indices) != int(support_positions.size):
+                        support_indices = [
+                            i for i in range(q_full_hold.size)
+                            if i not in controlled
+                        ]
+                        support_positions = q_full_hold[support_indices].copy()
+                        support_hold_source = "current_joint_positions_support_hold_size_mismatch"
+                    else:
+                        support_hold_source = "restore_place_report.support_hold_state"
+                else:
                     support_indices = [
                         i for i in range(q_full_hold.size)
                         if i not in controlled
                     ]
                     support_positions = q_full_hold[support_indices].copy()
-                    support_hold_source = "current_joint_positions_support_hold_size_mismatch"
-                else:
-                    support_hold_source = "restore_place_report.support_hold_state"
-            else:
-                support_indices = [
-                    i for i in range(q_full_hold.size)
-                    if i not in controlled
-                ]
-                support_positions = q_full_hold[support_indices].copy()
-                support_hold_source = "current_joint_positions"
+                    support_hold_source = "current_joint_positions"
+                support_indices_report = [int(index) for index in support_indices]
 
-            print(
-                "[arm-place] hold support joints:",
-                {
-                    "support_indices": support_indices,
-                    "support_positions": support_positions.tolist(),
-                    "source": support_hold_source,
-                },
-                flush=True,
-            )
+                print(
+                    "[arm-place] hold support joints:",
+                    {
+                        "support_indices": support_indices_report,
+                        "support_positions": support_positions.tolist(),
+                        "source": support_hold_source,
+                    },
+                    flush=True,
+                )
+            elif not support_hold_disabled_logged:
+                print(
+                    "[arm-place] support joint hold disabled",
+                    {
+                        "reason": support_hold_disabled_reason,
+                    },
+                    flush=True,
+                )
+                support_hold_disabled_logged = True
             if step_callback is not None:
                 await step_callback(
                     phase="before_execute_motion_segment",
@@ -3202,8 +3266,8 @@ async def _execute_arm_place_plan(
                 robot,
                 arm_indices,
                 segment,
-                hold_indices=support_indices,
-                hold_positions=support_positions,
+                hold_indices=support_indices if arm_place_hold_support_joints else None,
+                hold_positions=support_positions if arm_place_hold_support_joints else None,
                 step_callback=step_callback,
             )
             logs.append(motion_log)
@@ -3348,7 +3412,13 @@ async def _execute_arm_place_plan(
             "root_support_hold_step_callback_enabled": bool(root_support_hold_callback is not None),
             "root_hold_during_arm_place": bool(root_support_hold_callback is not None),
             "root_hold_every_arm_step": bool(root_hold_every_arm_step),
+            "arm_place_hold_support_joints_enabled": bool(arm_place_hold_support_joints),
+            "support_hold_source": support_hold_source,
+            "support_indices": support_indices_report,
+            "support_hold_disabled_reason": support_hold_disabled_reason,
+            "arm_place_direct_joint_state_requested": bool(arm_place_direct_joint_state_requested),
             "arm_place_direct_joint_state_replay": bool(exec_module.DIRECT_ARM_STATE_REPLAY),
+            "arm_place_direct_joint_state_auto_enabled_reason": arm_place_direct_joint_state_auto_enabled_reason,
             "robot_root_pose_modified_during_arm_place": False,
             "return_home_executed": bool(
                 return_home_log
@@ -3383,6 +3453,12 @@ async def _execute_arm_place_plan(
         "object_carry_step_callback_enabled": object_carry_step_callback_enabled,
         "root_support_hold_during_arm_place": root_support_hold_state,
         "arm_place_execution_config": arm_place_execution_config,
+        "arm_place_hold_support_joints_enabled": bool(arm_place_hold_support_joints),
+        "support_hold_source": support_hold_source,
+        "support_indices": support_indices_report,
+        "support_hold_disabled_reason": support_hold_disabled_reason,
+        "arm_place_direct_joint_state_requested": bool(arm_place_direct_joint_state_requested),
+        "arm_place_direct_joint_state_auto_enabled_reason": arm_place_direct_joint_state_auto_enabled_reason,
         "max_tcp_object_error_m": (
             clamp_state.get("max_pre_clamp_error_m") if isinstance(clamp_state, dict) else None
         ),
@@ -3786,6 +3862,7 @@ def _apply_visual_replay_frame_with_carry_hold(
     root_pose_override: dict[str, Any] | None = None,
     visual_root_world_matrix=None,
     visual_root_world_matrix_source: str | None = None,
+    joint_replay_enabled: bool = True,
     joint_replay_prefer_action: bool = False,
     joint_replay_leg_only: bool = True,
     joint_replay_apply_velocity: bool = False,
@@ -3895,16 +3972,23 @@ def _apply_visual_replay_frame_with_carry_hold(
 
     leg_mapping = None
     target_joint_velocities = None
-    if joint_replay_leg_only:
+    if not joint_replay_enabled:
+        target_joint_positions = None
+        joint_indices = None
+        joint_names = None
+        joint_replay_skip_reason = "disabled_by_stable_root_only_carry_replay"
+    elif joint_replay_leg_only:
         leg_mapping = _map_replay_leg_joint_positions_for_carry(robot, frame, hold_state)
         target_joint_positions = (leg_mapping or {}).get("values")
         target_joint_velocities = (leg_mapping or {}).get("velocities")
         joint_indices = (leg_mapping or {}).get("indices")
         joint_names = (leg_mapping or {}).get("joint_names")
+        joint_replay_skip_reason = "missing_or_unmapped_replay_joint_positions"
     else:
         target_joint_positions = _map_replay_joint_positions_for_carry(robot, frame, hold_state)
         joint_indices = None
         joint_names = None
+        joint_replay_skip_reason = "missing_or_unmapped_replay_joint_positions"
 
     if target_joint_positions is not None:
         joint_visual_report = _apply_visual_joint_positions_for_carry(
@@ -3938,7 +4022,8 @@ def _apply_visual_replay_frame_with_carry_hold(
         )
         report["joint_visual_report"] = {
             "requested": False,
-            "reason": "missing_or_unmapped_replay_joint_positions",
+            "reason": joint_replay_skip_reason,
+            "enabled": bool(joint_replay_enabled),
             "leg_only": bool(joint_replay_leg_only),
         }
 
@@ -4083,6 +4168,7 @@ def _make_root_support_hold_callback(
     root_z: float,
     support_hold_state: dict[str, Any],
     *,
+    apply_support_joints: bool = True,
     sample_limit: int = 16,
 ):
     state: dict[str, Any] = {
@@ -4091,13 +4177,22 @@ def _make_root_support_hold_callback(
         "root_hold_nav_pose": dict(nav_pose),
         "root_hold_z": float(root_z),
         "support_hold_state": support_hold_state,
+        "support_joint_hold_enabled": bool(apply_support_joints),
         "hold_count": 0,
         "samples": [],
     }
 
     async def root_support_hold_callback(**kwargs):
         root_report = _set_robot_root_to_nav_pose(robot, nav_pose, root_z)
-        support_report = _apply_support_hold(robot, support_hold_state)
+        support_report = (
+            _apply_support_hold(robot, support_hold_state)
+            if apply_support_joints
+            else {
+                "available": bool(support_hold_state.get("available", False)),
+                "skipped": True,
+                "reason": "support_joint_hold_disabled_for_arm_place",
+            }
+        )
         state["hold_count"] += 1
         step_index = kwargs.get("step_index")
         should_sample = len(state["samples"]) < sample_limit
@@ -4122,6 +4217,7 @@ def _apply_root_support_hold_from_report(
     restore_place_report: dict[str, Any],
     *,
     apply_root_pose: bool = True,
+    apply_support_joints: bool = True,
 ) -> dict[str, Any]:
     if not restore_place_report.get("root_hold_during_arm_place", False):
         return {
@@ -4146,19 +4242,27 @@ def _apply_root_support_hold_from_report(
             "skipped": True,
             "reason": "root_pose_hold_skipped_during_arm_motion_step",
         }
-    support_report = (
-        _apply_support_hold(robot, support_hold_state)
-        if isinstance(support_hold_state, dict)
-        else {
-            "available": False,
-            "reason": "missing_support_hold_state",
+    if not apply_support_joints:
+        support_report = {
+            "available": bool(isinstance(support_hold_state, dict) and support_hold_state.get("available", False)),
+            "skipped": True,
+            "reason": "support_joint_hold_disabled_for_arm_place",
         }
-    )
+    else:
+        support_report = (
+            _apply_support_hold(robot, support_hold_state)
+            if isinstance(support_hold_state, dict)
+            else {
+                "available": False,
+                "reason": "missing_support_hold_state",
+            }
+        )
     return {
         "applied": True,
         "root": root_report,
         "support": support_report,
         "root_pose_hold_applied": bool(apply_root_pose),
+        "support_joint_hold_applied": bool(apply_support_joints),
     }
 
 
@@ -4429,8 +4533,16 @@ async def _replay_nav_to_place_with_tcp_object_carry(
     ).lower() in {"1", "true", "yes", "on"}
     carry_replay_backend = os.environ.get(
         "GO2_X5_CARRY_REPLAY_BACKEND",
-        "kinematic_full_root_articulation",
+        DEFAULT_CARRY_REPLAY_BACKEND,
     ).strip().lower()
+    root_only_visual_replay_enabled = carry_replay_backend in {
+        "visual_root",
+        "visual_root_only",
+        "root_only",
+        "root_only_visual",
+        "paused_visual_root",
+        "visual_root_xform",
+    }
     live_physics_articulation_replay_enabled = (
         carry_replay_backend
         in {
@@ -4482,12 +4594,18 @@ async def _replay_nav_to_place_with_tcp_object_carry(
     ).lower() in {"1", "true", "yes", "on"}
     use_full_recorded_root_pose = os.environ.get(
         "GO2_X5_CARRY_REPLAY_FULL_ROOT_POSE",
-        "1" if live_physics_articulation_replay_enabled or kinematic_full_root_replay_enabled else "0",
+        "1" if live_physics_articulation_replay_enabled else "0",
+    ).lower() in {"1", "true", "yes", "on"}
+    joint_replay_enabled = os.environ.get(
+        "GO2_X5_CARRY_REPLAY_JOINTS",
+        "1" if (live_physics_articulation_replay_enabled or live_planar_articulation_replay_enabled) else "0",
     ).lower() in {"1", "true", "yes", "on"}
     joint_replay_prefer_action = os.environ.get(
         "GO2_X5_CARRY_REPLAY_JOINT_ACTION",
         "1"
         if (
+            joint_replay_enabled
+            and
             live_articulation_replay_enabled
             and not live_planar_articulation_replay_enabled
             and not kinematic_full_root_replay_enabled
@@ -4507,8 +4625,11 @@ async def _replay_nav_to_place_with_tcp_object_carry(
         (
             "1"
             if (
-                kinematic_articulation_replay_enabled
-                and not kinematic_full_root_replay_enabled
+                root_only_visual_replay_enabled
+                or (
+                    kinematic_articulation_replay_enabled
+                    and not kinematic_full_root_replay_enabled
+                )
             )
             or visual_root_xform_fallback_enabled
             else "0"
@@ -4704,6 +4825,8 @@ async def _replay_nav_to_place_with_tcp_object_carry(
                 if kinematic_full_root_replay_enabled
                 else "kinematic_articulation_visual_replay"
                 if kinematic_articulation_replay_enabled
+                else "visual_root_xform_only_replay"
+                if root_only_visual_replay_enabled
                 else "paused_rendered_visual_replay_then_root_support_hold"
             ),
             "backend": carry_replay_backend,
@@ -4720,6 +4843,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
             "zero_root_velocity_when_skipped": bool(zero_root_velocity_when_skipped),
             "full_root_pose": bool(use_full_recorded_root_pose),
             "joint_action": bool(joint_replay_prefer_action),
+            "joint_replay": bool(joint_replay_enabled),
             "joint_velocity": bool(joint_replay_apply_velocity),
             "leg_only": bool(joint_replay_leg_only),
             "kinematic_full_root": bool(kinematic_full_root_replay_enabled),
@@ -4773,6 +4897,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
             root_pose_override=aligned_root_pose,
             visual_root_world_matrix=visual_root_sync_matrix,
             visual_root_world_matrix_source=visual_root_sync_source,
+            joint_replay_enabled=bool(joint_replay_enabled),
             joint_replay_prefer_action=bool(joint_replay_prefer_action),
             joint_replay_leg_only=bool(joint_replay_leg_only),
             joint_replay_apply_velocity=bool(joint_replay_apply_velocity),
@@ -4827,6 +4952,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
             root_pose_override=aligned_root_pose,
             visual_root_world_matrix=visual_root_sync_matrix,
             visual_root_world_matrix_source=visual_root_sync_source,
+            joint_replay_enabled=bool(joint_replay_enabled),
             joint_replay_prefer_action=bool(joint_replay_prefer_action),
             joint_replay_leg_only=bool(joint_replay_leg_only),
             joint_replay_apply_velocity=bool(joint_replay_apply_velocity),
@@ -4878,6 +5004,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
         ),
         visual_root_world_matrix=final_visual_root_sync_matrix,
         visual_root_world_matrix_source=final_visual_root_sync_source,
+        joint_replay_enabled=bool(joint_replay_enabled),
         joint_replay_prefer_action=bool(joint_replay_prefer_action),
         joint_replay_leg_only=bool(joint_replay_leg_only),
         joint_replay_apply_velocity=bool(joint_replay_apply_velocity),
@@ -5073,6 +5200,8 @@ async def _replay_nav_to_place_with_tcp_object_carry(
             if kinematic_full_root_replay_enabled
             else "kinematic_articulation_visual_replay_with_leg_joints_and_tcp_object_clamp"
             if kinematic_articulation_replay_enabled
+            else "paused_visual_root_xform_only_with_tcp_object_clamp"
+            if root_only_visual_replay_enabled
             else "paused_visual_replay_with_robot_xform_fallback_then_static_handoff"
         ),
         "carry_replay_mode": (
@@ -5088,6 +5217,8 @@ async def _replay_nav_to_place_with_tcp_object_carry(
                 else "kinematic_articulation_planar_root_leg_only_direct_joint_replay"
             )
             if kinematic_articulation_replay_enabled
+            else "paused_visual_root_xform_only_no_joint_replay"
+            if root_only_visual_replay_enabled
             else "paused_rendered_visual_replay_then_root_support_hold"
         ),
         "carry_replay_backend": carry_replay_backend,
@@ -5099,6 +5230,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
         "visual_carry_nav": bool(
             kinematic_full_root_replay_enabled
             or kinematic_articulation_replay_enabled
+            or root_only_visual_replay_enabled
         ),
         "stable_carry_implemented": True,
         "fixed_joint_carry_implemented": False,
@@ -5134,6 +5266,8 @@ async def _replay_nav_to_place_with_tcp_object_carry(
             if kinematic_full_root_replay_enabled
             else "render_flush_for_kinematic_articulation_replay_while_paused"
             if kinematic_articulation_replay_enabled
+            else "viewport_update_for_visual_root_xform_only_replay"
+            if root_only_visual_replay_enabled
             else "render_flush_while_physics_paused"
         ),
         "visual_replay_live_articulation_enabled": bool(live_articulation_replay_enabled),
@@ -5141,6 +5275,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
         "visual_replay_live_planar_articulation_enabled": bool(live_planar_articulation_replay_enabled),
         "visual_replay_kinematic_articulation_enabled": bool(kinematic_articulation_replay_enabled),
         "visual_replay_kinematic_full_root_enabled": bool(kinematic_full_root_replay_enabled),
+        "visual_replay_root_only_enabled": bool(root_only_visual_replay_enabled),
         "visual_replay_root_pose_source": (
             "recorded_full_root_pose_se2_aligned_to_pick_root"
             if use_full_recorded_root_pose and live_articulation_replay_enabled
@@ -5155,6 +5290,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
         "visual_replay_root_velocity_applied": bool(apply_replay_root_velocity),
         "visual_replay_root_velocity_zeroed_when_skipped": bool(zero_root_velocity_when_skipped),
         "visual_replay_full_root_pose_applied": bool(use_full_recorded_root_pose and live_articulation_replay_enabled),
+        "visual_replay_joint_replay_enabled": bool(joint_replay_enabled),
         "visual_replay_joint_action_enabled": bool(joint_replay_prefer_action),
         "visual_replay_joint_velocity_enabled": bool(joint_replay_apply_velocity),
         "visual_replay_leg_only_joint_replay": bool(joint_replay_leg_only),

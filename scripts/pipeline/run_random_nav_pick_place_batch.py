@@ -7,6 +7,7 @@ import argparse
 import copy
 import json
 import math
+import os
 import subprocess
 import sys
 import time
@@ -19,7 +20,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from source.data.random_task import (
     DEFAULT_APPROACH_ANGLES_DEG,
-    DEFAULT_OBJECT_OFFSET_BASE_GOAL_XY_M,
     DEFAULT_STANDOFF_CANDIDATES_M,
     RandomTaskGenerationError,
     SpawnRegion,
@@ -33,6 +33,9 @@ DEFAULT_ISAACLAB_LAUNCHER = "/home/light/workspace/IsaacLab/isaaclab.sh"
 DEFAULT_APPLE_FIXED_Z_M = 0.81653
 DEFAULT_APPLE_FIXED_RPY_DEG = (-2.524, -7.822, -0.181)
 DEFAULT_PLACE_TEMPLATE_TASK = "tasks/nav_pick_place_apple_contact.json"
+DEFAULT_OUTPUT_TASK_DIR = "outputs/random_tasks/apple_pick_place_07_far_manual"
+DEFAULT_DATASET_ROOT = "outputs/random_pick_place_dataset/apple_pick_place_07_far_manual"
+DEFAULT_PICK_PLACE_BASE_GOAL_OFFSET_XY_M = (0.35, -0.08)
 HANDOFF_MODE = "multi_process_json"
 PHYSICAL_CONTINUITY = False
 
@@ -90,8 +93,8 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--num-episodes", type=int, default=1)
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--output-task-dir", default="outputs/random_tasks/nav_pick_place")
-    parser.add_argument("--dataset-root", default="outputs/random_pick_place_dataset")
+    parser.add_argument("--output-task-dir", default=DEFAULT_OUTPUT_TASK_DIR)
+    parser.add_argument("--dataset-root", default=DEFAULT_DATASET_ROOT)
     parser.add_argument("--task", default="RobotLab-Isaac-Velocity-Flat-Go2-X5-Foundation-v0")
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
     parser.add_argument("--isaaclab-launcher", default=DEFAULT_ISAACLAB_LAUNCHER)
@@ -101,13 +104,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--precompute-nav-first", action="store_true")
 
     parser.add_argument("--nav-headless", action="store_true")
-    parser.add_argument("--demo-visuals", action="store_true")
+    parser.add_argument("--demo-visuals", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--follow-camera-mode", choices=("chase", "front", "overhead", "fixed", "stage"), default="stage")
     parser.add_argument("--viewport-camera-prim", default="/World/Camera_main")
     parser.add_argument("--replay-nav-before-grasp", action="store_true")
     parser.add_argument("--replay-nav-real-time", action="store_true")
     parser.add_argument("--replay-nav-speed", type=float, default=1.0)
-    parser.add_argument("--keep-window-open", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--keep-window-open", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--show-grasp-trajectory", action="store_true")
 
     parser.add_argument("--table-x-range", type=float, nargs=2, default=(0.88, 0.93), metavar=("X_MIN", "X_MAX"))
@@ -129,7 +132,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--edge-sides", nargs="+", default=None)
 
     parser.add_argument("--base-goal-mode", choices=("radial", "object-offset"), default="object-offset")
-    parser.add_argument("--base-goal-offset-xy", type=float, nargs=2, default=DEFAULT_OBJECT_OFFSET_BASE_GOAL_XY_M)
+    parser.add_argument("--base-goal-offset-xy", type=float, nargs=2, default=DEFAULT_PICK_PLACE_BASE_GOAL_OFFSET_XY_M)
     parser.add_argument("--standoff-candidates", type=float, nargs="+", default=DEFAULT_STANDOFF_CANDIDATES_M)
     parser.add_argument("--approach-angles-deg", type=float, nargs="+", default=DEFAULT_APPROACH_ANGLES_DEG)
     parser.add_argument("--nav-map", default=None)
@@ -143,8 +146,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--path-heading-min-segment-length", type=float, default=0.10)
     parser.add_argument("--max-sample-attempts", type=int, default=200)
 
-    parser.add_argument("--brisk-nav", action="store_true")
-    parser.add_argument("--fast-dwa", action="store_true")
+    parser.add_argument("--brisk-nav", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--fast-dwa", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-nav-steps", type=int, default=3000)
     parser.add_argument("--goal-tolerance", type=float, default=0.15)
     parser.add_argument("--goal-yaw-tolerance", type=float, default=0.20)
@@ -173,7 +176,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--base-stable-linear-tolerance", type=float, default=0.06)
     parser.add_argument("--base-stable-angular-tolerance", type=float, default=0.20)
 
-    parser.add_argument("--side-retreat-only", action="store_true")
+    parser.add_argument("--side-retreat-only", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--allow-retreat-success", action="store_true")
     parser.add_argument("--legacy-side-retreat", action="store_true")
     parser.add_argument("--side-grasp-fallback-retreat", action="store_true")
@@ -182,9 +185,9 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Fail pick handoff if the object drifts after target-pose apply and velocity reset.",
     )
-    parser.add_argument("--use-planner-server", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--use-planner-server", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--auto-start-planner-server", action="store_true")
-    parser.add_argument("--restart-planner-server", action="store_true")
+    parser.add_argument("--restart-planner-server", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--planner-server-log", default="/tmp/go2_x5_curobo_planner_server.log")
     parser.add_argument("--planner-server-start-timeout-s", type=float, default=180.0)
 
@@ -212,8 +215,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--single-stage-result-name", default="single_stage_result.json")
     parser.add_argument("--single-stage-pick-report-name", default="single_stage_pick_handoff_report.json")
     parser.add_argument("--single-stage-put-result-name", default="single_stage_put_result.json")
-    parser.add_argument("--single-stage-replay-nav", action="store_true")
-    parser.add_argument("--single-stage-replay-nav-real-time", action="store_true")
+    parser.add_argument(
+        "--single-stage-stable-defaults",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Inject stable single-stage-07 env defaults for carry replay and arm-place. "
+            "Enabled by default to avoid stale GO2_X5_* debug env causing foot twist or arm jitter."
+        ),
+    )
+    parser.add_argument("--single-stage-replay-nav", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--single-stage-replay-nav-real-time", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--single-stage-replay-nav-speed", type=float, default=1.0)
     parser.add_argument(
         "--skip-nav-place-for-local-arm-place",
@@ -520,6 +532,37 @@ def _single_stage_07_command(
             else:
                 command.append("--no-replay-nav-place-with-carried-object")
     return command
+
+
+def _single_stage_07_env(args: argparse.Namespace) -> dict[str, str] | None:
+    """Return env overrides that keep the 07 carry/place path in the stable profile."""
+    if not getattr(args, "single_stage_stable_defaults", True):
+        return None
+    return {
+        # Carry replay: move only the visual root and TCP-clamped object by default.
+        # Do not replay leg joints/root velocities; those debug modes easily twist the feet.
+        "GO2_X5_CARRY_REPLAY_BACKEND": "visual_root_only",
+        "GO2_X5_CARRY_VISUAL_ROOT_XFORM_SYNC": "1",
+        "GO2_X5_CARRY_REPLAY_FULL_ROOT_POSE": "0",
+        "GO2_X5_CARRY_REPLAY_ROOT_VELOCITY": "0",
+        "GO2_X5_CARRY_REPLAY_JOINTS": "0",
+        "GO2_X5_CARRY_REPLAY_JOINT_ACTION": "0",
+        "GO2_X5_CARRY_REPLAY_JOINT_VELOCITY": "0",
+        "GO2_X5_CARRY_REPLAY_RENDER_WORLD_STEP": "0",
+        "GO2_X5_CARRY_ZERO_ROOT_VELOCITY_WHEN_SKIPPED": "0",
+        # Arm place: stable arm replay while leaving support/leg joints alone.
+        "GO2_X5_ARM_PLACE_HOLD_SUPPORT_JOINTS": "0",
+        "GO2_X5_ARM_PLACE_DIRECT_JOINT_STATE": "1",
+        "GO2_X5_ARM_PLACE_SETTLE_TO_START_DURATION": "0.50",
+        "GO2_X5_ARM_PLACE_EXEC_TIME_SCALE": "1.50",
+        "GO2_X5_ARM_PLACE_COMMAND_DT": "0.02",
+        # Common place target tuning that was previously supplied on the shell command.
+        "GO2_X5_ARM_PRE_PLACE_CLEARANCE_M": "0.08",
+        "GO2_X5_ARM_PLACE_RELEASE_CLEARANCE_M": "0.02",
+        "GO2_X5_ARM_PLACE_RETREAT_CLEARANCE_M": "0.10",
+        "GO2_X5_WORLD_COLLISION_ACTIVATION_DISTANCE_M": "0.07",
+        "GO2_X5_SINGLE_STAGE_STABLE_DEFAULTS": "1",
+    }
 
 
 def _stage_excerpt(payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -988,6 +1031,10 @@ def _run_episode(args: argparse.Namespace, episode_index: int, episode_seed: int
     summary["nav_visualization_in_batch"] = bool(args.manipulation_backend != "single-stage-07" and args.demo_visuals)
     summary["single_stage_07_visualization"] = bool(args.manipulation_backend == "single-stage-07" and args.demo_visuals)
     summary["single_stage_replay_nav"] = bool(args.manipulation_backend == "single-stage-07" and args.single_stage_replay_nav)
+    summary["single_stage_stable_defaults"] = bool(
+        args.manipulation_backend == "single-stage-07"
+        and args.single_stage_stable_defaults
+    )
     if args.manipulation_backend == "single-stage-07":
         summary["single_stage_manipulation_result"] = str(single_stage_result_path)
 
@@ -1121,8 +1168,28 @@ def _run_episode(args: argparse.Namespace, episode_index: int, episode_seed: int
             nav_place_result=nav_place_result_for_07,
             episode_dir=episode_dir,
         )
+        single_stage_env_overrides = _single_stage_07_env(args)
+        single_stage_env = None
+        if single_stage_env_overrides is not None:
+            single_stage_env = {**os.environ, **single_stage_env_overrides}
+            print(
+                "[pick-place-batch] single_stage_07 stable defaults:",
+                {
+                    "carry_backend": single_stage_env_overrides.get("GO2_X5_CARRY_REPLAY_BACKEND"),
+                    "carry_joint_replay": single_stage_env_overrides.get("GO2_X5_CARRY_REPLAY_JOINTS"),
+                    "arm_direct": single_stage_env_overrides.get("GO2_X5_ARM_PLACE_DIRECT_JOINT_STATE"),
+                    "hold_support": single_stage_env_overrides.get("GO2_X5_ARM_PLACE_HOLD_SUPPORT_JOINTS"),
+                    "exec_time_scale": single_stage_env_overrides.get("GO2_X5_ARM_PLACE_EXEC_TIME_SCALE"),
+                },
+                flush=True,
+            )
         print(f"[pick-place-batch] episode={episode_index} seed={episode_seed} single_stage_07")
-        single_stage_completed = subprocess.run(single_stage_command, cwd=str(PROJECT_ROOT), check=False)
+        single_stage_completed = subprocess.run(
+            single_stage_command,
+            cwd=str(PROJECT_ROOT),
+            check=False,
+            env=single_stage_env,
+        )
         single_stage_result = _read_json_if_exists(single_stage_result_path)
         summary["stages"]["single_stage_manipulation"] = _single_stage_stage_summary(
             args,
