@@ -67,8 +67,14 @@ TRACK_LOG_EVERY_N_STEPS = 20
 DRAW_WAYPOINT_STRIDE = 40
 DRAW_WAYPOINT_RADIUS = 0.005
 
-RETURN_HOME_AFTER_LIFT = True
-RETURN_HOME_STRATEGY = "reverse_executed_motion"
+RETURN_HOME_AFTER_LIFT = os.environ.get("GO2_X5_RETURN_HOME_AFTER_LIFT", "1").strip().lower() not in {
+    "",
+    "0",
+    "false",
+    "no",
+    "off",
+}
+RETURN_HOME_STRATEGY = os.environ.get("GO2_X5_RETURN_HOME_STRATEGY", "reverse_executed_motion")
 RETURN_HOME_MIN_DURATION = 1.5
 RETURN_HOME_MAX_JOINT_SPEED = 0.5
 
@@ -84,6 +90,7 @@ STRICT_POST_MOTION_WAIT_SEGMENTS = {
 # 物体中心或 bbox 顶部至少上升这么多，认为第一版 lift 有效果。
 OBJECT_LIFT_SUCCESS_THRESHOLD_M = 0.04
 OBJECT_RETREAT_SUCCESS_THRESHOLD_M = 0.03
+SIDE_RETREAT_MAX_DROP_M = float(os.environ.get("GO2_X5_SIDE_RETREAT_MAX_DROP_M", "0.08"))
 MAX_OBJECT_PRE_EXECUTION_DRIFT_M = float(os.environ.get("GO2_X5_MAX_OBJECT_PRE_EXECUTION_DRIFT_M", "0.012"))
 
 
@@ -97,6 +104,20 @@ def env_bool(name: str, default: bool) -> bool:
 
 
 DIRECT_ARM_STATE_REPLAY = env_bool("GO2_X5_DIRECT_ARM_STATE_REPLAY", False)
+SKIP_APPLY_ACTION_WHEN_DIRECT_STATE_REPLAY = env_bool(
+    "GO2_X5_SKIP_ACTION_WHEN_DIRECT_STATE_REPLAY",
+    False,
+)
+SKIP_WORLD_STEP_WHEN_DIRECT_STATE_REPLAY = env_bool(
+    "GO2_X5_SKIP_WORLD_STEP_WHEN_DIRECT_STATE_REPLAY",
+    False,
+)
+HOLD_GRIPPER_AFTER_CLOSE = env_bool("GO2_X5_HOLD_GRIPPER_AFTER_CLOSE", True)
+REQUIRE_SIDE_RETREAT_HEIGHT_OK = env_bool("GO2_X5_REQUIRE_SIDE_RETREAT_HEIGHT_OK", False)
+GRIPPER_HOLD_AFTER_CLOSE_SOURCE = os.environ.get(
+    "GO2_X5_GRIPPER_HOLD_AFTER_CLOSE_SOURCE",
+    "target",
+).strip().lower()
 
 
 # VLA collection should not silently count a side drag as a successful pick.
@@ -563,7 +584,16 @@ def draw_motion_segments(stage, segments):
             UsdGeom.Gprim(sphere.GetPrim()).CreateDisplayColorAttr([Gf.Vec3f(*color)])
 
 
-async def settle_arm_to_start(world, robot, arm_indices, q_start, label: str, step_callback=None):
+async def settle_arm_to_start(
+    world,
+    robot,
+    arm_indices,
+    q_start,
+    label: str,
+    step_callback=None,
+    hold_indices=None,
+    hold_positions=None,
+):
     """执行某段轨迹前，平滑移动到该段起点，避免规划状态和当前仿真状态有小偏差。"""
     arm_indices = require_joint_indices(arm_indices, label=f"{label}:settle_arm_to_start")
     q_full_initial = get_joint_positions_checked(
@@ -585,28 +615,60 @@ async def settle_arm_to_start(world, robot, arm_indices, q_start, label: str, st
 
         q_full_now = get_joint_positions_checked(
             robot,
-            min_size=required_joint_vector_size(arm_indices),
+            min_size=required_joint_vector_size(arm_indices, hold_indices),
             label=f"{label}:before_apply_action",
         ).copy()
-        action = make_partial_action(q_target, arm_indices, q_full_now)
+        action = make_partial_action_with_hold(
+            q_target,
+            arm_indices,
+            q_full_now,
+            hold_indices=hold_indices,
+            hold_positions=hold_positions,
+        )
 
         apply_arm_motion_command(
             robot,
             action,
             q_target,
             arm_indices,
+            hold_indices=hold_indices,
+            hold_positions=hold_positions,
         )
-        world.step(render=True)
+        await maybe_run_step_callback(
+            step_callback,
+            phase="before_world_step_settle_arm_to_start",
+            segment_name=label,
+            step_index=step,
+            q_arm_target=q_target,
+        )
+        skip_world_step = bool(DIRECT_ARM_STATE_REPLAY and SKIP_WORLD_STEP_WHEN_DIRECT_STATE_REPLAY)
+        if not skip_world_step:
+            world.step(render=True)
         await maybe_run_step_callback(
             step_callback,
             phase="settle_arm_to_start",
             segment_name=label,
             step_index=step,
             q_arm_target=q_target,
+            world_step_skipped=skip_world_step,
         )
         if DIRECT_ARM_STATE_REPLAY:
-            _set_joint_state_direct_best_effort(robot, q_target, arm_indices)
+            direct_set_arm_motion_state(
+                robot,
+                q_target,
+                arm_indices,
+                hold_indices=hold_indices,
+                hold_positions=hold_positions,
+            )
         await omni.kit.app.get_app().next_update_async()
+        if DIRECT_ARM_STATE_REPLAY:
+            direct_set_arm_motion_state(
+                robot,
+                q_target,
+                arm_indices,
+                hold_indices=hold_indices,
+                hold_positions=hold_positions,
+            )
 
 
 async def execute_motion_segment(
@@ -631,7 +693,16 @@ async def execute_motion_segment(
     if q_traj.shape[0] != time_from_start.shape[0]:
         raise RuntimeError(f"{name}: q 和 time_from_start 长度不一致。")
 
-    await settle_arm_to_start(world, robot, arm_indices, q_traj[0], name, step_callback=step_callback)
+    await settle_arm_to_start(
+        world,
+        robot,
+        arm_indices,
+        q_traj[0],
+        name,
+        step_callback=step_callback,
+        hold_indices=hold_indices,
+        hold_positions=hold_positions,
+    )
 
     plan_duration = float(time_from_start[-1])
     exec_time_scale = _segment_exec_time_scale(name)
@@ -653,6 +724,16 @@ async def execute_motion_segment(
         "target_q_arm": [],
         "actual_q_arm": [],
         "joint_error_norm": [],
+        "hold_indices": [int(index) for index in hold_indices] if hold_indices is not None else [],
+        "hold_positions": (
+            np.asarray(hold_positions, dtype=float).tolist()
+            if hold_positions is not None
+            else []
+        ),
+        "gripper_hold_during_motion": bool(hold_indices is not None and hold_positions is not None),
+        "world_step_skipped_when_direct_state_replay": bool(
+            DIRECT_ARM_STATE_REPLAY and SKIP_WORLD_STEP_WHEN_DIRECT_STATE_REPLAY
+        ),
     }
 
     print(
@@ -687,7 +768,19 @@ async def execute_motion_segment(
             hold_indices=hold_indices,
             hold_positions=hold_positions,
         )
-        world.step(render=True)
+        await maybe_run_step_callback(
+            step_callback,
+            phase="before_world_step_execute_motion_segment",
+            segment_name=name,
+            step_index=step,
+            t=float(t_exec),
+            t_exec=float(t_exec),
+            t_plan=float(t_plan),
+            q_arm_target=q_target,
+        )
+        skip_world_step = bool(DIRECT_ARM_STATE_REPLAY and SKIP_WORLD_STEP_WHEN_DIRECT_STATE_REPLAY)
+        if not skip_world_step:
+            world.step(render=True)
         await maybe_run_step_callback(
             step_callback,
             phase="execute_motion_segment",
@@ -697,14 +790,25 @@ async def execute_motion_segment(
             t_exec=float(t_exec),
             t_plan=float(t_plan),
             q_arm_target=q_target,
+            world_step_skipped=skip_world_step,
         )
         if DIRECT_ARM_STATE_REPLAY:
-            command_report["post_step_direct_set"] = _set_joint_state_direct_best_effort(
+            command_report["post_step_direct_set"] = direct_set_arm_motion_state(
                 robot,
                 q_target,
                 arm_indices,
+                hold_indices=hold_indices,
+                hold_positions=hold_positions,
             )
         await omni.kit.app.get_app().next_update_async()
+        if DIRECT_ARM_STATE_REPLAY:
+            command_report["post_update_direct_set"] = direct_set_arm_motion_state(
+                robot,
+                q_target,
+                arm_indices,
+                hold_indices=hold_indices,
+                hold_positions=hold_positions,
+            )
 
         q_full_actual = get_joint_positions_checked(
             robot,
@@ -1116,7 +1220,15 @@ async def execute_gripper_segment(
     return log
 
 
-async def hold_final(world, robot, segments, arm_indices):
+async def hold_final(
+    world,
+    robot,
+    segments,
+    arm_indices,
+    *,
+    hold_indices=None,
+    hold_positions=None,
+):
     """保持最后一个 motion segment 的末端姿态一小段时间。"""
     last_motion = None
     for segment in reversed(segments):
@@ -1130,9 +1242,26 @@ async def hold_final(world, robot, segments, arm_indices):
     q_final = np.asarray(last_motion["trajectory"]["q"][-1], dtype=float)
     hold_steps = int(FINAL_HOLD_DURATION / SIM_DT)
     for _ in range(hold_steps):
-        q_full_now = safe_numpy(robot.get_joint_positions()).copy()
-        action = make_partial_action(q_final, arm_indices, q_full_now)
-        robot.apply_action(action)
+        q_full_now = get_joint_positions_checked(
+            robot,
+            min_size=required_joint_vector_size(arm_indices, hold_indices),
+            label="hold_final:before_apply_action",
+        ).copy()
+        action = make_partial_action_with_hold(
+            q_final,
+            arm_indices,
+            q_full_now,
+            hold_indices=hold_indices,
+            hold_positions=hold_positions,
+        )
+        apply_arm_motion_command(
+            robot,
+            action,
+            q_final,
+            arm_indices,
+            hold_indices=hold_indices,
+            hold_positions=hold_positions,
+        )
         world.step(render=True)
         await omni.kit.app.get_app().next_update_async()
 
@@ -1269,9 +1398,19 @@ def apply_arm_motion_command(
     hold_positions=None,
 ) -> dict:
     """Apply a normal action, optionally followed by direct joint-state writeback."""
-    report = {"direct_arm_state_replay": bool(DIRECT_ARM_STATE_REPLAY)}
-    robot.apply_action(action)
-    report["apply_action"] = True
+    report = {
+        "direct_arm_state_replay": bool(DIRECT_ARM_STATE_REPLAY),
+        "skip_apply_action_when_direct_state_replay": bool(
+            SKIP_APPLY_ACTION_WHEN_DIRECT_STATE_REPLAY
+        ),
+    }
+    skip_apply_action = bool(DIRECT_ARM_STATE_REPLAY and SKIP_APPLY_ACTION_WHEN_DIRECT_STATE_REPLAY)
+    if skip_apply_action:
+        report["apply_action"] = False
+        report["apply_action_skipped_reason"] = "direct_state_replay_only"
+    else:
+        robot.apply_action(action)
+        report["apply_action"] = True
     if not DIRECT_ARM_STATE_REPLAY:
         return report
 
@@ -1286,6 +1425,26 @@ def apply_arm_motion_command(
         indices,
     )
     return report
+
+
+def direct_set_arm_motion_state(
+    robot,
+    target_positions,
+    joint_indices,
+    *,
+    hold_indices=None,
+    hold_positions=None,
+) -> dict:
+    indices = [int(index) for index in joint_indices]
+    positions = np.asarray(target_positions, dtype=float).reshape(-1)
+    if hold_indices is not None and hold_positions is not None:
+        indices = [int(index) for index in hold_indices] + indices
+        positions = np.concatenate([np.asarray(hold_positions, dtype=float).reshape(-1), positions])
+    return _set_joint_state_direct_best_effort(
+        robot,
+        positions,
+        indices,
+    )
 
 
 async def main():
@@ -1343,6 +1502,10 @@ async def main():
     logs = []
     executed_segments = []
     last_motion_q_final = None
+    q_gripper_hold_after_close = None
+    q_gripper_hold_actual_after_close = None
+    gripper_hold_indices_after_close = None
+    gripper_hold_source = None
     abort_reason = None
     if target_bbox_delta.get("available") and not target_bbox_delta.get("within_tolerance", True):
         abort_reason = (
@@ -1355,7 +1518,20 @@ async def main():
         if abort_reason is not None:
             break
         if segment["type"] == "motion":
-            motion_log = await execute_motion_segment(world, robot, arm_indices, segment)
+            motion_hold_indices = gripper_hold_indices_after_close if HOLD_GRIPPER_AFTER_CLOSE else None
+            motion_hold_positions = q_gripper_hold_after_close if HOLD_GRIPPER_AFTER_CLOSE else None
+            motion_log = await execute_motion_segment(
+                world,
+                robot,
+                arm_indices,
+                segment,
+                hold_indices=motion_hold_indices,
+                hold_positions=motion_hold_positions,
+            )
+            motion_log["gripper_hold_after_close_enabled"] = bool(
+                motion_hold_indices is not None and motion_hold_positions is not None
+            )
+            motion_log["gripper_hold_after_close_source"] = gripper_hold_source
             logs.append(motion_log)
             executed_segments.append(segment)
             last_motion_q_final = np.asarray(segment["trajectory"]["q"][-1], dtype=float)
@@ -1400,11 +1576,37 @@ async def main():
                 )
                 print("[abort]", abort_reason)
                 break
+            if segment["name"] == "close_gripper" and HOLD_GRIPPER_AFTER_CLOSE:
+                q_target = np.asarray(segment["target_position"], dtype=float)
+                q_actual = get_joint_positions_checked(
+                    robot,
+                    min_size=required_joint_vector_size(gripper_indices),
+                    label="close_gripper:hold_capture",
+                )[gripper_indices].copy()
+                q_gripper_hold_actual_after_close = q_actual.copy()
+                if GRIPPER_HOLD_AFTER_CLOSE_SOURCE == "actual":
+                    q_gripper_hold_after_close = q_actual.copy()
+                    gripper_hold_source = "actual_after_close"
+                else:
+                    q_gripper_hold_after_close = q_target.copy()
+                    gripper_hold_source = "close_target"
+                gripper_hold_indices_after_close = list(gripper_indices)
+                gripper_log["gripper_hold_after_close_enabled"] = True
+                gripper_log["gripper_hold_after_close_source"] = gripper_hold_source
+                gripper_log["q_gripper_hold_after_close"] = q_gripper_hold_after_close.tolist()
+                gripper_log["q_gripper_actual_after_close"] = q_actual.tolist()
 
         else:
             raise RuntimeError(f"未知 segment type: {segment['type']}")
 
-    await hold_final(world, robot, executed_segments, arm_indices)
+    await hold_final(
+        world,
+        robot,
+        executed_segments,
+        arm_indices,
+        hold_indices=gripper_hold_indices_after_close if HOLD_GRIPPER_AFTER_CLOSE else None,
+        hold_positions=q_gripper_hold_after_close if HOLD_GRIPPER_AFTER_CLOSE else None,
+    )
 
     object_bbox_after_primary_motion = compute_world_bbox(stage, object_path)
     print("[object] bbox after primary motion:", object_bbox_after_primary_motion)
@@ -1428,6 +1630,12 @@ async def main():
                             robot,
                             arm_indices,
                             return_segment,
+                            hold_indices=(
+                                gripper_hold_indices_after_close if HOLD_GRIPPER_AFTER_CLOSE else None
+                            ),
+                            hold_positions=(
+                                q_gripper_hold_after_close if HOLD_GRIPPER_AFTER_CLOSE else None
+                            ),
                         )
                     )
         else:
@@ -1448,6 +1656,7 @@ async def main():
     lift_success = None
     object_center_displacement = None
     object_retreat_success = None
+    object_retreat_height_ok = None
     task_success = None
     if object_bbox_before is not None and object_bbox_after_primary_motion is not None:
         lift_delta_top_z = float(
@@ -1466,12 +1675,16 @@ async def main():
         object_retreat_success = (
             object_center_displacement >= OBJECT_RETREAT_SUCCESS_THRESHOLD_M
         )
+        object_retreat_height_ok = lift_delta_center_z >= -SIDE_RETREAT_MAX_DROP_M
 
     if abort_reason is None:
         if REQUIRE_OBJECT_LIFT_SUCCESS:
             task_success = lift_success
         elif grasp_mode == "side" and has_planned_retreat and not has_lift_segment:
-            task_success = object_retreat_success
+            if REQUIRE_SIDE_RETREAT_HEIGHT_OK:
+                task_success = bool(object_retreat_success and object_retreat_height_ok)
+            else:
+                task_success = bool(object_retreat_success)
         else:
             task_success = lift_success
     else:
@@ -1489,8 +1702,35 @@ async def main():
             "object_center_displacement_m": object_center_displacement,
             "object_retreat_success": object_retreat_success,
             "object_retreat_success_threshold_m": OBJECT_RETREAT_SUCCESS_THRESHOLD_M,
+            "object_retreat_height_ok": object_retreat_height_ok,
+            "side_retreat_max_drop_m": SIDE_RETREAT_MAX_DROP_M,
+            "require_side_retreat_height_ok": REQUIRE_SIDE_RETREAT_HEIGHT_OK,
+            "side_retreat_height_warning": (
+                "object_height_dropped_but_side_retreat_uses_carry_precheck"
+                if (
+                    grasp_mode == "side"
+                    and has_planned_retreat
+                    and not has_lift_segment
+                    and not REQUIRE_OBJECT_LIFT_SUCCESS
+                    and not REQUIRE_SIDE_RETREAT_HEIGHT_OK
+                    and object_retreat_height_ok is False
+                )
+                else None
+            ),
             "target_vs_pre_execution_object_drift": target_bbox_delta,
             "require_object_lift_success": REQUIRE_OBJECT_LIFT_SUCCESS,
+            "hold_gripper_after_close": HOLD_GRIPPER_AFTER_CLOSE,
+            "gripper_hold_after_close_source": gripper_hold_source,
+            "q_gripper_hold_after_close": (
+                q_gripper_hold_after_close.tolist()
+                if q_gripper_hold_after_close is not None
+                else None
+            ),
+            "q_gripper_actual_after_close": (
+                q_gripper_hold_actual_after_close.tolist()
+                if q_gripper_hold_actual_after_close is not None
+                else None
+            ),
             "task_success": task_success,
             "aborted": abort_reason is not None,
             "abort_reason": abort_reason,

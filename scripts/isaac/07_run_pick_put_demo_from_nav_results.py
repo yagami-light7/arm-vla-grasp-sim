@@ -37,6 +37,10 @@ DEFAULT_CARRY_REPLAY_BACKEND = "visual_root_only"
 DEFAULT_ARM_PLACE_COMMAND_DT = 0.02
 DEFAULT_ARM_PLACE_SETTLE_TO_START_DURATION = 0.50
 DEFAULT_ARM_PLACE_EXEC_TIME_SCALE = 1.50
+DEFAULT_VIDEO_BASELINE_HOLD_AFTER_PHASE_S = 0.5
+DEFAULT_VIDEO_BASELINE_AFTER_PICK_HOLD_S = 0.0
+DEFAULT_VIDEO_BASELINE_ARM_PRE_SETTLE_S = 2.5
+DEFAULT_VIDEO_BASELINE_SAFE_LEG_SETTLE_S = 0.6
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -47,6 +51,102 @@ def _env_flag(name: str, default: bool = False) -> bool:
     if raw is None:
         return bool(default)
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return float(default)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _video_baseline_enabled() -> bool:
+    return _env_flag("GO2_X5_VIDEO_BASELINE_MODE", False)
+
+
+def _video_baseline_leg_policy() -> str:
+    raw = os.environ.get("GO2_X5_VIDEO_BASELINE_LEG_POLICY")
+    if raw is None and _video_baseline_enabled():
+        return "frozen_safe_pose"
+    policy = str(raw or "replay").strip().lower().replace("-", "_")
+    if policy not in {"frozen_safe_pose", "disabled", "replay"}:
+        return "frozen_safe_pose" if _video_baseline_enabled() else "replay"
+    return policy
+
+
+def _video_baseline_hold_after_phase_s() -> float:
+    default = DEFAULT_VIDEO_BASELINE_HOLD_AFTER_PHASE_S if _video_baseline_enabled() else 0.0
+    return max(0.0, _env_float("GO2_X5_VIDEO_BASELINE_HOLD_AFTER_PHASE_S", default))
+
+
+def _video_baseline_after_pick_hold_s() -> float:
+    default = DEFAULT_VIDEO_BASELINE_AFTER_PICK_HOLD_S if _video_baseline_enabled() else 0.0
+    return max(0.0, _env_float("GO2_X5_VIDEO_BASELINE_AFTER_PICK_HOLD_S", default))
+
+
+def _arm_place_pre_settle_s() -> float:
+    default = DEFAULT_VIDEO_BASELINE_ARM_PRE_SETTLE_S if _video_baseline_enabled() else 0.0
+    return max(0.0, _env_float("GO2_X5_ARM_PLACE_PRE_SETTLE_S", default))
+
+
+def _carry_object_pose_source() -> str:
+    source = os.environ.get("GO2_X5_CARRY_OBJECT_POSE_SOURCE", "usd_root")
+    source = source.strip().lower().replace("-", "_")
+    if source not in {"usd_root", "root", "visual_root", "live_rigid_body", "dynamic"}:
+        return "usd_root"
+    return source
+
+
+def _carry_reset_object_xform_stack() -> bool:
+    return _env_flag("GO2_X5_CARRY_RESET_OBJECT_XFORM_STACK", False)
+
+
+def _carry_compensate_preserved_xform_stack() -> bool:
+    return _env_flag("GO2_X5_CARRY_COMPENSATE_PRESERVED_XFORM_STACK", True)
+
+
+def _carry_object_translation_only() -> bool:
+    return _env_flag("GO2_X5_CARRY_OBJECT_TRANSLATION_ONLY", True)
+
+
+def _carry_object_orientation_mode() -> str:
+    mode = os.environ.get("GO2_X5_CARRY_OBJECT_ORIENTATION_MODE", "world_locked")
+    mode = mode.strip().lower().replace("-", "_")
+    aliases = {
+        "world": "world_locked",
+        "preserve_world": "world_locked",
+        "locked_world": "world_locked",
+        "keep_world": "world_locked",
+        "tcp": "tcp_relative",
+        "full_tcp": "tcp_relative",
+        "full_tcp_relative": "tcp_relative",
+    }
+    mode = aliases.get(mode, mode)
+    if mode not in {"world_locked", "tcp_relative"}:
+        return "world_locked"
+    return mode
+
+
+def _video_baseline_config() -> dict[str, Any]:
+    return {
+        "enabled": _video_baseline_enabled(),
+        "leg_policy": _video_baseline_leg_policy(),
+        "hold_after_phase_s": _video_baseline_hold_after_phase_s(),
+        "after_pick_hold_s": _video_baseline_after_pick_hold_s(),
+        "arm_place_pre_settle_s": _arm_place_pre_settle_s(),
+        "carry_object_pose_source": _carry_object_pose_source(),
+        "carry_object_orientation_mode": _carry_object_orientation_mode(),
+        "carry_object_translation_only": _carry_object_translation_only(),
+        "carry_reset_object_xform_stack": _carry_reset_object_xform_stack(),
+        "carry_compensate_preserved_xform_stack": _carry_compensate_preserved_xform_stack(),
+        "safe_leg_settle_s": max(
+            0.0,
+            _env_float("GO2_X5_VIDEO_BASELINE_SAFE_LEG_SETTLE_S", DEFAULT_VIDEO_BASELINE_SAFE_LEG_SETTLE_S),
+        ),
+    }
 
 
 class DemoFailure(RuntimeError):
@@ -184,6 +284,10 @@ def _base_result(args: argparse.Namespace) -> dict[str, Any]:
         "arm_place_executed": False,
         "object_teleported": _put_mode_teleports_object(args.put_mode),
         "physical_place_continuity": args.put_mode == "arm-place",
+        "video_baseline_mode": _video_baseline_enabled(),
+        "video_baseline_leg_policy": _video_baseline_leg_policy(),
+        "video_baseline_config": _video_baseline_config(),
+        "phase_transition_reports": [],
         "task_nav_to_pick": _required_path_text(args.task_nav_to_pick, "task-nav-to-pick"),
         "task_nav_to_place": _required_path_text(args.task_nav_to_place, "task-nav-to-place"),
         "nav_pick_result": _required_path_text(args.nav_pick_result, "nav-pick-result"),
@@ -485,6 +589,10 @@ def _apply_grasp_policy_env(args: argparse.Namespace) -> None:
     os.environ["GO2_X5_SIDE_GRASP_FALLBACK_RETREAT"] = "1" if args.side_grasp_fallback_retreat else "0"
     os.environ["GO2_X5_SHOW_GRASP_TRAJECTORY"] = "1" if args.show_grasp_trajectory else "0"
     os.environ["GO2_X5_PICK_SETTLE_STEPS"] = str(max(0, int(args.settle_steps)))
+    os.environ["GO2_X5_RETURN_HOME_AFTER_LIFT"] = "0"
+    os.environ["GO2_X5_HOLD_GRIPPER_AFTER_CLOSE"] = "1"
+    os.environ.setdefault("GO2_X5_CARRY_HOLD_GRIPPER_CLOSE_TARGET", "0")
+    os.environ.setdefault("GO2_X5_REQUIRE_SIDE_RETREAT_HEIGHT_OK", "0")
 
 
 def _object_pose_from_bbox(bbox: dict[str, Any] | None) -> dict[str, Any]:
@@ -1281,6 +1389,62 @@ def _carry_state(args: argparse.Namespace, object_prim_path: str) -> dict[str, A
     }
 
 
+def _verify_object_carried_before_nav(object_prim_path: str, *, label: str) -> dict[str, Any]:
+    import numpy as np
+    import omni.usd
+    from scripts.isaac import run_pick_from_nav_result as pick_handoff
+
+    max_tcp_object_distance_m = float(os.environ.get("GO2_X5_CARRY_PRECHECK_MAX_TCP_OBJECT_DISTANCE_M", "0.45"))
+    min_object_center_z_m = float(os.environ.get("GO2_X5_CARRY_PRECHECK_MIN_OBJECT_CENTER_Z_M", "0.35"))
+    stage = omni.usd.get_context().get_stage()
+    report: dict[str, Any] = {
+        "label": label,
+        "object_prim_path": object_prim_path,
+        "max_tcp_object_distance_m": max_tcp_object_distance_m,
+        "min_object_center_z_m": min_object_center_z_m,
+        "success": False,
+    }
+    if stage is None:
+        report["failure_reason"] = "stage_not_ready"
+        return report
+
+    try:
+        T_tcp, tcp_report = _tcp_world_matrix(stage)
+        T_object, object_report = _dynamic_object_world_matrix(stage, object_prim_path)
+        T_tcp_object = np.linalg.inv(T_tcp) @ T_object
+        tcp_object_distance_m = float(np.linalg.norm(np.asarray(T_tcp_object, dtype=float)[:3, 3]))
+        report["tcp"] = tcp_report
+        report["object_matrix"] = object_report
+        report["tcp_to_object_transform"] = _matrix_pose_report(T_tcp_object, frame="tcp")
+        report["tcp_to_object_translation_norm_m"] = tcp_object_distance_m
+    except Exception as exc:
+        report["failure_reason"] = "object_tcp_pose_read_failed"
+        report["failure_detail"] = str(exc)
+        return report
+
+    bbox = pick_handoff._compute_world_bbox(stage, object_prim_path)
+    report["object_bbox"] = bbox
+    center = list((bbox or {}).get("center_xyz") or [])
+    center_z = float(center[2]) if len(center) == 3 else None
+    report["object_center_z_m"] = center_z
+
+    failures: list[str] = []
+    if tcp_object_distance_m > max_tcp_object_distance_m:
+        failures.append("object_too_far_from_tcp_after_pick")
+    if center_z is not None and center_z < min_object_center_z_m:
+        failures.append("object_center_too_low_after_pick")
+    if center_z is None:
+        failures.append("object_bbox_unavailable_after_pick")
+
+    if failures:
+        report["failure_reason"] = "object_not_carried_after_pick"
+        report["issues"] = failures
+        return report
+
+    report["success"] = True
+    return report
+
+
 def _verify_mvp_place(
     place_pose: dict[str, Any],
     bbox_after: dict[str, Any] | None,
@@ -1597,6 +1761,34 @@ def _dynamic_object_world_matrix(stage, prim_path: str):
     return matrix, report
 
 
+def _carry_object_world_matrix(stage, object_prim_path: str):
+    """Read the object transform used for visual/logical carry continuity.
+
+    The apple asset has a root Xform and a nested rigid body. Reading the nested
+    rigid body pose and writing it back to /World/apple root double-applies local
+    xform ops such as rotateX:unitsResolve, which causes the visible carry-start
+    rotation jump. Use the root USD world transform by default.
+    """
+
+    source = _carry_object_pose_source()
+    if source in {"live_rigid_body", "dynamic"}:
+        matrix, report = _dynamic_object_world_matrix(stage, object_prim_path)
+        report["carry_object_pose_source"] = source
+        return matrix, report
+
+    matrix = _usd_object_root_world_matrix(stage, object_prim_path)
+    report = _matrix_pose_report(matrix, frame="world")
+    report.update(
+        {
+            "object_prim_path": object_prim_path,
+            "source": "usd_object_root_world_matrix",
+            "carry_object_pose_source": source,
+            "rigid_body_paths": _rigid_body_paths_under(stage, object_prim_path),
+        }
+    )
+    return matrix, report
+
+
 def _transform_bbox_world(bbox: dict[str, Any] | None, transform_world) -> dict[str, Any] | None:
     import itertools
     import numpy as np
@@ -1633,7 +1825,78 @@ def _transform_bbox_world(bbox: dict[str, Any] | None, transform_world) -> dict[
     }
 
 
-def _set_prim_world_matrix(stage, prim_path: str, target_world_matrix, *, reset_xform_stack: bool = True) -> dict[str, Any]:
+def _matrix4d_to_numpy(matrix) -> "np.ndarray":
+    import numpy as np
+
+    return np.asarray(
+        [[float(matrix[row][col]) for col in range(4)] for row in range(4)],
+        dtype=float,
+    )
+
+
+def _xform_op_matrix(op):
+    from pxr import Usd
+
+    try:
+        return _matrix4d_to_numpy(op.GetOpTransform(Usd.TimeCode.Default()))
+    except TypeError:
+        return _matrix4d_to_numpy(op.GetOpTransform())
+
+
+def _compensated_orient_for_preserved_stack(xformable, target_local_quat) -> tuple[list[float], dict[str, Any]]:
+    import numpy as np
+    from pxr import UsdGeom
+    from scripts.math.SE3 import quat_wxyz_to_rotmat, rotmat_to_quat_wxyz
+
+    ordered_ops = list(xformable.GetOrderedXformOps())
+    report: dict[str, Any] = {
+        "enabled": True,
+        "ordered_ops": [op.GetOpName() for op in ordered_ops],
+        "suffix_rotation_op_names": [],
+    }
+    orient_index = None
+    for index, op in enumerate(ordered_ops):
+        if op.GetOpType() == UsdGeom.XformOp.TypeOrient or op.GetOpName() == "xformOp:orient":
+            orient_index = index
+            break
+    if orient_index is None:
+        report["enabled"] = False
+        report["reason"] = "orient_op_not_in_xform_order"
+        return [float(value) for value in target_local_quat], report
+
+    suffix_rotation = np.eye(3, dtype=float)
+    for op in ordered_ops[orient_index + 1:]:
+        op_type = op.GetOpType()
+        if op_type in {UsdGeom.XformOp.TypeScale, UsdGeom.XformOp.TypeTranslate}:
+            continue
+        try:
+            op_matrix = _xform_op_matrix(op)
+        except Exception as exc:
+            report.setdefault("suffix_op_errors", []).append({"op": op.GetOpName(), "error": str(exc)})
+            continue
+        suffix_rotation = suffix_rotation @ np.asarray(op_matrix, dtype=float)[:3, :3]
+        report["suffix_rotation_op_names"].append(op.GetOpName())
+
+    if not report["suffix_rotation_op_names"]:
+        report["reason"] = "no_suffix_rotation_ops"
+        return [float(value) for value in target_local_quat], report
+
+    target_rotation = quat_wxyz_to_rotmat(target_local_quat)
+    compensated_rotation = target_rotation @ np.linalg.inv(suffix_rotation)
+    compensated_quat = rotmat_to_quat_wxyz(compensated_rotation)
+    report["target_local_quaternion_wxyz"] = [float(value) for value in target_local_quat]
+    report["compensated_local_quaternion_wxyz"] = [float(value) for value in compensated_quat]
+    return [float(value) for value in compensated_quat], report
+
+
+def _set_prim_world_matrix(
+    stage,
+    prim_path: str,
+    target_world_matrix,
+    *,
+    reset_xform_stack: bool = True,
+    compensate_preserved_stack: bool = False,
+) -> dict[str, Any]:
     import numpy as np
     from pxr import Usd, UsdGeom
     from scripts.math.SE3 import matrix_to_pose
@@ -1658,11 +1921,17 @@ def _set_prim_world_matrix(stage, prim_path: str, target_world_matrix, *, reset_
     order_before = pick_handoff._xform_op_order_names(xformable)
     if reset_xform_stack:
         pick_handoff._reset_pose_xform_stack(xformable, local_position, local_quat)
+        compensation_report = {"enabled": False, "reason": "reset_xform_stack_true"}
     else:
         translate_op = pick_handoff._get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeTranslate)
         orient_op = pick_handoff._get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeOrient)
         pick_handoff._set_translate_op(translate_op, local_position)
-        pick_handoff._set_orient_op(orient_op, local_quat)
+        if compensate_preserved_stack:
+            orient_quat, compensation_report = _compensated_orient_for_preserved_stack(xformable, local_quat)
+        else:
+            orient_quat = local_quat
+            compensation_report = {"enabled": False, "reason": "compensation_disabled"}
+        pick_handoff._set_orient_op(orient_op, orient_quat)
     xformable = UsdGeom.Xformable(prim)
     return {
         "object_prim_path": prim_path,
@@ -1674,6 +1943,51 @@ def _set_prim_world_matrix(stage, prim_path: str, target_world_matrix, *, reset_
         "target_world_quaternion_wxyz": [float(value) for value in world_quat],
         "target_local_position_xyz": [float(value) for value in local_position],
         "target_local_quaternion_wxyz": [float(value) for value in local_quat],
+        "compensated_preserved_xform_stack": compensation_report,
+    }
+
+
+def _set_prim_world_translation(
+    stage,
+    prim_path: str,
+    target_world_position,
+) -> dict[str, Any]:
+    import numpy as np
+    from pxr import UsdGeom
+    from scripts.isaac import run_pick_from_nav_result as pick_handoff
+
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        raise DemoFailure("stage_not_ready", f"object prim does not exist: {prim_path}")
+    if not prim.IsA(UsdGeom.Xformable):
+        raise DemoFailure("stage_not_ready", f"object prim is not xformable: {prim_path}")
+
+    parent = prim.GetParent()
+    if parent and parent.IsValid():
+        parent_world = _usd_prim_world_matrix(stage, str(parent.GetPath()))
+    else:
+        parent_world = np.eye(4, dtype=float)
+    target_world_position = np.asarray(target_world_position, dtype=float).reshape(3)
+    local_h = np.linalg.inv(parent_world) @ np.asarray(
+        [target_world_position[0], target_world_position[1], target_world_position[2], 1.0],
+        dtype=float,
+    )
+    local_position = local_h[:3]
+
+    xformable = UsdGeom.Xformable(prim)
+    order_before = pick_handoff._xform_op_order_names(xformable)
+    translate_op = pick_handoff._get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeTranslate)
+    pick_handoff._set_translate_op(translate_op, local_position)
+
+    return {
+        "object_prim_path": prim_path,
+        "translation_only": True,
+        "orientation_untouched": True,
+        "parent_prim_path": str(parent.GetPath()) if parent and parent.IsValid() else None,
+        "xform_op_order_before": order_before,
+        "xform_op_order_after": pick_handoff._xform_op_order_names(UsdGeom.Xformable(prim)),
+        "target_world_position_xyz": [float(value) for value in target_world_position],
+        "target_local_position_xyz": [float(value) for value in local_position],
     }
 
 
@@ -2169,6 +2483,53 @@ def _matrix_translation_error_m(a, b) -> float:
     return float(np.linalg.norm(np.asarray(a, dtype=float)[:3, 3] - np.asarray(b, dtype=float)[:3, 3]))
 
 
+def _apply_carry_object_orientation_mode(
+    target_world_matrix,
+    reference_world_matrix,
+    *,
+    label: str,
+    current_world_matrix=None,
+) -> tuple[Any, dict[str, Any]]:
+    import numpy as np
+
+    mode = _carry_object_orientation_mode()
+    target = np.asarray(target_world_matrix, dtype=float).copy()
+    report: dict[str, Any] = {
+        "mode": mode,
+        "label": label,
+        "applied": False,
+    }
+    if mode == "tcp_relative":
+        report["reason"] = "full_tcp_relative_orientation_requested"
+        return target, report
+    orientation_source_matrix = current_world_matrix if current_world_matrix is not None else reference_world_matrix
+    if orientation_source_matrix is None:
+        report["reason"] = "missing_reference_world_matrix"
+        return target, report
+
+    reference = np.asarray(orientation_source_matrix, dtype=float)
+    target_before = target.copy()
+    target[:3, :3] = reference[:3, :3]
+    report.update(
+        {
+            "applied": True,
+            "reason": (
+                "preserve_current_readback_orientation"
+                if current_world_matrix is not None
+                else "preserve_pick_complete_world_orientation"
+            ),
+            "orientation_source": (
+                "current_object_readback"
+                if current_world_matrix is not None
+                else "reference_world_matrix"
+            ),
+            "target_before_orientation": _matrix_pose_report(target_before, frame="world"),
+            "reference_world_orientation": _matrix_pose_report(reference, frame="world"),
+        }
+    )
+    return target, report
+
+
 def _joint_indices_for_existing_names(dof_names: list[str], names: list[str]) -> tuple[list[int], list[str], list[str]]:
     indices: list[int] = []
     found: list[str] = []
@@ -2325,6 +2686,32 @@ def _apply_arm_gripper_hold(robot, hold_state: dict[str, Any]) -> dict[str, Any]
     return report
 
 
+def _force_closed_gripper_hold_state(
+    hold_state: dict[str, Any],
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    """Keep carry holds contact-intent closed instead of passively freezing current gap."""
+
+    if not _env_flag("GO2_X5_CARRY_HOLD_GRIPPER_CLOSE_TARGET", True):
+        return hold_state
+    if not isinstance(hold_state, dict) or not hold_state.get("available", False):
+        return hold_state
+    gripper_indices = list(hold_state.get("gripper_indices") or [])
+    if not gripper_indices:
+        return hold_state
+
+    close_m = _env_float("GO2_X5_GRIPPER_CLOSE_M", 0.0)
+    updated = dict(hold_state)
+    captured = list(updated.get("q_gripper_hold") or [])
+    updated["q_gripper_hold_captured"] = captured
+    updated["q_gripper_hold"] = [float(close_m) for _ in gripper_indices]
+    updated["q_gripper_hold_source"] = "forced_close_target_for_carry"
+    updated["q_gripper_hold_reason"] = reason
+    updated["carry_hold_gripper_close_target"] = True
+    return updated
+
+
 def _zero_arm_gripper_velocity_from_hold_state(robot, hold_state: dict[str, Any]) -> dict[str, Any]:
     import numpy as np
 
@@ -2346,6 +2733,509 @@ def _zero_arm_gripper_velocity_from_hold_state(robot, hold_state: dict[str, Any]
     return report
 
 
+def _zero_robot_root_velocity_best_effort(robot) -> dict[str, Any]:
+    import numpy as np
+
+    report: dict[str, Any] = {"requested": True, "success": False}
+    try:
+        robot.set_linear_velocity(np.zeros(3, dtype=float))
+        report["linear_velocity_zeroed"] = True
+    except Exception as exc:
+        report["linear_velocity_zero_error"] = str(exc)
+    try:
+        robot.set_angular_velocity(np.zeros(3, dtype=float))
+        report["angular_velocity_zeroed"] = True
+    except Exception as exc:
+        report["angular_velocity_zero_error"] = str(exc)
+    report["success"] = bool(report.get("linear_velocity_zeroed") or report.get("angular_velocity_zeroed"))
+    return report
+
+
+def _read_robot_root_velocity_report(robot) -> dict[str, Any]:
+    report: dict[str, Any] = {}
+    for label, getter in (
+        ("linear_velocity", "get_linear_velocity"),
+        ("angular_velocity", "get_angular_velocity"),
+    ):
+        try:
+            value = getattr(robot, getter)()
+            report[label] = [float(item) for item in value]
+        except Exception as exc:
+            report[f"{label}_read_error"] = str(exc)
+    return report
+
+
+def _world_play_state_report(world) -> dict[str, Any]:
+    report: dict[str, Any] = {}
+    for attr_name in ("is_playing", "is_stopped"):
+        try:
+            attr = getattr(world, attr_name, None)
+            if callable(attr):
+                report[attr_name] = bool(attr())
+        except Exception as exc:
+            report[f"{attr_name}_error"] = str(exc)
+    return report
+
+
+def _video_leg_indices(robot, hold_state: dict[str, Any] | None = None) -> tuple[list[int], list[str]]:
+    import numpy as np
+
+    try:
+        q_full = np.asarray(robot.get_joint_positions(), dtype=float).reshape(-1)
+    except Exception:
+        q_full = np.asarray([], dtype=float)
+    dof_names = _robot_dof_names_for_replay(robot)
+    blocked = set()
+    if isinstance(hold_state, dict):
+        blocked.update(int(index) for index in (hold_state.get("arm_indices") or []))
+        blocked.update(int(index) for index in (hold_state.get("gripper_indices") or []))
+    for index, name in enumerate(dof_names):
+        if str(name).startswith("arm_joint"):
+            blocked.add(index)
+
+    candidate_indices: list[int] = []
+    for index in range(int(q_full.size)):
+        if index in blocked:
+            continue
+        name = dof_names[index] if index < len(dof_names) else f"joint_{index}"
+        name_lower = str(name).lower()
+        if (
+            name.startswith(("FL_", "FR_", "RL_", "RR_"))
+            or any(token in name_lower for token in ("hip", "thigh", "calf", "haa", "hfe", "kfe"))
+        ):
+            candidate_indices.append(index)
+    if not candidate_indices:
+        candidate_indices = [index for index in range(int(q_full.size)) if index not in blocked]
+    candidate_names = [
+        dof_names[index] if index < len(dof_names) else f"joint_{index}"
+        for index in candidate_indices
+    ]
+    return [int(index) for index in candidate_indices], [str(name) for name in candidate_names]
+
+
+def _preset_safe_leg_pose_for_names(names: list[str]) -> list[float]:
+    q: list[float] = []
+    for name in names:
+        lower = str(name).lower()
+        if "thigh" in lower or "hfe" in lower:
+            q.append(0.80)
+        elif "calf" in lower or "kfe" in lower:
+            q.append(-1.50)
+        else:
+            q.append(0.0)
+    return q
+
+
+def _read_video_leg_pose(robot, leg_state: dict[str, Any] | None = None) -> dict[str, Any]:
+    import numpy as np
+
+    if isinstance(leg_state, dict) and leg_state.get("available", False):
+        indices = [int(index) for index in (leg_state.get("leg_indices") or [])]
+        names = [str(name) for name in (leg_state.get("leg_joint_names") or [])]
+    else:
+        indices, names = _video_leg_indices(robot)
+    report: dict[str, Any] = {
+        "available": bool(indices),
+        "leg_indices": indices,
+        "leg_joint_names": names,
+    }
+    if not indices:
+        report["reason"] = "no_leg_indices"
+        return report
+    try:
+        q_full = np.asarray(robot.get_joint_positions(), dtype=float).reshape(-1)
+        q_leg = q_full[np.asarray(indices, dtype=int)]
+        report["q_leg"] = q_leg.tolist()
+        report["q_leg_min"] = float(q_leg.min()) if q_leg.size else None
+        report["q_leg_max"] = float(q_leg.max()) if q_leg.size else None
+        report["q_leg_max_abs"] = float(np.max(np.abs(q_leg))) if q_leg.size else None
+    except Exception as exc:
+        report["available"] = False
+        report["read_error"] = str(exc)
+    return report
+
+
+def _capture_video_safe_leg_pose(robot, *, source: str, hold_state: dict[str, Any] | None = None) -> dict[str, Any]:
+    import numpy as np
+
+    indices, names = _video_leg_indices(robot, hold_state)
+    report: dict[str, Any] = {
+        "available": bool(indices),
+        "source": source,
+        "leg_indices": indices,
+        "leg_joint_names": names,
+        "fallback_used": False,
+    }
+    if not indices:
+        report["reason"] = "no_leg_indices"
+        return report
+    try:
+        q_full = np.asarray(robot.get_joint_positions(), dtype=float).reshape(-1)
+        q_leg = q_full[np.asarray(indices, dtype=int)]
+        current_is_safe = bool(q_leg.size and np.all(np.isfinite(q_leg)) and float(np.max(np.abs(q_leg))) < 3.2)
+        report["q_leg_captured"] = q_leg.tolist()
+        report["q_leg_captured_max_abs"] = float(np.max(np.abs(q_leg))) if q_leg.size else None
+        if current_is_safe:
+            report["q_leg_safe"] = q_leg.tolist()
+            report["q_leg_safe_source"] = source
+        else:
+            q_preset = _preset_safe_leg_pose_for_names(names)
+            report["q_leg_safe"] = q_preset
+            report["q_leg_safe_source"] = "preset_safe_stand_pose"
+            report["fallback_used"] = True
+            report["fallback_reason"] = "captured_leg_pose_nonfinite_or_too_large"
+    except Exception as exc:
+        q_preset = _preset_safe_leg_pose_for_names(names)
+        report["q_leg_safe"] = q_preset
+        report["q_leg_safe_source"] = "preset_safe_stand_pose"
+        report["fallback_used"] = True
+        report["capture_error"] = str(exc)
+    print(
+        "[video-baseline] captured q_leg_safe",
+        {
+            "source": report.get("q_leg_safe_source"),
+            "indices": indices,
+            "fallback_used": report.get("fallback_used"),
+        },
+        flush=True,
+    )
+    return report
+
+
+def _apply_video_safe_leg_pose(robot, leg_state: dict[str, Any], *, source: str) -> dict[str, Any]:
+    import numpy as np
+
+    report: dict[str, Any] = {
+        "source": source,
+        "available": bool(isinstance(leg_state, dict) and leg_state.get("available", False)),
+    }
+    if not report["available"]:
+        report["skipped"] = True
+        report["reason"] = (leg_state or {}).get("reason", "safe_leg_pose_unavailable")
+        return report
+    indices = [int(index) for index in (leg_state.get("leg_indices") or [])]
+    q_leg = np.asarray(leg_state.get("q_leg_safe") or [], dtype=float)
+    report["leg_indices"] = indices
+    report["leg_joint_names"] = [str(name) for name in (leg_state.get("leg_joint_names") or [])]
+    report["position_hold"] = _set_joint_positions_best_effort(robot, q_leg, indices)
+    report["velocity_zero"] = _set_joint_velocities_best_effort(robot, np.zeros_like(q_leg), indices)
+    report["success"] = bool((report["position_hold"] or {}).get("success", False))
+    return report
+
+
+def _update_video_leg_monitor(robot, leg_state: dict[str, Any] | None, monitor: dict[str, Any], *, phase: str) -> None:
+    import numpy as np
+
+    if not isinstance(leg_state, dict) or not leg_state.get("available", False):
+        return
+    pose = _read_video_leg_pose(robot, leg_state)
+    q_now = np.asarray(pose.get("q_leg") or [], dtype=float)
+    q_safe = np.asarray(leg_state.get("q_leg_safe") or [], dtype=float)
+    if q_now.size != q_safe.size or q_now.size == 0:
+        return
+    delta = float(np.max(np.abs(q_now - q_safe)))
+    monitor["leg_max_delta_during_place"] = max(float(monitor.get("leg_max_delta_during_place", 0.0)), delta)
+    samples = monitor.setdefault("samples", [])
+    if len(samples) < 16 or delta > float(monitor.get("sample_delta_threshold", 0.08)):
+        samples.append({"phase": phase, "delta_from_safe_max_abs": delta, "pose": pose})
+
+
+async def _smooth_video_safe_leg_pose(
+    world,
+    robot,
+    leg_state: dict[str, Any],
+    *,
+    duration_s: float,
+    source: str,
+    step_callback=None,
+) -> dict[str, Any]:
+    import numpy as np
+    import omni.kit.app
+
+    report: dict[str, Any] = {
+        "source": source,
+        "duration_s": float(duration_s),
+        "available": bool(isinstance(leg_state, dict) and leg_state.get("available", False)),
+    }
+    if not report["available"]:
+        report["skipped"] = True
+        report["reason"] = (leg_state or {}).get("reason", "safe_leg_pose_unavailable")
+        return report
+    indices = [int(index) for index in (leg_state.get("leg_indices") or [])]
+    q_target = np.asarray(leg_state.get("q_leg_safe") or [], dtype=float)
+    q_full_start = np.asarray(robot.get_joint_positions(), dtype=float).reshape(-1)
+    q_start = q_full_start[np.asarray(indices, dtype=int)]
+    report["start_error"] = float(np.linalg.norm(q_start - q_target)) if q_start.size == q_target.size else None
+    skip_error_tol = max(0.0, _env_float("GO2_X5_VIDEO_BASELINE_SAFE_LEG_SETTLE_SKIP_ERROR_TOL", 0.01))
+    report["skip_error_tol"] = float(skip_error_tol)
+    if report["start_error"] is not None and float(report["start_error"]) <= skip_error_tol:
+        report.update(
+            {
+                "skipped": True,
+                "reason": "already_within_tolerance",
+                "final_error": report["start_error"],
+                "final_pose": q_start.tolist(),
+                "success": True,
+            }
+        )
+        print("[video-baseline] skipped safe leg pre-place settle", report, flush=True)
+        return report
+    steps = max(1, int(math.ceil(max(0.0, duration_s) / 0.02)))
+    for step_index in range(steps + 1):
+        u = 1.0 if steps <= 0 else min(1.0, step_index / float(steps))
+        s = u * u * (3.0 - 2.0 * u)
+        q_cmd = (1.0 - s) * q_start + s * q_target
+        _set_joint_positions_best_effort(robot, q_cmd, indices)
+        _set_joint_velocities_best_effort(robot, np.zeros_like(q_cmd), indices)
+        if step_callback is not None:
+            await step_callback(phase=f"{source}:safe_leg_pose", step_index=step_index)
+        world.step(render=True)
+        await omni.kit.app.get_app().next_update_async()
+    q_after = np.asarray(robot.get_joint_positions(), dtype=float).reshape(-1)[np.asarray(indices, dtype=int)]
+    report["final_error"] = float(np.linalg.norm(q_after - q_target)) if q_after.size == q_target.size else None
+    report["final_pose"] = q_after.tolist()
+    report["success"] = True
+    print("[video-baseline] applied safe leg pose before arm-place", report, flush=True)
+    return report
+
+
+async def _smooth_arm_to_q_start_for_video_baseline(
+    world,
+    robot,
+    arm_indices: list[int],
+    q_target,
+    *,
+    duration_s: float,
+    step_callback=None,
+) -> dict[str, Any]:
+    import numpy as np
+    import omni.kit.app
+
+    q_target = np.asarray(q_target, dtype=float).reshape(-1)
+    indices = [int(index) for index in arm_indices]
+    report: dict[str, Any] = {
+        "enabled": bool(duration_s > 0.0),
+        "duration_s": float(duration_s),
+        "arm_indices": indices,
+    }
+    if duration_s <= 0.0 or not indices:
+        report["skipped"] = True
+        report["reason"] = "duration_zero_or_no_arm_indices"
+        return report
+    q_full_start = np.asarray(robot.get_joint_positions(), dtype=float).reshape(-1)
+    q_start = q_full_start[np.asarray(indices, dtype=int)]
+    report["q_start"] = q_start.tolist()
+    report["q_target"] = q_target.tolist()
+    start_error = float(np.linalg.norm(q_start - q_target))
+    report["start_error"] = start_error
+    max_duration_s = max(
+        float(duration_s),
+        _env_float("GO2_X5_ARM_PLACE_PRE_SETTLE_MAX_S", 4.0),
+    )
+    speed_rad_s = max(1.0e-6, _env_float("GO2_X5_ARM_PLACE_PRE_SETTLE_SPEED_RAD_S", 0.55))
+    adaptive_duration_s = min(max_duration_s, max(float(duration_s), start_error / speed_rad_s))
+    tol = max(0.0, _env_float("GO2_X5_ARM_PLACE_PRE_SETTLE_JOINT_ERROR_TOL", 0.03))
+    report["adaptive_duration_s"] = float(adaptive_duration_s)
+    report["joint_error_tol"] = float(tol)
+    if start_error <= tol:
+        report.update(
+            {
+                "adaptive_duration_s": 0.0,
+                "q_after": q_start.tolist(),
+                "final_error": start_error,
+                "hold_steps": 0,
+                "converged": True,
+                "success": True,
+                "skipped": True,
+                "reason": "already_within_tolerance",
+            }
+        )
+        print("[video-baseline] skipped arm pre-settle before move_to_pre_place", report, flush=True)
+        return report
+    steps = max(1, int(math.ceil(adaptive_duration_s / 0.02)))
+    for step_index in range(steps + 1):
+        u = min(1.0, step_index / float(steps))
+        s = u * u * (3.0 - 2.0 * u)
+        q_cmd = (1.0 - s) * q_start + s * q_target
+        _set_joint_positions_best_effort(robot, q_cmd, indices)
+        _set_joint_velocities_best_effort(robot, np.zeros_like(q_cmd), indices)
+        if step_callback is not None:
+            await step_callback(
+                phase="video_baseline_pre_place_arm_settle",
+                segment_name="move_to_pre_place",
+                step_index=step_index,
+                q_arm_target=q_cmd,
+            )
+        world.step(render=True)
+        await omni.kit.app.get_app().next_update_async()
+
+    hold_timeout_s = max(0.0, _env_float("GO2_X5_ARM_PLACE_PRE_SETTLE_HOLD_TIMEOUT_S", 1.0))
+    hold_steps = int(math.ceil(hold_timeout_s / 0.02))
+    converged = False
+    hold_step_count = 0
+    for hold_step_count in range(hold_steps + 1):
+        q_now = np.asarray(robot.get_joint_positions(), dtype=float).reshape(-1)[np.asarray(indices, dtype=int)]
+        error = float(np.linalg.norm(q_now - q_target))
+        if error <= tol:
+            converged = True
+            break
+        _set_joint_positions_best_effort(robot, q_target, indices)
+        _set_joint_velocities_best_effort(robot, np.zeros_like(q_target), indices)
+        if step_callback is not None:
+            await step_callback(
+                phase="video_baseline_pre_place_arm_settle_hold",
+                segment_name="move_to_pre_place",
+                step_index=hold_step_count,
+                q_arm_target=q_target,
+            )
+        world.step(render=True)
+        await omni.kit.app.get_app().next_update_async()
+    q_after = np.asarray(robot.get_joint_positions(), dtype=float).reshape(-1)[np.asarray(indices, dtype=int)]
+    report["q_after"] = q_after.tolist()
+    report["final_error"] = float(np.linalg.norm(q_after - q_target))
+    report["hold_steps"] = int(hold_step_count)
+    report["converged"] = bool(converged or report["final_error"] <= tol)
+    report["success"] = bool(report["converged"])
+    print("[video-baseline] arm pre-settle before move_to_pre_place", report, flush=True)
+    return report
+
+
+async def _video_baseline_hold_after_phase(
+    world,
+    robot,
+    *,
+    phase: str,
+    duration_s: float,
+    hold_state: dict[str, Any] | None = None,
+    leg_policy: str = "replay",
+    leg_state: dict[str, Any] | None = None,
+    root_nav_pose: dict[str, Any] | None = None,
+    root_z: float | None = None,
+    clamp_callback=None,
+) -> dict[str, Any]:
+    import omni.kit.app
+
+    report: dict[str, Any] = {
+        "enabled": bool(_video_baseline_enabled() and duration_s > 0.0),
+        "phase": phase,
+        "duration_s": float(duration_s),
+        "leg_policy": leg_policy,
+    }
+    if not report["enabled"]:
+        report["skipped"] = True
+        return report
+    print(f"[video-baseline] hold phase={phase} duration={duration_s:.3f}s", flush=True)
+    steps = max(1, int(math.ceil(duration_s / 0.02)))
+    samples: list[dict[str, Any]] = []
+    for step_index in range(steps):
+        root_report = None
+        if isinstance(root_nav_pose, dict) and root_z is not None:
+            root_report = _set_robot_root_to_nav_pose(robot, root_nav_pose, float(root_z))
+        else:
+            root_report = _zero_robot_root_velocity_best_effort(robot)
+        arm_hold_report = _apply_arm_gripper_hold(robot, hold_state) if isinstance(hold_state, dict) else None
+        leg_report = None
+        if leg_policy == "frozen_safe_pose" and isinstance(leg_state, dict):
+            leg_report = _apply_video_safe_leg_pose(robot, leg_state, source=f"hold_after_{phase}")
+        clamp_report = None
+        if clamp_callback is not None:
+            clamp_report = await clamp_callback(
+                phase=f"hold_after_{phase}",
+                segment_name="video_baseline_hold",
+                step_index=step_index,
+            )
+        world.step(render=True)
+        await omni.kit.app.get_app().next_update_async()
+        if step_index in {0, steps - 1}:
+            samples.append(
+                {
+                    "step_index": step_index,
+                    "root": root_report,
+                    "arm_gripper": arm_hold_report,
+                    "leg": leg_report,
+                    "clamp": clamp_report,
+                }
+            )
+    report["steps"] = steps
+    report["samples"] = samples
+    report["success"] = True
+    return report
+
+
+def _record_video_phase_transition(
+    result: dict[str, Any],
+    *,
+    phase: str,
+    world,
+    robot,
+    object_prim_path: str | None,
+    execution_type: str,
+    object_mode: str,
+    leg_policy: str,
+    hold_state: dict[str, Any] | None = None,
+    leg_state: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not _video_baseline_enabled():
+        return {}
+    import omni.usd
+    from scripts.isaac import run_pick_from_nav_result as pick_handoff
+
+    stage = omni.usd.get_context().get_stage()
+    report: dict[str, Any] = {
+        "phase": phase,
+        "timestamp": time.time(),
+        "execution_type": execution_type,
+        "object_mode": object_mode,
+        "leg_policy": leg_policy,
+        "world_play_state": _world_play_state_report(world),
+        "root_velocity": _read_robot_root_velocity_report(robot),
+        "leg_pose": _read_video_leg_pose(robot, leg_state),
+    }
+    try:
+        report["root_world_pose"] = pick_handoff._robot_root_report(robot)
+    except Exception as exc:
+        report["root_world_pose"] = {"read_error": str(exc)}
+    if isinstance(hold_state, dict) and hold_state.get("available", False):
+        try:
+            import numpy as np
+
+            q_full = np.asarray(robot.get_joint_positions(), dtype=float).reshape(-1)
+            arm_indices = [int(index) for index in (hold_state.get("arm_indices") or [])]
+            gripper_indices = [int(index) for index in (hold_state.get("gripper_indices") or [])]
+            report["arm_q"] = q_full[np.asarray(arm_indices, dtype=int)].tolist() if arm_indices else []
+            report["gripper_q"] = q_full[np.asarray(gripper_indices, dtype=int)].tolist() if gripper_indices else []
+        except Exception as exc:
+            report["joint_read_error"] = str(exc)
+    if stage is not None and object_prim_path:
+        try:
+            report["object_bbox"] = pick_handoff._compute_world_bbox(stage, object_prim_path)
+        except Exception as exc:
+            report["object_bbox_error"] = str(exc)
+        try:
+            report["object_is_kinematic"] = _object_has_kinematic_enabled(stage, object_prim_path)
+        except Exception as exc:
+            report["object_kinematic_read_error"] = str(exc)
+    if extra:
+        report.update(extra)
+    result.setdefault("phase_transition_reports", []).append(report)
+    result["video_baseline_mode"] = True
+    result["video_baseline_leg_policy"] = leg_policy
+    root = report.get("root_world_pose") or {}
+    root_text = {
+        "x": root.get("x"),
+        "y": root.get("y"),
+        "yaw": root.get("yaw"),
+    }
+    print(
+        "[video-baseline] phase="
+        f"{phase} root={root_text} object_mode={object_mode} "
+        f"leg_policy={leg_policy} execution={execution_type}",
+        flush=True,
+    )
+    return report
+
+
 def _set_robot_root_to_nav_pose(robot, nav_pose: dict[str, Any], root_z: float) -> dict[str, Any]:
     import numpy as np
     from source.navigation.adapters.frame_utils import yaw_to_quat_wxyz
@@ -2364,13 +3254,36 @@ def _set_robot_root_to_nav_pose(robot, nav_pose: dict[str, Any], root_z: float) 
     return report
 
 
-def _make_tcp_relative_object_clamp(stage, object_prim_path: str, tcp_to_object_matrix, *, sample_limit: int = 12):
+def _make_tcp_relative_object_clamp(
+    stage,
+    object_prim_path: str,
+    tcp_to_object_matrix,
+    *,
+    orientation_reference_world_matrix=None,
+    sample_limit: int = 12,
+):
     import numpy as np
+
+    T_orientation_reference = (
+        np.asarray(orientation_reference_world_matrix, dtype=float)
+        if orientation_reference_world_matrix is not None
+        else None
+    )
+    orientation_reference_report = None
+    if T_orientation_reference is None and _carry_object_orientation_mode() == "world_locked":
+        try:
+            T_orientation_reference, orientation_reference_report = _carry_object_world_matrix(stage, object_prim_path)
+        except Exception as exc:
+            orientation_reference_report = {"error": str(exc)}
+    elif T_orientation_reference is not None:
+        orientation_reference_report = _matrix_pose_report(T_orientation_reference, frame="world")
 
     state: dict[str, Any] = {
         "enabled": True,
         "object_prim_path": object_prim_path,
         "object_carried_relative_to": "tcp",
+        "object_orientation_mode": _carry_object_orientation_mode(),
+        "object_orientation_reference_world": orientation_reference_report,
         "tcp_to_object_transform": _matrix_pose_report(tcp_to_object_matrix, frame="tcp"),
         "clamp_count": 0,
         "max_pre_clamp_error_m": 0.0,
@@ -2383,25 +3296,36 @@ def _make_tcp_relative_object_clamp(stage, object_prim_path: str, tcp_to_object_
             return
         segment_name = str(kwargs.get("segment_name", ""))
         T_tcp_current, tcp_report = _tcp_world_matrix(stage)
-        T_object_target = T_tcp_current @ T_tcp_object
+        T_object_target_raw = T_tcp_current @ T_tcp_object
+        T_object_pre = None
         try:
-            T_object_pre, object_pre_report = _dynamic_object_world_matrix(stage, object_prim_path)
-            pre_error_m = _matrix_translation_error_m(T_object_pre, T_object_target)
-            state["max_pre_clamp_error_m"] = max(float(state["max_pre_clamp_error_m"]), pre_error_m)
+            T_object_pre, object_pre_report = _carry_object_world_matrix(stage, object_prim_path)
+        except Exception as exc:
+            object_pre_report = {"error": str(exc)}
+        T_object_target, orientation_mode_report = _apply_carry_object_orientation_mode(
+            T_object_target_raw,
+            T_orientation_reference,
+            label=f"tcp_relative_clamp:{segment_name}",
+            current_world_matrix=T_object_pre,
+        )
+        try:
+            pre_error_m = (
+                _matrix_translation_error_m(T_object_pre, T_object_target)
+                if T_object_pre is not None
+                else None
+            )
+            if pre_error_m is not None:
+                state["max_pre_clamp_error_m"] = max(float(state["max_pre_clamp_error_m"]), pre_error_m)
         except Exception as exc:
             object_pre_report = {"error": str(exc)}
             pre_error_m = None
-        object_apply = _set_dynamic_object_world_matrix(
+        object_apply = _set_carried_object_root_world_matrix(
             stage,
             object_prim_path,
             T_object_target,
-            reset_xform_stack=False,
-        )
-        velocity_zero = _zero_object_velocity_if_dynamic(
-            stage,
-            object_prim_path,
             label=f"tcp_relative_clamp:{segment_name}",
         )
+        velocity_zero = object_apply.get("velocity_zero")
         state["clamp_count"] += 1
         if len(state["samples"]) < sample_limit or (pre_error_m is not None and pre_error_m > 0.04):
             state["samples"].append(
@@ -2412,6 +3336,8 @@ def _make_tcp_relative_object_clamp(stage, object_prim_path: str, tcp_to_object_
                     "pre_clamp_error_m": pre_error_m,
                     "tcp": tcp_report,
                     "object_pre_clamp": object_pre_report,
+                    "object_target_raw_tcp_relative": _matrix_pose_report(T_object_target_raw, frame="world"),
+                    "object_orientation_mode": orientation_mode_report,
                     "object_pose_apply": object_apply,
                     "velocity_zero": velocity_zero,
                 }
@@ -2974,6 +3900,8 @@ async def _execute_arm_place_plan(
     exec_module.OUTPUT_JSON = execution_json
     arm_place_direct_joint_state_requested = _env_flag("GO2_X5_ARM_PLACE_DIRECT_JOINT_STATE", True)
     arm_place_direct_joint_state = bool(arm_place_direct_joint_state_requested)
+    arm_place_direct_state_only = _env_flag("GO2_X5_ARM_PLACE_DIRECT_STATE_ONLY", True)
+    arm_place_lock_base = _env_flag("GO2_X5_ARM_PLACE_LOCK_BASE", True)
     exec_module.ARM_COMMAND_DT = float(
         os.environ.get("GO2_X5_ARM_PLACE_COMMAND_DT", str(DEFAULT_ARM_PLACE_COMMAND_DT))
     )
@@ -2991,7 +3919,28 @@ async def _execute_arm_place_plan(
         exec_module.POST_MOTION_CONVERGENCE_TIMEOUT = float(os.environ["GO2_X5_ARM_PLACE_POST_MOTION_TIMEOUT_S"])
     if "GO2_X5_ARM_PLACE_POST_MOTION_JOINT_ERROR_TOL" in os.environ:
         exec_module.POST_MOTION_JOINT_ERROR_TOL = float(os.environ["GO2_X5_ARM_PLACE_POST_MOTION_JOINT_ERROR_TOL"])
-    arm_place_hold_support_joints = _env_flag("GO2_X5_ARM_PLACE_HOLD_SUPPORT_JOINTS", False)
+    video_config = _video_baseline_config()
+    video_baseline_mode = bool(video_config["enabled"])
+    video_leg_policy = str(video_config["leg_policy"])
+    arm_place_hold_support_joints = _env_flag(
+        "GO2_X5_ARM_PLACE_HOLD_SUPPORT_JOINTS",
+        bool(video_baseline_mode and video_leg_policy == "frozen_safe_pose"),
+    )
+    arm_place_callback_safe_leg_direct_set = _env_flag(
+        "GO2_X5_ARM_PLACE_CALLBACK_SAFE_LEG_DIRECT_SET",
+        False,
+    )
+    support_hold_forced_off_reason = ""
+    if video_baseline_mode and video_leg_policy == "disabled" and arm_place_hold_support_joints:
+        support_hold_forced_off_reason = (
+            f"GO2_X5_VIDEO_BASELINE_LEG_POLICY={video_leg_policy} disables support joint writes"
+        )
+        arm_place_hold_support_joints = False
+        print(
+            "[video-baseline] disabled restore support_hold_state during arm-place",
+            {"leg_policy": video_leg_policy, "reason": support_hold_forced_off_reason},
+            flush=True,
+        )
     arm_place_direct_joint_state_auto_enabled_reason = ""
     if (
         not arm_place_direct_joint_state
@@ -3012,6 +3961,15 @@ async def _execute_arm_place_plan(
             flush=True,
         )
     exec_module.DIRECT_ARM_STATE_REPLAY = bool(arm_place_direct_joint_state)
+    exec_module.SKIP_APPLY_ACTION_WHEN_DIRECT_STATE_REPLAY = bool(
+        arm_place_direct_joint_state and arm_place_direct_state_only
+    )
+    arm_place_skip_world_step = _env_flag("GO2_X5_ARM_PLACE_SKIP_WORLD_STEP", True)
+    exec_module.SKIP_WORLD_STEP_WHEN_DIRECT_STATE_REPLAY = bool(
+        arm_place_direct_joint_state
+        and arm_place_direct_state_only
+        and arm_place_skip_world_step
+    )
     exec_module.STRICT_POST_MOTION_WAIT_SEGMENTS = set(exec_module.STRICT_POST_MOTION_WAIT_SEGMENTS) | {
         "move_to_pre_place",
         "approach_to_place",
@@ -3020,6 +3978,10 @@ async def _execute_arm_place_plan(
     arm_place_execution_config = {
         "direct_joint_state_replay_requested": bool(arm_place_direct_joint_state_requested),
         "direct_joint_state_replay": bool(exec_module.DIRECT_ARM_STATE_REPLAY),
+        "direct_state_only": bool(exec_module.SKIP_APPLY_ACTION_WHEN_DIRECT_STATE_REPLAY),
+        "skip_world_step_during_direct_motion": bool(exec_module.SKIP_WORLD_STEP_WHEN_DIRECT_STATE_REPLAY),
+        "lock_base": bool(arm_place_lock_base),
+        "support_joints_in_motion_action": bool(arm_place_hold_support_joints and not arm_place_lock_base),
         "direct_joint_state_auto_enabled_reason": arm_place_direct_joint_state_auto_enabled_reason,
         "command_dt": float(exec_module.ARM_COMMAND_DT),
         "sim_dt": float(exec_module.SIM_DT),
@@ -3028,6 +3990,13 @@ async def _execute_arm_place_plan(
         "post_motion_timeout_s": float(exec_module.POST_MOTION_CONVERGENCE_TIMEOUT),
         "post_motion_joint_error_tol": float(exec_module.POST_MOTION_JOINT_ERROR_TOL),
         "hold_support_joints": bool(arm_place_hold_support_joints),
+        "callback_safe_leg_direct_set": bool(arm_place_callback_safe_leg_direct_set),
+        "support_hold_forced_off_reason": support_hold_forced_off_reason,
+        "video_baseline_mode": bool(video_baseline_mode),
+        "video_baseline_leg_policy": video_leg_policy,
+        "carry_object_orientation_mode": _carry_object_orientation_mode(),
+        "carry_object_translation_only": _carry_object_translation_only(),
+        "arm_place_pre_settle_s": float(video_config["arm_place_pre_settle_s"]),
     }
     print("[arm-place] execution config:", arm_place_execution_config, flush=True)
 
@@ -3070,12 +4039,14 @@ async def _execute_arm_place_plan(
     root_support_hold_callback = None
     root_hold_during_arm_place = bool((restore_place_report or {}).get("root_hold_during_arm_place", False))
     root_hold_every_arm_step = _env_flag("GO2_X5_ARM_PLACE_HOLD_ROOT_EVERY_STEP", False)
+    root_hold_nav_pose = None
+    root_hold_z = None
     support_hold_source = "disabled"
     support_indices_report: list[int] = []
     support_hold_disabled_reason = (
         ""
         if arm_place_hold_support_joints
-        else "GO2_X5_ARM_PLACE_HOLD_SUPPORT_JOINTS=0"
+        else support_hold_forced_off_reason or "GO2_X5_ARM_PLACE_HOLD_SUPPORT_JOINTS=0"
     )
     support_hold_disabled_logged = False
     if root_hold_during_arm_place:
@@ -3104,28 +4075,106 @@ async def _execute_arm_place_plan(
             T_tcp_now, _ = _tcp_world_matrix(stage)
             T_object_now, _ = _dynamic_object_world_matrix(stage, object_prim_path)
             tcp_to_object_matrix = (np.linalg.inv(T_tcp_now) @ T_object_now).tolist()
+        orientation_reference_world_matrix = (
+            ((restore_place_report or {}).get("tcp_to_object_continuity_init") or {})
+            .get("object_carry_start", {})
+            .get("matrix_4x4")
+        )
+        if orientation_reference_world_matrix is None:
+            orientation_reference_world_matrix = (
+                ((restore_place_report or {}).get("object_orientation_reference_before_base_restore") or {})
+                .get("matrix_4x4")
+            )
         clamp_state, clamp_callback = _make_tcp_relative_object_clamp(
             stage,
             object_prim_path,
             tcp_to_object_matrix,
+            orientation_reference_world_matrix=orientation_reference_world_matrix,
         )
     object_carry_step_callback_enabled = bool(clamp_callback is not None)
+    video_leg_state = None
+    if video_baseline_mode:
+        candidate_leg_state = None
+        for key in ("video_baseline_leg_state", "q_leg_safe", "safe_leg_state"):
+            value = (restore_place_report or {}).get(key)
+            if isinstance(value, dict) and value.get("available", False):
+                candidate_leg_state = value
+                break
+        video_leg_state = candidate_leg_state or _capture_video_safe_leg_pose(
+            robot,
+            source="arm_place_entry_fallback_capture",
+        )
+        if video_leg_policy != "replay":
+            print(
+                "[video-baseline] using safe leg policy during arm-place",
+                {
+                    "leg_policy": video_leg_policy,
+                    "apply_support_joints": bool(arm_place_hold_support_joints),
+                    "reason": "video_baseline_safe_leg_pose",
+                },
+                flush=True,
+            )
+    leg_write_sources: list[dict[str, Any]] = []
+    leg_monitor: dict[str, Any] = {
+        "leg_max_delta_during_place": 0.0,
+        "sample_delta_threshold": 0.08,
+    }
+    leg_pose_before_place = _read_video_leg_pose(robot, video_leg_state) if video_baseline_mode else {}
+    leg_pose_after_safe_settle: dict[str, Any] = {}
+    safe_leg_settle_report: dict[str, Any] = {}
+    arm_place_pre_settle_report: dict[str, Any] = {}
+    arm_place_world_play_state_changes: list[dict[str, Any]] = []
 
     async def root_support_hold_from_report_callback(**kwargs):
         phase = str(kwargs.get("phase") or "")
         step_index = kwargs.get("step_index")
         apply_root_pose = bool(
+            arm_place_lock_base
+            or
             root_hold_every_arm_step
             or step_index == -1
             or phase.startswith("before_execute")
             or phase.startswith("after_execute")
+            or phase.startswith("before_world_step")
+        )
+        apply_support_for_callback = bool(
+            arm_place_hold_support_joints
+            and (
+                arm_place_lock_base
+                or not (video_baseline_mode and video_leg_policy != "replay")
+            )
         )
         root_support_report = _apply_root_support_hold_from_report(
             robot,
             restore_place_report or {},
             apply_root_pose=apply_root_pose,
-            apply_support_joints=arm_place_hold_support_joints,
+            apply_support_joints=apply_support_for_callback,
         )
+        safe_leg_report = None
+        if video_baseline_mode and video_leg_policy == "frozen_safe_pose" and isinstance(video_leg_state, dict):
+            if arm_place_lock_base or arm_place_callback_safe_leg_direct_set or not arm_place_hold_support_joints:
+                safe_leg_report = _apply_video_safe_leg_pose(
+                    robot,
+                    video_leg_state,
+                    source=f"arm_place_callback:{phase}",
+                )
+            else:
+                safe_leg_report = {
+                    "available": bool(video_leg_state.get("available", False)),
+                    "skipped": True,
+                    "reason": "support_hold_positions_handle_safe_leg_during_arm_motion",
+                }
+            _update_video_leg_monitor(robot, video_leg_state, leg_monitor, phase=phase)
+            if len(leg_write_sources) < 24:
+                leg_write_sources.append(
+                    {
+                        "source": "video_baseline_safe_leg_pose_callback",
+                        "phase": phase,
+                        "segment_name": kwargs.get("segment_name"),
+                        "step_index": step_index,
+                        "report": safe_leg_report,
+                    }
+                )
         if isinstance(root_support_hold_state, dict) and root_support_report.get("applied", False):
             root_support_hold_state["hold_count"] = int(root_support_hold_state.get("hold_count", 0)) + 1
             samples = root_support_hold_state.setdefault("samples", [])
@@ -3140,6 +4189,7 @@ async def _execute_arm_place_plan(
                         "segment_name": kwargs.get("segment_name"),
                         "step_index": step_index,
                         "root_support": root_support_report,
+                        "safe_leg": safe_leg_report,
                     }
                 )
         if isinstance(clamp_state, dict):
@@ -3151,13 +4201,79 @@ async def _execute_arm_place_plan(
                         "segment_name": kwargs.get("segment_name"),
                         "step_index": kwargs.get("step_index"),
                         "root_support": root_support_report,
+                        "safe_leg": safe_leg_report,
                     }
                 )
         return root_support_report
 
+    async def video_baseline_pre_place_hold_callback(**kwargs):
+        root_support_report = await root_support_hold_from_report_callback(**kwargs)
+        if clamp_callback is not None:
+            await clamp_callback(**kwargs)
+        return root_support_report
+
+    if video_baseline_mode and video_leg_policy == "frozen_safe_pose" and isinstance(video_leg_state, dict):
+        safe_leg_settle_report = await _smooth_video_safe_leg_pose(
+            world,
+            robot,
+            video_leg_state,
+            duration_s=float(video_config["safe_leg_settle_s"]),
+            source="before_arm_place",
+            step_callback=video_baseline_pre_place_hold_callback,
+        )
+        leg_write_sources.append(
+            {
+                "source": "video_baseline_safe_leg_pose_pre_arm_place_settle",
+                "report": safe_leg_settle_report,
+            }
+        )
+        leg_pose_after_safe_settle = _read_video_leg_pose(robot, video_leg_state)
+        _update_video_leg_monitor(robot, video_leg_state, leg_monitor, phase="after_safe_leg_settle")
+
+    first_motion_segment = next(
+        (
+            segment
+            for segment in plan.get("segments", [])
+            if segment.get("type") == "motion"
+            and ((segment.get("trajectory") or {}).get("q") is not None)
+        ),
+        None,
+    )
+    if (
+        video_baseline_mode
+        and first_motion_segment is not None
+        and float(video_config["arm_place_pre_settle_s"]) > 0.0
+    ):
+        first_q = np.asarray(first_motion_segment["trajectory"]["q"][0], dtype=float)
+        arm_place_pre_settle_report = await _smooth_arm_to_q_start_for_video_baseline(
+            world,
+            robot,
+            arm_indices,
+            first_q,
+            duration_s=float(video_config["arm_place_pre_settle_s"]),
+            step_callback=video_baseline_pre_place_hold_callback,
+        )
+    arm_place_execution_config.update(
+        {
+            "arm_place_pre_settle_start_error": arm_place_pre_settle_report.get("start_error"),
+            "arm_place_pre_settle_final_error": arm_place_pre_settle_report.get("final_error"),
+            "safe_leg_settle_start_error": safe_leg_settle_report.get("start_error"),
+            "safe_leg_settle_final_error": safe_leg_settle_report.get("final_error"),
+        }
+    )
+
     for segment in plan.get("segments", []):
         if segment.get("type") == "motion":
             segment_name = str(segment.get("name") or "")
+            if exec_module.SKIP_WORLD_STEP_WHEN_DIRECT_STATE_REPLAY:
+                pause_report = await _set_world_playing_best_effort(world, playing=False)
+                pause_report.update(
+                    {
+                        "segment_name": segment_name,
+                        "reason": "direct_state_arm_motion_without_physics_step",
+                    }
+                )
+                arm_place_world_play_state_changes.append(pause_report)
             object_clamp_enabled_for_segment = (
                 clamp_callback is not None and segment_name in {"move_to_pre_place", "approach_to_place"}
             )
@@ -3216,7 +4332,16 @@ async def _execute_arm_place_plan(
                 # 四足腿部关节 = 全部关节 - 机械臂关节 - 夹爪关节。
                 controlled = set(int(i) for i in arm_indices) | set(int(i) for i in local_gripper_indices)
                 restore_support_hold = (restore_place_report or {}).get("support_hold_state") or {}
-                if root_support_hold_callback is not None and restore_support_hold.get("available", False):
+                if (
+                    video_baseline_mode
+                    and video_leg_policy == "frozen_safe_pose"
+                    and isinstance(video_leg_state, dict)
+                    and video_leg_state.get("available", False)
+                ):
+                    support_indices = [int(index) for index in (video_leg_state.get("leg_indices") or [])]
+                    support_positions = np.asarray(video_leg_state.get("q_leg_safe") or [], dtype=float)
+                    support_hold_source = "video_baseline_safe_leg_pose"
+                elif root_support_hold_callback is not None and restore_support_hold.get("available", False):
                     support_indices = [int(index) for index in (restore_support_hold.get("support_indices") or [])]
                     support_positions = np.asarray(restore_support_hold.get("q_support_hold") or [], dtype=float)
                     if len(support_indices) != int(support_positions.size):
@@ -3266,8 +4391,16 @@ async def _execute_arm_place_plan(
                 robot,
                 arm_indices,
                 segment,
-                hold_indices=support_indices if arm_place_hold_support_joints else None,
-                hold_positions=support_positions if arm_place_hold_support_joints else None,
+                hold_indices=(
+                    support_indices
+                    if arm_place_hold_support_joints and not arm_place_lock_base
+                    else None
+                ),
+                hold_positions=(
+                    support_positions
+                    if arm_place_hold_support_joints and not arm_place_lock_base
+                    else None
+                ),
                 step_callback=step_callback,
             )
             logs.append(motion_log)
@@ -3282,6 +4415,15 @@ async def _execute_arm_place_plan(
         elif segment.get("type") == "gripper":
             if segment.get("name") != "open_gripper":
                 raise DemoFailure("arm_place_failed", f"unexpected arm-place gripper segment: {segment.get('name')}")
+            if exec_module.SKIP_WORLD_STEP_WHEN_DIRECT_STATE_REPLAY:
+                play_report = await _set_world_playing_best_effort(world, playing=True)
+                play_report.update(
+                    {
+                        "segment_name": str(segment.get("name") or "open_gripper"),
+                        "reason": "restore_physics_before_dynamic_object_release",
+                    }
+                )
+                arm_place_world_play_state_changes.append(play_report)
             if object_kinematic_until_release and release_dynamic_restore is None:
                 if clamp_callback is not None:
                     await clamp_callback(
@@ -3344,6 +4486,23 @@ async def _execute_arm_place_plan(
             object_bbox_after_open = (
                 pick_handoff._compute_world_bbox(stage, object_prim_path) if stage is not None else None
             )
+            if video_baseline_mode:
+                release_hold_report = await _video_baseline_hold_after_phase(
+                    world,
+                    robot,
+                    phase="after_place_release",
+                    duration_s=float(video_config["hold_after_phase_s"]),
+                    leg_policy=video_leg_policy,
+                    leg_state=video_leg_state,
+                    root_nav_pose=root_hold_nav_pose if isinstance(root_hold_nav_pose, dict) else None,
+                    root_z=float(root_hold_z) if root_hold_z is not None else None,
+                )
+                leg_write_sources.append(
+                    {
+                        "source": "video_baseline_hold_after_place_release",
+                        "report": release_hold_report,
+                    }
+                )
         else:
             raise DemoFailure("arm_place_failed", f"unknown arm-place segment type: {segment.get('type')}")
 
@@ -3370,6 +4529,24 @@ async def _execute_arm_place_plan(
                 arm_indices,
                 q_home,
             )
+            if video_baseline_mode:
+                return_home_hold_report = await _video_baseline_hold_after_phase(
+                    world,
+                    robot,
+                    phase="after_return_home",
+                    duration_s=float(video_config["hold_after_phase_s"]),
+                    leg_policy=video_leg_policy,
+                    leg_state=video_leg_state,
+                    root_nav_pose=root_hold_nav_pose if isinstance(root_hold_nav_pose, dict) else None,
+                    root_z=float(root_hold_z) if root_hold_z is not None else None,
+                )
+                return_home_log["video_baseline_hold_after_return_home"] = return_home_hold_report
+                leg_write_sources.append(
+                    {
+                        "source": "video_baseline_hold_after_return_home",
+                        "report": return_home_hold_report,
+                    }
+                )
             logs.append(return_home_log)
         else:
             return_home_log = {
@@ -3388,6 +4565,8 @@ async def _execute_arm_place_plan(
         root_after_arm_place = pick_handoff._robot_root_report(robot)
     except Exception as exc:
         root_after_arm_place = {"read_error": str(exc)}
+    leg_pose_after_place = _read_video_leg_pose(robot, video_leg_state) if video_baseline_mode else {}
+    _update_video_leg_monitor(robot, video_leg_state, leg_monitor, phase="after_arm_place")
     verification = _verify_mvp_place(
         dict(place["place_pose_world"]),
         object_bbox_after,
@@ -3412,13 +4591,25 @@ async def _execute_arm_place_plan(
             "root_support_hold_step_callback_enabled": bool(root_support_hold_callback is not None),
             "root_hold_during_arm_place": bool(root_support_hold_callback is not None),
             "root_hold_every_arm_step": bool(root_hold_every_arm_step),
+            "arm_place_lock_base": bool(arm_place_lock_base),
+            "support_joints_in_motion_action": bool(arm_place_hold_support_joints and not arm_place_lock_base),
             "arm_place_hold_support_joints_enabled": bool(arm_place_hold_support_joints),
             "support_hold_source": support_hold_source,
             "support_indices": support_indices_report,
             "support_hold_disabled_reason": support_hold_disabled_reason,
             "arm_place_direct_joint_state_requested": bool(arm_place_direct_joint_state_requested),
             "arm_place_direct_joint_state_replay": bool(exec_module.DIRECT_ARM_STATE_REPLAY),
+            "arm_place_direct_state_only": bool(exec_module.SKIP_APPLY_ACTION_WHEN_DIRECT_STATE_REPLAY),
+            "arm_place_skip_world_step_during_direct_motion": bool(
+                exec_module.SKIP_WORLD_STEP_WHEN_DIRECT_STATE_REPLAY
+            ),
             "arm_place_direct_joint_state_auto_enabled_reason": arm_place_direct_joint_state_auto_enabled_reason,
+            "carry_object_translation_only": _carry_object_translation_only(),
+            "carry_object_orientation_mode": _carry_object_orientation_mode(),
+            "video_baseline_mode": bool(video_baseline_mode),
+            "video_baseline_leg_policy": video_leg_policy,
+            "q_leg_safe_source": (video_leg_state or {}).get("q_leg_safe_source") if isinstance(video_leg_state, dict) else None,
+            "leg_max_delta_during_place": leg_monitor.get("leg_max_delta_during_place"),
             "robot_root_pose_modified_during_arm_place": False,
             "return_home_executed": bool(
                 return_home_log
@@ -3453,6 +4644,22 @@ async def _execute_arm_place_plan(
         "object_carry_step_callback_enabled": object_carry_step_callback_enabled,
         "root_support_hold_during_arm_place": root_support_hold_state,
         "arm_place_execution_config": arm_place_execution_config,
+        "arm_place_world_play_state_changes": arm_place_world_play_state_changes,
+        "arm_place_lock_base": bool(arm_place_lock_base),
+        "support_joints_in_motion_action": bool(arm_place_hold_support_joints and not arm_place_lock_base),
+        "video_baseline_mode": bool(video_baseline_mode),
+        "video_baseline_leg_policy": video_leg_policy,
+        "q_leg_safe_source": (video_leg_state or {}).get("q_leg_safe_source") if isinstance(video_leg_state, dict) else None,
+        "q_leg_safe": (video_leg_state or {}).get("q_leg_safe") if isinstance(video_leg_state, dict) else None,
+        "video_baseline_safe_leg_state": video_leg_state,
+        "leg_pose_before_place": leg_pose_before_place,
+        "leg_safe_settle": safe_leg_settle_report,
+        "leg_pose_after_safe_settle": leg_pose_after_safe_settle,
+        "leg_pose_after_place": leg_pose_after_place,
+        "leg_max_delta_during_place": leg_monitor.get("leg_max_delta_during_place"),
+        "leg_monitor": leg_monitor,
+        "leg_write_sources": leg_write_sources,
+        "arm_place_pre_settle": arm_place_pre_settle_report,
         "arm_place_hold_support_joints_enabled": bool(arm_place_hold_support_joints),
         "support_hold_source": support_hold_source,
         "support_indices": support_indices_report,
@@ -3665,6 +4872,73 @@ def _map_replay_joint_positions_for_carry(
                 target[joint_index] = values[local_index]
 
     return target if common > 0 else None
+
+
+def _map_replay_joint_positions_full(robot, frame: dict[str, Any]) -> dict[str, Any]:
+    """Map recorded replay joint_pos onto the current articulation order.
+
+    This intentionally mirrors scripts/isaac/run_pick_from_nav_result_standalone.py:
+    full joint mapping by joint_names is the known-good navigation replay path.
+    """
+
+    current_joint_positions = robot.get_joint_positions()
+    if current_joint_positions is None:
+        return {"success": False, "reason": "missing_current_joint_positions"}
+    current = [float(value) for value in current_joint_positions]
+    recorded_raw = frame.get("joint_pos")
+    if not isinstance(recorded_raw, (list, tuple)):
+        return {"success": False, "reason": "missing_recorded_joint_pos"}
+    recorded = [float(value) for value in recorded_raw]
+    dof_names = _robot_dof_names_for_replay(robot)
+    recorded_names = [str(name) for name in (frame.get("joint_names") or [])]
+
+    if dof_names and recorded_names:
+        recorded_by_name = {name: index for index, name in enumerate(recorded_names)}
+        target = current[:]
+        common = 0
+        missing_current_names: list[str] = []
+        for index, name in enumerate(dof_names):
+            recorded_index = recorded_by_name.get(name)
+            if recorded_index is None or recorded_index >= len(recorded):
+                missing_current_names.append(name)
+                continue
+            target[index] = recorded[recorded_index]
+            common += 1
+        if common == 0:
+            return {
+                "success": False,
+                "reason": "joint_name_mapping_found_no_common_joints",
+                "current_joint_names": dof_names,
+                "recorded_joint_names": recorded_names,
+            }
+        return {
+            "success": True,
+            "values": target,
+            "mode": "full_joint_name_mapping_like_standalone_replay",
+            "mapped_joint_count": common,
+            "current_joint_count": len(current),
+            "recorded_joint_count": len(recorded),
+            "missing_current_joint_names": missing_current_names,
+        }
+
+    if len(recorded) == len(current):
+        return {
+            "success": True,
+            "values": recorded,
+            "mode": "full_joint_count_mapping_like_standalone_replay",
+            "mapped_joint_count": len(recorded),
+            "current_joint_count": len(current),
+            "recorded_joint_count": len(recorded),
+        }
+
+    return {
+        "success": False,
+        "reason": "joint_count_mismatch_without_joint_names",
+        "current_joint_count": len(current),
+        "recorded_joint_count": len(recorded),
+        "current_joint_names": dof_names,
+        "recorded_joint_names": recorded_names,
+    }
 
 
 def _map_replay_leg_joint_positions_for_carry(
@@ -4027,7 +5301,15 @@ def _apply_visual_replay_frame_with_carry_hold(
             "leg_only": bool(joint_replay_leg_only),
         }
 
-    report["arm_gripper_hold"] = _apply_arm_gripper_hold(robot, hold_state)
+    if target_joint_positions is not None and not joint_replay_leg_only:
+        report["arm_gripper_hold"] = {
+            "skipped": True,
+            "reason": "full_joint_replay_target_already_overrides_arm_gripper_hold",
+            "arm_indices": list(hold_state.get("arm_indices") or []),
+            "gripper_indices": list(hold_state.get("gripper_indices") or []),
+        }
+    else:
+        report["arm_gripper_hold"] = _apply_arm_gripper_hold(robot, hold_state)
     return report
 
 
@@ -4154,10 +5436,19 @@ def _apply_stable_handoff_robot_hold(
     root_z: float,
     hold_state: dict[str, Any],
     support_hold_state: dict[str, Any],
+    apply_support_joints: bool = True,
 ) -> dict[str, Any]:
     return {
         "root_hold": _set_robot_root_to_nav_pose(robot, nav_pose, root_z),
-        "support_hold": _apply_support_hold(robot, support_hold_state),
+        "support_hold": (
+            _apply_support_hold(robot, support_hold_state)
+            if apply_support_joints
+            else {
+                "available": bool(support_hold_state.get("available", False)),
+                "skipped": True,
+                "reason": "support_joint_hold_disabled_by_video_baseline",
+            }
+        ),
         "arm_gripper_hold": _apply_arm_gripper_hold(robot, hold_state),
     }
 
@@ -4325,6 +5616,256 @@ async def _render_paused_replay_frame(world, app, *, use_world_step: bool = Fals
     return report
 
 
+async def _replay_nav_trajectory_with_visible_gait(
+    world,
+    robot,
+    nav_result: dict[str, Any],
+    *,
+    label: str,
+    real_time: bool,
+    replay_speed: float,
+) -> dict[str, Any]:
+    """Replay a precomputed nav trajectory with root motion and visible leg gait."""
+
+    import numpy as np
+    import omni.kit.app
+    from isaacsim.core.utils.types import ArticulationAction
+
+    frames, replay_path = _read_nav_replay_frames(nav_result)
+    app = omni.kit.app.get_app()
+    try:
+        root_before = _robot_root_report_from_pick_handoff(robot)
+    except Exception:
+        root_before = {}
+    root_z = float((root_before.get("position_xyz") or [0.0, 0.0, 0.335])[2])
+    play_report = await _set_world_playing_best_effort(world, playing=True)
+    playback_speed = max(float(replay_speed), 1.0e-6)
+    previous_frame: dict[str, Any] | None = None
+    samples: list[dict[str, Any]] = []
+    joint_applied_count = 0
+    root_pose_applied_count = 0
+    joint_mapping_failures: list[dict[str, Any]] = []
+
+    print(
+        "[video-baseline] replay nav with gait:",
+        {
+            "label": label,
+            "frames": len(frames),
+            "real_time": bool(real_time),
+            "speed": playback_speed,
+        },
+        flush=True,
+    )
+
+    for frame_index, frame in enumerate(frames):
+        if real_time and previous_frame is not None:
+            delay = max(
+                0.0,
+                float(frame.get("timestamp", 0.0)) - float(previous_frame.get("timestamp", 0.0)),
+            ) / playback_speed
+            if delay > 0.0:
+                await asyncio.sleep(delay)
+        previous_frame = frame
+
+        raw_pos = np.asarray(frame.get("root_pos_w", [0.0, 0.0, root_z]), dtype=float).reshape(-1)
+        raw_quat = np.asarray(frame.get("root_quat_w", [1.0, 0.0, 0.0, 0.0]), dtype=float).reshape(-1)
+        raw_lin_vel = np.asarray(frame.get("root_lin_vel_w", [0.0, 0.0, 0.0]), dtype=float).reshape(-1)
+        raw_ang_vel = np.asarray(frame.get("root_ang_vel_w", [0.0, 0.0, 0.0]), dtype=float).reshape(-1)
+        position = np.asarray(
+            [
+                float(raw_pos[0]) if raw_pos.size > 0 else 0.0,
+                float(raw_pos[1]) if raw_pos.size > 1 else 0.0,
+                float(raw_pos[2]) if raw_pos.size > 2 else root_z,
+            ],
+            dtype=float,
+        )
+        orientation = np.asarray(
+            [
+                float(raw_quat[0]) if raw_quat.size > 0 else 1.0,
+                float(raw_quat[1]) if raw_quat.size > 1 else 0.0,
+                float(raw_quat[2]) if raw_quat.size > 2 else 0.0,
+                float(raw_quat[3]) if raw_quat.size > 3 else 0.0,
+            ],
+            dtype=float,
+        )
+
+        root_report: dict[str, Any] = {
+            "root_pos_w_applied": position.tolist(),
+            "root_quat_w_applied": orientation.tolist(),
+            "root_pose_source": f"{label}_standalone_style_recorded_full_root_pose",
+        }
+        try:
+            robot.set_world_pose(position=position, orientation=orientation)
+            root_report["live_root_pose_applied"] = True
+            root_pose_applied_count += 1
+        except Exception as exc:
+            root_report["live_root_pose_applied"] = False
+            root_report["live_root_pose_error"] = str(exc)
+
+        linear_velocity = np.asarray(
+            [
+                float(raw_lin_vel[0]) if raw_lin_vel.size > 0 else 0.0,
+                float(raw_lin_vel[1]) if raw_lin_vel.size > 1 else 0.0,
+                float(raw_lin_vel[2]) if raw_lin_vel.size > 2 else 0.0,
+            ],
+            dtype=float,
+        )
+        angular_velocity = np.asarray(
+            [
+                float(raw_ang_vel[0]) if raw_ang_vel.size > 0 else 0.0,
+                float(raw_ang_vel[1]) if raw_ang_vel.size > 1 else 0.0,
+                float(raw_ang_vel[2]) if raw_ang_vel.size > 2 else 0.0,
+            ],
+            dtype=float,
+        )
+        try:
+            robot.set_linear_velocity(linear_velocity)
+            robot.set_angular_velocity(angular_velocity)
+            root_report["root_velocity_applied"] = True
+            root_report["root_linear_velocity_applied"] = linear_velocity.tolist()
+            root_report["root_angular_velocity_applied"] = angular_velocity.tolist()
+        except Exception as exc:
+            root_report["root_velocity_applied"] = False
+            root_report["root_velocity_error"] = str(exc)
+
+        mapping_report = _map_replay_joint_positions_full(robot, frame)
+        joint_report: dict[str, Any]
+        if mapping_report.get("success", False):
+            try:
+                robot.apply_action(
+                    ArticulationAction(
+                        joint_positions=np.asarray(mapping_report["values"], dtype=float)
+                    )
+                )
+                joint_report = {
+                    "requested": True,
+                    "success": True,
+                    "backend": "apply_action_full",
+                    "mapping": {key: value for key, value in mapping_report.items() if key != "values"},
+                }
+            except Exception as exc:
+                joint_report = {
+                    "requested": True,
+                    "success": False,
+                    "backend": "apply_action_full",
+                    "apply_action_error": str(exc),
+                    "mapping": {key: value for key, value in mapping_report.items() if key != "values"},
+                }
+                if len(joint_mapping_failures) < 8:
+                    joint_mapping_failures.append(
+                        {
+                            "frame_index": frame_index,
+                            "reason": "apply_action_failed",
+                            "error": str(exc),
+                            "mapping": joint_report["mapping"],
+                        }
+                    )
+        else:
+            joint_report = {
+                "requested": True,
+                "success": False,
+                "reason": mapping_report.get("reason", "joint_mapping_failed"),
+                "mapping": mapping_report,
+            }
+            if len(joint_mapping_failures) < 8:
+                joint_mapping_failures.append(
+                    {
+                        "frame_index": frame_index,
+                        "reason": joint_report["reason"],
+                        "mapping": mapping_report,
+                    }
+                )
+
+        frame_report = {
+            "nav_pose": _nav_replay_frame_pose(frame, root_z=float(position[2])),
+            "root": root_report,
+            "joint_replay_applied": bool(joint_report.get("success", False)),
+            "joint_replay_mode": "standalone_style_full_joint_name_mapping",
+            "joint_visual_report": joint_report,
+        }
+        if frame_report.get("joint_replay_applied", False):
+            joint_applied_count += 1
+        world.step(render=True)
+        await app.next_update_async()
+        if frame_index in {0, 1, 2, len(frames) - 1} or frame_index % max(1, len(frames) // 8) == 0:
+            samples.append(
+                {
+                    "frame_index": frame_index,
+                    "timestamp": frame.get("timestamp"),
+                    "root_and_joint_replay": frame_report,
+                }
+            )
+        if frame_index % 80 == 0 or frame_index == len(frames) - 1:
+            print(
+                "[video-baseline] nav gait replay",
+                {
+                    "label": label,
+                    "frame": frame_index,
+                    "frames": len(frames),
+                    "joint_replay_applied": frame_report.get("joint_replay_applied"),
+                },
+                flush=True,
+            )
+
+    if joint_applied_count <= 0:
+        raise DemoFailure(
+            "nav_gait_joint_mapping_failed",
+            f"{label}: replay trajectory did not apply any recorded joint positions; refusing root-only floating replay.",
+            {
+                "label": label,
+                "replay_trajectory_path": str(replay_path),
+                "replay_frame_count": len(frames),
+                "joint_mapping_failures": joint_mapping_failures,
+            },
+        )
+    if root_pose_applied_count <= 0:
+        raise DemoFailure(
+            "nav_replay_root_pose_failed",
+            f"{label}: replay trajectory did not apply any robot root poses; refusing object-only or joint-only replay.",
+            {
+                "label": label,
+                "replay_trajectory_path": str(replay_path),
+                "replay_frame_count": len(frames),
+                "samples": samples[:8],
+            },
+        )
+
+    velocity_zero = _zero_robot_root_velocity_best_effort(robot)
+    try:
+        root_after = _robot_root_report_from_pick_handoff(robot)
+    except Exception as exc:
+        root_after = {"read_error": str(exc)}
+    return {
+        "success": True,
+        "executed": True,
+        "label": label,
+        "replay_trajectory_path": str(replay_path),
+        "replay_frame_count": len(frames),
+        "real_time_replay": bool(real_time),
+        "replay_speed": float(playback_speed),
+        "world_play": play_report,
+        "root_before": root_before,
+        "root_after": root_after,
+        "root_velocity_zero_after_replay": velocity_zero,
+        "gait_replay_executed": True,
+        "joint_replay_enabled": True,
+        "joint_replay_leg_only": False,
+        "joint_replay_apply_action": True,
+        "joint_replay_apply_velocity": False,
+        "joint_replay_mode": "standalone_style_full_joint_name_mapping",
+        "joint_replay_applied_frame_count": int(joint_applied_count),
+        "root_pose_applied_frame_count": int(root_pose_applied_count),
+        "joint_mapping_failures": joint_mapping_failures,
+        "samples": samples,
+    }
+
+
+def _robot_root_report_from_pick_handoff(robot) -> dict[str, Any]:
+    from scripts.isaac import run_pick_from_nav_result as pick_handoff
+
+    return pick_handoff._robot_root_report(robot)
+
+
 def _set_carried_object_root_world_matrix(
     stage,
     object_prim_path: str,
@@ -4332,12 +5873,29 @@ def _set_carried_object_root_world_matrix(
     *,
     label: str = "carried_object_root_world_matrix",
 ) -> dict[str, Any]:
-    report = _set_prim_world_matrix(
-        stage,
-        object_prim_path,
-        target_world_matrix,
-        reset_xform_stack=False,
-    )
+    import numpy as np
+
+    if _carry_object_translation_only() and _carry_object_orientation_mode() == "world_locked":
+        report = _set_prim_world_translation(
+            stage,
+            object_prim_path,
+            np.asarray(target_world_matrix, dtype=float)[:3, 3],
+        )
+    else:
+        report = _set_prim_world_matrix(
+            stage,
+            object_prim_path,
+            target_world_matrix,
+            reset_xform_stack=_carry_reset_object_xform_stack(),
+            compensate_preserved_stack=(
+                (not _carry_reset_object_xform_stack())
+                and _carry_compensate_preserved_xform_stack()
+            ),
+        )
+    report["carry_reset_object_xform_stack"] = _carry_reset_object_xform_stack()
+    report["carry_compensate_preserved_xform_stack"] = _carry_compensate_preserved_xform_stack()
+    report["carry_object_translation_only"] = _carry_object_translation_only()
+    report["carry_object_orientation_mode"] = _carry_object_orientation_mode()
     report["velocity_zero"] = _zero_object_velocity_if_dynamic(
         stage,
         object_prim_path,
@@ -4391,14 +5949,17 @@ async def _replay_nav_to_place_with_tcp_object_carry(
     raw_replay_root_motion = _summarize_replay_root_motion(frames, root_z=root_z)
 
     T_tcp_before, tcp_before_report = _tcp_world_matrix(stage)
-    T_object_before, object_before_report = _dynamic_object_world_matrix(stage, object_prim_path)
+    T_object_before, object_before_report = _carry_object_world_matrix(stage, object_prim_path)
     T_tcp_object = np.linalg.inv(T_tcp_before) @ T_object_before
     T_tcp_object_pick_capture = T_tcp_object.copy()
     T_object_carry_start = T_object_before.copy()
     tcp_object_continuity_report: dict[str, Any] = {
-        "initialized": False,
-        "source": "pending_first_replay_frame",
+        "initialized": True,
+        "source": "pick_capture_before_nav_replay",
+        "object_orientation_mode": _carry_object_orientation_mode(),
         "pick_capture": _matrix_pose_report(T_tcp_object_pick_capture, frame="tcp"),
+        "continuity_transform": _matrix_pose_report(T_tcp_object, frame="tcp"),
+        "object_carry_start": _matrix_pose_report(T_object_carry_start, frame="world"),
     }
 
     # replay trajectory 的第一帧未必和 pick 后当前真实 root 完全一致。
@@ -4474,17 +6035,65 @@ async def _replay_nav_to_place_with_tcp_object_carry(
     raw_final_replay_pose, final_nav_pose = _aligned_nav_pose_from_frame(frames[-1])
     aligned_replay_root_motion = _summarize_aligned_root_motion(frames)
 
-    hold_state = _capture_arm_gripper_hold_state(robot)
+    hold_state = _force_closed_gripper_hold_state(
+        _capture_arm_gripper_hold_state(robot),
+        reason="nav_to_place_carry_replay",
+    )
     root_start_matrix = T_live_start
     root_start_matrix_inv = np.linalg.inv(root_start_matrix)
 
     freeze_report = _set_object_kinematic_enabled(stage, object_prim_path, True)
-    continuous_pose_apply_before_replay = _set_carried_object_root_world_matrix(
-        stage,
-        object_prim_path,
-        T_object_carry_start,
-        label="after_freeze_sync_current_carry_pose_before_nav_replay",
-    )
+    if _env_flag("GO2_X5_CARRY_REAPPLY_OBJECT_POSE_BEFORE_REPLAY", False):
+        continuous_pose_apply_before_replay = _set_carried_object_root_world_matrix(
+            stage,
+            object_prim_path,
+            T_object_carry_start,
+            label="after_freeze_sync_current_carry_pose_before_nav_replay",
+        )
+        try:
+            T_object_carry_start, object_before_report = _carry_object_world_matrix(stage, object_prim_path)
+            T_tcp_object = np.linalg.inv(T_tcp_before) @ T_object_carry_start
+            tcp_object_continuity_report["continuity_transform"] = _matrix_pose_report(
+                T_tcp_object,
+                frame="tcp",
+            )
+            tcp_object_continuity_report["object_carry_start"] = _matrix_pose_report(
+                T_object_carry_start,
+                frame="world",
+            )
+            tcp_object_continuity_report["object_carry_start_after_optional_reapply"] = _matrix_pose_report(
+                T_object_carry_start,
+                frame="world",
+            )
+        except Exception as exc:
+            continuous_pose_apply_before_replay["readback_after_reapply_error"] = str(exc)
+    else:
+        try:
+            T_object_carry_start, object_before_report = _carry_object_world_matrix(stage, object_prim_path)
+            T_tcp_object = np.linalg.inv(T_tcp_before) @ T_object_carry_start
+            tcp_object_continuity_report["continuity_transform"] = _matrix_pose_report(
+                T_tcp_object,
+                frame="tcp",
+            )
+            tcp_object_continuity_report["object_carry_start"] = _matrix_pose_report(
+                T_object_carry_start,
+                frame="world",
+            )
+            continuous_pose_apply_before_replay = {
+                "skipped": True,
+                "reason": "preserve_actual_readback_pose_before_carry_replay",
+                "object_pose_readback_after_freeze": object_before_report,
+            }
+            tcp_object_continuity_report["object_carry_start_after_freeze_readback"] = _matrix_pose_report(
+                T_object_carry_start,
+                frame="world",
+            )
+        except Exception as exc:
+            continuous_pose_apply_before_replay = {
+                "skipped": True,
+                "reason": "preserve_actual_readback_pose_before_carry_replay",
+                "readback_after_freeze_error": str(exc),
+            }
     velocity_zero_before_replay = _zero_object_velocity_if_dynamic(
         stage,
         object_prim_path,
@@ -4531,9 +6140,11 @@ async def _replay_nav_to_place_with_tcp_object_carry(
         "GO2_X5_CARRY_VISUAL_ROOT_XFORM_FALLBACK",
         "0",
     ).lower() in {"1", "true", "yes", "on"}
+    video_baseline_mode = _video_baseline_enabled()
+    video_leg_policy = _video_baseline_leg_policy()
     carry_replay_backend = os.environ.get(
         "GO2_X5_CARRY_REPLAY_BACKEND",
-        DEFAULT_CARRY_REPLAY_BACKEND,
+        "live_planar_articulation" if video_baseline_mode else DEFAULT_CARRY_REPLAY_BACKEND,
     ).strip().lower()
     root_only_visual_replay_enabled = carry_replay_backend in {
         "visual_root",
@@ -4590,36 +6201,51 @@ async def _replay_nav_to_place_with_tcp_object_carry(
     )
     apply_replay_root_velocity = os.environ.get(
         "GO2_X5_CARRY_REPLAY_ROOT_VELOCITY",
-        "1" if live_physics_articulation_replay_enabled else "0",
+        "1" if live_physics_articulation_replay_enabled or (video_baseline_mode and live_planar_articulation_replay_enabled) else "0",
     ).lower() in {"1", "true", "yes", "on"}
     use_full_recorded_root_pose = os.environ.get(
         "GO2_X5_CARRY_REPLAY_FULL_ROOT_POSE",
-        "1" if live_physics_articulation_replay_enabled else "0",
+        "1" if live_physics_articulation_replay_enabled or (video_baseline_mode and live_planar_articulation_replay_enabled) else "0",
     ).lower() in {"1", "true", "yes", "on"}
     joint_replay_enabled = os.environ.get(
         "GO2_X5_CARRY_REPLAY_JOINTS",
-        "1" if (live_physics_articulation_replay_enabled or live_planar_articulation_replay_enabled) else "0",
+        "1"
+        if (
+            live_physics_articulation_replay_enabled
+            or live_planar_articulation_replay_enabled
+            or (video_baseline_mode and kinematic_articulation_replay_enabled)
+        )
+        else "0",
     ).lower() in {"1", "true", "yes", "on"}
     joint_replay_prefer_action = os.environ.get(
         "GO2_X5_CARRY_REPLAY_JOINT_ACTION",
         "1"
         if (
             joint_replay_enabled
-            and
-            live_articulation_replay_enabled
-            and not live_planar_articulation_replay_enabled
+            and live_articulation_replay_enabled
+            and (video_baseline_mode or not live_planar_articulation_replay_enabled)
             and not kinematic_full_root_replay_enabled
         )
         else "0",
     ).lower() in {"1", "true", "yes", "on"}
     joint_replay_leg_only = os.environ.get(
         "GO2_X5_CARRY_REPLAY_LEG_ONLY",
-        "1",
+        "0" if video_baseline_mode else "1",
     ).lower() in {"1", "true", "yes", "on"}
     joint_replay_apply_velocity = os.environ.get(
         "GO2_X5_CARRY_REPLAY_JOINT_VELOCITY",
-        "1" if live_planar_articulation_replay_enabled or live_physics_articulation_replay_enabled else "0",
+        "0"
+        if video_baseline_mode
+        else "1"
+        if live_planar_articulation_replay_enabled or live_physics_articulation_replay_enabled
+        else "0",
     ).lower() in {"1", "true", "yes", "on"}
+    video_joint_replay_override_reason = ""
+    if video_baseline_mode and joint_replay_enabled:
+        video_joint_replay_override_reason = (
+            "nav gait replay kept enabled; "
+            f"GO2_X5_VIDEO_BASELINE_LEG_POLICY={video_leg_policy} applies only before/during arm-place"
+        )
     visual_root_xform_sync_enabled = os.environ.get(
         "GO2_X5_CARRY_VISUAL_ROOT_XFORM_SYNC",
         (
@@ -4645,12 +6271,21 @@ async def _replay_nav_to_place_with_tcp_object_carry(
     ).lower() in {"1", "true", "yes", "on"}
     kinematic_render_world_step = os.environ.get(
         "GO2_X5_CARRY_REPLAY_RENDER_WORLD_STEP",
-        "0" if kinematic_full_root_replay_enabled else "1" if kinematic_articulation_replay_enabled else "0",
+        "1"
+        if video_baseline_mode and kinematic_articulation_replay_enabled
+        else "0" if kinematic_full_root_replay_enabled else "1" if kinematic_articulation_replay_enabled else "0",
     ).lower() in {"1", "true", "yes", "on"}
     zero_root_velocity_when_skipped = os.environ.get(
         "GO2_X5_CARRY_ZERO_ROOT_VELOCITY_WHEN_SKIPPED",
-        "1" if live_planar_articulation_replay_enabled else "0",
+        "0" if video_baseline_mode and live_planar_articulation_replay_enabled else "1" if live_planar_articulation_replay_enabled else "0",
     ).lower() in {"1", "true", "yes", "on"}
+    carry_tcp_source = os.environ.get(
+        "GO2_X5_CARRY_TCP_SOURCE",
+        "root_delta" if video_baseline_mode else "auto",
+    ).strip().lower().replace("-", "_")
+    if carry_tcp_source not in {"auto", "usd", "root_delta", "root_delta_prediction"}:
+        carry_tcp_source = "root_delta" if video_baseline_mode else "auto"
+    prefer_root_delta_tcp = carry_tcp_source in {"root_delta", "root_delta_prediction"}
     visual_root_sync_start_report: dict[str, Any] = {
         "enabled": bool(visual_root_xform_sync_enabled),
         "visual_root_prim_path": visual_root_prim_path,
@@ -4696,6 +6331,9 @@ async def _replay_nav_to_place_with_tcp_object_carry(
     max_post_clamp_usd_error_m = 0.0
     clamp_count = 0
     usd_root_pose_apply_failed_count = 0
+    replay_root_pose_applied_frame_count = 0
+    replay_joint_applied_frame_count = 0
+    replay_joint_failure_samples: list[dict[str, Any]] = []
 
     def _predicted_tcp_from_nav_pose(nav_pose: dict[str, Any]):
         root_matrix = _planar_pose_matrix(
@@ -4708,6 +6346,28 @@ async def _replay_nav_to_place_with_tcp_object_carry(
 
     def _current_tcp_or_root_delta_fallback(label: str, nav_pose: dict[str, Any]):
         fallback_tcp = _predicted_tcp_from_nav_pose(nav_pose)
+        if prefer_root_delta_tcp:
+            fallback_report = _matrix_pose_report(fallback_tcp, frame="world")
+            fallback_report.update(
+                {
+                    "tcp_prim_path": _resolve_tcp_prim_path(stage),
+                    "source": "root_delta_prediction",
+                    "fallback_used": True,
+                    "fallback_reason": "root_delta_tcp_source_for_logical_carry",
+                    "label": label,
+                    "carry_tcp_source": carry_tcp_source,
+                }
+            )
+            try:
+                matrix, tcp_report = _tcp_world_matrix(stage)
+                fallback_report["usd_tcp_pose"] = tcp_report
+                fallback_report["usd_vs_root_delta_translation_error_m"] = _matrix_translation_error_m(
+                    matrix,
+                    fallback_tcp,
+                )
+            except Exception as exc:
+                fallback_report["usd_tcp_read_error"] = str(exc)
+            return fallback_tcp, fallback_report
         try:
             matrix, tcp_report = _tcp_world_matrix(stage)
             fallback_delta_m = _matrix_translation_error_m(matrix, fallback_tcp)
@@ -4758,6 +6418,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
                 "initialized": True,
                 "source": "first_replay_frame_current_tcp_and_current_object_pose",
                 "label": label,
+                "object_orientation_mode": _carry_object_orientation_mode(),
                 "first_target_vs_carry_start_error_m": _matrix_translation_error_m(
                     T_first_target,
                     T_object_carry_start,
@@ -4771,11 +6432,26 @@ async def _replay_nav_to_place_with_tcp_object_carry(
                 "object_carry_start": _matrix_pose_report(T_object_carry_start, frame="world"),
             }
 
-        T_object_target = T_tcp_current @ T_tcp_object
+        T_object_target_raw = T_tcp_current @ T_tcp_object
+        T_object_pre = None
         try:
-            T_object_pre, object_pre_report = _dynamic_object_world_matrix(stage, object_prim_path)
-            pre_clamp_error_m = _matrix_translation_error_m(T_object_pre, T_object_target)
-            max_pre_clamp_error_m = max(max_pre_clamp_error_m, pre_clamp_error_m)
+            T_object_pre, object_pre_report = _carry_object_world_matrix(stage, object_prim_path)
+        except Exception as exc:
+            object_pre_report = {"error": str(exc)}
+        T_object_target, orientation_mode_report = _apply_carry_object_orientation_mode(
+            T_object_target_raw,
+            T_object_carry_start,
+            label=label,
+            current_world_matrix=T_object_pre,
+        )
+        try:
+            pre_clamp_error_m = (
+                _matrix_translation_error_m(T_object_pre, T_object_target)
+                if T_object_pre is not None
+                else None
+            )
+            if pre_clamp_error_m is not None:
+                max_pre_clamp_error_m = max(max_pre_clamp_error_m, pre_clamp_error_m)
         except Exception as exc:
             object_pre_report = {"error": str(exc)}
             pre_clamp_error_m = None
@@ -4801,6 +6477,8 @@ async def _replay_nav_to_place_with_tcp_object_carry(
         clamp_count += 1
         return {
             "target": _matrix_pose_report(T_object_target, frame="world"),
+            "target_raw_tcp_relative": _matrix_pose_report(T_object_target_raw, frame="world"),
+            "object_orientation_mode": orientation_mode_report,
             "object_pre_clamp": object_pre_report,
             "pre_clamp_error_m": pre_clamp_error_m,
             "pre_clamp_live_error_m": pre_clamp_error_m,
@@ -4846,6 +6524,8 @@ async def _replay_nav_to_place_with_tcp_object_carry(
             "joint_replay": bool(joint_replay_enabled),
             "joint_velocity": bool(joint_replay_apply_velocity),
             "leg_only": bool(joint_replay_leg_only),
+            "carry_tcp_source": carry_tcp_source,
+            "object_orientation_mode": _carry_object_orientation_mode(),
             "kinematic_full_root": bool(kinematic_full_root_replay_enabled),
             "render_world_step": bool(
                 live_physics_articulation_replay_enabled
@@ -4893,7 +6573,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
             nav_pose=nav_pose,
             visual_root_xform_fallback=visual_root_xform_sync_enabled,
             robot_root_prim_path=visual_root_prim_path,
-            apply_live_root_pose=not visual_root_xform_sync_enabled,
+            apply_live_root_pose=bool(video_baseline_mode and joint_replay_enabled) or not visual_root_xform_sync_enabled,
             root_pose_override=aligned_root_pose,
             visual_root_world_matrix=visual_root_sync_matrix,
             visual_root_world_matrix_source=visual_root_sync_source,
@@ -4903,6 +6583,18 @@ async def _replay_nav_to_place_with_tcp_object_carry(
             joint_replay_apply_velocity=bool(joint_replay_apply_velocity),
             zero_root_velocity_when_skipped=bool(zero_root_velocity_when_skipped),
         )
+        if frame_report.get("live_root_pose_applied", False):
+            replay_root_pose_applied_frame_count += 1
+        if frame_report.get("joint_replay_applied", False):
+            replay_joint_applied_frame_count += 1
+        elif joint_replay_enabled and len(replay_joint_failure_samples) < 8:
+            replay_joint_failure_samples.append(
+                {
+                    "frame_index": frame_index,
+                    "joint_replay_mode": frame_report.get("joint_replay_mode"),
+                    "joint_visual_report": frame_report.get("joint_visual_report"),
+                }
+            )
 
         T_tcp_current, tcp_current_report = _current_tcp_or_root_delta_fallback(
             f"visual_replay_frame_{frame_index}",
@@ -4948,7 +6640,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
             nav_pose=nav_pose,
             visual_root_xform_fallback=visual_root_xform_sync_enabled,
             robot_root_prim_path=visual_root_prim_path,
-            apply_live_root_pose=not visual_root_xform_sync_enabled,
+            apply_live_root_pose=bool(video_baseline_mode and joint_replay_enabled) or not visual_root_xform_sync_enabled,
             root_pose_override=aligned_root_pose,
             visual_root_world_matrix=visual_root_sync_matrix,
             visual_root_world_matrix_source=visual_root_sync_source,
@@ -4985,6 +6677,36 @@ async def _replay_nav_to_place_with_tcp_object_carry(
                 flush=True,
             )
 
+    if video_baseline_mode and joint_replay_enabled and replay_joint_applied_frame_count <= 0:
+        raise DemoFailure(
+            "nav_gait_joint_mapping_failed",
+            "nav_to_place carry replay did not apply any recorded joint positions; refusing root-only/object-only video baseline.",
+            {
+                "replay_trajectory_path": str(replay_path),
+                "replay_frame_count": frame_count,
+                "carry_replay_backend": carry_replay_backend,
+                "joint_replay_leg_only": bool(joint_replay_leg_only),
+                "joint_replay_prefer_action": bool(joint_replay_prefer_action),
+                "joint_failure_samples": replay_joint_failure_samples,
+            },
+        )
+    if (
+        video_baseline_mode
+        and live_articulation_replay_enabled
+        and replay_root_pose_applied_frame_count <= 0
+    ):
+        raise DemoFailure(
+            "nav_replay_root_pose_failed",
+            "nav_to_place carry replay did not apply any robot root poses; refusing object-only carry replay.",
+            {
+                "replay_trajectory_path": str(replay_path),
+                "replay_frame_count": frame_count,
+                "carry_replay_backend": carry_replay_backend,
+                "visual_root_xform_sync_enabled": bool(visual_root_xform_sync_enabled),
+                "pose_clamp_samples": pose_clamp_samples[:8],
+            },
+        )
+
     final_visual_root_sync_matrix, final_visual_root_sync_source = _visual_root_sync_matrix_from_nav_pose(final_nav_pose)
     visual_final_root_hold = _apply_visual_replay_frame_with_carry_hold(
         robot,
@@ -4996,7 +6718,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
         nav_pose=final_nav_pose,
         visual_root_xform_fallback=visual_root_xform_sync_enabled,
         robot_root_prim_path=visual_root_prim_path,
-        apply_live_root_pose=not visual_root_xform_sync_enabled,
+        apply_live_root_pose=bool(video_baseline_mode and joint_replay_enabled) or not visual_root_xform_sync_enabled,
         root_pose_override=(
             _aligned_full_root_pose_from_frame(frames[-1])
             if live_articulation_replay_enabled and use_full_recorded_root_pose
@@ -5031,12 +6753,14 @@ async def _replay_nav_to_place_with_tcp_object_carry(
     stable_pre_capture_root_hold = _set_robot_root_to_nav_pose(robot, final_nav_pose, root_z)
     stable_pre_capture_arm_gripper_hold = _apply_arm_gripper_hold(robot, hold_state)
     support_hold_state = _capture_support_hold_state(robot, hold_state)
+    stable_handoff_apply_support_joints = not (video_baseline_mode and video_leg_policy != "replay")
     initial_stable_hold = _apply_stable_handoff_robot_hold(
         robot,
         final_nav_pose,
         root_z=root_z,
         hold_state=hold_state,
         support_hold_state=support_hold_state,
+        apply_support_joints=stable_handoff_apply_support_joints,
     )
     T_tcp_final, tcp_final_report = _current_tcp_or_root_delta_fallback(
         "stable_handoff_initial",
@@ -5052,6 +6776,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
                 root_z=root_z,
                 hold_state=hold_state,
                 support_hold_state=support_hold_state,
+                apply_support_joints=stable_handoff_apply_support_joints,
             )
             T_tcp_settle, tcp_settle_report = _current_tcp_or_root_delta_fallback(
                 f"static_handoff_{settle_index}",
@@ -5076,6 +6801,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
                 root_z=root_z,
                 hold_state=hold_state,
                 support_hold_state=support_hold_state,
+                apply_support_joints=stable_handoff_apply_support_joints,
             )
             T_tcp_post_settle, tcp_post_settle_report = _current_tcp_or_root_delta_fallback(
                 f"static_handoff_{settle_index}_post_update",
@@ -5100,6 +6826,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
             root_z=root_z,
             hold_state=hold_state,
             support_hold_state=support_hold_state,
+            apply_support_joints=stable_handoff_apply_support_joints,
         )
         T_tcp_settle, tcp_settle_report = _current_tcp_or_root_delta_fallback(
             f"stable_handoff_{settle_index}",
@@ -5131,6 +6858,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
             root_z=root_z,
             hold_state=hold_state,
             support_hold_state=support_hold_state,
+            apply_support_joints=stable_handoff_apply_support_joints,
         )
         T_tcp_post_settle, tcp_post_settle_report = _current_tcp_or_root_delta_fallback(
             f"stable_handoff_{settle_index}_post_step",
@@ -5154,6 +6882,7 @@ async def _replay_nav_to_place_with_tcp_object_carry(
         root_z=root_z,
         hold_state=hold_state,
         support_hold_state=support_hold_state,
+        apply_support_joints=stable_handoff_apply_support_joints,
     )
     T_tcp_after, tcp_after_report = _current_tcp_or_root_delta_fallback(
         "after_stable_handoff",
@@ -5162,13 +6891,11 @@ async def _replay_nav_to_place_with_tcp_object_carry(
     final_clamp_report = _clamp_object_to_tcp("nav_replay_carry_final_clamp", T_tcp_after)
     pre_final_clamp_error_m = final_clamp_report.get("pre_clamp_error_m")
     object_pre_final_report = final_clamp_report.get("object_pre_clamp")
-    final_object_apply = final_clamp_report.get("object_pose_apply")
+    final_object_apply = final_clamp_report.get("object_pose_apply") or {}
     final_velocity_zero = (final_object_apply or {}).get("velocity_zero")
 
     try:
-        T_object_after = _usd_object_root_world_matrix(stage, object_prim_path)
-        object_after_report = _matrix_pose_report(T_object_after, frame="world")
-        object_after_report["source"] = "usd_object_root_world_matrix"
+        T_object_after, object_after_report = _carry_object_world_matrix(stage, object_prim_path)
     except Exception as exc:
         T_object_after, object_after_report = _dynamic_object_world_matrix(stage, object_prim_path)
         object_after_report["usd_root_read_error"] = str(exc)
@@ -5290,15 +7017,24 @@ async def _replay_nav_to_place_with_tcp_object_carry(
         "visual_replay_root_velocity_applied": bool(apply_replay_root_velocity),
         "visual_replay_root_velocity_zeroed_when_skipped": bool(zero_root_velocity_when_skipped),
         "visual_replay_full_root_pose_applied": bool(use_full_recorded_root_pose and live_articulation_replay_enabled),
+        "visual_replay_root_pose_applied_frame_count": int(replay_root_pose_applied_frame_count),
         "visual_replay_joint_replay_enabled": bool(joint_replay_enabled),
         "visual_replay_joint_action_enabled": bool(joint_replay_prefer_action),
         "visual_replay_joint_velocity_enabled": bool(joint_replay_apply_velocity),
         "visual_replay_leg_only_joint_replay": bool(joint_replay_leg_only),
+        "visual_replay_joint_replay_applied_frame_count": int(replay_joint_applied_frame_count),
+        "visual_replay_joint_replay_failure_samples": replay_joint_failure_samples,
+        "carry_tcp_source": carry_tcp_source,
+        "carry_tcp_source_prefers_root_delta": bool(prefer_root_delta_tcp),
+        "video_baseline_mode": bool(video_baseline_mode),
+        "video_baseline_leg_policy": video_leg_policy,
+        "video_baseline_joint_replay_override_reason": video_joint_replay_override_reason,
         "visual_replay_kinematic_render_world_step": bool(kinematic_render_world_step),
         "stable_handoff_world_play": stable_play_report,
         "play_report_before_handoff": stable_play_report,
         "settle_steps": requested_settle_steps,
         "stable_handoff_steps": handoff_steps,
+        "stable_handoff_support_joint_hold_enabled": bool(stable_handoff_apply_support_joints),
         "handoff_physics_settle_enabled": bool(handoff_physics_settle_enabled),
         "handoff_physics_settle_requested_steps": requested_settle_steps,
         "handoff_physics_settle_executed_steps": handoff_steps,
@@ -5306,6 +7042,8 @@ async def _replay_nav_to_place_with_tcp_object_carry(
 
         "object_prim_path": object_prim_path,
         "object_carried_relative_to": "tcp",
+        "object_orientation_mode": _carry_object_orientation_mode(),
+        "object_orientation_reference_world": _matrix_pose_report(T_object_carry_start, frame="world"),
         "object_pose_clamped_to_tcp": True,
         "object_carry_step_callback_enabled": True,
         "object_kinematic_until_place": True,
@@ -5426,10 +7164,13 @@ async def _restore_place_base_with_kinematic_object_carry(
     root_before = pick_handoff._robot_root_report(robot)
     root_z = float(root_before["position_xyz"][2])
     T_tcp_before, tcp_before_report = _tcp_world_matrix(stage)
-    T_object_before, object_before_report = _dynamic_object_world_matrix(stage, object_prim_path)
+    T_object_before, object_before_report = _carry_object_world_matrix(stage, object_prim_path)
     T_tcp_object = np.linalg.inv(T_tcp_before) @ T_object_before
     object_bbox_before = pick_handoff._compute_world_bbox(stage, object_prim_path)
-    joint_hold_state = _capture_arm_gripper_hold_state(robot)
+    joint_hold_state = _force_closed_gripper_hold_state(
+        _capture_arm_gripper_hold_state(robot),
+        reason="restore_place_base_with_object_carry",
+    )
 
     old_root_matrix = _planar_pose_matrix(
         float(root_before["position_xyz"][0]),
@@ -5492,24 +7233,26 @@ async def _restore_place_base_with_kinematic_object_carry(
             return fallback_tcp_after_root_restore, tcp_report
 
     T_tcp_initial, tcp_initial_report = _current_tcp_or_fallback("after_robot_root_set_before_settle")
-    T_object_initial_target = T_tcp_initial @ T_tcp_object
-    initial_object_apply = _set_dynamic_object_world_matrix(
+    T_object_initial_target_raw = T_tcp_initial @ T_tcp_object
+    T_object_initial_target, initial_orientation_mode_report = _apply_carry_object_orientation_mode(
+        T_object_initial_target_raw,
+        T_object_before,
+        label="initial_after_root_set",
+        current_world_matrix=T_object_before,
+    )
+    initial_object_apply = _set_carried_object_root_world_matrix(
         stage,
         object_prim_path,
         T_object_initial_target,
-        reset_xform_stack=False,
-    )
-    initial_velocity_zero = _zero_object_velocity_if_dynamic(
-        stage,
-        object_prim_path,
         label="initial_after_root_set",
     )
+    initial_velocity_zero = initial_object_apply.get("velocity_zero")
 
     clamp_samples: list[dict[str, Any]] = []
     tcp_sample_reports: list[dict[str, Any]] = [tcp_initial_report]
     max_pre_clamp_error_m = 0.0
     pre_clamp_error_count = 0
-    max_live_apply_failed = False
+    max_root_pose_apply_failed = False
     requested_settle_steps = max(0, int(settle_steps))
     sample_steps = {0, 1, 2, max(0, requested_settle_steps - 1)}
     app = omni.kit.app.get_app()
@@ -5517,30 +7260,41 @@ async def _restore_place_base_with_kinematic_object_carry(
         root_hold_report = _set_robot_root_to_nav_pose(robot, nav_pose, root_z)
         joint_hold_report = _apply_arm_gripper_hold(robot, joint_hold_state)
         T_tcp_current, tcp_current_report = _current_tcp_or_fallback(f"settle_step_{step_index}")
-        T_object_target = T_tcp_current @ T_tcp_object
+        T_object_target_raw = T_tcp_current @ T_tcp_object
+        T_object_pre_clamp = None
         try:
-            T_object_pre_clamp, object_pre_report = _dynamic_object_world_matrix(stage, object_prim_path)
-            pre_clamp_error_m = _matrix_translation_error_m(T_object_pre_clamp, T_object_target)
-            max_pre_clamp_error_m = max(max_pre_clamp_error_m, pre_clamp_error_m)
-            pre_clamp_error_count += 1
+            T_object_pre_clamp, object_pre_report = _carry_object_world_matrix(stage, object_prim_path)
+        except Exception as exc:
+            object_pre_report = {"error": str(exc)}
+        T_object_target, orientation_mode_report = _apply_carry_object_orientation_mode(
+            T_object_target_raw,
+            T_object_before,
+            label=f"kinematic_carry_step_{step_index}",
+            current_world_matrix=T_object_pre_clamp,
+        )
+        try:
+            pre_clamp_error_m = (
+                _matrix_translation_error_m(T_object_pre_clamp, T_object_target)
+                if T_object_pre_clamp is not None
+                else None
+            )
+            if pre_clamp_error_m is not None:
+                max_pre_clamp_error_m = max(max_pre_clamp_error_m, pre_clamp_error_m)
+                pre_clamp_error_count += 1
         except Exception as exc:
             object_pre_report = {"error": str(exc)}
             pre_clamp_error_m = None
-        object_apply = _set_dynamic_object_world_matrix(
+        object_apply = _set_carried_object_root_world_matrix(
             stage,
             object_prim_path,
             T_object_target,
-            reset_xform_stack=False,
-        )
-        max_live_apply_failed = bool(
-            max_live_apply_failed
-            or not (object_apply.get("live_rigid_pose_apply") or {}).get("success", False)
-        )
-        velocity_zero = _zero_object_velocity_if_dynamic(
-            stage,
-            object_prim_path,
             label=f"kinematic_carry_step_{step_index}",
         )
+        max_root_pose_apply_failed = bool(
+            max_root_pose_apply_failed
+            or "target_world_position_xyz" not in object_apply
+        )
+        velocity_zero = object_apply.get("velocity_zero")
         if step_index in sample_steps:
             clamp_samples.append(
                 {
@@ -5550,6 +7304,8 @@ async def _restore_place_base_with_kinematic_object_carry(
                     "joint_hold": joint_hold_report,
                     "object_pre_clamp": object_pre_report,
                     "pre_clamp_error_m": pre_clamp_error_m,
+                    "object_target_raw_tcp_relative": _matrix_pose_report(T_object_target_raw, frame="world"),
+                    "object_orientation_mode": orientation_mode_report,
                     "object_pose_apply": object_apply,
                     "velocity_zero": velocity_zero,
                 }
@@ -5560,29 +7316,40 @@ async def _restore_place_base_with_kinematic_object_carry(
         await app.next_update_async()
 
     T_tcp_final, tcp_final_report = _current_tcp_or_fallback("after_settle_before_final_clamp")
-    T_object_final_target = T_tcp_final @ T_tcp_object
+    T_object_final_target_raw = T_tcp_final @ T_tcp_object
+    T_object_pre_final = None
     try:
-        T_object_pre_final, object_pre_final_report = _dynamic_object_world_matrix(stage, object_prim_path)
-        pre_final_error_m = _matrix_translation_error_m(T_object_pre_final, T_object_final_target)
-        max_pre_clamp_error_m = max(max_pre_clamp_error_m, pre_final_error_m)
-        pre_clamp_error_count += 1
+        T_object_pre_final, object_pre_final_report = _carry_object_world_matrix(stage, object_prim_path)
+    except Exception as exc:
+        object_pre_final_report = {"error": str(exc)}
+    T_object_final_target, final_orientation_mode_report = _apply_carry_object_orientation_mode(
+        T_object_final_target_raw,
+        T_object_before,
+        label="kinematic_carry_final_clamp",
+        current_world_matrix=T_object_pre_final,
+    )
+    try:
+        pre_final_error_m = (
+            _matrix_translation_error_m(T_object_pre_final, T_object_final_target)
+            if T_object_pre_final is not None
+            else None
+        )
+        if pre_final_error_m is not None:
+            max_pre_clamp_error_m = max(max_pre_clamp_error_m, pre_final_error_m)
+            pre_clamp_error_count += 1
     except Exception as exc:
         object_pre_final_report = {"error": str(exc)}
         pre_final_error_m = None
-    final_object_apply = _set_dynamic_object_world_matrix(
+    final_object_apply = _set_carried_object_root_world_matrix(
         stage,
         object_prim_path,
         T_object_final_target,
-        reset_xform_stack=False,
-    )
-    final_velocity_zero = _zero_object_velocity_if_dynamic(
-        stage,
-        object_prim_path,
         label="kinematic_carry_final_clamp",
     )
+    final_velocity_zero = final_object_apply.get("velocity_zero")
 
     try:
-        T_object_after_clamp, object_after_clamp_report = _dynamic_object_world_matrix(stage, object_prim_path)
+        T_object_after_clamp, object_after_clamp_report = _carry_object_world_matrix(stage, object_prim_path)
         T_tcp_object_after = np.linalg.inv(T_tcp_final) @ T_object_after_clamp
         final_relative_error_m = _matrix_translation_error_m(T_tcp_object_after, T_tcp_object)
     except Exception as exc:
@@ -5612,7 +7379,6 @@ async def _restore_place_base_with_kinematic_object_carry(
     tcp_transform_preserved = bool(
         final_relative_error_m is not None and final_relative_error_m <= transform_preserve_threshold_m
     )
-    live_success_final = bool((final_object_apply.get("live_rigid_pose_apply") or {}).get("success", False))
     object_is_kinematic = _object_has_kinematic_enabled(stage, object_prim_path)
     object_velocity_zero_skipped_because_kinematic = any(
         _velocity_report_skipped_because_kinematic(item)
@@ -5649,6 +7415,7 @@ async def _restore_place_base_with_kinematic_object_carry(
         "object_pose_synced_during_base_restore": True,
         "object_pose_clamped_to_tcp": True,
         "object_carried_relative_to": "tcp",
+        "object_orientation_mode": _carry_object_orientation_mode(),
         "object_is_kinematic": bool(object_is_kinematic),
         "object_velocity_zero_skipped_because_kinematic": bool(
             object_velocity_zero_skipped_because_kinematic
@@ -5682,6 +7449,17 @@ async def _restore_place_base_with_kinematic_object_carry(
         "tcp_pose_initial_after_root_set": tcp_initial_report,
         "tcp_pose_fallback_reports": tcp_sample_reports,
         "tcp_to_object_transform_before": _matrix_pose_report(T_tcp_object, frame="tcp"),
+        "object_orientation_reference_before_base_restore": _matrix_pose_report(T_object_before, frame="world"),
+        "object_pose_apply_initial_target_raw_tcp_relative": _matrix_pose_report(
+            T_object_initial_target_raw,
+            frame="world",
+        ),
+        "object_orientation_mode_initial": initial_orientation_mode_report,
+        "object_pose_apply_final_target_raw_tcp_relative": _matrix_pose_report(
+            T_object_final_target_raw,
+            frame="world",
+        ),
+        "object_orientation_mode_final": final_orientation_mode_report,
         "tcp_to_object_transform_preserved": tcp_transform_preserved,
         "max_object_tcp_relative_error_m": (
             float(max_pre_clamp_error_m) if pre_clamp_error_count > 0 else None
@@ -5702,7 +7480,7 @@ async def _restore_place_base_with_kinematic_object_carry(
         "object_carry_step_callback_enabled": False,
         "robot_root_velocity_zeroed_after_restore": True,
         "robot_root_pose_modified_during_arm_place": False,
-        "live_rigid_body_pose_apply_success": live_success_final and not max_live_apply_failed,
+        "root_xform_pose_apply_success": not max_root_pose_apply_failed,
         "max_tcp_object_error_m": (
             float(max_pre_clamp_error_m) if pre_clamp_error_count > 0 else None
         ),
@@ -5758,7 +7536,7 @@ async def _restore_place_base_with_object_carry(
 
     root_before = pick_handoff._robot_root_report(robot)
     object_bbox_before = pick_handoff._compute_world_bbox(stage, object_prim_path)
-    object_matrix_before, object_matrix_before_report = _dynamic_object_world_matrix(stage, object_prim_path)
+    object_matrix_before, object_matrix_before_report = _carry_object_world_matrix(stage, object_prim_path)
     old_root_matrix = _planar_pose_matrix(
         float(root_before["position_xyz"][0]),
         float(root_before["position_xyz"][1]),
@@ -5777,19 +7555,14 @@ async def _restore_place_base_with_object_carry(
     expected_object_bbox_after = _transform_bbox_world(object_bbox_before, carry_delta_world)
 
     restore_report = await pick_handoff._restore_and_settle(world, robot, nav_place_result)
-    object_apply = _set_dynamic_object_world_matrix(
+    object_apply = _set_carried_object_root_world_matrix(
         stage,
         object_prim_path,
         target_object_matrix,
-        reset_xform_stack=False,
+        label="restore_place_base_object_carry_teleport",
     )
-    live_apply = object_apply.get("live_rigid_pose_apply", {})
-    if live_apply.get("attempted") and not live_apply.get("success", False):
-        raise DemoFailure(
-            "object_carry_failed",
-            f"failed to apply live rigid body pose for carried object: {live_apply.get('error')}",
-            object_apply,
-        )
+    if "target_world_position_xyz" not in object_apply:
+        raise DemoFailure("object_carry_failed", "failed to apply carried object root pose.", object_apply)
     velocity_reset = pick_handoff.reset_object_physics_state(
         object_prim_path,
         zero_linear_velocity=True,
@@ -6060,28 +7833,63 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
 
     task_pick = load_task(task_pick_path)
     world, robot = await pick_handoff._initialize_robot()
+    video_config = _video_baseline_config()
+    video_baseline_mode = bool(video_config["enabled"])
+    video_leg_policy = str(video_config["leg_policy"])
+    video_safe_leg_state: dict[str, Any] | None = None
+    video_pick_hold_state: dict[str, Any] | None = None
+    object_prim_path = str(raw_task_pick.get("pick", {}).get("object_prim_path") or task_pick.pick.object_prim_path)
+    if video_baseline_mode:
+        result["video_baseline_mode"] = True
+        result["video_baseline_leg_policy"] = video_leg_policy
+        result["video_baseline_config"] = video_config
+        result.setdefault("phase_transition_reports", [])
+        print("[video-baseline] mode enabled", video_config, flush=True)
+        print(f"[video-baseline] leg_policy={video_leg_policy}", flush=True)
+    _record_video_phase_transition(
+        result,
+        phase="before_replay_nav_to_pick",
+        world=world,
+        robot=robot,
+        object_prim_path=object_prim_path,
+        execution_type="restore_or_replay_handoff",
+        object_mode="dynamic",
+        leg_policy=video_leg_policy,
+        extra={"replay_nav_to_pick_requested": bool(args.replay_nav_to_pick)},
+    )
 
     result["stages"]["replay_nav_to_pick"] = {
         "requested": bool(args.replay_nav_to_pick),
         "executed": False,
         "replay_trajectory_path": nav_pick_result.get("replay_trajectory_path"),
-        "reason": (
-            "not_implemented_first_version_uses_restore_only"
-            if args.replay_nav_to_pick
-            else "disabled"
-        ),
+        "reason": "pending" if args.replay_nav_to_pick else "disabled",
         "replay_before_pick_object_prepare": bool(args.replay_before_pick_object_prepare),
     }
     if args.replay_nav_to_pick:
-        result.setdefault("warnings", []).append(
-            {
-                "warning": "replay_nav_to_pick_not_executed",
-                "detail": (
-                    "Current stable-carry stage still restores the final pick base pose. "
-                    "Only nav_to_place replay carry is implemented in this phase."
-                ),
-            }
-        )
+        try:
+            result["stages"]["replay_nav_to_pick"] = await _replay_nav_trajectory_with_visible_gait(
+                world,
+                robot,
+                nav_pick_result,
+                label="nav_to_pick",
+                real_time=bool(args.replay_nav_real_time),
+                replay_speed=float(args.replay_nav_speed),
+            )
+            result["metadata"]["replay_nav_to_pick_executed"] = True
+        except DemoFailure as exc:
+            if exc.reason in {
+                "missing_nav_replay_trajectory",
+                "invalid_nav_replay_trajectory",
+                "empty_nav_replay_trajectory",
+            }:
+                raise DemoFailure("replay_nav_to_pick_failed", str(exc), exc.report) from exc
+            raise
+        except Exception as exc:
+            raise DemoFailure(
+                "replay_nav_to_pick_failed",
+                str(exc),
+                getattr(exc, "report", None),
+            ) from exc
 
     try:
         result["stages"]["restore_pick_base"] = await pick_handoff._restore_and_settle(world, robot, nav_pick_result)
@@ -6100,6 +7908,32 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
         {"object_reset_stability_steps": 3, "fail_on_object_reset_drift": False},
         reset_xform_stack=bool(args.reset_object_xform_stack),
     )
+    if video_baseline_mode:
+        video_safe_leg_state = _capture_video_safe_leg_pose(
+            robot,
+            source="after_replay_nav_to_pick_before_pick",
+        )
+        result["video_baseline_safe_leg_state"] = video_safe_leg_state
+        _record_video_phase_transition(
+            result,
+            phase="after_replay_nav_to_pick_before_pick",
+            world=world,
+            robot=robot,
+            object_prim_path=object_prim_path,
+            execution_type="replay_or_restore_complete",
+            object_mode="dynamic",
+            leg_policy=video_leg_policy,
+            leg_state=video_safe_leg_state,
+            extra={"q_leg_safe_source": video_safe_leg_state.get("q_leg_safe_source")},
+        )
+        result.setdefault("video_baseline_holds", {})["after_replay_nav_to_pick"] = await _video_baseline_hold_after_phase(
+            world,
+            robot,
+            phase="after_replay_nav_to_pick",
+            duration_s=float(video_config["hold_after_phase_s"]),
+            leg_policy=video_leg_policy,
+            leg_state=video_safe_leg_state,
+        )
 
     dataset_dir = Path(args.dataset_dir).expanduser().resolve()
     recorder = EpisodeRecorder(dataset_dir, task_pick.task_id, task_pick.episode_id, enabled=True)
@@ -6118,6 +7952,42 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
     _write_json(args.pick_handoff_report, {"schema_version": 1, "mode": MODE, "success": pick_report["success"], "pick": pick_report})
     if not pick_report["success"]:
         raise DemoFailure("pick_failed", f"pick failed: {pick_report.get('failure_reason')}", pick_report)
+
+    carry_precheck = _verify_object_carried_before_nav(
+        task_pick.pick.object_prim_path,
+        label="after_pick_before_nav_to_place",
+    )
+    result["stages"]["carry_precheck"] = carry_precheck
+    if not carry_precheck.get("success", False):
+        raise DemoFailure(
+            "object_not_carried_after_pick",
+            "object is not close enough to the gripper/TCP after pick; refusing to carry a dropped object.",
+            carry_precheck,
+        )
+
+    if video_baseline_mode:
+        video_pick_hold_state = _capture_arm_gripper_hold_state(robot)
+        _record_video_phase_transition(
+            result,
+            phase="after_pick_before_carry_replay",
+            world=world,
+            robot=robot,
+            object_prim_path=object_prim_path,
+            execution_type="physics_pick_complete",
+            object_mode="dynamic_before_carry_freeze",
+            leg_policy=video_leg_policy,
+            hold_state=video_pick_hold_state,
+            leg_state=video_safe_leg_state,
+        )
+        result.setdefault("video_baseline_holds", {})["after_pick"] = await _video_baseline_hold_after_phase(
+            world,
+            robot,
+            phase="after_pick",
+            duration_s=float(video_config["after_pick_hold_s"]),
+            hold_state=video_pick_hold_state,
+            leg_policy=video_leg_policy,
+            leg_state=video_safe_leg_state,
+        )
 
     carry_state = _carry_state(args, task_pick.pick.object_prim_path)
     result["stages"]["carry_state"] = carry_state
@@ -6161,6 +8031,18 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
                     "nav_place_result is required for replay_nav_to_place_with_carried_object.",
                 )
 
+            _record_video_phase_transition(
+                result,
+                phase="before_replay_nav_to_place_with_object",
+                world=world,
+                robot=robot,
+                object_prim_path=object_prim_path,
+                execution_type="visual_carry_replay",
+                object_mode="will_be_kinematic_tcp_clamped",
+                leg_policy=video_leg_policy,
+                hold_state=video_pick_hold_state,
+                leg_state=video_safe_leg_state,
+            )
             try:
                 carry_replay_report = await _replay_nav_to_place_with_tcp_object_carry(
                     world,
@@ -6181,6 +8063,12 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
                 ) from exc
 
             result["stages"]["replay_nav_to_place"] = carry_replay_report
+            result["metadata"]["replay_nav_to_place_executed"] = True
+            if video_baseline_mode and isinstance(video_safe_leg_state, dict):
+                carry_replay_report["video_baseline_leg_state"] = video_safe_leg_state
+                carry_replay_report["q_leg_safe"] = video_safe_leg_state.get("q_leg_safe")
+                carry_replay_report["q_leg_safe_source"] = video_safe_leg_state.get("q_leg_safe_source")
+                carry_replay_report["video_baseline_leg_policy"] = video_leg_policy
 
             # 兼容后面的 _run_arm_place_put(... restore_place_report=...)
             # 这里不是瞬移 restore，而是 replay carry 后 base 已经连续到达 place 附近。
@@ -6190,6 +8078,35 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
                 "restore_place_base_skipped": True,
                 "reason": "base_already_moved_by_replay_nav_to_place_with_carried_object",
             }
+            if video_baseline_mode and isinstance(video_safe_leg_state, dict):
+                result["stages"]["restore_place_base"]["video_baseline_leg_state"] = video_safe_leg_state
+            _record_video_phase_transition(
+                result,
+                phase="after_replay_nav_to_place_before_place",
+                world=world,
+                robot=robot,
+                object_prim_path=object_prim_path,
+                execution_type="visual_carry_replay_complete",
+                object_mode="kinematic_tcp_clamped",
+                leg_policy=video_leg_policy,
+                hold_state=video_pick_hold_state,
+                leg_state=video_safe_leg_state,
+                extra={
+                    "carry_backend": carry_replay_report.get("carry_replay_backend"),
+                    "visual_carry_nav": carry_replay_report.get("visual_carry_nav"),
+                },
+            )
+            result.setdefault("video_baseline_holds", {})["after_replay_nav_to_place"] = await _video_baseline_hold_after_phase(
+                world,
+                robot,
+                phase="after_replay_nav_to_place",
+                duration_s=float(video_config["hold_after_phase_s"]),
+                hold_state=video_pick_hold_state,
+                leg_policy=video_leg_policy,
+                leg_state=video_safe_leg_state,
+                root_nav_pose=carry_replay_report.get("root_hold_nav_pose"),
+                root_z=carry_replay_report.get("root_hold_z"),
+            )
 
         elif args.restore_nav_place_for_arm_place:
             # 旧分支：瞬移/恢复 place base。不作为主线 carry 使用。
@@ -6204,6 +8121,8 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
                 )
             except Exception as exc:
                 raise DemoFailure("restore_place_base_failed", str(exc), getattr(exc, "report", None)) from exc
+            if video_baseline_mode and isinstance(video_safe_leg_state, dict):
+                result["stages"]["restore_place_base"]["video_baseline_leg_state"] = video_safe_leg_state
 
         else:
             # 默认路线：不恢复 place base，不做 kinematic carry。
@@ -6231,6 +8150,8 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
                 "robot_root_pose_modified_during_arm_place": False,
                 "max_tcp_object_error_m": None,
             }
+            if video_baseline_mode and isinstance(video_safe_leg_state, dict):
+                result["stages"]["restore_place_base"]["video_baseline_leg_state"] = video_safe_leg_state
         if args.replay_nav_to_place and not result["stages"].get("replay_nav_to_place", {}).get("success", False):
             result.setdefault("warnings", []).append(
                 {
@@ -6250,6 +8171,22 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
         if args.put_mode == "mvp-reconstruct":
             put_report = _run_mvp_put(world, raw_task_place, args)
         elif args.put_mode == "arm-place":
+            _record_video_phase_transition(
+                result,
+                phase="before_arm_place",
+                world=world,
+                robot=robot,
+                object_prim_path=object_prim_path,
+                execution_type="curobo_arm_place_physics_execution",
+                object_mode=(
+                    "kinematic_tcp_clamped_until_release"
+                    if (result["stages"].get("restore_place_base") or {}).get("object_kinematic_until_release")
+                    else "dynamic"
+                ),
+                leg_policy=video_leg_policy,
+                hold_state=video_pick_hold_state,
+                leg_state=video_safe_leg_state,
+            )
             put_report = await _run_arm_place_put(
                 world,
                 robot,
@@ -6274,6 +8211,19 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
         )
         raise
     result["stages"]["put"] = put_report
+    _record_video_phase_transition(
+        result,
+        phase="after_arm_place",
+        world=world,
+        robot=robot,
+        object_prim_path=object_prim_path,
+        execution_type="curobo_arm_place_complete",
+        object_mode="dynamic_after_release",
+        leg_policy=video_leg_policy,
+        hold_state=video_pick_hold_state,
+        leg_state=video_safe_leg_state,
+        extra={"put_success": put_report.get("success"), "arm_place_executed": put_report.get("arm_place_executed")},
+    )
     _write_json(args.put_result, {"schema_version": 1, "mode": MODE, **put_report})
     restore_place_stage = result["stages"].get("restore_place_base") or {}
     result.update(
@@ -6307,6 +8257,25 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
             "scene_usd": str(scene_usd),
             "pipeline_context": str(context_path),
         }
+    )
+    _record_video_phase_transition(
+        result,
+        phase="final_result",
+        world=world,
+        robot=robot,
+        object_prim_path=object_prim_path,
+        execution_type="final_result",
+        object_mode="dynamic_after_release" if args.put_mode == "arm-place" else "mvp_or_release_mode",
+        leg_policy=video_leg_policy,
+        hold_state=video_pick_hold_state,
+        leg_state=video_safe_leg_state,
+        extra={
+            "success": result.get("success"),
+            "put_mode": result.get("put_mode"),
+            "base_transfer_mode": result.get("base_transfer_mode"),
+            "replay_nav_to_pick_executed": result.get("metadata", {}).get("replay_nav_to_pick_executed"),
+            "replay_nav_to_place_executed": result.get("metadata", {}).get("replay_nav_to_place_executed"),
+        },
     )
     try:
         app = omni.kit.app.get_app()
@@ -6381,6 +8350,7 @@ def _run() -> int:
             "restore_pick_base_failed",
             "object_unstable_before_pick",
             "pick_failed",
+            "object_not_carried_after_pick",
             "carry_mode_not_implemented",
             "restore_place_base_failed",
             "missing_place_pose_world",
@@ -6390,6 +8360,9 @@ def _run() -> int:
             "arm_place_failed",
             "arm_place_execution_failed",
             "object_out_of_place",
+            "replay_nav_to_pick_failed",
+            "nav_replay_root_pose_failed",
+            "nav_gait_joint_mapping_failed",
             "replay_nav_to_place_failed",
             "missing_nav_replay_trajectory",
             "invalid_nav_replay_trajectory",
@@ -6400,6 +8373,7 @@ def _run() -> int:
                 "restore_pick_base_failed": "restore_pick_base",
                 "object_unstable_before_pick": "prepare_object",
                 "pick_failed": "pick",
+                "object_not_carried_after_pick": "carry_precheck",
                 "carry_mode_not_implemented": "carry_state",
                 "restore_place_base_failed": "restore_place_base",
                 "missing_place_pose_world": "put",
@@ -6409,6 +8383,9 @@ def _run() -> int:
                 "arm_place_failed": "put",
                 "arm_place_execution_failed": "put",
                 "object_out_of_place": "put",
+                "replay_nav_to_pick_failed": "replay_nav_to_pick",
+                "nav_replay_root_pose_failed": "replay_nav_to_pick",
+                "nav_gait_joint_mapping_failed": "replay_nav_to_pick",
                 "replay_nav_to_place_failed": "replay_nav_to_place",
                 "missing_nav_replay_trajectory": "replay_nav_to_place",
                 "invalid_nav_replay_trajectory": "replay_nav_to_place",

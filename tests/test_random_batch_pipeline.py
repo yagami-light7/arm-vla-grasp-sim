@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from argparse import Namespace
@@ -256,7 +257,8 @@ class RandomBatchPipelineTest(unittest.TestCase):
         with patch("sys.argv", ["run_random_nav_pick_place_batch.py"]):
             args = pick_place_batch._parse_args()
 
-        env = pick_place_batch._single_stage_07_env(args)
+        with patch.dict(os.environ, {}, clear=True):
+            env = pick_place_batch._single_stage_07_env(args)
 
         self.assertIsNotNone(env)
         self.assertEqual(env["GO2_X5_CARRY_REPLAY_BACKEND"], "visual_root_only")
@@ -265,10 +267,75 @@ class RandomBatchPipelineTest(unittest.TestCase):
         self.assertEqual(env["GO2_X5_ARM_PLACE_HOLD_SUPPORT_JOINTS"], "0")
         self.assertEqual(env["GO2_X5_ARM_PLACE_DIRECT_JOINT_STATE"], "1")
         self.assertEqual(env["GO2_X5_ARM_PLACE_EXEC_TIME_SCALE"], "1.50")
+        self.assertEqual(env["GO2_X5_RETURN_HOME_AFTER_LIFT"], "0")
+        self.assertEqual(env["GO2_X5_HOLD_GRIPPER_AFTER_CLOSE"], "1")
+        self.assertEqual(env["GO2_X5_CARRY_HOLD_GRIPPER_CLOSE_TARGET"], "0")
+        self.assertEqual(env["GO2_X5_REQUIRE_SIDE_RETREAT_HEIGHT_OK"], "0")
+        self.assertEqual(env["GO2_X5_CARRY_OBJECT_POSE_SOURCE"], "usd_root")
+        self.assertEqual(env["GO2_X5_CARRY_OBJECT_ORIENTATION_MODE"], "world_locked")
+        self.assertEqual(env["GO2_X5_CARRY_OBJECT_TRANSLATION_ONLY"], "1")
+        self.assertEqual(env["GO2_X5_CARRY_RESET_OBJECT_XFORM_STACK"], "0")
+        self.assertEqual(env["GO2_X5_CARRY_COMPENSATE_PRESERVED_XFORM_STACK"], "1")
+        self.assertEqual(env["GO2_X5_CARRY_REAPPLY_OBJECT_POSE_BEFORE_REPLAY"], "0")
+        self.assertEqual(env["GO2_X5_ARM_PLACE_CALLBACK_SAFE_LEG_DIRECT_SET"], "0")
+        self.assertEqual(env["GO2_X5_ARM_PLACE_DIRECT_STATE_ONLY"], "1")
+        self.assertEqual(env["GO2_X5_ARM_PLACE_LOCK_BASE"], "1")
+        self.assertEqual(env["GO2_X5_ARM_PLACE_SKIP_WORLD_STEP"], "1")
 
         with patch("sys.argv", ["run_random_nav_pick_place_batch.py", "--no-single-stage-stable-defaults"]):
             args = pick_place_batch._parse_args()
         self.assertIsNone(pick_place_batch._single_stage_07_env(args))
+
+    def test_pick_place_batch_video_baseline_env_defaults_keep_nav_gait(self) -> None:
+        with patch("sys.argv", ["run_random_nav_pick_place_batch.py"]):
+            args = pick_place_batch._parse_args()
+
+        with patch.dict(os.environ, {"GO2_X5_VIDEO_BASELINE_MODE": "1"}, clear=True):
+            env = pick_place_batch._single_stage_07_env(args)
+
+        self.assertIsNotNone(env)
+        self.assertEqual(env["GO2_X5_CARRY_REPLAY_BACKEND"], "live_planar_articulation")
+        self.assertEqual(env["GO2_X5_CARRY_VISUAL_ROOT_XFORM_SYNC"], "0")
+        self.assertEqual(env["GO2_X5_CARRY_REPLAY_FULL_ROOT_POSE"], "1")
+        self.assertEqual(env["GO2_X5_CARRY_REPLAY_ROOT_VELOCITY"], "1")
+        self.assertEqual(env["GO2_X5_CARRY_REPLAY_JOINTS"], "1")
+        self.assertEqual(env["GO2_X5_CARRY_REPLAY_LEG_ONLY"], "0")
+        self.assertEqual(env["GO2_X5_CARRY_REPLAY_JOINT_ACTION"], "1")
+        self.assertEqual(env["GO2_X5_CARRY_REPLAY_JOINT_VELOCITY"], "0")
+        self.assertEqual(env["GO2_X5_CARRY_ZERO_ROOT_VELOCITY_WHEN_SKIPPED"], "0")
+        self.assertEqual(env["GO2_X5_CARRY_REPLAY_RENDER_WORLD_STEP"], "1")
+        self.assertEqual(env["GO2_X5_CARRY_TCP_SOURCE"], "root_delta")
+        self.assertEqual(env["GO2_X5_RETURN_HOME_AFTER_LIFT"], "0")
+        self.assertEqual(env["GO2_X5_HOLD_GRIPPER_AFTER_CLOSE"], "1")
+        self.assertEqual(env["GO2_X5_CARRY_HOLD_GRIPPER_CLOSE_TARGET"], "0")
+        self.assertEqual(env["GO2_X5_REQUIRE_SIDE_RETREAT_HEIGHT_OK"], "0")
+        self.assertEqual(env["GO2_X5_VIDEO_BASELINE_AFTER_PICK_HOLD_S"], "0.0")
+        self.assertEqual(env["GO2_X5_CARRY_OBJECT_POSE_SOURCE"], "usd_root")
+        self.assertEqual(env["GO2_X5_CARRY_OBJECT_ORIENTATION_MODE"], "world_locked")
+        self.assertEqual(env["GO2_X5_CARRY_OBJECT_TRANSLATION_ONLY"], "1")
+        self.assertEqual(env["GO2_X5_CARRY_RESET_OBJECT_XFORM_STACK"], "0")
+        self.assertEqual(env["GO2_X5_CARRY_COMPENSATE_PRESERVED_XFORM_STACK"], "1")
+        self.assertEqual(env["GO2_X5_CARRY_REAPPLY_OBJECT_POSE_BEFORE_REPLAY"], "0")
+        self.assertEqual(env["GO2_X5_VIDEO_BASELINE_LEG_POLICY"], "frozen_safe_pose")
+        self.assertEqual(env["GO2_X5_VIDEO_BASELINE_SAFE_LEG_SETTLE_SKIP_ERROR_TOL"], "0.01")
+        self.assertEqual(env["GO2_X5_ARM_PLACE_PRE_SETTLE_S"], "2.50")
+        self.assertEqual(env["GO2_X5_ARM_PLACE_HOLD_SUPPORT_JOINTS"], "1")
+        self.assertEqual(env["GO2_X5_ARM_PLACE_CALLBACK_SAFE_LEG_DIRECT_SET"], "0")
+        self.assertEqual(env["GO2_X5_ARM_PLACE_DIRECT_STATE_ONLY"], "1")
+        self.assertEqual(env["GO2_X5_ARM_PLACE_LOCK_BASE"], "1")
+        self.assertEqual(env["GO2_X5_ARM_PLACE_SKIP_WORLD_STEP"], "1")
+
+        with patch.dict(
+            os.environ,
+            {
+                "GO2_X5_VIDEO_BASELINE_MODE": "1",
+                "GO2_X5_CARRY_REPLAY_BACKEND": "custom_backend",
+            },
+            clear=True,
+        ):
+            env = pick_place_batch._single_stage_07_env(args)
+        self.assertIsNotNone(env)
+        self.assertNotIn("GO2_X5_CARRY_REPLAY_BACKEND", env)
 
     def test_pick_place_batch_single_stage_07_command_forwards_options(self) -> None:
         with patch(
