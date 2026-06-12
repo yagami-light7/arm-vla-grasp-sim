@@ -41,7 +41,7 @@ DEFAULT_ARM_PLACE_EXEC_TIME_SCALE = 1.00
 DEFAULT_ARM_PLACE_MOVE_TO_PRE_PLACE_TIME_SCALE = 1.00
 DEFAULT_ARM_PLACE_APPROACH_TO_PLACE_TIME_SCALE = 1.00
 DEFAULT_ARM_PLACE_RETREAT_PLACE_TIME_SCALE = 1.00
-DEFAULT_ARM_PLACE_RELEASE_CLEARANCE_M = 0.012
+DEFAULT_ARM_PLACE_RELEASE_CLEARANCE_M = 0.013
 DEFAULT_ARM_PLACE_PRE_PLACE_CLEARANCE_M = 0.06
 DEFAULT_ARM_PLACE_RETREAT_CLEARANCE_M = 0.08
 DEFAULT_VIDEO_BASELINE_HOLD_AFTER_PHASE_S = 0.5
@@ -223,6 +223,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--legacy-side-retreat", action="store_true")
     parser.add_argument("--side-grasp-fallback-retreat", action="store_true")
     parser.add_argument("--show-grasp-trajectory", action="store_true")
+    parser.add_argument(
+        "--show-randomization-debug",
+        action="store_true",
+        help="Show pick/place XY randomization ranges and sampled positions as non-physical USD guide markers.",
+    )
     parser.add_argument("--carry-mode", choices=("none", "logical", "fixed-joint", "kinematic"), default="logical")
     parser.add_argument("--put-mode", choices=("mvp-reconstruct", "release-only", "arm-place"), default="mvp-reconstruct")
     parser.add_argument("--replay-nav-to-pick", action="store_true")
@@ -315,6 +320,7 @@ def _base_result(args: argparse.Namespace) -> dict[str, Any]:
         "video_baseline_mode": _video_baseline_enabled(),
         "video_baseline_leg_policy": _video_baseline_leg_policy(),
         "video_baseline_config": _video_baseline_config(),
+        "show_randomization_debug": bool(args.show_randomization_debug),
         "phase_transition_reports": [],
         "task_nav_to_pick": _required_path_text(args.task_nav_to_pick, "task-nav-to-pick"),
         "task_nav_to_place": _required_path_text(args.task_nav_to_place, "task-nav-to-place"),
@@ -338,6 +344,11 @@ def _base_result(args: argparse.Namespace) -> dict[str, Any]:
         },
         "stages": {
             "open_stage": {},
+            "randomization_debug": {
+                "enabled": bool(args.show_randomization_debug),
+                "created": False,
+                "reason": "pending" if args.show_randomization_debug else "disabled",
+            },
             "replay_nav_to_pick": {},
             "restore_pick_base": {},
             "prepare_object": {},
@@ -423,6 +434,7 @@ def _write_context(args: argparse.Namespace, task_pick: dict[str, Any], scene_us
         "side_retreat_only": bool(args.side_retreat_only),
         "side_grasp_fallback_retreat": bool(args.side_grasp_fallback_retreat),
         "show_grasp_trajectory": bool(args.show_grasp_trajectory),
+        "show_randomization_debug": bool(args.show_randomization_debug),
         "object_pose_policy": (task_pick.get("randomization") or {}).get("object_pose_policy", {}),
         "physical_nav_continuity": PHYSICAL_NAV_CONTINUITY,
         "base_transfer_mode": "restore_from_nav_result",
@@ -551,6 +563,192 @@ def _set_viewport_stage_camera(camera_prim_path: str) -> bool:
     except Exception as exc:
         print(f"[WARN] Failed to set viewport camera {camera_prim_path}: {exc}")
         return False
+
+
+def _randomization_xy_range(
+    randomization: dict[str, Any],
+    *,
+    key: str,
+    fallback_key: str | None = None,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    report = randomization.get(key)
+    if not isinstance(report, dict) and fallback_key:
+        report = randomization.get(fallback_key)
+    if not isinstance(report, dict):
+        return None
+    x_range = report.get("x_range_m")
+    y_range = report.get("y_range_m")
+    if not isinstance(x_range, (list, tuple)) or len(x_range) != 2:
+        return None
+    if not isinstance(y_range, (list, tuple)) or len(y_range) != 2:
+        return None
+    try:
+        x_min, x_max = float(x_range[0]), float(x_range[1])
+        y_min, y_max = float(y_range[0]), float(y_range[1])
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in (x_min, x_max, y_min, y_max)):
+        return None
+    if x_min > x_max or y_min > y_max:
+        return None
+    return (x_min, x_max), (y_min, y_max)
+
+
+def _create_debug_curve(
+    stage,
+    prim_path: str,
+    points: list[tuple[float, float, float]],
+    color: tuple[float, float, float],
+    *,
+    width: float,
+) -> None:
+    from pxr import Gf, UsdGeom
+
+    curve = UsdGeom.BasisCurves.Define(stage, prim_path)
+    curve.CreateTypeAttr(UsdGeom.Tokens.linear)
+    curve.CreateWrapAttr(UsdGeom.Tokens.nonperiodic)
+    curve.CreateCurveVertexCountsAttr([len(points)])
+    curve.CreatePointsAttr([Gf.Vec3f(*point) for point in points])
+    curve.CreateWidthsAttr([float(width)] * len(points))
+    curve.SetWidthsInterpolation(UsdGeom.Tokens.vertex)
+    curve.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+
+
+def _create_randomization_debug_group(
+    stage,
+    *,
+    group_name: str,
+    xy_range: tuple[tuple[float, float], tuple[float, float]] | None,
+    pose_world: dict[str, Any],
+    color: tuple[float, float, float],
+) -> dict[str, Any]:
+    from pxr import Gf, UsdGeom
+
+    root_path = f"/World/RandomizationDebug/{group_name}"
+    UsdGeom.Xform.Define(stage, root_path)
+    try:
+        x = float(pose_world["x"])
+        y = float(pose_world["y"])
+        z = float(pose_world["z"])
+    except (KeyError, TypeError, ValueError) as exc:
+        return {
+            "created": False,
+            "root_prim_path": root_path,
+            "failure_reason": f"invalid_pose_world: {exc}",
+        }
+
+    marker_height = z + 0.12
+    sphere_path = f"{root_path}/SampledPosition"
+    sphere = UsdGeom.Sphere.Define(stage, sphere_path)
+    sphere.CreateRadiusAttr(0.035)
+    sphere.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+    UsdGeom.Xformable(sphere.GetPrim()).AddTranslateOp().Set(Gf.Vec3d(x, y, marker_height))
+
+    stem_path = f"{root_path}/PositionStem"
+    _create_debug_curve(
+        stage,
+        stem_path,
+        [(x, y, z + 0.01), (x, y, marker_height)],
+        color,
+        width=0.012,
+    )
+
+    range_path = None
+    if xy_range is not None:
+        (x_min, x_max), (y_min, y_max) = xy_range
+        range_path = f"{root_path}/XYRange"
+        range_z = z + 0.02
+        _create_debug_curve(
+            stage,
+            range_path,
+            [
+                (x_min, y_min, range_z),
+                (x_max, y_min, range_z),
+                (x_max, y_max, range_z),
+                (x_min, y_max, range_z),
+                (x_min, y_min, range_z),
+            ],
+            color,
+            width=0.016,
+        )
+
+    return {
+        "created": True,
+        "root_prim_path": root_path,
+        "sampled_position_prim_path": sphere_path,
+        "position_stem_prim_path": stem_path,
+        "xy_range_prim_path": range_path,
+        "pose_world": {"x": x, "y": y, "z": z},
+        "xy_range": {
+            "x": list(xy_range[0]),
+            "y": list(xy_range[1]),
+        }
+        if xy_range is not None
+        else None,
+        "color_rgb": list(color),
+        "physics_enabled": False,
+        "collision_enabled": False,
+    }
+
+
+def _show_randomization_debug(
+    raw_task_pick: dict[str, Any],
+    raw_task_place: dict[str, Any],
+) -> dict[str, Any]:
+    import omni.usd
+    from pxr import UsdGeom
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        raise DemoFailure("randomization_debug_failed", "No USD stage is open.")
+    root_path = "/World/RandomizationDebug"
+    if stage.GetPrimAtPath(root_path).IsValid():
+        stage.RemovePrim(root_path)
+    UsdGeom.Xform.Define(stage, root_path)
+
+    pick_randomization = dict(raw_task_pick.get("randomization") or {})
+    place_randomization = dict(raw_task_place.get("randomization") or {})
+    pick_pose = dict((raw_task_pick.get("pick") or {}).get("object_pose_world") or {})
+    place_pose = dict((raw_task_place.get("place") or {}).get("place_pose_world") or {})
+    pick_range = _randomization_xy_range(pick_randomization, key="object_xy_randomization")
+    place_range = _randomization_xy_range(place_randomization, key="place_xy_randomization")
+
+    report = {
+        "enabled": True,
+        "root_prim_path": root_path,
+        "legend": {
+            "pick": {"color": "green", "rgb": [0.1, 1.0, 0.2]},
+            "place": {"color": "blue", "rgb": [0.1, 0.4, 1.0]},
+            "sphere": "sampled episode position",
+            "rectangle": "configured XY randomization range",
+        },
+        "pick": _create_randomization_debug_group(
+            stage,
+            group_name="Pick",
+            xy_range=pick_range,
+            pose_world=pick_pose,
+            color=(0.1, 1.0, 0.2),
+        ),
+        "place": _create_randomization_debug_group(
+            stage,
+            group_name="Place",
+            xy_range=place_range,
+            pose_world=place_pose,
+            color=(0.1, 0.4, 1.0),
+        ),
+    }
+    print(
+        "[randomization-debug]",
+        {
+            "pick_range": report["pick"].get("xy_range"),
+            "pick_pose": report["pick"].get("pose_world"),
+            "place_range": report["place"].get("xy_range"),
+            "place_pose": report["place"].get("pose_world"),
+            "legend": "green=pick, blue=place",
+        },
+        flush=True,
+    )
+    return report
 
 
 def _schedule_kit_coroutine(coro):
@@ -8775,6 +8973,28 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
     )
     result["stages"]["prepare_object"]["timing"] = "after_stage_open_before_nav_to_pick_replay"
     result["stages"]["prepare_object"]["stage_setup_only"] = True
+    if args.show_randomization_debug:
+        try:
+            result["stages"]["randomization_debug"] = _show_randomization_debug(
+                raw_task_pick,
+                raw_task_place,
+            )
+            result["stages"]["randomization_debug"]["created"] = True
+            result["stages"]["randomization_debug"]["reason"] = ""
+        except Exception as exc:
+            result["stages"]["randomization_debug"] = {
+                "enabled": True,
+                "created": False,
+                "reason": "visualization_creation_failed",
+                "error": str(exc),
+            }
+            result.setdefault("warnings", []).append(
+                {
+                    "warning": "randomization_debug_visualization_failed",
+                    "detail": str(exc),
+                }
+            )
+            print(f"[WARN] randomization debug visualization failed: {exc}", flush=True)
     if video_baseline_mode:
         result["video_baseline_mode"] = True
         result["video_baseline_leg_policy"] = video_leg_policy

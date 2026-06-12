@@ -8,11 +8,12 @@ import copy
 import json
 import math
 import os
+import random
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -36,6 +37,10 @@ DEFAULT_PLACE_TEMPLATE_TASK = "tasks/nav_pick_place_apple_contact.json"
 DEFAULT_OUTPUT_TASK_DIR = "outputs/random_tasks/apple_pick_place_07_far_manual"
 DEFAULT_DATASET_ROOT = "outputs/random_pick_place_dataset/apple_pick_place_07_far_manual"
 DEFAULT_PICK_PLACE_BASE_GOAL_OFFSET_XY_M = (0.35, -0.08)
+DEFAULT_PICK_X_RANGE_M = (0.83, 0.93)
+DEFAULT_PICK_Y_RANGE_M = (1.00, 1.50)
+DEFAULT_PLACE_X_RANGE_M = (0.65285, 0.75285)
+DEFAULT_PLACE_Y_RANGE_M = (5.00337, 5.50337)
 HANDOFF_MODE = "multi_process_json"
 PHYSICAL_CONTINUITY = False
 
@@ -112,9 +117,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--replay-nav-speed", type=float, default=1.0)
     parser.add_argument("--keep-window-open", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--show-grasp-trajectory", action="store_true")
+    parser.add_argument(
+        "--show-randomization-debug",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Show pick/place XY ranges and sampled episode positions as non-physical USD guide markers.",
+    )
 
-    parser.add_argument("--table-x-range", type=float, nargs=2, default=(0.88, 0.93), metavar=("X_MIN", "X_MAX"))
-    parser.add_argument("--table-y-range", type=float, nargs=2, default=(1.4, 1.5), metavar=("Y_MIN", "Y_MAX"))
+    parser.add_argument("--table-x-range", type=float, nargs=2, default=DEFAULT_PICK_X_RANGE_M, metavar=("X_MIN", "X_MAX"))
+    parser.add_argument("--table-y-range", type=float, nargs=2, default=DEFAULT_PICK_Y_RANGE_M, metavar=("Y_MIN", "Y_MAX"))
+    parser.add_argument("--place-x-range", type=float, nargs=2, default=DEFAULT_PLACE_X_RANGE_M, metavar=("X_MIN", "X_MAX"))
+    parser.add_argument("--place-y-range", type=float, nargs=2, default=DEFAULT_PLACE_Y_RANGE_M, metavar=("Y_MIN", "Y_MAX"))
     parser.add_argument("--table-z", type=float, default=0.81653)
     parser.add_argument("--object-z-offset", type=float, default=0.0)
     parser.add_argument("--object-fixed-z", type=float, default=DEFAULT_APPLE_FIXED_Z_M)
@@ -517,6 +530,8 @@ def _single_stage_07_command(
         command.append("--side-grasp-fallback-retreat")
     if args.show_grasp_trajectory:
         command.append("--show-grasp-trajectory")
+    if args.show_randomization_debug:
+        command.append("--show-randomization-debug")
 
     if args.single_stage_put_mode == "arm-place":
         if args.restore_nav_place_for_arm_place:
@@ -879,6 +894,85 @@ def _ensure_place_goal(task: dict[str, Any], args: argparse.Namespace) -> dict[s
     return task
 
 
+def _validated_range_pair(raw_range: Sequence[float], *, name: str) -> tuple[float, float]:
+    if len(raw_range) != 2:
+        raise ValueError(f"{name} must contain exactly two values.")
+    lower, upper = (float(raw_range[0]), float(raw_range[1]))
+    if not math.isfinite(lower) or not math.isfinite(upper):
+        raise ValueError(f"{name} values must be finite.")
+    if lower > upper:
+        raise ValueError(f"{name} min must be <= max.")
+    return lower, upper
+
+
+def _apply_default_place_xy_randomization(
+    task: dict[str, Any],
+    *,
+    episode_seed: int,
+    place_x_range: Sequence[float] = DEFAULT_PLACE_X_RANGE_M,
+    place_y_range: Sequence[float] = DEFAULT_PLACE_Y_RANGE_M,
+) -> dict[str, Any]:
+    """Sample place x/y inside bounds while preserving the template base-goal offset."""
+
+    place = dict(task.get("place") or {})
+    place_pose = dict(place.get("place_pose_world") or {})
+    base_goal = dict(place.get("base_goal") or {})
+    if not place.get("enabled", False) or not {"x", "y"}.issubset(place_pose):
+        return task
+
+    x_min, x_max = _validated_range_pair(place_x_range, name="place_x_range")
+    y_min, y_max = _validated_range_pair(place_y_range, name="place_y_range")
+    rng = random.Random(int(episode_seed) + 9173)
+    sampled_x = rng.uniform(x_min, x_max)
+    sampled_y = rng.uniform(y_min, y_max)
+
+    place_pose_before = copy.deepcopy(place_pose)
+    base_goal_before = copy.deepcopy(base_goal)
+    dx = sampled_x - float(place_pose_before["x"])
+    dy = sampled_y - float(place_pose_before["y"])
+    place_pose["x"] = sampled_x
+    place_pose["y"] = sampled_y
+    place["place_pose_world"] = place_pose
+
+    base_goal_offset_before: list[float] | None = None
+    if {"x", "y"}.issubset(base_goal):
+        base_goal_offset_before = [
+            float(base_goal["x"]) - float(place_pose_before["x"]),
+            float(base_goal["y"]) - float(place_pose_before["y"]),
+        ]
+        base_goal["x"] = float(base_goal["x"]) + dx
+        base_goal["y"] = float(base_goal["y"]) + dy
+        place["base_goal"] = base_goal
+
+    task["place"] = place
+    randomization = dict(task.get("randomization") or {})
+    randomization["place_xy_randomization"] = {
+        "enabled": True,
+        "mode": "sample_xy_within_cli_range_translate_base_goal",
+        "seed": int(episode_seed) + 9173,
+        "x_range_m": [x_min, x_max],
+        "y_range_m": [y_min, y_max],
+        "sampled_xy": {"x": sampled_x, "y": sampled_y},
+        "delta_xy_m": [dx, dy],
+        "place_pose_world_before": place_pose_before,
+        "place_pose_world_after": copy.deepcopy(place_pose),
+        "base_goal_before": base_goal_before,
+        "base_goal_after": copy.deepcopy(base_goal) if base_goal else None,
+        "base_goal_offset_from_place_xy_m_before": base_goal_offset_before,
+        "base_goal_offset_from_place_xy_m_after": [
+            float(base_goal["x"]) - float(place_pose["x"]),
+            float(base_goal["y"]) - float(place_pose["y"]),
+        ]
+        if {"x", "y"}.issubset(base_goal)
+        else None,
+        "nav_goal_rule": "place.base_goal keeps the original template offset from randomized place.place_pose_world",
+        "pose_policy": "xy_only; z/roll/pitch/yaw unchanged",
+        "object_mesh_randomization": {"enabled": False, "reason": "no mesh or asset swap in batch randomization"},
+    }
+    task["randomization"] = randomization
+    return task
+
+
 def _wrap_yaw(yaw: float) -> float:
     return (float(yaw) + math.pi) % (2.0 * math.pi) - math.pi
 
@@ -949,10 +1043,15 @@ def _batch_row_from_summary(summary: dict[str, Any], *, started_at: float, task:
         "nav_visualization_in_batch": summary.get("nav_visualization_in_batch"),
         "single_stage_07_visualization": summary.get("single_stage_07_visualization"),
         "single_stage_replay_nav": summary.get("single_stage_replay_nav"),
+        "show_randomization_debug": summary.get("show_randomization_debug"),
         "object_pose_world": task.get("pick", {}).get("object_pose_world"),
         "object_pose_policy": randomization.get("object_pose_policy"),
+        "object_xy_randomization": randomization.get("object_xy_randomization"),
+        "object_mesh_randomization": randomization.get("object_mesh_randomization"),
         "base_goal": task.get("pick", {}).get("base_goal"),
+        "place_pose_world": (task.get("place") or {}).get("place_pose_world"),
         "place_base_goal": (task.get("place") or {}).get("base_goal"),
+        "place_xy_randomization": randomization.get("place_xy_randomization"),
         "selected_base_goal_candidate": selected,
         "path_heading_error": selected.get("path_heading_error"),
         "nav_pick_base_goal_xy_error_m": nav_pick_alignment.get("base_goal_xy_error_m"),
@@ -1109,6 +1208,17 @@ def _run_episode(args: argparse.Namespace, episode_index: int, episode_seed: int
         )
         # 确保place字段存在
         task = _ensure_place_goal(task, args)
+        if not (
+            args.manipulation_backend == "single-stage-07"
+            and args.single_stage_put_mode == "arm-place"
+            and args.skip_nav_place_for_local_arm_place
+        ):
+            task = _apply_default_place_xy_randomization(
+                task,
+                episode_seed=episode_seed,
+                place_x_range=args.place_x_range,
+                place_y_range=args.place_y_range,
+            )
         # 是否跳过nav_to_place
         if(
             args.manipulation_backend == "single-stage-07"
@@ -1116,6 +1226,7 @@ def _run_episode(args: argparse.Namespace, episode_index: int, episode_seed: int
             and args.skip_nav_place_for_local_arm_place
         ):
             task = _make_local_arm_place_goal(task)
+        _write_json(generated_task_json, task)
     except (RandomTaskGenerationError, ValueError, FileNotFoundError) as exc:
         summary = _base_episode_summary(episode_index, episode_seed, episode_dir, task_nav_to_pick_path)
         _finalize_failure(summary, "task_generation_failed", str(exc))
@@ -1134,6 +1245,11 @@ def _run_episode(args: argparse.Namespace, episode_index: int, episode_seed: int
     summary["physical_nav_continuity"] = PHYSICAL_CONTINUITY
     summary["nav_visualization_in_batch"] = bool(args.manipulation_backend != "single-stage-07" and args.demo_visuals)
     summary["single_stage_07_visualization"] = bool(args.manipulation_backend == "single-stage-07" and args.demo_visuals)
+    summary["show_randomization_debug"] = bool(
+        args.manipulation_backend == "single-stage-07"
+        and args.demo_visuals
+        and args.show_randomization_debug
+    )
     summary["single_stage_replay_nav"] = bool(args.manipulation_backend == "single-stage-07" and args.single_stage_replay_nav)
     summary["single_stage_stable_defaults"] = bool(
         args.manipulation_backend == "single-stage-07"

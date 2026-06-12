@@ -223,6 +223,8 @@ class RandomBatchPipelineTest(unittest.TestCase):
         self.assertEqual(args.place_template_task, "tasks/nav_pick_place_apple_contact.json")
         self.assertEqual(args.output_task_dir, "outputs/random_tasks/apple_pick_place_07_far_manual")
         self.assertEqual(args.dataset_root, "outputs/random_pick_place_dataset/apple_pick_place_07_far_manual")
+        self.assertEqual(tuple(args.place_x_range), (0.65285, 0.75285))
+        self.assertEqual(tuple(args.place_y_range), (5.00337, 5.50337))
         self.assertEqual(args.base_goal_mode, "object-offset")
         self.assertEqual(tuple(args.base_goal_offset_xy), (0.35, -0.08))
         self.assertAlmostEqual(args.clearance_radius, 0.20)
@@ -248,6 +250,7 @@ class RandomBatchPipelineTest(unittest.TestCase):
         self.assertEqual(args.follow_camera_mode, "stage")
         self.assertEqual(args.viewport_camera_prim, "/World/Camera_main")
         self.assertFalse(args.keep_window_open)
+        self.assertFalse(args.show_randomization_debug)
         self.assertTrue(args.side_retreat_only)
         self.assertTrue(args.use_planner_server)
         self.assertTrue(args.restart_planner_server)
@@ -383,6 +386,7 @@ class RandomBatchPipelineTest(unittest.TestCase):
                 "--legacy-side-retreat",
                 "--side-grasp-fallback-retreat",
                 "--show-grasp-trajectory",
+                "--show-randomization-debug",
                 "--single-stage-replay-nav",
                 "--single-stage-replay-nav-real-time",
                 "--single-stage-replay-nav-speed",
@@ -416,6 +420,7 @@ class RandomBatchPipelineTest(unittest.TestCase):
         self.assertIn("--legacy-side-retreat", command)
         self.assertIn("--side-grasp-fallback-retreat", command)
         self.assertIn("--show-grasp-trajectory", command)
+        self.assertIn("--show-randomization-debug", command)
         self.assertIn("--replay-nav-to-pick", command)
         self.assertIn("--replay-nav-to-place", command)
         self.assertIn("--replay-nav-real-time", command)
@@ -437,6 +442,62 @@ class RandomBatchPipelineTest(unittest.TestCase):
         self.assertIsNotNone(patched["place"]["base_goal"])
         self.assertIsNotNone(patched["place"]["place_pose_world"])
         self.assertTrue(patched["randomization"]["place_template"]["enabled"])
+
+    def test_pick_place_batch_randomizes_place_xy_and_keeps_base_offset(self) -> None:
+        task = {
+            "place": {
+                "enabled": True,
+                "place_pose_world": {
+                    "x": 0.65,
+                    "y": 5.00,
+                    "z": 0.72664,
+                    "roll": 0.0,
+                    "pitch": 0.0,
+                    "yaw": 0.0,
+                },
+                "base_goal": {"x": 1.10, "y": 4.85, "yaw": 1.57},
+            },
+            "randomization": {},
+        }
+
+        randomized = pick_place_batch._apply_default_place_xy_randomization(
+            task,
+            episode_seed=7,
+            place_x_range=(0.55, 0.75),
+            place_y_range=(4.90, 5.10),
+        )
+        report = randomized["randomization"]["place_xy_randomization"]
+        before_pose = report["place_pose_world_before"]
+        after_pose = report["place_pose_world_after"]
+        before_goal = report["base_goal_before"]
+        after_goal = report["base_goal_after"]
+        dx, dy = report["delta_xy_m"]
+
+        self.assertTrue(report["enabled"])
+        self.assertEqual(report["mode"], "sample_xy_within_cli_range_translate_base_goal")
+        self.assertEqual(report["x_range_m"], [0.55, 0.75])
+        self.assertEqual(report["y_range_m"], [4.90, 5.10])
+        self.assertGreaterEqual(report["sampled_xy"]["x"], 0.55)
+        self.assertLessEqual(report["sampled_xy"]["x"], 0.75)
+        self.assertGreaterEqual(report["sampled_xy"]["y"], 4.90)
+        self.assertLessEqual(report["sampled_xy"]["y"], 5.10)
+        self.assertAlmostEqual(after_pose["x"] - before_pose["x"], dx)
+        self.assertAlmostEqual(after_pose["y"] - before_pose["y"], dy)
+        self.assertAlmostEqual(after_goal["x"] - before_goal["x"], dx)
+        self.assertAlmostEqual(after_goal["y"] - before_goal["y"], dy)
+        self.assertAlmostEqual(
+            after_goal["x"] - after_pose["x"],
+            before_goal["x"] - before_pose["x"],
+        )
+        self.assertAlmostEqual(
+            after_goal["y"] - after_pose["y"],
+            before_goal["y"] - before_pose["y"],
+        )
+        self.assertEqual(after_pose["z"], before_pose["z"])
+        self.assertEqual(after_pose["roll"], before_pose["roll"])
+        self.assertEqual(after_pose["pitch"], before_pose["pitch"])
+        self.assertEqual(after_pose["yaw"], before_pose["yaw"])
+        self.assertFalse(report["object_mesh_randomization"]["enabled"])
 
     def test_pick_place_batch_command_forwards_stable_terminal_yaw_options(self) -> None:
         with patch("sys.argv", ["run_random_nav_pick_place_batch.py", "--demo-visuals"]):

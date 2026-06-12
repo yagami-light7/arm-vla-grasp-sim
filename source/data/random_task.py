@@ -738,6 +738,19 @@ def generate_random_pick_task(
                 object_fixed_rpy_input_unit=fixed_rpy_input_unit,
                 randomize_object_yaw=randomize_object_yaw,
             ),
+            "object_xy_randomization": {
+                "enabled": True,
+                "mode": "sample_xy_within_spawn_region",
+                "x_range_m": [float(spawn_region.x_min), float(spawn_region.x_max)],
+                "y_range_m": [float(spawn_region.y_min), float(spawn_region.y_max)],
+                "sampled_xy": {"x": float(object_pose.x), "y": float(object_pose.y)},
+                "pose_policy": "xy_only; z/roll/pitch fixed when fixed pose options are provided",
+                "nav_goal_rule": "pick.base_goal is generated from the sampled object pose",
+            },
+            "object_mesh_randomization": {
+                "enabled": False,
+                "reason": "random task generation only samples pose; it does not swap mesh or asset references",
+            },
             "object_edge_sampling": {
                 "enabled": edge_margin is not None,
                 "edge_sides": list(effective_edge_sides) if edge_margin is not None else [],
