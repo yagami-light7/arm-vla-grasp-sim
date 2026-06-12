@@ -55,8 +55,24 @@ DEBUG_ROOT_PATH = "/World/debug_go2_x5_grasp_sequence"
 SIM_DT = 1.0 / 50.0
 ARM_COMMAND_DT = 0.05
 ARM_PLACE_EXEC_TIME_SCALE = max(1.0e-6, float(os.environ.get("GO2_X5_ARM_PLACE_EXEC_TIME_SCALE", "1.0")))
+ARM_PLACE_MOVE_TO_PRE_PLACE_TIME_SCALE = max(
+    1.0e-6,
+    float(os.environ.get("GO2_X5_ARM_PLACE_MOVE_TO_PRE_PLACE_TIME_SCALE", str(ARM_PLACE_EXEC_TIME_SCALE))),
+)
+ARM_PLACE_APPROACH_TO_PLACE_TIME_SCALE = max(
+    1.0e-6,
+    float(os.environ.get("GO2_X5_ARM_PLACE_APPROACH_TO_PLACE_TIME_SCALE", str(ARM_PLACE_EXEC_TIME_SCALE))),
+)
+ARM_PLACE_RETREAT_PLACE_TIME_SCALE = max(
+    1.0e-6,
+    float(os.environ.get("GO2_X5_ARM_PLACE_RETREAT_PLACE_TIME_SCALE", str(ARM_PLACE_EXEC_TIME_SCALE))),
+)
 GRIPPER_COMMAND_DT = SIM_DT
 SETTLE_TO_SEGMENT_START_DURATION = 0.10
+SETTLE_TO_SEGMENT_START_SKIP_ERROR_TOL = max(
+    0.0,
+    float(os.environ.get("GO2_X5_SETTLE_TO_SEGMENT_START_SKIP_ERROR_TOL", "0.0")),
+)
 GRIPPER_MOVE_DURATION = 0.70
 GRIPPER_HOLD_DURATION = 0.45
 FINAL_HOLD_DURATION = 0.20
@@ -147,9 +163,12 @@ def safe_numpy(value) -> np.ndarray:
 def _segment_exec_time_scale(segment_name: str) -> float:
     """Apply the arm-place time scale only to place motion segments."""
     name = str(segment_name or "")
-    place_segments = {"move_to_pre_place", "approach_to_place", "retreat_place"}
-    if name in place_segments:
-        return float(ARM_PLACE_EXEC_TIME_SCALE)
+    if name == "move_to_pre_place":
+        return float(ARM_PLACE_MOVE_TO_PRE_PLACE_TIME_SCALE)
+    if name == "approach_to_place":
+        return float(ARM_PLACE_APPROACH_TO_PLACE_TIME_SCALE)
+    if name == "retreat_place":
+        return float(ARM_PLACE_RETREAT_PLACE_TIME_SCALE)
     return 1.0
 
 
@@ -606,6 +625,52 @@ async def settle_arm_to_start(
 
     start_error = float(np.linalg.norm(q_arm_initial - q_start))
     print(f"[settle:{label}] start_error={start_error:.6f}")
+    if (
+        SETTLE_TO_SEGMENT_START_SKIP_ERROR_TOL > 0.0
+        and start_error <= SETTLE_TO_SEGMENT_START_SKIP_ERROR_TOL
+    ):
+        q_full_now = get_joint_positions_checked(
+            robot,
+            min_size=required_joint_vector_size(arm_indices, hold_indices),
+            label=f"{label}:skip_settle_before_apply_action",
+        ).copy()
+        action = make_partial_action_with_hold(
+            q_start,
+            arm_indices,
+            q_full_now,
+            hold_indices=hold_indices,
+            hold_positions=hold_positions,
+        )
+        apply_arm_motion_command(
+            robot,
+            action,
+            q_start,
+            arm_indices,
+            hold_indices=hold_indices,
+            hold_positions=hold_positions,
+        )
+        if DIRECT_ARM_STATE_REPLAY:
+            direct_set_arm_motion_state(
+                robot,
+                q_start,
+                arm_indices,
+                hold_indices=hold_indices,
+                hold_positions=hold_positions,
+            )
+        await maybe_run_step_callback(
+            step_callback,
+            phase="settle_arm_to_start_skipped",
+            segment_name=label,
+            step_index=-1,
+            q_arm_target=q_start,
+            start_error=start_error,
+            skip_error_tol=float(SETTLE_TO_SEGMENT_START_SKIP_ERROR_TOL),
+        )
+        print(
+            f"[settle:{label}] skipped, start_error={start_error:.6f}, "
+            f"skip_error_tol={SETTLE_TO_SEGMENT_START_SKIP_ERROR_TOL:.6f}"
+        )
+        return
 
     num_steps = max(2, int(SETTLE_TO_SEGMENT_START_DURATION / SIM_DT))
     for step in range(num_steps):
@@ -634,9 +699,10 @@ async def settle_arm_to_start(
             hold_indices=hold_indices,
             hold_positions=hold_positions,
         )
+        await omni.kit.app.get_app().next_update_async()
         await maybe_run_step_callback(
             step_callback,
-            phase="before_world_step_settle_arm_to_start",
+            phase="after_direct_update_before_world_step",
             segment_name=label,
             step_index=step,
             q_arm_target=q_target,
@@ -646,7 +712,7 @@ async def settle_arm_to_start(
             world.step(render=True)
         await maybe_run_step_callback(
             step_callback,
-            phase="settle_arm_to_start",
+            phase="after_world_step_settle_arm_to_start",
             segment_name=label,
             step_index=step,
             q_arm_target=q_target,
@@ -668,6 +734,13 @@ async def settle_arm_to_start(
                 arm_indices,
                 hold_indices=hold_indices,
                 hold_positions=hold_positions,
+            )
+            await maybe_run_step_callback(
+                step_callback,
+                phase="after_post_update_direct_set_settle_arm_to_start",
+                segment_name=label,
+                step_index=step,
+                q_arm_target=q_target,
             )
 
 
@@ -734,6 +807,13 @@ async def execute_motion_segment(
         "world_step_skipped_when_direct_state_replay": bool(
             DIRECT_ARM_STATE_REPLAY and SKIP_WORLD_STEP_WHEN_DIRECT_STATE_REPLAY
         ),
+        "world_steps_executed": 0,
+        "world_steps_skipped": 0,
+        "render_updates_executed": 0,
+        "direct_state_command_count": 0,
+        "callback_after_direct_update_count": 0,
+        "callback_after_world_step_count": 0,
+        "callback_after_post_update_direct_set_count": 0,
     }
 
     print(
@@ -768,9 +848,13 @@ async def execute_motion_segment(
             hold_indices=hold_indices,
             hold_positions=hold_positions,
         )
+        if DIRECT_ARM_STATE_REPLAY:
+            log["direct_state_command_count"] += 1
+        await omni.kit.app.get_app().next_update_async()
+        log["render_updates_executed"] += 1
         await maybe_run_step_callback(
             step_callback,
-            phase="before_world_step_execute_motion_segment",
+            phase="after_direct_update_before_world_step",
             segment_name=name,
             step_index=step,
             t=float(t_exec),
@@ -778,20 +862,13 @@ async def execute_motion_segment(
             t_plan=float(t_plan),
             q_arm_target=q_target,
         )
+        log["callback_after_direct_update_count"] += 1
         skip_world_step = bool(DIRECT_ARM_STATE_REPLAY and SKIP_WORLD_STEP_WHEN_DIRECT_STATE_REPLAY)
         if not skip_world_step:
             world.step(render=True)
-        await maybe_run_step_callback(
-            step_callback,
-            phase="execute_motion_segment",
-            segment_name=name,
-            step_index=step,
-            t=float(t_exec),
-            t_exec=float(t_exec),
-            t_plan=float(t_plan),
-            q_arm_target=q_target,
-            world_step_skipped=skip_world_step,
-        )
+            log["world_steps_executed"] += 1
+        else:
+            log["world_steps_skipped"] += 1
         if DIRECT_ARM_STATE_REPLAY:
             command_report["post_step_direct_set"] = direct_set_arm_motion_state(
                 robot,
@@ -800,7 +877,21 @@ async def execute_motion_segment(
                 hold_indices=hold_indices,
                 hold_positions=hold_positions,
             )
+            log["direct_state_command_count"] += 1
         await omni.kit.app.get_app().next_update_async()
+        log["render_updates_executed"] += 1
+        await maybe_run_step_callback(
+            step_callback,
+            phase="after_world_step_execute_motion_segment",
+            segment_name=name,
+            step_index=step,
+            t=float(t_exec),
+            t_exec=float(t_exec),
+            t_plan=float(t_plan),
+            q_arm_target=q_target,
+            world_step_skipped=skip_world_step,
+        )
+        log["callback_after_world_step_count"] += 1
         if DIRECT_ARM_STATE_REPLAY:
             command_report["post_update_direct_set"] = direct_set_arm_motion_state(
                 robot,
@@ -809,6 +900,19 @@ async def execute_motion_segment(
                 hold_indices=hold_indices,
                 hold_positions=hold_positions,
             )
+            log["direct_state_command_count"] += 1
+            await maybe_run_step_callback(
+                step_callback,
+                phase="after_post_update_direct_set",
+                segment_name=name,
+                step_index=step,
+                t=float(t_exec),
+                t_exec=float(t_exec),
+                t_plan=float(t_plan),
+                q_arm_target=q_target,
+                world_step_skipped=skip_world_step,
+            )
+            log["callback_after_post_update_direct_set_count"] += 1
 
         q_full_actual = get_joint_positions_checked(
             robot,
@@ -903,7 +1007,7 @@ def make_reverse_return_home_segments(executed_segments):
     ]
 
 
-async def execute_return_home_motion(world, robot, arm_indices, q_home):
+async def execute_return_home_motion(world, robot, arm_indices, q_home, step_callback=None):
     """抓取流程结束后，用关节空间 S 曲线回到任务开始时的 home pose。"""
     name = "return_home"
     q_home = np.asarray(q_home, dtype=float)
@@ -949,7 +1053,23 @@ async def execute_return_home_motion(world, robot, arm_indices, q_home):
             q_target,
             arm_indices,
         )
+        await maybe_run_step_callback(
+            step_callback,
+            phase="after_direct_update_before_world_step",
+            segment_name=name,
+            step_index=step,
+            t=float(t),
+            q_arm_target=q_target,
+        )
         world.step(render=True)
+        await maybe_run_step_callback(
+            step_callback,
+            phase="after_world_step_execute_motion_segment",
+            segment_name=name,
+            step_index=step,
+            t=float(t),
+            q_arm_target=q_target,
+        )
         if DIRECT_ARM_STATE_REPLAY:
             _set_joint_state_direct_best_effort(robot, q_target, arm_indices)
         await omni.kit.app.get_app().next_update_async()

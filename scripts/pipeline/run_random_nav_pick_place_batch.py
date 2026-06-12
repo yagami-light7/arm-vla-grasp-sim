@@ -538,16 +538,24 @@ def _single_stage_07_env(args: argparse.Namespace) -> dict[str, str] | None:
     """Return env overrides that keep the 07 carry/place path in the stable profile."""
     if not getattr(args, "single_stage_stable_defaults", True):
         return None
-    video_baseline = str(os.environ.get("GO2_X5_VIDEO_BASELINE_MODE", "")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    raw_video_baseline = os.environ.get("GO2_X5_VIDEO_BASELINE_MODE")
+    if raw_video_baseline is None:
+        video_baseline = bool(getattr(args, "demo_visuals", False))
+        video_baseline_source = "--demo-visuals"
+    else:
+        video_baseline = str(raw_video_baseline).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        video_baseline_source = "GO2_X5_VIDEO_BASELINE_MODE"
     if video_baseline:
         video_defaults = {
             # Video baseline: both nav replay segments should show visible quadruped gait.
             # Keep explicit user GO2_X5_* values when present.
+            "GO2_X5_VIDEO_BASELINE_MODE": "1",
+            "GO2_X5_VIDEO_BASELINE_SOURCE": video_baseline_source,
             "GO2_X5_CARRY_REPLAY_BACKEND": "live_planar_articulation",
             "GO2_X5_CARRY_VISUAL_ROOT_XFORM_SYNC": "0",
             "GO2_X5_CARRY_REPLAY_FULL_ROOT_POSE": "1",
@@ -573,21 +581,34 @@ def _single_stage_07_env(args: argparse.Namespace) -> dict[str, str] | None:
             "GO2_X5_CARRY_COMPENSATE_PRESERVED_XFORM_STACK": "1",
             "GO2_X5_CARRY_REAPPLY_OBJECT_POSE_BEFORE_REPLAY": "0",
             "GO2_X5_VIDEO_BASELINE_SAFE_LEG_SETTLE_SKIP_ERROR_TOL": "0.01",
+            "GO2_X5_VIDEO_HOLD_ARM_GRIPPER_MODE": "action",
             "GO2_X5_ARM_PLACE_PRE_SETTLE_S": "2.50",
             "GO2_X5_ARM_PLACE_PRE_SETTLE_MAX_S": "4.00",
             "GO2_X5_ARM_PLACE_PRE_SETTLE_JOINT_ERROR_TOL": "0.03",
             "GO2_X5_ARM_PLACE_HOLD_SUPPORT_JOINTS": "1",
+            "GO2_X5_ARM_PLACE_HOLD_ROOT_SUPPORT_BEFORE_WORLD_STEP": "0",
+            "GO2_X5_ARM_PLACE_PLANNING_HOLD_ARM_GRIPPER": "1",
+            "GO2_X5_ARM_PLACE_PLANNING_HOLD_MODE": "action",
             "GO2_X5_ARM_PLACE_CALLBACK_SAFE_LEG_DIRECT_SET": "0",
-            "GO2_X5_ARM_PLACE_DIRECT_JOINT_STATE": "1",
-            "GO2_X5_ARM_PLACE_DIRECT_STATE_ONLY": "1",
+            "GO2_X5_ARM_PLACE_DIRECT_JOINT_STATE": "0",
+            "GO2_X5_ARM_PLACE_DIRECT_STATE_ONLY": "0",
             "GO2_X5_ARM_PLACE_LOCK_BASE": "1",
-            "GO2_X5_ARM_PLACE_SKIP_WORLD_STEP": "1",
+            "GO2_X5_ARM_PLACE_SKIP_WORLD_STEP": "0",
+            "GO2_X5_ARM_PLACE_OBJECT_FOLLOW_MODE": "tcp_kinematic_clamp",
+            "GO2_X5_ARM_PLACE_REQUIRE_OBJECT_NEAR_RELEASE_BEFORE_OPEN": "1",
             "GO2_X5_ARM_PLACE_SETTLE_TO_START_DURATION": "0.50",
-            "GO2_X5_ARM_PLACE_EXEC_TIME_SCALE": "1.50",
+            "GO2_X5_ARM_PLACE_SETTLE_TO_START_SKIP_ERROR_TOL": "0.005",
+            "GO2_X5_ARM_PLACE_EXEC_TIME_SCALE": "1.00",
+            "GO2_X5_ARM_PLACE_MOVE_TO_PRE_PLACE_TIME_SCALE": "1.00",
+            "GO2_X5_ARM_PLACE_APPROACH_TO_PLACE_TIME_SCALE": "1.00",
+            "GO2_X5_ARM_PLACE_RETREAT_PLACE_TIME_SCALE": "1.00",
+            "GO2_X5_ARM_PLACE_DISABLE_KINEMATIC_OBJECT_COLLISION": "1",
+            "GO2_X5_ARM_PLACE_RETURN_HOME_AFTER_RELEASE": "1",
+            "GO2_X5_ARM_PLACE_HOLD_ROOT_SUPPORT_DURING_RETURN_HOME": "0",
             "GO2_X5_ARM_PLACE_COMMAND_DT": "0.02",
-            "GO2_X5_ARM_PRE_PLACE_CLEARANCE_M": "0.08",
-            "GO2_X5_ARM_PLACE_RELEASE_CLEARANCE_M": "0.02",
-            "GO2_X5_ARM_PLACE_RETREAT_CLEARANCE_M": "0.10",
+            "GO2_X5_ARM_PRE_PLACE_CLEARANCE_M": "0.06",
+            "GO2_X5_ARM_PLACE_RELEASE_CLEARANCE_M": "0.005",
+            "GO2_X5_ARM_PLACE_RETREAT_CLEARANCE_M": "0.08",
             "GO2_X5_WORLD_COLLISION_ACTIVATION_DISTANCE_M": "0.07",
             "GO2_X5_SINGLE_STAGE_STABLE_DEFAULTS": "1",
         }
@@ -623,6 +644,7 @@ def _single_stage_07_env(args: argparse.Namespace) -> dict[str, str] | None:
         "GO2_X5_ARM_PLACE_LOCK_BASE": "1",
         "GO2_X5_ARM_PLACE_SKIP_WORLD_STEP": "1",
         "GO2_X5_ARM_PLACE_SETTLE_TO_START_DURATION": "0.50",
+        "GO2_X5_ARM_PLACE_SETTLE_TO_START_SKIP_ERROR_TOL": "0.005",
         "GO2_X5_ARM_PLACE_EXEC_TIME_SCALE": "1.50",
         "GO2_X5_ARM_PLACE_COMMAND_DT": "0.02",
         # Common place target tuning that was previously supplied on the shell command.
@@ -1255,13 +1277,46 @@ def _run_episode(args: argparse.Namespace, episode_index: int, episode_seed: int
         if single_stage_env_overrides is not None:
             single_stage_env = {**os.environ, **single_stage_env_overrides}
             print(
-                "[pick-place-batch] single_stage_07 stable defaults:",
+                "[pick-place-batch] single_stage_07 env defaults:",
                 {
+                    "video_baseline": single_stage_env_overrides.get("GO2_X5_VIDEO_BASELINE_MODE"),
+                    "video_baseline_source": single_stage_env_overrides.get("GO2_X5_VIDEO_BASELINE_SOURCE"),
                     "carry_backend": single_stage_env_overrides.get("GO2_X5_CARRY_REPLAY_BACKEND"),
                     "carry_joint_replay": single_stage_env_overrides.get("GO2_X5_CARRY_REPLAY_JOINTS"),
                     "arm_direct": single_stage_env_overrides.get("GO2_X5_ARM_PLACE_DIRECT_JOINT_STATE"),
+                    "arm_skip_world_step": single_stage_env_overrides.get("GO2_X5_ARM_PLACE_SKIP_WORLD_STEP"),
                     "hold_support": single_stage_env_overrides.get("GO2_X5_ARM_PLACE_HOLD_SUPPORT_JOINTS"),
+                    "hold_root_support_before_world_step": single_stage_env_overrides.get(
+                        "GO2_X5_ARM_PLACE_HOLD_ROOT_SUPPORT_BEFORE_WORLD_STEP"
+                    ),
+                    "planning_hold_arm_gripper": single_stage_env_overrides.get(
+                        "GO2_X5_ARM_PLACE_PLANNING_HOLD_ARM_GRIPPER"
+                    ),
+                    "planning_hold_mode": single_stage_env_overrides.get("GO2_X5_ARM_PLACE_PLANNING_HOLD_MODE"),
+                    "video_hold_arm_gripper_mode": single_stage_env_overrides.get(
+                        "GO2_X5_VIDEO_HOLD_ARM_GRIPPER_MODE"
+                    ),
+                    "object_follow_mode": single_stage_env_overrides.get("GO2_X5_ARM_PLACE_OBJECT_FOLLOW_MODE"),
+                    "disable_kinematic_object_collision": single_stage_env_overrides.get(
+                        "GO2_X5_ARM_PLACE_DISABLE_KINEMATIC_OBJECT_COLLISION"
+                    ),
                     "exec_time_scale": single_stage_env_overrides.get("GO2_X5_ARM_PLACE_EXEC_TIME_SCALE"),
+                    "move_to_pre_place_time_scale": single_stage_env_overrides.get(
+                        "GO2_X5_ARM_PLACE_MOVE_TO_PRE_PLACE_TIME_SCALE"
+                    ),
+                    "approach_to_place_time_scale": single_stage_env_overrides.get(
+                        "GO2_X5_ARM_PLACE_APPROACH_TO_PLACE_TIME_SCALE"
+                    ),
+                    "retreat_place_time_scale": single_stage_env_overrides.get(
+                        "GO2_X5_ARM_PLACE_RETREAT_PLACE_TIME_SCALE"
+                    ),
+                    "return_home_after_release": single_stage_env_overrides.get(
+                        "GO2_X5_ARM_PLACE_RETURN_HOME_AFTER_RELEASE"
+                    ),
+                    "hold_root_support_during_return_home": single_stage_env_overrides.get(
+                        "GO2_X5_ARM_PLACE_HOLD_ROOT_SUPPORT_DURING_RETURN_HOME"
+                    ),
+                    "release_clearance_m": single_stage_env_overrides.get("GO2_X5_ARM_PLACE_RELEASE_CLEARANCE_M"),
                 },
                 flush=True,
             )

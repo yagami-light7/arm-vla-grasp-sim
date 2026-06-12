@@ -36,7 +36,14 @@ ARM_PLACE_MAX_TARGET_RADIUS_3D_M = float(os.environ.get("GO2_X5_ARM_PLACE_MAX_TA
 DEFAULT_CARRY_REPLAY_BACKEND = "visual_root_only"
 DEFAULT_ARM_PLACE_COMMAND_DT = 0.02
 DEFAULT_ARM_PLACE_SETTLE_TO_START_DURATION = 0.50
-DEFAULT_ARM_PLACE_EXEC_TIME_SCALE = 1.50
+DEFAULT_ARM_PLACE_SETTLE_TO_START_SKIP_ERROR_TOL = 0.005
+DEFAULT_ARM_PLACE_EXEC_TIME_SCALE = 1.00
+DEFAULT_ARM_PLACE_MOVE_TO_PRE_PLACE_TIME_SCALE = 1.00
+DEFAULT_ARM_PLACE_APPROACH_TO_PLACE_TIME_SCALE = 1.00
+DEFAULT_ARM_PLACE_RETREAT_PLACE_TIME_SCALE = 1.00
+DEFAULT_ARM_PLACE_RELEASE_CLEARANCE_M = 0.012
+DEFAULT_ARM_PLACE_PRE_PLACE_CLEARANCE_M = 0.06
+DEFAULT_ARM_PLACE_RETREAT_CLEARANCE_M = 0.08
 DEFAULT_VIDEO_BASELINE_HOLD_AFTER_PHASE_S = 0.5
 DEFAULT_VIDEO_BASELINE_AFTER_PICK_HOLD_S = 0.0
 DEFAULT_VIDEO_BASELINE_ARM_PRE_SETTLE_S = 2.5
@@ -130,13 +137,34 @@ def _carry_object_orientation_mode() -> str:
     return mode
 
 
+def _arm_place_object_follow_mode(*, video_baseline_mode: bool) -> str:
+    default = "tcp_kinematic_clamp" if video_baseline_mode else "dynamic_contact"
+    mode = os.environ.get("GO2_X5_ARM_PLACE_OBJECT_FOLLOW_MODE", default)
+    mode = str(mode).strip().lower().replace("-", "_")
+    aliases = {
+        "tcp": "tcp_kinematic_clamp",
+        "tcp_clamp": "tcp_kinematic_clamp",
+        "kinematic_tcp_clamp": "tcp_kinematic_clamp",
+        "joint": "temporary_joint",
+        "temp_joint": "temporary_joint",
+        "contact": "dynamic_contact",
+        "dynamic": "dynamic_contact",
+    }
+    mode = aliases.get(mode, mode)
+    if mode not in {"tcp_kinematic_clamp", "temporary_joint", "dynamic_contact"}:
+        return default
+    return mode
+
+
 def _video_baseline_config() -> dict[str, Any]:
+    video_enabled = _video_baseline_enabled()
     return {
-        "enabled": _video_baseline_enabled(),
+        "enabled": video_enabled,
         "leg_policy": _video_baseline_leg_policy(),
         "hold_after_phase_s": _video_baseline_hold_after_phase_s(),
         "after_pick_hold_s": _video_baseline_after_pick_hold_s(),
         "arm_place_pre_settle_s": _arm_place_pre_settle_s(),
+        "arm_place_object_follow_mode": _arm_place_object_follow_mode(video_baseline_mode=video_enabled),
         "carry_object_pose_source": _carry_object_pose_source(),
         "carry_object_orientation_mode": _carry_object_orientation_mode(),
         "carry_object_translation_only": _carry_object_translation_only(),
@@ -1300,6 +1328,11 @@ async def _prepare_object_for_pick(
         "object_bbox_before": bbox_before,
         "object_pose_apply": pose_report,
         "object_visibility": visibility,
+        "object_mesh_randomization": {
+            "enabled": False,
+            "reason": "single_stage_07_only_applies_task_pose_and_visibility; mesh_asset_is_not_swapped",
+            "object_prim_path": object_prim_path,
+        },
         "object_stability": stability,
         "object_bbox_after": stability.get("bbox_after_final_reset") or stability.get("bbox_after_short_step"),
         "center_displacement_m": stability.get("center_displacement_m"),
@@ -2257,6 +2290,102 @@ def _set_object_kinematic_enabled(stage, object_prim_path: str, enabled: bool) -
     return report
 
 
+def _collision_enabled_attr(stage, prim):
+    from pxr import Sdf, UsdPhysics
+
+    collision_api = UsdPhysics.CollisionAPI(prim)
+    attr = None
+    created = False
+    try:
+        attr = collision_api.GetCollisionEnabledAttr()
+    except Exception:
+        attr = None
+    if attr is not None and attr.IsValid():
+        return attr, created
+    try:
+        attr = collision_api.CreateCollisionEnabledAttr()
+        created = True
+        if attr is not None and attr.IsValid():
+            return attr, created
+    except Exception:
+        pass
+    attr = prim.GetAttribute("physics:collisionEnabled")
+    if attr is None or not attr.IsValid():
+        attr = prim.CreateAttribute("physics:collisionEnabled", Sdf.ValueTypeNames.Bool)
+        created = True
+    return attr, created
+
+
+def _set_object_collision_enabled(stage, object_prim_path: str, enabled: bool) -> dict[str, Any]:
+    from pxr import Usd, UsdPhysics
+
+    report: dict[str, Any] = {
+        "object_prim_path": object_prim_path,
+        "requested_collision_enabled": bool(enabled),
+        "colliders": [],
+        "applied": False,
+    }
+    root_prim = stage.GetPrimAtPath(object_prim_path)
+    if not root_prim.IsValid():
+        report["warning"] = "object_prim_invalid"
+        return report
+    for prim in Usd.PrimRange(root_prim):
+        if not prim.HasAPI(UsdPhysics.CollisionAPI):
+            continue
+        collider_report: dict[str, Any] = {
+            "prim_path": str(prim.GetPath()),
+        }
+        try:
+            attr, created = _collision_enabled_attr(stage, prim)
+            before = _read_bool_attr_value(attr, True)
+            collider_report["collision_enabled_before"] = before
+            collider_report["collision_enabled_attr_created"] = bool(created)
+            attr.Set(bool(enabled))
+            collider_report["collision_enabled_after"] = _read_bool_attr_value(attr, bool(enabled))
+            collider_report["success"] = True
+            report["applied"] = True
+        except Exception as exc:
+            collider_report["success"] = False
+            collider_report["error"] = str(exc)
+        report["colliders"].append(collider_report)
+    if not report["colliders"]:
+        report["warning"] = "no_collision_api_under_object_root"
+    return report
+
+
+def _restore_object_collision_enabled(stage, collision_report: dict[str, Any] | None) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "object_prim_path": (collision_report or {}).get("object_prim_path"),
+        "colliders": [],
+        "applied": False,
+    }
+    if not isinstance(collision_report, dict):
+        report["reason"] = "missing_collision_report"
+        return report
+    for collider in collision_report.get("colliders", []):
+        prim_path = str(collider.get("prim_path") or "")
+        collider_report: dict[str, Any] = {"prim_path": prim_path}
+        if not prim_path:
+            collider_report["success"] = False
+            collider_report["error"] = "missing_prim_path"
+            report["colliders"].append(collider_report)
+            continue
+        try:
+            prim = stage.GetPrimAtPath(prim_path)
+            attr, _ = _collision_enabled_attr(stage, prim)
+            restore_value = bool(collider.get("collision_enabled_before", True))
+            attr.Set(restore_value)
+            collider_report["collision_enabled_restored_to"] = restore_value
+            collider_report["collision_enabled_after_restore"] = _read_bool_attr_value(attr, restore_value)
+            collider_report["success"] = True
+            report["applied"] = True
+        except Exception as exc:
+            collider_report["success"] = False
+            collider_report["error"] = str(exc)
+        report["colliders"].append(collider_report)
+    return report
+
+
 def _restore_object_kinematic_enabled(stage, freeze_report: dict[str, Any]) -> dict[str, Any]:
     from pxr import UsdPhysics
 
@@ -2683,6 +2812,90 @@ def _apply_arm_gripper_hold(robot, hold_state: dict[str, Any]) -> dict[str, Any]
         np.zeros_like(q_gripper),
         gripper_indices,
     )
+    return report
+
+
+def _apply_arm_gripper_hold_action(robot, hold_state: dict[str, Any]) -> dict[str, Any]:
+    import numpy as np
+    from isaacsim.core.utils.types import ArticulationAction
+
+    report: dict[str, Any] = {
+        "available": bool(hold_state.get("available", False)),
+        "backend": "apply_action",
+    }
+    if not report["available"]:
+        report["reason"] = hold_state.get("reason", "hold_state_unavailable")
+        return report
+    arm_indices = [int(index) for index in (hold_state.get("arm_indices") or [])]
+    gripper_indices = [int(index) for index in (hold_state.get("gripper_indices") or [])]
+    q_arm = np.asarray(hold_state.get("q_arm_hold") or [], dtype=float)
+    q_gripper = np.asarray(hold_state.get("q_gripper_hold") or [], dtype=float)
+    indices = arm_indices + gripper_indices
+    if not indices:
+        report["success"] = False
+        report["reason"] = "missing_arm_gripper_indices"
+        return report
+    positions = np.concatenate([q_arm, q_gripper])
+    if positions.size != len(indices):
+        report["success"] = False
+        report["reason"] = "hold_position_size_mismatch"
+        report["position_count"] = int(positions.size)
+        report["index_count"] = int(len(indices))
+        return report
+    report["arm_indices"] = arm_indices
+    report["gripper_indices"] = gripper_indices
+    try:
+        robot.apply_action(
+            ArticulationAction(
+                joint_positions=positions,
+                joint_indices=indices,
+            )
+        )
+        report["success"] = True
+        report["applied"] = True
+        report["mode"] = "action"
+        return report
+    except Exception as exc:
+        report["apply_action_error"] = str(exc)
+    try:
+        q_full = np.asarray(robot.get_joint_positions(), dtype=float).reshape(-1)
+        q_full[np.asarray(indices, dtype=int)] = positions
+        robot.apply_action(ArticulationAction(joint_positions=q_full))
+        report["success"] = True
+        report["applied"] = True
+        report["mode"] = "action_full_fallback"
+    except Exception as exc:
+        report["success"] = False
+        report["apply_action_full_error"] = str(exc)
+    return report
+
+
+def _apply_arm_gripper_hold_with_mode(
+    robot,
+    hold_state: dict[str, Any],
+    *,
+    mode: str,
+) -> dict[str, Any]:
+    normalized = str(mode or "direct").strip().lower().replace("-", "_")
+    aliases = {
+        "soft": "action",
+        "apply_action": "action",
+        "pd": "action",
+        "set": "direct",
+        "set_joint_positions": "direct",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized in {"0", "false", "off", "none", "disabled"}:
+        return {
+            "available": bool(isinstance(hold_state, dict) and hold_state.get("available", False)),
+            "skipped": True,
+            "mode": normalized,
+            "reason": "arm_gripper_hold_mode_disabled",
+        }
+    if normalized == "action":
+        return _apply_arm_gripper_hold_action(robot, hold_state)
+    report = _apply_arm_gripper_hold(robot, hold_state)
+    report["mode"] = "direct"
     return report
 
 
@@ -3120,6 +3333,7 @@ async def _video_baseline_hold_after_phase(
         "phase": phase,
         "duration_s": float(duration_s),
         "leg_policy": leg_policy,
+        "arm_gripper_hold_mode": os.environ.get("GO2_X5_VIDEO_HOLD_ARM_GRIPPER_MODE", "action"),
     }
     if not report["enabled"]:
         report["skipped"] = True
@@ -3133,7 +3347,15 @@ async def _video_baseline_hold_after_phase(
             root_report = _set_robot_root_to_nav_pose(robot, root_nav_pose, float(root_z))
         else:
             root_report = _zero_robot_root_velocity_best_effort(robot)
-        arm_hold_report = _apply_arm_gripper_hold(robot, hold_state) if isinstance(hold_state, dict) else None
+        arm_hold_report = (
+            _apply_arm_gripper_hold_with_mode(
+                robot,
+                hold_state,
+                mode=str(report["arm_gripper_hold_mode"]),
+            )
+            if isinstance(hold_state, dict)
+            else None
+        )
         leg_report = None
         if leg_policy == "frozen_safe_pose" and isinstance(leg_state, dict):
             leg_report = _apply_video_safe_leg_pose(robot, leg_state, source=f"hold_after_{phase}")
@@ -3287,14 +3509,20 @@ def _make_tcp_relative_object_clamp(
         "tcp_to_object_transform": _matrix_pose_report(tcp_to_object_matrix, frame="tcp"),
         "clamp_count": 0,
         "max_pre_clamp_error_m": 0.0,
+        "max_post_clamp_error_m": 0.0,
+        "clamp_count_by_segment": {},
+        "max_pre_clamp_error_by_segment": {},
+        "max_post_clamp_error_by_segment": {},
+        "last_report_by_segment": {},
         "samples": [],
     }
     T_tcp_object = np.asarray(tcp_to_object_matrix, dtype=float)
 
     async def clamp_callback(**kwargs):
         if not state.get("enabled", False):
-            return
+            return {"enabled": False, "skipped": True, "reason": "clamp_state_disabled"}
         segment_name = str(kwargs.get("segment_name", ""))
+        phase = kwargs.get("phase")
         T_tcp_current, tcp_report = _tcp_world_matrix(stage)
         T_object_target_raw = T_tcp_current @ T_tcp_object
         T_object_pre = None
@@ -3326,24 +3554,278 @@ def _make_tcp_relative_object_clamp(
             label=f"tcp_relative_clamp:{segment_name}",
         )
         velocity_zero = object_apply.get("velocity_zero")
-        state["clamp_count"] += 1
-        if len(state["samples"]) < sample_limit or (pre_error_m is not None and pre_error_m > 0.04):
-            state["samples"].append(
-                {
-                    "phase": kwargs.get("phase"),
-                    "segment_name": segment_name,
-                    "step_index": kwargs.get("step_index"),
-                    "pre_clamp_error_m": pre_error_m,
-                    "tcp": tcp_report,
-                    "object_pre_clamp": object_pre_report,
-                    "object_target_raw_tcp_relative": _matrix_pose_report(T_object_target_raw, frame="world"),
-                    "object_orientation_mode": orientation_mode_report,
-                    "object_pose_apply": object_apply,
-                    "velocity_zero": velocity_zero,
-                }
+        post_error_m = None
+        try:
+            T_object_post, object_post_report = _carry_object_world_matrix(stage, object_prim_path)
+            post_error_m = _matrix_translation_error_m(T_object_post, T_object_target)
+            state["max_post_clamp_error_m"] = max(
+                float(state.get("max_post_clamp_error_m", 0.0)),
+                float(post_error_m),
             )
+        except Exception as exc:
+            object_post_report = {"error": str(exc)}
+        state["clamp_count"] += 1
+        state["clamp_count_by_segment"][segment_name] = (
+            int(state["clamp_count_by_segment"].get(segment_name, 0)) + 1
+        )
+        if pre_error_m is not None:
+            state["max_pre_clamp_error_by_segment"][segment_name] = max(
+                float(state["max_pre_clamp_error_by_segment"].get(segment_name, 0.0)),
+                float(pre_error_m),
+            )
+        if post_error_m is not None:
+            state["max_post_clamp_error_by_segment"][segment_name] = max(
+                float(state["max_post_clamp_error_by_segment"].get(segment_name, 0.0)),
+                float(post_error_m),
+            )
+        report = {
+            "phase": phase,
+            "segment_name": segment_name,
+            "step_index": kwargs.get("step_index"),
+            "pre_clamp_error_m": pre_error_m,
+            "post_clamp_error_m": post_error_m,
+            "tcp": tcp_report,
+            "object_pre_clamp": object_pre_report,
+            "object_post_clamp": object_post_report,
+            "object_target_raw_tcp_relative": _matrix_pose_report(T_object_target_raw, frame="world"),
+            "object_orientation_mode": orientation_mode_report,
+            "object_pose_apply": object_apply,
+            "velocity_zero": velocity_zero,
+        }
+        state["last_report_by_segment"][segment_name] = report
+        if (
+            len(state["samples"]) < sample_limit
+            or (pre_error_m is not None and pre_error_m > 0.04)
+            or (post_error_m is not None and post_error_m > 0.03)
+        ):
+            state["samples"].append(report)
+        return report
 
     return state, clamp_callback
+
+
+def _place_release_clearance_m(place: dict[str, Any]) -> float:
+    return max(
+        0.0,
+        float(
+            place.get(
+                "release_clearance",
+                os.environ.get("GO2_X5_ARM_PLACE_RELEASE_CLEARANCE_M", str(DEFAULT_ARM_PLACE_RELEASE_CLEARANCE_M)),
+            )
+        ),
+    )
+
+
+def _expected_release_center_world(place: dict[str, Any]) -> list[float]:
+    place_pose = dict(place.get("place_pose_world") or {})
+    return [
+        float(place_pose["x"]),
+        float(place_pose["y"]),
+        float(place_pose["z"]) + _place_release_clearance_m(place),
+    ]
+
+
+def _bbox_center_error_report(
+    bbox: dict[str, Any] | None,
+    expected_center_xyz: list[float],
+    *,
+    xy_tolerance: float,
+    z_tolerance: float,
+) -> dict[str, Any]:
+    center = list((bbox or {}).get("center_xyz") or [])
+    if len(center) != 3:
+        return {
+            "success": False,
+            "failure_reason": "object_bbox_missing",
+            "expected_center_xyz": expected_center_xyz,
+            "xy_tolerance_m": float(xy_tolerance),
+            "z_tolerance_m": float(z_tolerance),
+        }
+    xy_error = math.hypot(float(center[0]) - expected_center_xyz[0], float(center[1]) - expected_center_xyz[1])
+    z_error = abs(float(center[2]) - expected_center_xyz[2])
+    center_error = math.sqrt(
+        sum((float(center[index]) - expected_center_xyz[index]) ** 2 for index in range(3))
+    )
+    return {
+        "success": bool(xy_error <= xy_tolerance and z_error <= z_tolerance),
+        "object_center_xyz": [float(value) for value in center],
+        "expected_center_xyz": [float(value) for value in expected_center_xyz],
+        "center_error_m": float(center_error),
+        "xy_error_m": float(xy_error),
+        "z_error_m": float(z_error),
+        "xy_tolerance_m": float(xy_tolerance),
+        "z_tolerance_m": float(z_tolerance),
+    }
+
+
+async def _final_sync_object_to_release_pose_before_open(
+    world,
+    stage,
+    object_prim_path: str,
+    place: dict[str, Any],
+    *,
+    clamp_callback,
+    clamp_state: dict[str, Any] | None,
+    video_baseline_mode: bool,
+) -> dict[str, Any]:
+    import omni.kit.app
+
+    require_near_release = _env_flag(
+        "GO2_X5_ARM_PLACE_REQUIRE_OBJECT_NEAR_RELEASE_BEFORE_OPEN",
+        bool(video_baseline_mode),
+    )
+    xy_tolerance = max(
+        0.0,
+        _env_float(
+            "GO2_X5_ARM_PLACE_RELEASE_SYNC_XY_TOLERANCE_M",
+            float(place.get("place_xy_tolerance", 0.10)),
+        ),
+    )
+    z_tolerance = max(
+        0.0,
+        _env_float(
+            "GO2_X5_ARM_PLACE_RELEASE_SYNC_Z_TOLERANCE_M",
+            float(place.get("place_z_tolerance", 0.08)),
+        ),
+    )
+    expected_center = _expected_release_center_world(place)
+    report: dict[str, Any] = {
+        "required": bool(require_near_release),
+        "object_prim_path": object_prim_path,
+        "expected_release_center_world": expected_center,
+        "release_clearance_m": _place_release_clearance_m(place),
+        "xy_tolerance_m": float(xy_tolerance),
+        "z_tolerance_m": float(z_tolerance),
+        "clamp_reports": [],
+        "world_steps_executed": 0,
+        "render_updates_executed": 0,
+        "clamp_count_before": int((clamp_state or {}).get("clamp_count", 0)),
+    }
+    if clamp_callback is None:
+        report.update(
+            {
+                "success": False,
+                "failure_reason": "missing_tcp_object_clamp_callback",
+                "clamp_count_after": int((clamp_state or {}).get("clamp_count", 0)),
+            }
+        )
+        return report
+
+    for step_index in range(3):
+        clamp_report = await clamp_callback(
+            phase="before_open_gripper_release:final_sync_before_world_step",
+            segment_name="open_gripper",
+            step_index=step_index,
+        )
+        report["clamp_reports"].append(clamp_report)
+        world.step(render=True)
+        report["world_steps_executed"] += 1
+        await omni.kit.app.get_app().next_update_async()
+        report["render_updates_executed"] += 1
+        clamp_report = await clamp_callback(
+            phase="after_world_step_before_open_gripper_release",
+            segment_name="open_gripper",
+            step_index=step_index,
+        )
+        report["clamp_reports"].append(clamp_report)
+        await omni.kit.app.get_app().next_update_async()
+        report["render_updates_executed"] += 1
+
+    bbox = _compute_bbox(stage, object_prim_path) if stage is not None else None
+    report["object_bbox_after_final_sync"] = bbox
+    report["release_pose_error"] = _bbox_center_error_report(
+        bbox,
+        expected_center,
+        xy_tolerance=xy_tolerance,
+        z_tolerance=z_tolerance,
+    )
+    report["clamp_count_after"] = int((clamp_state or {}).get("clamp_count", 0))
+    report["success"] = bool(report["release_pose_error"].get("success", False))
+    if require_near_release and not report["success"]:
+        report["failure_reason"] = "object_not_at_release_pose_before_open_gripper"
+    return report
+
+
+def _restore_object_dynamic_for_release(
+    stage,
+    object_prim_path: str,
+    freeze_report: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if isinstance(freeze_report, dict):
+        restored = _restore_object_kinematic_enabled(stage, freeze_report)
+        dynamic_restored = any(
+            bool(item.get("success", False))
+            and not bool(item.get("kinematic_enabled_after_restore", True))
+            for item in restored.get("rigid_bodies", [])
+        )
+        if dynamic_restored:
+            restored["restore_strategy"] = "restore_original_kinematic_state"
+            return restored
+        restored["restore_strategy"] = "restore_original_kept_kinematic_then_force_dynamic"
+    else:
+        restored = {
+            "object_prim_path": object_prim_path,
+            "rigid_bodies": [],
+            "applied": False,
+            "restore_strategy": "missing_freeze_report_force_dynamic",
+        }
+    forced = _set_object_kinematic_enabled(stage, object_prim_path, False)
+    forced["restore_strategy"] = "force_dynamic_for_release"
+    restored["forced_dynamic_release"] = forced
+    restored["applied"] = bool(restored.get("applied", False) or forced.get("applied", False))
+    restored["rigid_bodies"] = list(restored.get("rigid_bodies") or []) + [
+        {
+            "forced_dynamic_release": True,
+            "report": forced,
+            "success": bool(forced.get("applied", False)),
+            "kinematic_enabled_after_restore": False,
+        }
+    ]
+    return restored
+
+
+def _arm_place_motion_object_sync_report(
+    motion_log: dict[str, Any],
+    clamp_state: dict[str, Any] | None,
+    segment_name: str,
+    *,
+    video_baseline_mode: bool,
+) -> dict[str, Any]:
+    post_threshold = max(0.0, _env_float("GO2_X5_ARM_PLACE_MAX_POST_CLAMP_ERROR_M", 0.03))
+    clamp_count = int(((clamp_state or {}).get("clamp_count_by_segment") or {}).get(segment_name, 0))
+    max_post = ((clamp_state or {}).get("max_post_clamp_error_by_segment") or {}).get(segment_name)
+    last_report = ((clamp_state or {}).get("last_report_by_segment") or {}).get(segment_name) or {}
+    last_post = last_report.get("post_clamp_error_m")
+    world_steps_executed = int(motion_log.get("world_steps_executed", 0))
+    report = {
+        "segment_name": segment_name,
+        "required": bool(video_baseline_mode),
+        "world_steps_executed": world_steps_executed,
+        "world_steps_skipped": int(motion_log.get("world_steps_skipped", 0)),
+        "render_updates_executed": int(motion_log.get("render_updates_executed", 0)),
+        "direct_state_command_count": int(motion_log.get("direct_state_command_count", 0)),
+        "callback_after_direct_update_count": int(motion_log.get("callback_after_direct_update_count", 0)),
+        "callback_after_world_step_count": int(motion_log.get("callback_after_world_step_count", 0)),
+        "callback_after_post_update_direct_set_count": int(
+            motion_log.get("callback_after_post_update_direct_set_count", 0)
+        ),
+        "clamp_count": clamp_count,
+        "max_post_clamp_error_m": max_post,
+        "last_post_clamp_error_m": last_post,
+        "post_clamp_error_threshold_m": float(post_threshold),
+        "warnings": [],
+        "failures": [],
+    }
+    if video_baseline_mode and world_steps_executed <= 0:
+        report["failures"].append("world_steps_executed_zero")
+    if video_baseline_mode and clamp_count <= 0:
+        report["failures"].append("object_clamp_count_zero")
+    if max_post is not None and float(max_post) > post_threshold:
+        report["warnings"].append("max_post_clamp_error_above_threshold")
+    if last_post is not None and float(last_post) > post_threshold:
+        report["failures"].append("last_post_clamp_error_above_threshold")
+    report["success"] = not report["failures"]
+    return report
 
 
 def _named_pose_entry(T_base_pose, T_world_pose) -> dict[str, Any]:
@@ -3585,7 +4067,7 @@ def _make_arm_place_target(
     place_release_clearance = float(
         place.get(
             "release_clearance",
-            os.environ.get("GO2_X5_ARM_PLACE_RELEASE_CLEARANCE_M", "0.02"),
+            os.environ.get("GO2_X5_ARM_PLACE_RELEASE_CLEARANCE_M", str(DEFAULT_ARM_PLACE_RELEASE_CLEARANCE_M)),
         )
     )
     place_release_clearance = max(0.0, place_release_clearance)
@@ -3596,7 +4078,7 @@ def _make_arm_place_target(
     pre_place_clearance = float(
         place.get(
             "pre_place_clearance",
-            os.environ.get("GO2_X5_ARM_PRE_PLACE_CLEARANCE_M", "0.08"),
+            os.environ.get("GO2_X5_ARM_PRE_PLACE_CLEARANCE_M", str(DEFAULT_ARM_PLACE_PRE_PLACE_CLEARANCE_M)),
         )
     )
     pre_place_clearance = max(place_release_clearance, pre_place_clearance)
@@ -3605,7 +4087,7 @@ def _make_arm_place_target(
     retreat_clearance = float(
         place.get(
             "retreat_clearance",
-            os.environ.get("GO2_X5_ARM_PLACE_RETREAT_CLEARANCE_M", "0.10"),
+            os.environ.get("GO2_X5_ARM_PLACE_RETREAT_CLEARANCE_M", str(DEFAULT_ARM_PLACE_RETREAT_CLEARANCE_M)),
         )
     )
     retreat_clearance = max(place_release_clearance, retreat_clearance)
@@ -3768,6 +4250,7 @@ def _make_arm_place_target(
 async def _export_arm_place_state(state_json: Path, object_prim_path: str | None = None) -> dict[str, Any]:
     from source.manipulation import GraspPipeline, GraspTask
 
+    selection = None
     if object_prim_path:
         try:
             import omni.usd
@@ -3776,10 +4259,18 @@ async def _export_arm_place_state(state_json: Path, object_prim_path: str | None
             selection.set_selected_prim_paths([object_prim_path], True)
         except Exception as exc:
             print(f"[arm-place] warning: failed to select object for collision export exclusion: {exc}")
+            selection = None
 
     pipeline = GraspPipeline()
     task = GraspTask(object_prim_path=None, state_json=str(state_json))
-    return await pipeline.export_state(task)
+    try:
+        return await pipeline.export_state(task)
+    finally:
+        if selection is not None:
+            try:
+                selection.set_selected_prim_paths([], True)
+            except Exception as exc:
+                print(f"[arm-place] warning: failed to clear selection after state export: {exc}")
 
 
 def _plan_arm_place_external(
@@ -3898,9 +4389,20 @@ async def _execute_arm_place_plan(
     exec_module.TARGET_JSON = target_json
     exec_module.GRASP_PLAN_JSON = plan_json
     exec_module.OUTPUT_JSON = execution_json
-    arm_place_direct_joint_state_requested = _env_flag("GO2_X5_ARM_PLACE_DIRECT_JOINT_STATE", True)
+    video_config = _video_baseline_config()
+    video_baseline_mode = bool(video_config["enabled"])
+    video_leg_policy = str(video_config["leg_policy"])
+    arm_place_object_follow_mode = str(video_config["arm_place_object_follow_mode"])
+    default_direct_joint_state = not video_baseline_mode
+    arm_place_direct_joint_state_requested = _env_flag(
+        "GO2_X5_ARM_PLACE_DIRECT_JOINT_STATE",
+        default_direct_joint_state,
+    )
     arm_place_direct_joint_state = bool(arm_place_direct_joint_state_requested)
-    arm_place_direct_state_only = _env_flag("GO2_X5_ARM_PLACE_DIRECT_STATE_ONLY", True)
+    arm_place_direct_state_only = _env_flag(
+        "GO2_X5_ARM_PLACE_DIRECT_STATE_ONLY",
+        default_direct_joint_state,
+    )
     arm_place_lock_base = _env_flag("GO2_X5_ARM_PLACE_LOCK_BASE", True)
     exec_module.ARM_COMMAND_DT = float(
         os.environ.get("GO2_X5_ARM_PLACE_COMMAND_DT", str(DEFAULT_ARM_PLACE_COMMAND_DT))
@@ -3911,17 +4413,54 @@ async def _execute_arm_place_plan(
             str(DEFAULT_ARM_PLACE_SETTLE_TO_START_DURATION),
         )
     )
+    exec_module.SETTLE_TO_SEGMENT_START_SKIP_ERROR_TOL = max(
+        0.0,
+        float(
+            os.environ.get(
+                "GO2_X5_ARM_PLACE_SETTLE_TO_START_SKIP_ERROR_TOL",
+                str(DEFAULT_ARM_PLACE_SETTLE_TO_START_SKIP_ERROR_TOL),
+            )
+        ),
+    )
     exec_module.ARM_PLACE_EXEC_TIME_SCALE = max(
         1.0e-6,
         float(os.environ.get("GO2_X5_ARM_PLACE_EXEC_TIME_SCALE", str(DEFAULT_ARM_PLACE_EXEC_TIME_SCALE))),
+    )
+    exec_module.ARM_PLACE_MOVE_TO_PRE_PLACE_TIME_SCALE = max(
+        1.0e-6,
+        float(
+            os.environ.get(
+                "GO2_X5_ARM_PLACE_MOVE_TO_PRE_PLACE_TIME_SCALE",
+                str(max(exec_module.ARM_PLACE_EXEC_TIME_SCALE, DEFAULT_ARM_PLACE_MOVE_TO_PRE_PLACE_TIME_SCALE)),
+            )
+        ),
+    )
+    exec_module.ARM_PLACE_APPROACH_TO_PLACE_TIME_SCALE = max(
+        1.0e-6,
+        float(
+            os.environ.get(
+                "GO2_X5_ARM_PLACE_APPROACH_TO_PLACE_TIME_SCALE",
+                str(exec_module.ARM_PLACE_EXEC_TIME_SCALE),
+            )
+        ),
+    )
+    exec_module.ARM_PLACE_RETREAT_PLACE_TIME_SCALE = max(
+        1.0e-6,
+        float(
+            os.environ.get(
+                "GO2_X5_ARM_PLACE_RETREAT_PLACE_TIME_SCALE",
+                str(exec_module.ARM_PLACE_EXEC_TIME_SCALE),
+            )
+        ),
     )
     if "GO2_X5_ARM_PLACE_POST_MOTION_TIMEOUT_S" in os.environ:
         exec_module.POST_MOTION_CONVERGENCE_TIMEOUT = float(os.environ["GO2_X5_ARM_PLACE_POST_MOTION_TIMEOUT_S"])
     if "GO2_X5_ARM_PLACE_POST_MOTION_JOINT_ERROR_TOL" in os.environ:
         exec_module.POST_MOTION_JOINT_ERROR_TOL = float(os.environ["GO2_X5_ARM_PLACE_POST_MOTION_JOINT_ERROR_TOL"])
-    video_config = _video_baseline_config()
-    video_baseline_mode = bool(video_config["enabled"])
-    video_leg_policy = str(video_config["leg_policy"])
+    arm_place_return_home_after_release = _env_flag(
+        "GO2_X5_ARM_PLACE_RETURN_HOME_AFTER_RELEASE",
+        True,
+    )
     arm_place_hold_support_joints = _env_flag(
         "GO2_X5_ARM_PLACE_HOLD_SUPPORT_JOINTS",
         bool(video_baseline_mode and video_leg_policy == "frozen_safe_pose"),
@@ -3929,6 +4468,14 @@ async def _execute_arm_place_plan(
     arm_place_callback_safe_leg_direct_set = _env_flag(
         "GO2_X5_ARM_PLACE_CALLBACK_SAFE_LEG_DIRECT_SET",
         False,
+    )
+    arm_place_hold_root_support_before_world_step = _env_flag(
+        "GO2_X5_ARM_PLACE_HOLD_ROOT_SUPPORT_BEFORE_WORLD_STEP",
+        not video_baseline_mode,
+    )
+    arm_place_disable_kinematic_object_collision = _env_flag(
+        "GO2_X5_ARM_PLACE_DISABLE_KINEMATIC_OBJECT_COLLISION",
+        bool(video_baseline_mode),
     )
     support_hold_forced_off_reason = ""
     if video_baseline_mode and video_leg_policy == "disabled" and arm_place_hold_support_joints:
@@ -3964,7 +4511,22 @@ async def _execute_arm_place_plan(
     exec_module.SKIP_APPLY_ACTION_WHEN_DIRECT_STATE_REPLAY = bool(
         arm_place_direct_joint_state and arm_place_direct_state_only
     )
-    arm_place_skip_world_step = _env_flag("GO2_X5_ARM_PLACE_SKIP_WORLD_STEP", True)
+    default_skip_world_step = False if video_baseline_mode else True
+    if "GO2_X5_ARM_PLACE_SKIP_WORLD_STEP" in os.environ:
+        arm_place_skip_world_step = _env_flag(
+            "GO2_X5_ARM_PLACE_SKIP_WORLD_STEP",
+            default_skip_world_step,
+        )
+        arm_place_skip_world_step_source = "GO2_X5_ARM_PLACE_SKIP_WORLD_STEP"
+    elif "GO2_X5_ARM_PLACE_SKIP_WORLD_STEP_DURING_DIRECT_MOTION" in os.environ:
+        arm_place_skip_world_step = _env_flag(
+            "GO2_X5_ARM_PLACE_SKIP_WORLD_STEP_DURING_DIRECT_MOTION",
+            default_skip_world_step,
+        )
+        arm_place_skip_world_step_source = "GO2_X5_ARM_PLACE_SKIP_WORLD_STEP_DURING_DIRECT_MOTION"
+    else:
+        arm_place_skip_world_step = bool(default_skip_world_step)
+        arm_place_skip_world_step_source = "default_video_baseline_false_else_true"
     exec_module.SKIP_WORLD_STEP_WHEN_DIRECT_STATE_REPLAY = bool(
         arm_place_direct_joint_state
         and arm_place_direct_state_only
@@ -3980,20 +4542,40 @@ async def _execute_arm_place_plan(
         "direct_joint_state_replay": bool(exec_module.DIRECT_ARM_STATE_REPLAY),
         "direct_state_only": bool(exec_module.SKIP_APPLY_ACTION_WHEN_DIRECT_STATE_REPLAY),
         "skip_world_step_during_direct_motion": bool(exec_module.SKIP_WORLD_STEP_WHEN_DIRECT_STATE_REPLAY),
+        "skip_world_step_source": arm_place_skip_world_step_source,
+        "default_skip_world_step": bool(default_skip_world_step),
         "lock_base": bool(arm_place_lock_base),
         "support_joints_in_motion_action": bool(arm_place_hold_support_joints and not arm_place_lock_base),
         "direct_joint_state_auto_enabled_reason": arm_place_direct_joint_state_auto_enabled_reason,
         "command_dt": float(exec_module.ARM_COMMAND_DT),
         "sim_dt": float(exec_module.SIM_DT),
         "settle_to_segment_start_duration_s": float(exec_module.SETTLE_TO_SEGMENT_START_DURATION),
+        "settle_to_segment_start_skip_error_tol": float(
+            getattr(exec_module, "SETTLE_TO_SEGMENT_START_SKIP_ERROR_TOL", 0.0)
+        ),
         "exec_time_scale": float(getattr(exec_module, "ARM_PLACE_EXEC_TIME_SCALE", 1.0)),
+        "segment_exec_time_scales": {
+            "move_to_pre_place": float(
+                getattr(exec_module, "ARM_PLACE_MOVE_TO_PRE_PLACE_TIME_SCALE", 1.0)
+            ),
+            "approach_to_place": float(
+                getattr(exec_module, "ARM_PLACE_APPROACH_TO_PLACE_TIME_SCALE", 1.0)
+            ),
+            "retreat_place": float(
+                getattr(exec_module, "ARM_PLACE_RETREAT_PLACE_TIME_SCALE", 1.0)
+            ),
+        },
         "post_motion_timeout_s": float(exec_module.POST_MOTION_CONVERGENCE_TIMEOUT),
         "post_motion_joint_error_tol": float(exec_module.POST_MOTION_JOINT_ERROR_TOL),
         "hold_support_joints": bool(arm_place_hold_support_joints),
         "callback_safe_leg_direct_set": bool(arm_place_callback_safe_leg_direct_set),
+        "hold_root_support_before_world_step": bool(arm_place_hold_root_support_before_world_step),
         "support_hold_forced_off_reason": support_hold_forced_off_reason,
         "video_baseline_mode": bool(video_baseline_mode),
         "video_baseline_leg_policy": video_leg_policy,
+        "arm_place_object_follow_mode": arm_place_object_follow_mode,
+        "disable_kinematic_object_collision": bool(arm_place_disable_kinematic_object_collision),
+        "arm_place_return_home_after_release": bool(arm_place_return_home_after_release),
         "carry_object_orientation_mode": _carry_object_orientation_mode(),
         "carry_object_translation_only": _carry_object_translation_only(),
         "arm_place_pre_settle_s": float(video_config["arm_place_pre_settle_s"]),
@@ -4031,8 +4613,19 @@ async def _execute_arm_place_plan(
     tracking_failure_reason = ""
     opened_gripper = False
     object_kinematic_until_release = bool((restore_place_report or {}).get("object_kinematic_until_release", False))
+    object_kinematic_for_arm_place_motion = bool(arm_place_object_follow_mode == "tcp_kinematic_clamp")
+    object_mode_during_move_to_pre_place = (
+        "kinematic_tcp_clamp" if object_kinematic_for_arm_place_motion else arm_place_object_follow_mode
+    )
+    object_mode_during_approach_to_place = object_mode_during_move_to_pre_place
+    arm_place_object_freeze_report = None
+    tcp_to_object_before_arm_place = None
+    object_dynamic_refreeze_reports: list[dict[str, Any]] = []
+    final_release_sync_report: dict[str, Any] | None = None
     release_dynamic_restore = None
     release_velocity_reset = None
+    object_collision_suppression_report: dict[str, Any] | None = None
+    object_collision_restore_before_release: dict[str, Any] | None = None
     clamp_state = None
     clamp_callback = None
     root_support_hold_state = None
@@ -4069,12 +4662,49 @@ async def _execute_arm_place_plan(
                 "root_hold_z": root_hold_z,
                 "support_hold_state": support_hold_state,
             }
-    if object_kinematic_until_release and stage is not None:
+    if object_kinematic_for_arm_place_motion and stage is not None:
+        print(f"[arm-place-object] follow_mode={arm_place_object_follow_mode}", flush=True)
+        object_was_kinematic_before_arm_place = _object_has_kinematic_enabled(stage, object_prim_path)
+        arm_place_object_freeze_report = _set_object_kinematic_enabled(stage, object_prim_path, True)
+        object_kinematic_until_release = True
+        print("[arm-place-object] object frozen/kinematic before arm-place motion", flush=True)
+        if arm_place_disable_kinematic_object_collision:
+            object_collision_suppression_report = _set_object_collision_enabled(stage, object_prim_path, False)
+            print(
+                "[arm-place-object] disabled object collision during kinematic arm-place carry",
+                object_collision_suppression_report,
+                flush=True,
+            )
+        T_tcp_now, tcp_before_report = _tcp_world_matrix(stage)
+        T_object_now, object_before_report = _carry_object_world_matrix(stage, object_prim_path)
+        tcp_to_object_matrix = (np.linalg.inv(T_tcp_now) @ T_object_now).tolist()
+        tcp_to_object_before_arm_place = {
+            "source": "recomputed_current_tcp_to_current_object_before_arm_place",
+            "object_was_kinematic_before_arm_place": bool(object_was_kinematic_before_arm_place),
+            "tcp_world": tcp_before_report,
+            "object_world": object_before_report,
+            "matrix_4x4": tcp_to_object_matrix,
+            "pose": _matrix_pose_report(tcp_to_object_matrix, frame="tcp"),
+        }
+        print("[arm-place-object] tcp_to_object recomputed before arm-place", flush=True)
+        print("[arm-place-object] object remains kinematic until release", flush=True)
+        clamp_state, clamp_callback = _make_tcp_relative_object_clamp(
+            stage,
+            object_prim_path,
+            tcp_to_object_matrix,
+            orientation_reference_world_matrix=T_object_now,
+        )
+    elif object_kinematic_until_release and stage is not None:
         tcp_to_object_matrix = ((restore_place_report or {}).get("tcp_to_object_transform_before") or {}).get("matrix_4x4")
         if tcp_to_object_matrix is None:
             T_tcp_now, _ = _tcp_world_matrix(stage)
             T_object_now, _ = _dynamic_object_world_matrix(stage, object_prim_path)
             tcp_to_object_matrix = (np.linalg.inv(T_tcp_now) @ T_object_now).tolist()
+        tcp_to_object_before_arm_place = {
+            "source": "restore_place_report_or_dynamic_fallback",
+            "matrix_4x4": tcp_to_object_matrix,
+            "pose": _matrix_pose_report(tcp_to_object_matrix, frame="tcp"),
+        }
         orientation_reference_world_matrix = (
             ((restore_place_report or {}).get("tcp_to_object_continuity_init") or {})
             .get("object_carry_start", {})
@@ -4209,6 +4839,26 @@ async def _execute_arm_place_plan(
     async def video_baseline_pre_place_hold_callback(**kwargs):
         root_support_report = await root_support_hold_from_report_callback(**kwargs)
         if clamp_callback is not None:
+            if (
+                object_kinematic_for_arm_place_motion
+                and stage is not None
+                and not _object_has_kinematic_enabled(stage, object_prim_path)
+            ):
+                refreeze_report = _set_object_kinematic_enabled(stage, object_prim_path, True)
+                refreeze_report.update(
+                    {
+                        "phase": kwargs.get("phase"),
+                        "segment_name": kwargs.get("segment_name"),
+                        "step_index": kwargs.get("step_index"),
+                        "warning": "object_became_dynamic_during_pre_place_settle_refreezing",
+                    }
+                )
+                object_dynamic_refreeze_reports.append(refreeze_report)
+                print(
+                    "[arm-place-object] warning: object became dynamic during pre-place settle; refreezing.",
+                    refreeze_report,
+                    flush=True,
+                )
             await clamp_callback(**kwargs)
         return root_support_report
 
@@ -4279,20 +4929,88 @@ async def _execute_arm_place_plan(
             )
 
             async def combined_step_callback(**kwargs):
-                root_support_before = await root_support_hold_from_report_callback(
-                    **{
-                        **kwargs,
-                        "phase": f"{kwargs.get('phase', 'motion')}:root_support_pre_object",
-                    }
+                phase = str(kwargs.get("phase") or "")
+                root_support_hold_skipped_before_world_step = bool(
+                    phase == "after_direct_update_before_world_step"
+                    and not arm_place_hold_root_support_before_world_step
                 )
-                if object_clamp_enabled_for_segment and clamp_callback is not None:
-                    await clamp_callback(**kwargs)
-                root_support_after = await root_support_hold_from_report_callback(
-                    **{
-                        **kwargs,
-                        "phase": f"{kwargs.get('phase', 'motion')}:root_support_post_object",
+                if root_support_hold_skipped_before_world_step:
+                    root_support_before = {
+                        "skipped": True,
+                        "reason": "GO2_X5_ARM_PLACE_HOLD_ROOT_SUPPORT_BEFORE_WORLD_STEP=0",
+                        "phase": phase,
                     }
+                else:
+                    root_support_before = await root_support_hold_from_report_callback(
+                        **{
+                            **kwargs,
+                            "phase": f"{phase or 'motion'}:root_support_pre_object",
+                        }
+                    )
+                should_clamp_object = bool(
+                    object_clamp_enabled_for_segment
+                    and clamp_callback is not None
+                    and (
+                        phase == "after_direct_update_before_world_step"
+                        or phase.startswith("after_world_step")
+                        or phase == "after_post_update_direct_set"
+                        or phase.startswith("after_post_update_direct_set")
+                        or phase in {"execute_motion_segment", "settle_arm_to_start"}
+                        or "pre_place_arm_settle" in phase
+                    )
                 )
+                clamp_report = None
+                if (
+                    object_clamp_enabled_for_segment
+                    and clamp_callback is not None
+                    and phase.startswith("before_world_step")
+                ):
+                    if isinstance(clamp_state, dict):
+                        skipped = clamp_state.setdefault("object_clamp_skipped_before_world_step_samples", [])
+                        if len(skipped) < 12:
+                            skipped.append(
+                                {
+                                    "phase": phase,
+                                    "segment_name": kwargs.get("segment_name"),
+                                    "step_index": kwargs.get("step_index"),
+                                    "reason": "object_clamp_runs_after_direct_update_or_after_world_step",
+                                }
+                            )
+                if should_clamp_object and clamp_callback is not None:
+                    if (
+                        object_kinematic_for_arm_place_motion
+                        and stage is not None
+                        and not _object_has_kinematic_enabled(stage, object_prim_path)
+                    ):
+                        refreeze_report = _set_object_kinematic_enabled(stage, object_prim_path, True)
+                        refreeze_report.update(
+                            {
+                                "phase": phase,
+                                "segment_name": kwargs.get("segment_name"),
+                                "step_index": kwargs.get("step_index"),
+                                "warning": "object_became_dynamic_during_arm_place_motion_refreezing",
+                            }
+                        )
+                        object_dynamic_refreeze_reports.append(refreeze_report)
+                        print(
+                            "[arm-place-object] warning: object became dynamic during arm-place motion; refreezing.",
+                            refreeze_report,
+                            flush=True,
+                        )
+                    clamp_report = await clamp_callback(**kwargs)
+                if root_support_hold_skipped_before_world_step:
+                    root_support_after = {
+                        "skipped": True,
+                        "reason": "GO2_X5_ARM_PLACE_HOLD_ROOT_SUPPORT_BEFORE_WORLD_STEP=0",
+                        "phase": phase,
+                    }
+                else:
+                    root_support_after = await root_support_hold_from_report_callback(
+                        **{
+                            **kwargs,
+                            "phase": f"{phase or 'motion'}:root_support_post_object",
+                        }
+                    )
                 if isinstance(clamp_state, dict):
                     samples = clamp_state.setdefault("root_support_hold_during_arm_place_samples", [])
                     if len(samples) < 8:
@@ -4303,6 +5021,7 @@ async def _execute_arm_place_plan(
                                 "step_index": kwargs.get("step_index"),
                                 "root_support_before": root_support_before,
                                 "root_support_after": root_support_after,
+                                "object_clamp_report": clamp_report,
                             }
                         )
 
@@ -4404,6 +5123,31 @@ async def _execute_arm_place_plan(
                 step_callback=step_callback,
             )
             logs.append(motion_log)
+            if segment_name in {"move_to_pre_place", "approach_to_place"}:
+                object_sync_report = _arm_place_motion_object_sync_report(
+                    motion_log,
+                    clamp_state,
+                    segment_name,
+                    video_baseline_mode=video_baseline_mode,
+                )
+                motion_log["object_motion_sync"] = object_sync_report
+                if video_baseline_mode and not object_sync_report.get("success", False):
+                    partial_result = {
+                        "schema_version": 1,
+                        "script": "scripts/isaac/07_run_pick_put_demo_from_nav_results.py",
+                        "failure_reason": "arm_place_motion_object_sync_failed",
+                        "segment_name": segment_name,
+                        "arm_place_execution_config": arm_place_execution_config,
+                        "object_motion_sync": object_sync_report,
+                        "object_tcp_clamp_during_arm_place": clamp_state,
+                        "execution_logs": logs,
+                    }
+                    _write_json(execution_json, partial_result)
+                    raise DemoFailure(
+                        "arm_place_motion_object_sync_failed",
+                        f"arm-place object/TCP synchronization failed during {segment_name}.",
+                        partial_result,
+                    )
             last_motion_q_final = np.asarray(segment["trajectory"]["q"][-1], dtype=float)
             if segment.get("name") == "approach_to_place":
                 object_bbox_at_place_pose = (
@@ -4425,20 +5169,47 @@ async def _execute_arm_place_plan(
                 )
                 arm_place_world_play_state_changes.append(play_report)
             if object_kinematic_until_release and release_dynamic_restore is None:
-                if clamp_callback is not None:
-                    await clamp_callback(
-                        phase="before_open_gripper_release",
-                        segment_name=str(segment.get("name") or "open_gripper"),
-                        step_index=-1,
+                final_release_sync_report = await _final_sync_object_to_release_pose_before_open(
+                    world,
+                    stage,
+                    object_prim_path,
+                    place,
+                    clamp_callback=clamp_callback,
+                    clamp_state=clamp_state,
+                    video_baseline_mode=video_baseline_mode,
+                )
+                if (
+                    final_release_sync_report.get("required", False)
+                    and not final_release_sync_report.get("success", False)
+                ):
+                    partial_result = {
+                        "schema_version": 1,
+                        "script": "scripts/isaac/07_run_pick_put_demo_from_nav_results.py",
+                        "failure_reason": "object_not_at_release_pose_before_open_gripper",
+                        "arm_place_execution_config": arm_place_execution_config,
+                        "object_release_final_sync": final_release_sync_report,
+                        "object_tcp_clamp_during_arm_place": clamp_state,
+                        "execution_logs": logs,
+                    }
+                    _write_json(execution_json, partial_result)
+                    raise DemoFailure(
+                        "object_not_at_release_pose_before_open_gripper",
+                        "object is not near the expected release pose before open_gripper.",
+                        partial_result,
                     )
                 freeze_report = (restore_place_report or {}).get("object_freeze_report")
                 if not isinstance(freeze_report, dict):
-                    raise DemoFailure(
-                        "arm_place_failed",
-                        "object_kinematic_until_release=true but restore_place_report.object_freeze_report is missing.",
-                        {"restore_place_report": restore_place_report or {}},
+                    freeze_report = arm_place_object_freeze_report
+                if object_collision_suppression_report is not None:
+                    object_collision_restore_before_release = _restore_object_collision_enabled(
+                        stage,
+                        object_collision_suppression_report,
                     )
-                release_dynamic_restore = _restore_object_kinematic_enabled(stage, freeze_report)
+                release_dynamic_restore = _restore_object_dynamic_for_release(
+                    stage,
+                    object_prim_path,
+                    freeze_report,
+                )
                 if clamp_state is not None:
                     clamp_state["enabled"] = False
                 dynamic_restored = any(
@@ -4511,8 +5282,12 @@ async def _execute_arm_place_plan(
         "reason": "not started",
     }
 
-    if not tracking_failure_reason:
+    if not tracking_failure_reason and arm_place_return_home_after_release:
         q_home = exec_module.get_task_home_q_arm(plan.get("segments", []))
+        hold_root_support_during_return_home = _env_flag(
+            "GO2_X5_ARM_PLACE_HOLD_ROOT_SUPPORT_DURING_RETURN_HOME",
+            False,
+        )
 
         if q_home is not None:
             print(
@@ -4528,7 +5303,13 @@ async def _execute_arm_place_plan(
                 robot,
                 arm_indices,
                 q_home,
+                step_callback=(
+                    root_support_hold_from_report_callback
+                    if root_hold_during_arm_place and hold_root_support_during_return_home
+                    else None
+                ),
             )
+            return_home_log["hold_root_support_during_return_home"] = bool(hold_root_support_during_return_home)
             if video_baseline_mode:
                 return_home_hold_report = await _video_baseline_hold_after_phase(
                     world,
@@ -4556,7 +5337,7 @@ async def _execute_arm_place_plan(
     elif not tracking_failure_reason:
         return_home_log = {
             "skipped": True,
-            "reason": "open_gripper_not_executed",
+            "reason": "GO2_X5_ARM_PLACE_RETURN_HOME_AFTER_RELEASE=0",
         }
 
     _settle_world(world, settle_steps)
@@ -4583,6 +5364,15 @@ async def _execute_arm_place_plan(
             "object_teleported": False,
             "physical_place_continuity": True,
             "physical_nav_continuity": PHYSICAL_NAV_CONTINUITY,
+            "arm_place_object_follow_mode": arm_place_object_follow_mode,
+            "arm_place_return_home_after_release": bool(arm_place_return_home_after_release),
+            "object_kinematic_for_arm_place_motion": bool(object_kinematic_for_arm_place_motion),
+            "object_collision_disabled_during_kinematic_arm_place": bool(
+                object_collision_suppression_report
+                and object_collision_suppression_report.get("applied", False)
+            ),
+            "object_mode_during_move_to_pre_place": object_mode_during_move_to_pre_place,
+            "object_mode_during_approach_to_place": object_mode_during_approach_to_place,
             "object_kinematic_until_release": object_kinematic_until_release,
             "object_dynamic_restored_before_release": bool(
                 release_dynamic_restore and release_dynamic_restore.get("applied", False)
@@ -4645,6 +5435,7 @@ async def _execute_arm_place_plan(
         "root_support_hold_during_arm_place": root_support_hold_state,
         "arm_place_execution_config": arm_place_execution_config,
         "arm_place_world_play_state_changes": arm_place_world_play_state_changes,
+        "arm_place_return_home_after_release": bool(arm_place_return_home_after_release),
         "arm_place_lock_base": bool(arm_place_lock_base),
         "support_joints_in_motion_action": bool(arm_place_hold_support_joints and not arm_place_lock_base),
         "video_baseline_mode": bool(video_baseline_mode),
@@ -4669,9 +5460,22 @@ async def _execute_arm_place_plan(
         "max_tcp_object_error_m": (
             clamp_state.get("max_pre_clamp_error_m") if isinstance(clamp_state, dict) else None
         ),
+        "max_tcp_object_post_clamp_error_m": (
+            clamp_state.get("max_post_clamp_error_m") if isinstance(clamp_state, dict) else None
+        ),
+        "arm_place_object_follow_mode": arm_place_object_follow_mode,
+        "object_kinematic_for_arm_place_motion": bool(object_kinematic_for_arm_place_motion),
+        "object_collision_suppression_during_arm_place": object_collision_suppression_report,
+        "object_collision_restore_before_release": object_collision_restore_before_release,
+        "tcp_to_object_before_arm_place": tcp_to_object_before_arm_place,
+        "object_mode_during_move_to_pre_place": object_mode_during_move_to_pre_place,
+        "object_mode_during_approach_to_place": object_mode_during_approach_to_place,
+        "arm_place_object_freeze_report": arm_place_object_freeze_report,
+        "object_dynamic_refreeze_reports": object_dynamic_refreeze_reports,
         "object_kinematic_until_release": object_kinematic_until_release,
         "object_dynamic_restore_before_release": release_dynamic_restore,
         "object_velocity_reset_before_release": release_velocity_reset,
+        "object_release_final_sync": final_release_sync_report,
         "object_tcp_clamp_during_arm_place": clamp_state,
         "verification": verification,
         "execution_logs": logs,
@@ -5555,6 +6359,60 @@ def _apply_root_support_hold_from_report(
         "root_pose_hold_applied": bool(apply_root_pose),
         "support_joint_hold_applied": bool(apply_support_joints),
     }
+
+
+def _apply_arm_place_planning_hold(
+    robot,
+    restore_place_report: dict[str, Any] | None,
+    hold_state: dict[str, Any] | None,
+    video_leg_state: dict[str, Any] | None,
+    *,
+    label: str,
+    apply_arm_gripper: bool = True,
+    arm_gripper_hold_mode: str = "direct",
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "label": label,
+        "apply_arm_gripper": bool(apply_arm_gripper),
+        "arm_gripper_hold_mode": arm_gripper_hold_mode,
+        "arm_gripper_hold": None,
+        "root_hold": None,
+        "safe_leg_hold": None,
+    }
+    if isinstance(hold_state, dict) and apply_arm_gripper:
+        report["arm_gripper_hold"] = _apply_arm_gripper_hold_with_mode(
+            robot,
+            hold_state,
+            mode=arm_gripper_hold_mode,
+        )
+    elif isinstance(hold_state, dict):
+        report["arm_gripper_hold"] = {
+            "available": bool(hold_state.get("available", False)),
+            "skipped": True,
+            "reason": "GO2_X5_ARM_PLACE_PLANNING_HOLD_ARM_GRIPPER=0",
+        }
+    if isinstance(restore_place_report, dict):
+        report["root_hold"] = _apply_root_support_hold_from_report(
+            robot,
+            restore_place_report,
+            apply_root_pose=True,
+            apply_support_joints=False,
+        )
+    if isinstance(video_leg_state, dict) and video_leg_state.get("available", False):
+        report["safe_leg_hold"] = _apply_video_safe_leg_pose(
+            robot,
+            video_leg_state,
+            source=f"arm_place_planning_hold:{label}",
+        )
+    report["success"] = bool(
+        (not isinstance(hold_state, dict) or (report["arm_gripper_hold"] or {}).get("available", False))
+        and (
+            not isinstance(video_leg_state, dict)
+            or not video_leg_state.get("available", False)
+            or (report["safe_leg_hold"] or {}).get("success", False)
+        )
+    )
+    return report
 
 
 async def _set_world_playing_best_effort(world, *, playing: bool) -> dict[str, Any]:
@@ -7684,7 +8542,51 @@ async def _run_arm_place_put(
         (restore_place_report or {}).get("object_bbox_after_base_restore")
         or object_bbox_before_place_usd
     )
+    planning_hold_state = _capture_arm_gripper_hold_state(robot)
+    planning_hold_arm_gripper = _env_flag(
+        "GO2_X5_ARM_PLACE_PLANNING_HOLD_ARM_GRIPPER",
+        True,
+    )
+    planning_hold_arm_gripper_mode = os.environ.get(
+        "GO2_X5_ARM_PLACE_PLANNING_HOLD_MODE",
+        "action" if _video_baseline_enabled() else "direct",
+    )
+    planning_video_leg_state = None
+    if _video_baseline_enabled():
+        for key in ("video_baseline_leg_state", "q_leg_safe", "safe_leg_state"):
+            value = (restore_place_report or {}).get(key)
+            if isinstance(value, dict) and value.get("available", False):
+                planning_video_leg_state = value
+                break
+        if planning_video_leg_state is None:
+            planning_video_leg_state = _capture_video_safe_leg_pose(
+                robot,
+                source="arm_place_planning_fallback_capture",
+            )
+    planning_hold_reports: list[dict[str, Any]] = []
+    planning_hold_reports.append(
+        _apply_arm_place_planning_hold(
+            robot,
+            restore_place_report,
+            planning_hold_state,
+            planning_video_leg_state,
+            label="before_export_state",
+            apply_arm_gripper=planning_hold_arm_gripper,
+            arm_gripper_hold_mode=planning_hold_arm_gripper_mode,
+        )
+    )
     state = await _export_arm_place_state(state_json, object_prim_path)
+    planning_hold_reports.append(
+        _apply_arm_place_planning_hold(
+            robot,
+            restore_place_report,
+            planning_hold_state,
+            planning_video_leg_state,
+            label="after_export_state_before_target",
+            apply_arm_gripper=planning_hold_arm_gripper,
+            arm_gripper_hold_mode=planning_hold_arm_gripper_mode,
+        )
+    )
     target = _make_arm_place_target(
         state,
         raw_task_place,
@@ -7693,6 +8595,17 @@ async def _run_arm_place_put(
         object_bbox_before_place,
     )
     _write_json(target_json, target)
+    planning_hold_reports.append(
+        _apply_arm_place_planning_hold(
+            robot,
+            restore_place_report,
+            planning_hold_state,
+            planning_video_leg_state,
+            label="after_target_before_external_plan",
+            apply_arm_gripper=planning_hold_arm_gripper,
+            arm_gripper_hold_mode=planning_hold_arm_gripper_mode,
+        )
+    )
     _validate_arm_place_target_workspace(
         target,
         task_nav_to_place=args.task_nav_to_place,
@@ -7720,6 +8633,17 @@ async def _run_arm_place_put(
                 "target": target,
             },
         ) from exc
+    planning_hold_reports.append(
+        _apply_arm_place_planning_hold(
+            robot,
+            restore_place_report,
+            planning_hold_state,
+            planning_video_leg_state,
+            label="after_external_plan_before_execution",
+            apply_arm_gripper=planning_hold_arm_gripper,
+            arm_gripper_hold_mode=planning_hold_arm_gripper_mode,
+        )
+    )
 
     settle_steps = int(place.get("settle_steps", args.settle_steps))
     execution = await _execute_arm_place_plan(
@@ -7756,6 +8680,10 @@ async def _run_arm_place_put(
         "plan_json": str(plan_json),
         "object_bbox_before_place": object_bbox_before_place,
         "object_bbox_before_place_usd": object_bbox_before_place_usd,
+        "arm_place_planning_hold_state": planning_hold_state,
+        "arm_place_planning_hold_arm_gripper": bool(planning_hold_arm_gripper),
+        "arm_place_planning_hold_arm_gripper_mode": planning_hold_arm_gripper_mode,
+        "arm_place_planning_hold_reports": planning_hold_reports,
         "object_bbox_before_place_source": (
             "restore_place_base.object_bbox_after_base_restore"
             if (restore_place_report or {}).get("object_bbox_after_base_restore")
@@ -7839,6 +8767,14 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
     video_safe_leg_state: dict[str, Any] | None = None
     video_pick_hold_state: dict[str, Any] | None = None
     object_prim_path = str(raw_task_pick.get("pick", {}).get("object_prim_path") or task_pick.pick.object_prim_path)
+    result["stages"]["prepare_object"] = await _prepare_object_for_pick(
+        world,
+        task_pick,
+        {"object_reset_stability_steps": 3, "fail_on_object_reset_drift": False},
+        reset_xform_stack=bool(args.reset_object_xform_stack),
+    )
+    result["stages"]["prepare_object"]["timing"] = "after_stage_open_before_nav_to_pick_replay"
+    result["stages"]["prepare_object"]["stage_setup_only"] = True
     if video_baseline_mode:
         result["video_baseline_mode"] = True
         result["video_baseline_leg_policy"] = video_leg_policy
@@ -7902,12 +8838,12 @@ async def _run_demo_async(args: argparse.Namespace, result: dict[str, Any]) -> d
             "physical_nav_continuity": PHYSICAL_NAV_CONTINUITY,
         }
     )
-    result["stages"]["prepare_object"] = await _prepare_object_for_pick(
-        world,
-        task_pick,
-        {"object_reset_stability_steps": 3, "fail_on_object_reset_drift": False},
-        reset_xform_stack=bool(args.reset_object_xform_stack),
-    )
+    result["stages"]["prepare_object_after_nav_to_pick"] = {
+        "skipped": True,
+        "reason": "object_prepared_once_at_stage_setup",
+        "preserves_current_object_pose_after_nav_replay": True,
+        "object_prim_path": object_prim_path,
+    }
     if video_baseline_mode:
         video_safe_leg_state = _capture_video_safe_leg_pose(
             robot,
