@@ -16,3 +16,21 @@ step 03.
 
 Setup, inspection, FK checks, and single-purpose diagnostics live under
 `dev_tools/` so they do not look like required demo steps.
+
+## Full-physics refactor
+
+The experimental single-process pipeline starts at:
+
+```bash
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python \
+  scripts/pipeline/run_full_physics_pipeline.py \
+  --task-json tasks/nav_pick_place_apple_contact.json \
+  --output-dir outputs/full_physics_dry_run \
+  --num-episodes 1 \
+  --seed 0 \
+  --dry-run
+```
+
+The first refactor stage only provides a dependency-free control-flow dry run.
+Its summaries always set `pure_physics_success=false`; the existing video
+baseline remains unchanged.
