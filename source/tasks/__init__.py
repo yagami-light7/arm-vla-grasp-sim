@@ -1,5 +1,6 @@
-"""Task loading and normalization helpers."""
+"""Task loading, normalization and randomization helpers."""
 
-from .task_loader import JsonTaskProvider
+from .randomizer import prepare_episode_spec
+from .task_loader import JsonTaskProvider, episode_spec_from_dict
 
-__all__ = ["JsonTaskProvider"]
+__all__ = ["JsonTaskProvider", "episode_spec_from_dict", "prepare_episode_spec"]

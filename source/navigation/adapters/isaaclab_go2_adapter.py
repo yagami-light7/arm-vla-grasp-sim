@@ -107,6 +107,18 @@ class Go2LocomotionAdapter:
             return
         self._write_root_pose_xyzyaw(*self._base_pose_lock_xyzyaw)
 
+    def apply_base_pose_lock(self) -> dict[str, Any]:
+        """应用已捕获的 root pose；不推进仿真。"""
+
+        if self._base_pose_lock_xyzyaw is None:
+            return {"applied": False, "reason": "base_pose_lock_disabled"}
+        self._apply_base_pose_lock()
+        return {
+            "applied": True,
+            "pose_xyzyaw": list(self._base_pose_lock_xyzyaw),
+            "uses_direct_root_state": True,
+        }
+
     def set_support_joint_lock(self, enabled: bool = True) -> dict[str, Any]:
         """Freeze the quadruped support joints during manipulation phases."""
 
@@ -131,8 +143,26 @@ class Go2LocomotionAdapter:
 
         target = self._dog_joint_lock_target.to(device=self.runtime.device, dtype=torch.float32)
         velocity = torch.zeros_like(target)
+        # IsaacLab 的 write_joint_state_to_sim(joint_ids=...) 会把整条 articulation
+        # 的 DOF buffer 写回 PhysX。这里不能用它锁腿，否则会把 arm_joint1~6
+        # 也反复写回旧状态，导致 pick/place 看起来完全没有执行。
         self.robot.set_joint_position_target(target, joint_ids=self.dog_joint_ids)
-        self.robot.write_joint_state_to_sim(target, velocity, joint_ids=self.dog_joint_ids)
+        self.robot.set_joint_velocity_target(velocity, joint_ids=self.dog_joint_ids)
+
+    def apply_support_joint_lock(self) -> dict[str, Any]:
+        """应用已捕获的支撑关节姿态；不推进仿真。"""
+
+        if self._dog_joint_lock_target is None:
+            return {"applied": False, "reason": "support_joint_lock_disabled"}
+        self._apply_support_joint_lock()
+        return {
+            "applied": True,
+            "joint_names": list(DOG_JOINT_NAMES),
+            "joint_ids": [int(index) for index in self.dog_joint_ids],
+            "action_indices": list(self.dog_action_indices or []),
+            "uses_direct_joint_state": False,
+            "lock_mode": "position_velocity_target_only",
+        }
 
     def _apply_gripper_joint_target(self) -> None:
         if len(self.gripper_joint_ids) != 2:
@@ -149,6 +179,44 @@ class Go2LocomotionAdapter:
             ).reshape(1, -1)
         )
         self.robot.set_joint_position_target(gripper_target, joint_ids=self.gripper_joint_ids)
+
+    def apply_gripper_joint_target(self) -> dict[str, Any]:
+        """把当前夹爪目标写成 articulation position target，不改写关节状态。"""
+
+        if self._gripper_joint_target is None:
+            return {"applied": False, "reason": "gripper_joint_target_disabled"}
+        if len(self.gripper_joint_ids) != len(GRIPPER_JOINT_NAMES):
+            return {
+                "applied": False,
+                "reason": "gripper_joint_id_count_mismatch",
+                "joint_ids": [int(index) for index in self.gripper_joint_ids],
+            }
+        import torch
+
+        target = torch.as_tensor(
+            self._gripper_joint_target,
+            dtype=torch.float32,
+            device=self.runtime.device,
+        ).reshape(1, -1)
+        if target.shape[1] != len(self.gripper_joint_ids):
+            return {
+                "applied": False,
+                "reason": "gripper_joint_target_count_mismatch",
+                "target_count": int(target.shape[1]),
+                "joint_count": len(self.gripper_joint_ids),
+            }
+        velocity_target = torch.zeros_like(target)
+        self.robot.set_joint_position_target(target, joint_ids=self.gripper_joint_ids)
+        self.robot.set_joint_velocity_target(velocity_target, joint_ids=self.gripper_joint_ids)
+        return {
+            "applied": True,
+            "joint_names": list(GRIPPER_JOINT_NAMES),
+            "joint_ids": [int(index) for index in self.gripper_joint_ids],
+            "target_positions": [
+                float(value) for value in target.reshape(-1).detach().cpu().tolist()
+            ],
+            "uses_direct_joint_state": False,
+        }
 
     def get_base_pose(self) -> tuple[float, float, float]:
         """Return world-frame ``x, y, yaw``."""
@@ -197,6 +265,46 @@ class Go2LocomotionAdapter:
         """Optionally hold gripper joints while the locomotion policy steps."""
 
         self._gripper_joint_target = target
+
+    def apply_arm_joint_target(self) -> dict[str, Any]:
+        """把当前机械臂目标写成 articulation position target，不改写关节状态。"""
+
+        if self._arm_joint_target is None:
+            return {"applied": False, "reason": "arm_joint_target_disabled"}
+        if len(self.arm_joint_ids) != len(ARM_JOINT_NAMES):
+            return {
+                "applied": False,
+                "reason": "arm_joint_id_count_mismatch",
+                "joint_ids": [int(index) for index in self.arm_joint_ids],
+            }
+        import torch
+
+        target = torch.as_tensor(
+            self._arm_joint_target,
+            dtype=torch.float32,
+            device=self.runtime.device,
+        ).reshape(1, -1)
+        if target.shape[1] != len(self.arm_joint_ids):
+            return {
+                "applied": False,
+                "reason": "arm_joint_target_count_mismatch",
+                "target_count": int(target.shape[1]),
+                "joint_count": len(self.arm_joint_ids),
+            }
+        self.robot.set_joint_position_target(target, joint_ids=self.arm_joint_ids)
+        return {
+            "applied": True,
+            "joint_names": list(ARM_JOINT_NAMES),
+            "joint_ids": [int(index) for index in self.arm_joint_ids],
+            "target_positions": [
+                float(value) for value in target.reshape(-1).detach().cpu().tolist()
+            ],
+            # baseline 只通过 position action 驱动机械臂；运动阶段不能把 velocity
+            # target 每拍写成 0，否则阻尼项会持续抵抗 cuRobo 轨迹跟踪。
+            "control_mode": "position_target_only",
+            "velocity_target_written": False,
+            "uses_direct_joint_state": False,
+        }
 
     def set_direct_arm_action_override(self, enabled: bool = True) -> dict[str, Any]:
         """Override policy arm action slots with externally supplied joint targets.
@@ -289,8 +397,8 @@ class Go2LocomotionAdapter:
             return actions
         return self._override_target_actions(actions, self.arm_action_indices, self._arm_joint_target)
 
-    def step(self) -> Any:
-        """Inject the command term, run policy inference, and advance simulation."""
+    def compute_policy_action(self, *, refresh_observations: bool = True) -> Any:
+        """写入速度命令并执行策略推理，但不推进仿真。"""
 
         import torch
 
@@ -314,13 +422,36 @@ class Go2LocomotionAdapter:
                 self.arm_term.command_buffer[:, : arm_target.shape[1]] = arm_target
 
         with torch.inference_mode():
+            # 新 pipeline 的导航阶段不会开启这些锁；保留调用是为了兼容旧 manipulation 路径。
             self._apply_base_pose_lock()
             self._apply_support_joint_lock()
             self._apply_gripper_joint_target()
-            self.observations = self.env.get_observations()
+            if refresh_observations:
+                self.observations = self.env.get_observations()
             actions = self.policy(self.observations)
+            clip_actions = getattr(self.env, "clip_actions", None)
+            if clip_actions is not None:
+                actions = torch.clamp(actions, -clip_actions, clip_actions)
+            # 先裁剪 locomotion policy 输出，再写入 cuRobo 直接关节目标。
+            # Foundation 配置中 arm action scale 只有 0.10；如果 override 后再 clip，
+            # 1 rad 级别的机械臂目标会被等效压成约 0.1 rad，表现为 pick 阶段原地等待。
             actions = self._override_arm_actions(actions)
             self._last_actions = actions.detach()
+        return actions
+
+    def update_observations(self, observations: Any | None = None) -> Any:
+        """在 simulation runtime 完成物理步后更新策略观测。"""
+
+        self.observations = self.env.get_observations() if observations is None else observations
+        return self.observations
+
+    def step(self) -> Any:
+        """旧流程兼容入口；新 full-physics pipeline 禁止调用此方法。"""
+
+        import torch
+
+        actions = self.compute_policy_action()
+        with torch.inference_mode():
             self.observations, _, _, _ = self.env.step(actions)
             self._apply_gripper_joint_target()
             self._apply_support_joint_lock()

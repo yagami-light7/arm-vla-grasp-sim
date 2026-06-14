@@ -54,6 +54,7 @@ class GraspTask:
     """Input and output files for one pick attempt."""
 
     object_prim_path: str | None
+    curobo_task_mode: str = "grasp"
     grasp_mode: str = "auto"
     use_planner_server: bool = True
     state_json: str = "/tmp/go2_x5_isaac_state.json"
@@ -76,6 +77,18 @@ class GraspPipelineConfig:
     planner_port: int = 8765
     planner_timeout_s: float = 30.0
     one_shot_timeout_s: float = _env_float("GO2_X5_CUROBO_PLAN_TIMEOUT_S", 300.0)
+    side_grasp_plan_vertical_lift: bool = _env_bool(
+        "GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT",
+        True,
+    )
+    side_grasp_fallback_retreat: bool = _env_bool(
+        "GO2_X5_SIDE_GRASP_FALLBACK_RETREAT",
+        False,
+    )
+    side_grasp_retreat_to_pregrasp: bool = _env_bool(
+        "GO2_X5_SIDE_GRASP_RETREAT_TO_PREGRASP",
+        False,
+    )
 
 
 class GraspPipeline:
@@ -120,6 +133,7 @@ class GraspPipeline:
         """Plan arm-only grasp segments with the external cuRobo runtime."""
 
         Path(task.plan_json).unlink(missing_ok=True)
+        task_mode = (task.curobo_task_mode or "grasp").strip().lower()
         if task.use_planner_server and self._try_server(task):
             return self._read_json(task.plan_json)
         env = os.environ.copy()
@@ -127,12 +141,20 @@ class GraspPipeline:
             {
                 "GO2_X5_WORKSPACE": str(self.config.workspace),
                 "GO2_X5_CUROBO_SOURCE_ROOT": self.config.curobo_source_root,
+                "GO2_X5_CUROBO_TASK_MODE": task_mode or "grasp",
                 "GO2_X5_STATE_JSON": task.state_json,
                 "GO2_X5_TARGET_JSON": task.target_json,
                 "GO2_X5_PLAN_JSON": task.plan_json,
                 "GO2_X5_REQUIRE_OBJECT_LIFT_SUCCESS": os.environ.get("GO2_X5_REQUIRE_OBJECT_LIFT_SUCCESS", "1"),
-                "GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT": os.environ.get("GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT", "1"),
-                "GO2_X5_SIDE_GRASP_FALLBACK_RETREAT": os.environ.get("GO2_X5_SIDE_GRASP_FALLBACK_RETREAT", "0"),
+                "GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT": (
+                    "1" if self.config.side_grasp_plan_vertical_lift else "0"
+                ),
+                "GO2_X5_SIDE_GRASP_FALLBACK_RETREAT": (
+                    "1" if self.config.side_grasp_fallback_retreat else "0"
+                ),
+                "GO2_X5_SIDE_GRASP_RETREAT_TO_PREGRASP": (
+                    "1" if self.config.side_grasp_retreat_to_pregrasp else "0"
+                ),
             }
         )
         print(
@@ -141,6 +163,7 @@ class GraspPipeline:
                 "state_json": task.state_json,
                 "target_json": task.target_json,
                 "plan_json": task.plan_json,
+                "task_mode": task_mode or "grasp",
                 "timeout_s": float(self.config.one_shot_timeout_s),
             },
             flush=True,
@@ -212,12 +235,17 @@ class GraspPipeline:
 
     def _try_server(self, task: GraspTask) -> bool:
         request = {
-            "command": "plan_grasp_segments",
+            "command": (
+                "plan_place_segments"
+                if (task.curobo_task_mode or "grasp").strip().lower() == "place"
+                else "plan_grasp_segments"
+            ),
             "state_json": task.state_json,
             "target_json": task.target_json,
             "output_json": task.plan_json,
-            "side_grasp_plan_vertical_lift": _env_bool("GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT", True),
-            "side_grasp_fallback_retreat": _env_bool("GO2_X5_SIDE_GRASP_FALLBACK_RETREAT", False),
+            "side_grasp_plan_vertical_lift": self.config.side_grasp_plan_vertical_lift,
+            "side_grasp_fallback_retreat": self.config.side_grasp_fallback_retreat,
+            "side_grasp_retreat_to_pregrasp": self.config.side_grasp_retreat_to_pregrasp,
         }
         try:
             with socket.create_connection((self.config.planner_host, self.config.planner_port), timeout=1.0) as sock:

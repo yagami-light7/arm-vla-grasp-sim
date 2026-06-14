@@ -58,5 +58,15 @@ class SimulationRuntime(Protocol):
     def step(self, *, render: bool) -> None:
         ...
 
+    def prepare_object_for_pick(self, episode_spec: "EpisodeSpec") -> dict[str, Any]:
+        """在 pick 规划前恢复任务初始条件并唤醒动态物体。"""
+
+        ...
+
+    def pause(self) -> dict[str, Any]:
+        """暂停物理推进，同时保留 stage 和控制目标供 GUI 检查。"""
+
+        ...
+
     def close(self) -> None:
         ...

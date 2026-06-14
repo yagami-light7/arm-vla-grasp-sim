@@ -243,7 +243,12 @@ class DWAController:
                 [linear_values, np.array([min_active_linear_velocity], dtype=np.float64)]
             )
             linear_values = np.clip(linear_values, self.config.min_linear_velocity, linear_cap)
-            linear_values = np.unique(np.round(np.concatenate([linear_values, np.array([0.0])]), decimals=4))
+            linear_values = np.unique(
+                np.round(
+                    np.concatenate([linear_values, np.array([0.0])]),
+                    decimals=4,
+                )
+            )
 
         angular_values = np.linspace(
             angular_lower,
@@ -253,11 +258,26 @@ class DWAController:
         )
         angular_values = np.unique(
             np.round(
-                np.concatenate([angular_values, np.array([0.0, -self.config.max_angular_velocity, self.config.max_angular_velocity])]),
+                np.concatenate(
+                    [
+                        angular_values,
+                        np.array(
+                            [
+                                0.0,
+                                -self.config.max_angular_velocity,
+                                self.config.max_angular_velocity,
+                            ]
+                        ),
+                    ]
+                ),
                 decimals=4,
             )
         )
-        angular_values = np.clip(angular_values, -self.config.max_angular_velocity, self.config.max_angular_velocity)
+        angular_values = np.clip(
+            angular_values,
+            -self.config.max_angular_velocity,
+            self.config.max_angular_velocity,
+        )
 
         return [(float(v), float(w)) for v in linear_values for w in angular_values]
 

@@ -108,6 +108,7 @@ def env_bool(name: str, default: bool) -> bool:
 # debugging.
 SIDE_GRASP_PLAN_VERTICAL_LIFT = env_bool("GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT", True)
 SIDE_GRASP_FALLBACK_RETREAT = env_bool("GO2_X5_SIDE_GRASP_FALLBACK_RETREAT", False)
+SIDE_GRASP_RETREAT_TO_PREGRASP = env_bool("GO2_X5_SIDE_GRASP_RETREAT_TO_PREGRASP", False)
 
 SEGMENT_TIMING = {
     # 仅用于规划日志中的子路径名称；最终不会作为独立 motion 输出。
@@ -1299,15 +1300,25 @@ def plan_grasp_segments(
 
         if grasp_mode == "side" and not SIDE_GRASP_PLAN_VERTICAL_LIFT:
             print("[side grasp] legacy mode: skip vertical lift; retreat by reversing approach path.")
+            reverse_info_key = (
+                "reverse_approach_lift"
+                if SIDE_GRASP_RETREAT_TO_PREGRASP
+                else "reverse_full_approach_return"
+            )
+            target_name = "pregrasp" if SIDE_GRASP_RETREAT_TO_PREGRASP else "home"
             segment, q_current = build_lift_segment_from_reverse_approach(
                 planner=planner,
                 approach_segment=approach_segment,
                 T_world_base=T_world_base,
                 segment_name="retreat_object",
-                target_name="home",
-                reverse_info_key="reverse_full_approach_return",
+                target_name=target_name,
+                reverse_info_key=reverse_info_key,
             )
-            segment["retreat_strategy"] = "reverse_full_approach_path_for_side_grasp"
+            segment["retreat_strategy"] = (
+                "reverse_approach_path_to_pregrasp_for_side_grasp"
+                if SIDE_GRASP_RETREAT_TO_PREGRASP
+                else "reverse_full_approach_path_for_side_grasp"
+            )
         else:
             try:
                 segment, q_current = build_motion_segment(
@@ -1325,15 +1336,25 @@ def plan_grasp_segments(
                 if grasp_mode != "side" or not SIDE_GRASP_FALLBACK_RETREAT:
                     raise
                 print("[side grasp] vertical lift planning failed; fallback to reverse retreat.")
+                reverse_info_key = (
+                    "reverse_approach_lift"
+                    if SIDE_GRASP_RETREAT_TO_PREGRASP
+                    else "reverse_full_approach_return"
+                )
+                target_name = "pregrasp" if SIDE_GRASP_RETREAT_TO_PREGRASP else "home"
                 segment, q_current = build_lift_segment_from_reverse_approach(
                     planner=planner,
                     approach_segment=approach_segment,
                     T_world_base=T_world_base,
                     segment_name="retreat_object",
-                    target_name="home",
-                    reverse_info_key="reverse_full_approach_return",
+                    target_name=target_name,
+                    reverse_info_key=reverse_info_key,
                 )
-                segment["retreat_strategy"] = "reverse_full_approach_path_for_side_grasp_after_lift_failure"
+                segment["retreat_strategy"] = (
+                    "reverse_approach_path_to_pregrasp_for_side_grasp_after_lift_failure"
+                    if SIDE_GRASP_RETREAT_TO_PREGRASP
+                    else "reverse_full_approach_path_for_side_grasp_after_lift_failure"
+                )
         segments.append(segment)
 
     finally:
@@ -1365,6 +1386,7 @@ def plan_grasp_segments(
             "grasp_mode": grasp_mode,
             "side_grasp_plan_vertical_lift": SIDE_GRASP_PLAN_VERTICAL_LIFT,
             "side_grasp_fallback_retreat": SIDE_GRASP_FALLBACK_RETREAT,
+            "side_grasp_retreat_to_pregrasp": SIDE_GRASP_RETREAT_TO_PREGRASP,
         },
     }
 

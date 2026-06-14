@@ -22,6 +22,7 @@ Go2-X5 cuRobo 常驻规划服务。
 请求示例：
     {"command": "plan_grasp_segments"}
     {"command": "ping"}
+    {"command": "capabilities"}
     {"command": "shutdown"}
 """
 
@@ -134,6 +135,9 @@ class CuroboPlannerServer:
         module.SIDE_GRASP_FALLBACK_RETREAT = bool(
             request.get("side_grasp_fallback_retreat", module.SIDE_GRASP_FALLBACK_RETREAT)
         )
+        module.SIDE_GRASP_RETREAT_TO_PREGRASP = bool(
+            request.get("side_grasp_retreat_to_pregrasp", module.SIDE_GRASP_RETREAT_TO_PREGRASP)
+        )
 
         log("")
         log("========== Planner Server Request ==========")
@@ -143,6 +147,7 @@ class CuroboPlannerServer:
         log("[server] output_json:", output_json)
         log("[server] side_grasp_plan_vertical_lift:", module.SIDE_GRASP_PLAN_VERTICAL_LIFT)
         log("[server] side_grasp_fallback_retreat:", module.SIDE_GRASP_FALLBACK_RETREAT)
+        log("[server] side_grasp_retreat_to_pregrasp:", module.SIDE_GRASP_RETREAT_TO_PREGRASP)
 
         start = time.perf_counter()
         with contextlib.redirect_stdout(sys.stderr):
@@ -165,6 +170,46 @@ class CuroboPlannerServer:
         log(f"[server] request done, wall_time_s={wall_time_s:.3f}")
         return response
 
+    def plan_place_segments(self, request: dict) -> dict:
+        """执行一次放置分段规划，复用与 pick 相同的常驻 planner。"""
+
+        self.num_requests += 1
+        state_json = Path(request.get("state_json", DEFAULT_STATE_JSON))
+        target_json = Path(request.get("target_json", DEFAULT_TARGET_JSON))
+        output_json = Path(request.get("output_json", DEFAULT_OUTPUT_JSON))
+
+        module = self.module
+        module.STATE_JSON = state_json
+        module.TARGET_JSON = target_json
+        module.OUTPUT_JSON = output_json
+        module.PROFILER = module.Profiler()
+
+        log("")
+        log("========== Planner Server Place Request ==========")
+        log("[server] request_id:", self.num_requests)
+        log("[server] state_json:", state_json)
+        log("[server] target_json:", target_json)
+        log("[server] output_json:", output_json)
+
+        start = time.perf_counter()
+        with contextlib.redirect_stdout(sys.stderr):
+            payload = module.plan_place_segments(
+                planner=self.planner,
+                destroy_planner=False,
+            )
+        wall_time_s = time.perf_counter() - start
+        response = {
+            "ok": True,
+            "command": "plan_place_segments",
+            "request_id": self.num_requests,
+            "output_json": str(output_json),
+            "wall_time_s": wall_time_s,
+            "summary": payload.get("summary", {}),
+            "profile": module.PROFILER.summary(),
+        }
+        log(f"[server] place request done, wall_time_s={wall_time_s:.3f}")
+        return response
+
     def handle(self, request: dict) -> dict:
         """处理一个 JSON 请求。"""
         command = request.get("command", "plan_grasp_segments")
@@ -177,8 +222,21 @@ class CuroboPlannerServer:
                 "num_requests": self.num_requests,
             }
 
+        if command == "capabilities":
+            return {
+                "ok": True,
+                "command": "capabilities",
+                "features": {
+                    "side_grasp_retreat_to_pregrasp": True,
+                },
+                "workspace": str(WORKSPACE),
+            }
+
         if command == "plan_grasp_segments":
             return self.plan_grasp_segments(request)
+
+        if command == "plan_place_segments":
+            return self.plan_place_segments(request)
 
         if command == "shutdown":
             return {

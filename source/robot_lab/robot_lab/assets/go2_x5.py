@@ -72,14 +72,13 @@ GO2_X5_CFG = ArticulationCfg(
             damping=0.5,
             friction=0.0,
         ),
-        # Keep the carried X5 arm drive gains aligned with the manipulation USD.
-        # The locomotion checkpoint still uses the same leg gains; only arm_joint1~8
-        # are made consistent with the cuRobo/Isaac Sim grasp stage.
-        "arm": DCMotorCfg(
+        # manipulation baseline 通过 Isaac Sim implicit drive 跟踪 ArticulationAction。
+        # 这里不要用 DCMotorCfg 的速度-力矩曲线限幅机械臂，否则 arm_joint4 等腕部
+        # 关节在抓取轨迹中会明显滞后，表现为 TCP 低头并扫到桌面。
+        "arm": ImplicitActuatorCfg(
             joint_names_expr=["arm_joint[1-6]"],
-            effort_limit=15.0,
-            saturation_effort=15.0,
-            velocity_limit=3.0,
+            effort_limit_sim=100.0,
+            velocity_limit_sim=10.0,
             stiffness=1000.0,
             damping=50.0,
             friction=0.0,
