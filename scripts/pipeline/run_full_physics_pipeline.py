@@ -58,14 +58,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="显示 pick/place 随机区域和采样点的非物理 USD guide；默认关闭。",
     )
     parser.add_argument(
-        "--viewport-camera-prim",
-        default="/World/Camera_main",
-        help=(
-            "GUI 默认 viewpoint 使用的 USD Camera prim。baseline 默认 /World/Camera_main；"
-            "如果当前场景使用 Camera1/2/3，可传 /World/Camera1。"
-        ),
-    )
-    parser.add_argument(
         "--keep-window-open",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -78,40 +70,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="是否以无界面模式运行；使用 --headless 关闭GUI渲染。",
     )
     parser.add_argument(
-        "--enable-debug-vis",
-        action="store_true",
-        help="开启调试可视化；dry-run 只记录该请求，不创建物理可视化。",
-    )
-    parser.add_argument(
-        "--save-video",
-        action="store_true",
-        help="请求保存视频；dry-run 只记录该请求，不生成视频。",
-    )
-    parser.add_argument(
-        "--lock-base-during-manipulation",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="机械臂执行 pick/place 时锁定四足底盘 root pose；默认开启。",
-    )
-    parser.add_argument(
-        "--lock-support-joints-during-manipulation",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="机械臂执行 pick/place 时冻结 12 个四足支撑关节；默认开启。",
-    )
-    parser.add_argument(
-        "--replan-pick-from-current-state",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="已保留兼容；full-physics 模式始终基于当前状态在线规划 pick/place。",
-    )
-    parser.add_argument(
-        "--auto-start-curobo-server",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="full-physics 在线规划时自动启动并预热 cuRobo planner server；默认开启。",
-    )
-    parser.add_argument(
         "--pick-plan-json",
         help="预先生成的 pick cuRobo 分段计划 JSON；仅用于 manipulation apply smoke。",
     )
@@ -119,47 +77,50 @@ def _build_parser() -> argparse.ArgumentParser:
         "--place-plan-json",
         help="预先生成的 place cuRobo 分段计划 JSON；仅用于 manipulation apply smoke。",
     )
-    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument(
         "--dry-run",
-        action="store_true",
+        action="store_const",
+        const="dry_run",
+        dest="mode",
         help="使用无 Isaac 依赖的内存后端验证完整状态流。",
     )
     mode_group.add_argument(
         "--simulation-smoke",
-        action="store_true",
+        action="store_const",
+        const="simulation_smoke",
+        dest="mode",
         help="启动真实 Isaac Sim，仅验证单 Stage、单 World 的场景构建和 episode reset。",
     )
     mode_group.add_argument(
         "--navigation-smoke",
-        action="store_true",
+        action="store_const",
+        const="navigation_smoke",
+        dest="mode",
         help="启动真实 Isaac Lab locomotion policy，验证 pipeline 驱动的物理导航。",
     )
     mode_group.add_argument(
         "--navigation-carry-smoke",
-        action="store_true",
+        action="store_const",
+        const="navigation_carry_smoke",
+        dest="mode",
         help="从 pick 导航终点出发，验证导航到 place 时机械臂保持全零 home 且夹爪闭合。",
     )
     mode_group.add_argument(
         "--manipulation-smoke",
-        action="store_true",
+        action="store_const",
+        const="manipulation_smoke",
+        dest="mode",
         help="跳过导航，使用分段机械臂计划验证 manipulation action 合同。",
     )
     mode_group.add_argument(
         "--manipulation-apply-smoke",
-        action="store_true",
+        action="store_const",
+        const="manipulation_apply_smoke",
+        dest="mode",
         help="启动真实 Isaac Sim，跳过导航并验证机械臂/夹爪 action 能下发到 articulation。",
     )
-    mode_group.add_argument(
-        "--full-physics",
-        action="store_true",
-        help="启动完整在线规划物理执行：nav、pick、carry、place 和 LeRobot 导出。",
-    )
-    mode_group.add_argument(
-        "--integrated-apply-smoke",
-        action="store_true",
-        help="已取消；请改用 --full-physics。",
-    )
+    parser.set_defaults(mode="full_physics")
     return parser
 
 
@@ -201,9 +162,11 @@ def _validate_external_plan_paths(config: FullPhysicsConfig) -> None:
     raise SystemExit(f"外部 cuRobo plan JSON 不存在，请检查路径：\n{details}")
 
 
-def _keep_gui_open(simulation_app: object) -> None:
+def _keep_gui_open(simulation_app: object, retained_simulation: object | None = None) -> None:
     """物理 runtime 已暂停后只维持 Kit GUI，不再调用 pipeline world.step。"""
 
+    if retained_simulation is not None and hasattr(retained_simulation, "refresh_viewport"):
+        retained_simulation.refresh_viewport(reason="keep_gui_open_before_loop")
     print(
         "[full-physics] pipeline 已结束，GUI 保持打开；关闭窗口或按 Ctrl+C 退出。",
         flush=True,
@@ -217,19 +180,24 @@ def _keep_gui_open(simulation_app: object) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
-    if args.integrated_apply_smoke:
-        raise SystemExit("--integrated-apply-smoke 已取消，请改用 --full-physics。")
-    if args.full_physics and (args.pick_plan_json or args.place_plan_json):
-        raise SystemExit("--full-physics 禁止使用离线 plan JSON；pick/place 必须按当前仿真状态在线规划。")
+    mode = str(args.mode)
+    dry_run = mode == "dry_run"
+    simulation_smoke = mode == "simulation_smoke"
+    navigation_smoke = mode == "navigation_smoke"
+    navigation_carry_smoke = mode == "navigation_carry_smoke"
+    manipulation_smoke = mode == "manipulation_smoke"
+    manipulation_apply_smoke = mode == "manipulation_apply_smoke"
+    full_physics = mode == "full_physics"
+    if full_physics and (args.pick_plan_json or args.place_plan_json):
+        raise SystemExit("默认 full-physics 模式禁止使用离线 plan JSON；pick/place 必须按当前仿真状态在线规划。")
     if args.keep_window_open and args.headless:
         raise SystemExit("--keep-window-open 只能与 --no-headless 一起使用。")
     if (
-        args.simulation_smoke
-        or args.navigation_smoke
-        or args.navigation_carry_smoke
-        or args.manipulation_apply_smoke
-        or args.full_physics
-        or args.integrated_apply_smoke
+        simulation_smoke
+        or navigation_smoke
+        or navigation_carry_smoke
+        or manipulation_apply_smoke
+        or full_physics
     ) and args.num_episodes != 1:
         raise SystemExit("真实 Isaac smoke 目前只支持 --num-episodes 1。")
 
@@ -239,26 +207,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         num_episodes=args.num_episodes,
         seed=args.seed,
         headless=args.headless,
-        enable_debug_vis=args.enable_debug_vis,
-        save_video=args.save_video,
         keep_window_open=args.keep_window_open,
         pick_plan_json=_project_path(args.pick_plan_json) if args.pick_plan_json else None,
         place_plan_json=_project_path(args.place_plan_json) if args.place_plan_json else None,
-        dry_run=args.dry_run,
-        simulation_smoke=args.simulation_smoke,
-        navigation_smoke=args.navigation_smoke,
-        navigation_carry_smoke=args.navigation_carry_smoke,
-        manipulation_smoke=args.manipulation_smoke,
-        manipulation_apply_smoke=args.manipulation_apply_smoke,
-        full_physics=args.full_physics,
-        integrated_apply_smoke=args.integrated_apply_smoke,
-        manipulation=ManipulationSettings(
-            lock_base_during_manipulation=args.lock_base_during_manipulation,
-            lock_support_joints_during_manipulation=(
-                args.lock_support_joints_during_manipulation
-            ),
-            replan_pick_from_current_state=args.replan_pick_from_current_state,
-        ),
+        dry_run=dry_run,
+        simulation_smoke=simulation_smoke,
+        navigation_smoke=navigation_smoke,
+        navigation_carry_smoke=navigation_carry_smoke,
+        manipulation_smoke=manipulation_smoke,
+        manipulation_apply_smoke=manipulation_apply_smoke,
+        full_physics=full_physics,
+        manipulation=ManipulationSettings(),
         randomization=RandomizationSettings(
             enabled=args.randomize_task,
             show_debug_region=args.show_randomization_debug,
@@ -275,8 +234,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     retained_simulation = None
     try:
         if (
-            args.auto_start_curobo_server
-            and config.full_physics
+            config.full_physics
         ):
             from source.manipulation import (
                 CuroboPlannerServerProcess,
@@ -288,12 +246,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             planner_server.start()
         if (
-            args.simulation_smoke
-            or args.navigation_smoke
-            or args.navigation_carry_smoke
-            or args.manipulation_apply_smoke
-            or args.full_physics
-            or args.integrated_apply_smoke
+            simulation_smoke
+            or navigation_smoke
+            or navigation_carry_smoke
+            or manipulation_apply_smoke
+            or full_physics
         ):
             from isaaclab.app import AppLauncher
 
@@ -301,8 +258,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 {
                     "headless": config.headless,
                     "enable_cameras": bool(
-                        config.save_video
-                        or config.enable_debug_vis
+                        (config.full_physics and config.recording.enabled)
                         or config.randomization.show_debug_region
                         or not config.headless
                     ),
@@ -344,14 +300,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     flush=True,
                 )
             episode_dir = config.output_dir / f"episode_{episode_index:06d}"
-            if args.dry_run:
+            if dry_run:
                 pipeline = create_dry_run_pipeline(
                     config=config,
                     episode_spec=episode_spec,
                     episode_seed=episode_seed,
                     episode_dir=episode_dir,
                 )
-            elif args.manipulation_smoke:
+            elif manipulation_smoke:
                 from source.pipeline.manipulation_smoke import (
                     create_manipulation_smoke_pipeline,
                 )
@@ -362,7 +318,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     episode_seed=episode_seed,
                     episode_dir=episode_dir,
                 )
-            elif args.manipulation_apply_smoke:
+            elif manipulation_apply_smoke:
                 from source.pipeline.manipulation_apply_smoke import (
                     create_manipulation_apply_smoke_pipeline,
                 )
@@ -383,7 +339,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         ),
                     ),
                 )
-            elif args.full_physics:
+            elif full_physics:
                 from source.pipeline.integrated_apply_smoke import (
                     create_full_physics_pipeline,
                 )
@@ -401,20 +357,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                         simulation_app=app_launcher.app,
                         project_root=PROJECT_ROOT,
                         config=IsaacLabNavigationRuntimeConfig(
+                            enable_front_camera=config.recording.enabled,
+                            front_camera_height=config.recording.image_height,
+                            front_camera_width=config.recording.image_width,
                             place_release_clearance_min_m=(
                                 config.manipulation.place_release_clearance_min_m
                             ),
                             place_pre_clearance_min_m=(
                                 config.manipulation.place_pre_clearance_min_m
                             ),
-                            viewport_camera_prim_path=args.viewport_camera_prim,
                             show_randomization_debug=(
                                 config.randomization.show_debug_region
                             ),
                         ),
                     ),
                 )
-            elif args.simulation_smoke:
+            elif simulation_smoke:
                 from source.pipeline.simulation_smoke import (
                     create_simulation_smoke_pipeline,
                 )
@@ -435,7 +393,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         ),
                     ),
                 )
-            elif args.navigation_smoke or args.navigation_carry_smoke:
+            elif navigation_smoke or navigation_carry_smoke:
                 from source.pipeline.navigation_smoke import (
                     create_navigation_carry_smoke_pipeline,
                     create_navigation_smoke_pipeline,
@@ -447,7 +405,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
                 pipeline_factory = (
                     create_navigation_carry_smoke_pipeline
-                    if args.navigation_carry_smoke
+                    if navigation_carry_smoke
                     else create_navigation_smoke_pipeline
                 )
                 pipeline = pipeline_factory(
@@ -459,7 +417,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                         simulation_app=app_launcher.app,
                         project_root=PROJECT_ROOT,
                         config=IsaacLabNavigationRuntimeConfig(
-                            viewport_camera_prim_path=args.viewport_camera_prim,
                             show_randomization_debug=(
                                 config.randomization.show_debug_region
                             ),
@@ -487,7 +444,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 flush=True,
             )
         if args.keep_window_open and app_launcher is not None:
-            _keep_gui_open(app_launcher.app)
+            _keep_gui_open(app_launcher.app, retained_simulation)
         return 0 if all_success else 1
     finally:
         try:

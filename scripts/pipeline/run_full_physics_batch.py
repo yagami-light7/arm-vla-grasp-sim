@@ -11,6 +11,7 @@ import shlex
 import subprocess
 import sys
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -18,6 +19,8 @@ from typing import Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PIPELINE_ENTRY = PROJECT_ROOT / "scripts/pipeline/run_full_physics_pipeline.py"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 _REAL_MODES = {
@@ -25,7 +28,6 @@ _REAL_MODES = {
     "navigation_smoke": "--navigation-smoke",
     "navigation_carry_smoke": "--navigation-carry-smoke",
     "manipulation_apply_smoke": "--manipulation-apply-smoke",
-    "full_physics": "--full-physics",
 }
 
 
@@ -38,6 +40,7 @@ _COLORS = {
     "magenta": "\033[35m",
     "bold": "\033[1m",
     "dim": "\033[2m",
+    "white": "\033[37m",
     "reset": "\033[0m",
 }
 
@@ -84,6 +87,20 @@ class EpisodeProgress:
     source: str = "unavailable"
 
 
+@dataclass(frozen=True)
+class BatchEpisodeResult:
+    """batch 结束表格的一行结构化结果。"""
+
+    episode_index: int
+    seed: int
+    pick_place_xy: str
+    success: bool
+    failed_state: str
+    lerobot_path: str
+    elapsed_seconds: float
+    failure_reason: str
+
+
 def _project_path(raw_path: str | Path) -> Path:
     path = Path(raw_path).expanduser()
     if not path.is_absolute():
@@ -109,11 +126,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="首个 episode 的随机种子；后续 episode 自动使用 seed+1，重复命令可严格复现。",
     )
     parser.add_argument(
-        "--python",
-        default=sys.executable,
-        help="用于启动单 episode pipeline 的 Python 解释器路径。",
-    )
-    parser.add_argument(
         "--randomize-task",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -125,54 +137,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="显示 pick/place 随机区域和采样点；默认关闭。",
     )
     parser.add_argument(
-        "--viewport-camera-prim",
-        default="/World/Camera_main",
-        help=(
-            "转发给单 episode pipeline 的 GUI viewpoint camera prim；"
-            "当前场景 Camera1/2/3 可传 /World/Camera1。"
-        ),
-    )
-    parser.add_argument(
         "--headless",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="批量运行默认 headless；需要 GUI 时使用 --no-headless。",
     )
     parser.add_argument(
-        "--keep-window-open",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="单 episode GUI 调试时，在子 pipeline 结束后保持窗口；必须配合 --no-headless。",
-    )
-    parser.add_argument(
         "--continue-on-failure",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="单个 episode 失败后是否继续后续 episode；默认继续。",
-    )
-    parser.add_argument(
-        "--auto-start-curobo-server",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="转发给单 episode pipeline：自动启动/复用 cuRobo planner server。",
-    )
-    parser.add_argument(
-        "--lock-base-during-manipulation",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="转发给单 episode pipeline：机械臂执行时锁定底盘 root pose。",
-    )
-    parser.add_argument(
-        "--lock-support-joints-during-manipulation",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="转发给单 episode pipeline：机械臂执行时冻结四足支撑关节。",
-    )
-    parser.add_argument(
-        "--replan-pick-from-current-state",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="保留兼容；full-physics 模式始终基于当前状态在线规划 pick/place。",
     )
     parser.add_argument(
         "--pick-plan-json",
@@ -185,7 +159,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--progress-interval-s",
         type=float,
-        default=15.0,
+        default=5.0,
         help="子进程长时间无输出时，batch 心跳进度的打印间隔秒数。",
     )
     parser.add_argument(
@@ -195,17 +169,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="是否使用 ANSI 颜色打印 batch 进度；默认开启，可用 --no-color 关闭。",
     )
 
-    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--dry-run", action="store_const", const="dry_run", dest="mode")
     for mode_name, flag in _REAL_MODES.items():
         mode_group.add_argument(flag, action="store_const", const=mode_name, dest="mode")
-    mode_group.add_argument(
-        "--integrated-apply-smoke",
-        action="store_const",
-        const="integrated_apply_smoke",
-        dest="mode",
-        help="已取消；请改用 --full-physics。",
-    )
+    parser.set_defaults(mode="full_physics")
     return parser
 
 
@@ -322,6 +290,176 @@ def _format_progress_suffix(
     )
 
 
+def _summary_xy(summary: dict[str, object] | None) -> str:
+    """优先读取随机化采样点，关闭随机化时回退任务中的实际目标坐标。"""
+
+    if not summary:
+        return "pick=- place=-"
+    task = summary.get("task_config")
+    task = task if isinstance(task, dict) else {}
+    randomization = task.get("randomization")
+    randomization = randomization if isinstance(randomization, dict) else {}
+
+    def _sampled_xy(key: str, section: str, pose_key: str) -> tuple[float, float] | None:
+        random_section = randomization.get(key)
+        if isinstance(random_section, dict):
+            sampled = random_section.get("sampled_xy")
+            if isinstance(sampled, dict) and "x" in sampled and "y" in sampled:
+                return float(sampled["x"]), float(sampled["y"])
+        task_section = task.get(section)
+        if isinstance(task_section, dict):
+            pose = task_section.get(pose_key)
+            if isinstance(pose, dict) and "x" in pose and "y" in pose:
+                return float(pose["x"]), float(pose["y"])
+        return None
+
+    pick_xy = _sampled_xy("object_xy_randomization", "pick", "object_pose_world")
+    place_xy = _sampled_xy("place_xy_randomization", "place", "place_pose_world")
+
+    def _format_xy(value: tuple[float, float] | None) -> str:
+        return "-" if value is None else f"({value[0]:.4f},{value[1]:.4f})"
+
+    return f"pick={_format_xy(pick_xy)} place={_format_xy(place_xy)}"
+
+
+def _failed_state(summary: dict[str, object] | None, *, success: bool) -> str:
+    if success:
+        return "-"
+    if summary:
+        failure_metadata = summary.get("failure_metadata")
+        if isinstance(failure_metadata, dict):
+            current_state = failure_metadata.get("current_state")
+            if isinstance(current_state, str) and current_state:
+                return current_state
+        trace = summary.get("state_trace")
+        if isinstance(trace, list) and trace:
+            if str(trace[-1]) == "failed" and len(trace) > 1:
+                return str(trace[-2])
+            return str(trace[-1])
+        final_state = summary.get("final_state")
+        if isinstance(final_state, str) and final_state:
+            return final_state
+    return "summary_missing"
+
+
+def _lerobot_path(
+    episode: BatchEpisodeCommand,
+    summary: dict[str, object] | None,
+) -> str:
+    if summary:
+        export = summary.get("lerobot_export")
+        if isinstance(export, dict):
+            for key in (
+                "dataset_path",
+                "output_path",
+                "data_path",
+                "manifest_path",
+                "source_frames",
+            ):
+                value = export.get(key)
+                if isinstance(value, str) and value:
+                    return value
+        data_output_path = summary.get("data_output_path")
+        if isinstance(data_output_path, str) and data_output_path:
+            return data_output_path
+    return str(episode.summary_path.parent)
+
+
+def _build_episode_result(
+    *,
+    episode: BatchEpisodeCommand,
+    summary: dict[str, object] | None,
+    success: bool,
+    elapsed_seconds: float,
+) -> BatchEpisodeResult:
+    return BatchEpisodeResult(
+        episode_index=episode.episode_index,
+        seed=episode.seed,
+        pick_place_xy=_summary_xy(summary),
+        success=success,
+        failed_state=_failed_state(summary, success=success),
+        lerobot_path=_lerobot_path(episode, summary),
+        elapsed_seconds=max(0.0, float(elapsed_seconds)),
+        failure_reason=(
+            str(summary.get("failure_reason") or "")
+            if summary
+            else "summary_missing"
+        ),
+    )
+
+
+def _display_width(text: str) -> int:
+    """按终端显示宽度计算中英文混排文本长度。"""
+
+    return sum(
+        2 if unicodedata.east_asian_width(character) in {"W", "F"} else 1
+        for character in text
+    )
+
+
+def _pad_cell(text: str, width: int) -> str:
+    return text + " " * max(0, width - _display_width(text))
+
+
+def _format_result_table(
+    results: Sequence[BatchEpisodeResult],
+    *,
+    color_enabled: bool,
+) -> str:
+    headers = (
+        "Episode",
+        "随机化 Pick / Place XY",
+        "Pipeline 成功",
+        "失败 State",
+        "LeRobot 数据路径",
+        "Episode 耗时",
+    )
+    rows = [
+        (
+            f"{result.episode_index} (seed={result.seed})",
+            result.pick_place_xy,
+            "成功" if result.success else "失败",
+            result.failed_state,
+            result.lerobot_path,
+            _format_duration(result.elapsed_seconds),
+        )
+        for result in results
+    ]
+    widths = [
+        max(_display_width(headers[index]), *(_display_width(row[index]) for row in rows))
+        for index in range(len(headers))
+    ]
+    column_colors = ("cyan", "magenta", "green", "yellow", "blue", "white")
+    separator = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
+
+    def _row(values: Sequence[str], *, header: bool = False) -> str:
+        cells: list[str] = []
+        for index, value in enumerate(values):
+            color_name = column_colors[index]
+            if not header and index == 2 and value == "失败":
+                color_name = "red"
+            padded = _pad_cell(value, widths[index])
+            cells.append(_color(padded, color_name, enabled=color_enabled))
+        return "| " + " | ".join(cells) + " |"
+
+    lines = [separator, _row(headers, header=True), separator]
+    lines.extend(_row(row) for row in rows)
+    lines.append(separator)
+    return "\n".join(lines)
+
+
+def _print_result_table(
+    results: Sequence[BatchEpisodeResult],
+    *,
+    color_enabled: bool,
+) -> None:
+    print(
+        _color("[full-physics-batch] Episode 汇总", "bold", enabled=color_enabled),
+        flush=True,
+    )
+    print(_format_result_table(results, color_enabled=color_enabled), flush=True)
+
+
 def _build_child_command(
     args: argparse.Namespace,
     *,
@@ -332,11 +470,8 @@ def _build_child_command(
     output_root = _project_path(args.output_dir)
     episode_output_dir = output_root / f"episode_{episode_index:06d}"
     episode_seed = int(args.seed) + int(episode_index)
-    if args.mode == "integrated_apply_smoke":
-        raise SystemExit("--integrated-apply-smoke 已取消，请改用 --full-physics。")
-    mode_flag = "--dry-run" if args.mode == "dry_run" else _REAL_MODES[args.mode]
     command = [
-        str(Path(args.python).expanduser()),
+        sys.executable,
         "-B",
         str(PIPELINE_ENTRY),
         "--task-json",
@@ -347,33 +482,13 @@ def _build_child_command(
         "1",
         "--seed",
         str(episode_seed),
-        mode_flag,
         _bool_flag(args.randomize_task, "--randomize-task", "--no-randomize-task"),
         _bool_flag(args.headless, "--headless", "--no-headless"),
-        "--viewport-camera-prim",
-        str(args.viewport_camera_prim),
-        _bool_flag(args.keep_window_open, "--keep-window-open", "--no-keep-window-open"),
-        _bool_flag(
-            args.auto_start_curobo_server,
-            "--auto-start-curobo-server",
-            "--no-auto-start-curobo-server",
-        ),
-        _bool_flag(
-            args.lock_base_during_manipulation,
-            "--lock-base-during-manipulation",
-            "--no-lock-base-during-manipulation",
-        ),
-        _bool_flag(
-            args.lock_support_joints_during_manipulation,
-            "--lock-support-joints-during-manipulation",
-            "--no-lock-support-joints-during-manipulation",
-        ),
-        _bool_flag(
-            args.replan_pick_from_current_state,
-            "--replan-pick-from-current-state",
-            "--no-replan-pick-from-current-state",
-        ),
     ]
+    if args.mode == "dry_run":
+        command.append("--dry-run")
+    elif args.mode != "full_physics":
+        command.append(_REAL_MODES[args.mode])
     if args.show_randomization_debug:
         command.append("--show-randomization-debug")
     if args.pick_plan_json and args.mode != "full_physics":
@@ -488,6 +603,7 @@ def _write_batch_record(
     episode: BatchEpisodeCommand,
     returncode: int,
     summary: dict[str, object] | None,
+    result: BatchEpisodeResult,
 ) -> None:
     record = {
         "episode_index": episode.episode_index,
@@ -498,10 +614,32 @@ def _write_batch_record(
         "success": bool(summary.get("success")) if summary else False,
         "failure_reason": summary.get("failure_reason") if summary else "summary_missing",
         "execution_mode": summary.get("execution_mode") if summary else None,
+        "pick_place_xy": result.pick_place_xy,
+        "failed_state": result.failed_state,
+        "lerobot_path": result.lerobot_path,
+        "elapsed_seconds": result.elapsed_seconds,
     }
     stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
     stream.write("\n")
     stream.flush()
+
+
+def _materialize_batch_lerobot(output_root: Path) -> dict[str, object]:
+    """把成功子进程的原始 episode 合并成一个全局 LeRobot 数据集。"""
+
+    from source.recording import discover_recorded_episodes, materialize_lerobot_dataset
+
+    episode_dirs = discover_recorded_episodes(output_root, require_success=True)
+    report = materialize_lerobot_dataset(
+        episode_dirs,
+        output_root / "lerobot_dataset",
+    )
+    manifest_path = output_root / "lerobot_export_manifest.json"
+    manifest_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return {**report, "manifest_path": str(manifest_path)}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -510,13 +648,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--num-episodes must be positive.")
     if not args.headless and args.num_episodes > 1:
         raise SystemExit("批量 GUI 运行容易阻塞自动化；多 episode 请使用 --headless。")
-    if args.keep_window_open and args.headless:
-        raise SystemExit("--keep-window-open 必须与 --no-headless 一起使用。")
-    if args.keep_window_open and args.num_episodes != 1:
-        raise SystemExit("--keep-window-open 只支持单 episode GUI 调试。")
     if args.progress_interval_s <= 0.0:
         raise SystemExit("--progress-interval-s must be positive.")
-
     output_root = _project_path(args.output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
     batch_summary_path = output_root / "batch_summary.jsonl"
@@ -530,6 +663,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     completed = 0
     batch_started_at = time.monotonic()
     color_enabled = bool(args.color) and "NO_COLOR" not in env
+    episode_results: list[BatchEpisodeResult] = []
     _print_banner(
         (
             f"[full-physics-batch] mode={args.mode} episodes={args.num_episodes} "
@@ -542,14 +676,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         for episode_index in range(args.num_episodes):
             episode = _build_child_command(args, episode_index=episode_index)
             episode.output_dir.mkdir(parents=True, exist_ok=True)
+            episode_started_at = time.monotonic()
             returncode = _run_child_process(
                 episode,
                 env=env,
                 progress_interval_s=args.progress_interval_s,
                 color_enabled=color_enabled,
             )
+            episode_elapsed_seconds = time.monotonic() - episode_started_at
             summary = _read_summary(episode.summary_path)
             success = returncode == 0 and bool(summary and summary.get("success"))
+            result = _build_episode_result(
+                episode=episode,
+                summary=summary,
+                success=success,
+                elapsed_seconds=episode_elapsed_seconds,
+            )
+            episode_results.append(result)
             all_success = all_success and success
             completed += 1
             _write_batch_record(
@@ -557,6 +700,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 episode=episode,
                 returncode=returncode,
                 summary=summary,
+                result=result,
             )
             status_text = "success" if success else "failed"
             status_color = "green" if success else "red"
@@ -568,7 +712,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 + (
                     f"episode={episode_index} seed={episode.seed} "
                     f"returncode={returncode} "
-                    f"elapsed={_format_duration(time.monotonic() - batch_started_at)} "
+                    f"elapsed={_format_duration(episode_elapsed_seconds)} "
                     f"summary={episode.summary_path}"
                 ),
                 _format_progress_suffix(final_progress, color_enabled=color_enabled),
@@ -576,6 +720,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if not success and not args.continue_on_failure:
                 break
+    lerobot_report: dict[str, object] | None = None
+    if args.mode == "full_physics":
+        lerobot_report = _materialize_batch_lerobot(output_root)
+        export_status = "success" if lerobot_report.get("lerobot_exported") else "pending"
+        export_color = "green" if export_status == "success" else "yellow"
+        print(
+            _color(f"[lerobot-{export_status}] ", export_color, enabled=color_enabled)
+            + json.dumps(lerobot_report, ensure_ascii=False, separators=(",", ":")),
+            flush=True,
+        )
     total_elapsed = _format_duration(time.monotonic() - batch_started_at)
     final_color = "green" if all_success else "red"
     _print_banner(
@@ -586,6 +740,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         color_enabled=color_enabled,
     )
+    _print_result_table(episode_results, color_enabled=color_enabled)
     print(_color(f"[full-physics-batch] final={all_success}", final_color, enabled=color_enabled))
     return 0 if all_success else 1
 

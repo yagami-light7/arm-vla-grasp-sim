@@ -13,6 +13,7 @@ from source.manipulation.arm_executor import SegmentedArmExecutor, SegmentedArmE
 from source.manipulation.current_state_curobo import (
     CurrentStateCuroboPlanner,
     CurrentStateCuroboPlannerConfig,
+    build_curobo_state_payload,
     build_arm_place_target_payload,
     build_side_grasp_target_payload,
     pose_to_matrix,
@@ -27,10 +28,56 @@ from source.manipulation.grasp_pipeline import GraspPipeline, GraspPipelineConfi
 
 
 class FullPhysicsManipulationTest(unittest.TestCase):
+    def test_curobo_state_payload_records_world_collision_metadata(self) -> None:
+        payload = build_curobo_state_payload(
+            q_arm=[0.0] * 6,
+            dq_arm=[0.0] * 6,
+            q_full=[0.0] * 8,
+            dq_full=[0.0] * 8,
+            dof_names=[
+                "arm_joint1",
+                "arm_joint2",
+                "arm_joint3",
+                "arm_joint4",
+                "arm_joint5",
+                "arm_joint6",
+                "arm_joint7",
+                "arm_joint8",
+            ],
+            q_gripper=[0.043, 0.043],
+            dq_gripper=[0.0, 0.0],
+            T_world_base=pose_to_matrix([0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]),
+            robot_root_path="/World/go2_x5",
+            articulation_root_path="/World/go2_x5",
+            base_frame_path="/World/go2_x5/arm_base_link",
+            tcp_frame_path="/World/go2_x5/grasp_tcp_link",
+            tcp_mode="prim",
+            world_collision_cuboids=[
+                {
+                    "name": "table_edge",
+                    "pose_base": {
+                        "position_xyz": [0.2, 0.0, 0.1],
+                        "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                    },
+                    "dims_xyz": [0.5, 0.1, 0.1],
+                }
+            ],
+            world_collision_metadata={
+                "padding_m": 0.05,
+                "clearance_margin_m": 0.05,
+            },
+        )
+
+        world_collision = payload["world_collision"]
+        self.assertTrue(world_collision["enabled"])
+        self.assertEqual(world_collision["padding_m"], 0.05)
+        self.assertEqual(world_collision["clearance_margin_m"], 0.05)
+        self.assertEqual(world_collision["cuboids_base"][0]["name"], "table_edge")
+
     def test_planner_server_request_uses_place_command(self) -> None:
         from unittest.mock import patch
 
-        pipeline = GraspPipeline(GraspPipelineConfig())
+        pipeline = GraspPipeline(GraspPipelineConfig(split_pregrasp_motion=True))
         captured_request = {}
 
         class FakeSocket:
@@ -65,8 +112,9 @@ class FullPhysicsManipulationTest(unittest.TestCase):
 
         self.assertEqual(captured_request["command"], "plan_place_segments")
         self.assertFalse(captured_request["side_grasp_retreat_to_pregrasp"])
+        self.assertTrue(captured_request["split_pregrasp_motion"])
 
-    def test_current_state_planner_lifts_side_grasp_before_retreat(self) -> None:
+    def test_current_state_planner_uses_baseline_side_retreat(self) -> None:
         class FakeCurrentStateSimulation:
             pass
 
@@ -83,9 +131,10 @@ class FullPhysicsManipulationTest(unittest.TestCase):
             )
 
         grasp_pipeline = planner._plan_runner.__self__  # type: ignore[attr-defined]
-        self.assertTrue(grasp_pipeline.config.side_grasp_plan_vertical_lift)
+        self.assertFalse(grasp_pipeline.config.side_grasp_plan_vertical_lift)
         self.assertFalse(grasp_pipeline.config.side_grasp_fallback_retreat)
         self.assertFalse(grasp_pipeline.config.side_grasp_retreat_to_pregrasp)
+        self.assertTrue(grasp_pipeline.config.split_pregrasp_motion)
 
     def test_curobo_payload_is_preserved_as_segmented_arm_plan(self) -> None:
         plan = arm_plan_from_curobo_payload(_pick_payload())
@@ -93,8 +142,26 @@ class FullPhysicsManipulationTest(unittest.TestCase):
         self.assertEqual(plan.operation, "pick")
         self.assertEqual(plan.metadata["joint_names"], _arm_joint_names())
         self.assertEqual(plan.metadata["tool_frame"], "grasp_tcp_link")
-        self.assertEqual(len(plan.metadata["segments"]), 4)
-        self.assertEqual(len(plan.joint_trajectory), 5)
+        self.assertEqual(
+            [segment["name"] for segment in plan.metadata["segments"]],
+            [
+                "open_gripper",
+                "move_to_pregrasp",
+                "approach_to_grasp",
+                "close_gripper",
+                "retreat_object",
+                "return_home_after_retreat",
+            ],
+        )
+        self.assertEqual(len(plan.joint_trajectory), 8)
+
+    def test_segmented_executor_strictly_waits_for_pick_clearance_segments(self) -> None:
+        strict_segments = SegmentedArmExecutorConfig().strict_post_motion_hold_segments
+
+        self.assertIn("move_to_pregrasp", strict_segments)
+        self.assertIn("approach_to_grasp", strict_segments)
+        self.assertIn("retreat_object", strict_segments)
+        self.assertIn("return_home_after_retreat", strict_segments)
 
     def test_segmented_executor_holds_gripper_closed_after_close_segment(self) -> None:
         plan = arm_plan_from_curobo_payload(_pick_payload())
@@ -130,7 +197,28 @@ class FullPhysicsManipulationTest(unittest.TestCase):
         self.assertTrue(
             all(action.metadata.get("gripper_hold_after_close") for action in retreat_actions)
         )
+        retreat_settle_actions = [
+            action
+            for action in actions
+            if action.metadata.get("parent_segment_name") == "retreat_object"
+            and action.metadata.get("segment_type") == "settle_to_segment_start"
+        ]
+        self.assertTrue(retreat_settle_actions)
+        self.assertTrue(
+            all(action.gripper_command == "close" for action in retreat_settle_actions)
+        )
+        self.assertTrue(
+            all(
+                action.metadata.get("gripper_hold_after_close_source") == "close_target"
+                for action in retreat_settle_actions
+            )
+        )
         self.assertTrue(executor.status()["done"])
+        self.assertTrue(executor.status()["close_progress_report"]["close_success"])
+        self.assertGreaterEqual(
+            executor.status()["close_progress_report"]["close_progress"],
+            0.05,
+        )
         self.assertTrue(executor.status()["world_step_owned_by_pipeline"])
 
     def test_segmented_executor_waits_like_baseline_before_close(self) -> None:
@@ -155,17 +243,16 @@ class FullPhysicsManipulationTest(unittest.TestCase):
             if action.metadata.get("segment_name") == "approach_to_grasp"
             and action.metadata.get("segment_type") == "post_motion_hold"
         ]
-        self.assertEqual(len(post_hold_actions), 2)
-        self.assertTrue(
-            all(action.metadata.get("baseline_convergence_hold") for action in post_hold_actions)
+        # 测试 runtime 精确跟随目标，因此 strict wait 会在容差检查后提前结束。
+        self.assertEqual(post_hold_actions, [])
+        wait_reports = executor.status()["strict_post_motion_wait_reports"]
+        approach_report = next(
+            report
+            for report in wait_reports
+            if report["segment_name"] == "approach_to_grasp"
         )
-        self.assertTrue(all(action.gripper_command == "hold" for action in post_hold_actions))
-        self.assertTrue(
-            all(
-                action.arm_joint_positions == (0.2, 0.21, 0.22, 0.23, 0.24, 0.25)
-                for action in post_hold_actions
-            )
-        )
+        self.assertTrue(approach_report["post_motion_hold_converged"])
+        self.assertTrue(approach_report["post_motion_hold_skipped_on_tolerance"])
 
         pre_close_actions = [
             action
@@ -225,6 +312,71 @@ class FullPhysicsManipulationTest(unittest.TestCase):
             all(action.metadata.get("gripper_interpolation") == "smoothstep5" for action in close_actions)
         )
 
+    def test_open_gripper_holds_current_arm_pose_before_first_motion(self) -> None:
+        plan = arm_plan_from_curobo_payload(_pick_payload())
+        executor = SegmentedArmExecutor(
+            BinaryGripperController(),
+            config=SegmentedArmExecutorConfig(
+                sim_dt=0.10,
+                gripper_move_duration=0.20,
+                gripper_hold_duration=0.0,
+                settle_to_segment_start_duration=0.0,
+                post_motion_hold_duration=0.0,
+            ),
+        )
+        executor.reset(plan)
+
+        initial_arm = (0.11, 0.12, 0.13, 0.14, 0.15, 0.16)
+        drifted_arm = (0.31, 0.32, 0.33, 0.34, 0.35, 0.36)
+        first = executor.compute_action(_state_with_all_joints((*initial_arm, 0.0, 0.0)))
+        second = executor.compute_action(_state_with_all_joints((*drifted_arm, 0.01, 0.01)))
+
+        self.assertEqual(first.metadata["segment_name"], "open_gripper")
+        self.assertEqual(first.arm_joint_positions, initial_arm)
+        self.assertEqual(second.arm_joint_positions, initial_arm)
+        self.assertEqual(first.metadata["arm_hold_source"], "current_state_on_segment_entry")
+        self.assertEqual(second.metadata["arm_hold_source"], "current_state_on_segment_entry")
+        self.assertTrue(first.metadata["arm_hold_during_gripper"])
+
+    def test_close_progress_gate_blocks_motion_when_gripper_barely_moves(self) -> None:
+        plan = arm_plan_from_curobo_payload(_pick_payload())
+        executor = SegmentedArmExecutor(
+            BinaryGripperController(),
+            config=SegmentedArmExecutorConfig(
+                sim_dt=0.10,
+                settle_to_segment_start_duration=0.0,
+                post_motion_hold_duration=0.0,
+                pre_close_arm_hold_duration=0.0,
+                gripper_move_duration=0.20,
+                gripper_hold_duration=0.0,
+                final_motion_hold_duration=0.0,
+                require_close_progress_for_motion=True,
+            ),
+        )
+        executor.reset(plan)
+        joint_positions = [0.0] * 8
+        state = _state_with_all_joints(tuple(joint_positions))
+        while executor.status()["current_segment"]["name"] != "close_gripper":
+            action = executor.compute_action(state)
+            if action.arm_joint_positions is not None:
+                joint_positions[:6] = action.arm_joint_positions
+            gripper_positions = action.metadata.get("gripper_joint_positions")
+            if gripper_positions is not None:
+                joint_positions[6:8] = gripper_positions
+            state = _state_with_all_joints(tuple(joint_positions))
+
+        while executor.status()["current_segment"]["name"] == "close_gripper":
+            action = executor.compute_action(state)
+            # 模拟夹爪几乎未闭合，实际位置只从 0.040 走到 0.039。
+            joint_positions[6:8] = [0.039, 0.039]
+            state = _state_with_all_joints(tuple(joint_positions))
+
+        self.assertTrue(executor.is_done(state))
+        status = executor.status()
+        self.assertTrue(status["failed"])
+        self.assertEqual(status["failure_reason"], "gripper_close_progress_insufficient")
+        self.assertLess(status["close_progress_report"]["close_progress"], 0.05)
+
     def test_post_motion_hold_skips_when_joint_state_is_already_converged(self) -> None:
         plan = arm_plan_from_curobo_payload(_pick_payload())
         executor = SegmentedArmExecutor(
@@ -239,8 +391,22 @@ class FullPhysicsManipulationTest(unittest.TestCase):
         )
         executor.reset(plan)
 
-        while executor.status()["current_segment"]["type"] != "post_motion_hold":
-            executor.compute_action(_state())
+        state = _state_with_all_joints((0.0,) * 8)
+        while True:
+            current_segment = executor.status()["current_segment"]
+            if (
+                current_segment["type"] == "post_motion_hold"
+                and current_segment["name"] == "approach_to_grasp"
+            ):
+                break
+            action = executor.compute_action(state)
+            joint_positions = [0.0] * 8
+            if action.arm_joint_positions is not None:
+                joint_positions[:6] = action.arm_joint_positions
+            gripper_positions = action.metadata.get("gripper_joint_positions")
+            if gripper_positions is not None:
+                joint_positions[6:8] = gripper_positions
+            state = _state_with_all_joints(tuple(joint_positions))
         close_action = executor.compute_action(
             _state_with_joints((0.2, 0.21, 0.22, 0.23, 0.24, 0.25))
         )
@@ -284,6 +450,30 @@ class FullPhysicsManipulationTest(unittest.TestCase):
         self.assertEqual(action.metadata["interpolation"], "cubic_hermite")
         # 零速度端点的 cubic Hermite 在 t=0.25 处为 0.15625，不是线性 0.25。
         self.assertAlmostEqual(action.arm_joint_positions[0], 0.15625)
+
+    def test_pick_approach_uses_tracking_safe_time_scale(self) -> None:
+        plan = arm_plan_from_curobo_payload(_pick_payload())
+        executor = SegmentedArmExecutor(
+            BinaryGripperController(),
+            config=SegmentedArmExecutorConfig(
+                sim_dt=0.02,
+                arm_command_dt=0.02,
+                motion_time_scale=1.0,
+                pick_approach_motion_time_scale=2.0,
+                settle_to_segment_start_duration=0.0,
+                post_motion_hold_duration=0.0,
+                gripper_move_duration=0.02,
+                gripper_hold_duration=0.0,
+            ),
+        )
+        executor.reset(plan)
+
+        action = executor.compute_action(_state_with_all_joints((0.0,) * 8))
+        while action.metadata.get("segment_name") != "approach_to_grasp":
+            action = executor.compute_action(_state_with_all_joints((0.0,) * 8))
+
+        self.assertEqual(action.metadata["motion_time_scale"], 2.0)
+        self.assertEqual(action.metadata["segment_ticks"], 3)
 
     def test_place_plan_emits_gripper_open_event_without_internal_world_step(self) -> None:
         plan = arm_plan_from_curobo_payload(_place_payload())
@@ -547,12 +737,64 @@ class FullPhysicsManipulationTest(unittest.TestCase):
         self.assertEqual(calls[1].curobo_task_mode, "place")
         self.assertFalse(calls[1].use_planner_server)
 
+    def test_current_state_planner_rejects_lift_pick_when_side_retreat_expected(self) -> None:
+        class FakeCurrentStateSimulation:
+            def export_current_curobo_pick_inputs(self, *, output_dir, episode_spec, state):
+                del episode_spec, state
+                output_path = Path(output_dir)
+                output_path.mkdir(parents=True, exist_ok=True)
+                state_json = output_path / "pick_state.json"
+                target_json = output_path / "pick_target.json"
+                state_json.write_text("{}", encoding="utf-8")
+                target_json.write_text("{}", encoding="utf-8")
+                return {
+                    "state_json": state_json,
+                    "target_json": target_json,
+                    "object_prim_path": "/World/apple",
+                }
+
+        def lift_runner(task):
+            payload = _pick_payload()
+            payload["segments"][-1] = _motion_segment(
+                "lift_object",
+                [
+                    (0.2, 0.21, 0.22, 0.23, 0.24, 0.25),
+                    (0.1, 0.11, 0.12, 0.13, 0.14, 0.15),
+                ],
+            )
+            Path(task.plan_json).write_text(json.dumps(payload), encoding="utf-8")
+            return payload
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            planner = CurrentStateCuroboPlanner(
+                simulation=FakeCurrentStateSimulation(),
+                config=CurrentStateCuroboPlannerConfig(
+                    output_dir=root / "online",
+                    project_root=root,
+                    place_plan_json=None,
+                    use_planner_server=False,
+                ),
+                plan_runner=lift_runner,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "禁止 lift_object"):
+                planner.plan_pick(_state(), None)  # type: ignore[arg-type]
+
 
 def _drain_executor(executor: SegmentedArmExecutor):
-    state = _state()
+    joint_positions = [0.0] * 8
+    state = _state_with_all_joints(tuple(joint_positions))
     actions = []
     while not executor.is_done(state):
-        actions.append(executor.compute_action(state))
+        action = executor.compute_action(state)
+        actions.append(action)
+        if action.arm_joint_positions is not None:
+            joint_positions[:6] = action.arm_joint_positions
+        gripper_positions = action.metadata.get("gripper_joint_positions")
+        if gripper_positions is not None:
+            joint_positions[6:8] = gripper_positions
+        state = _state_with_all_joints(tuple(joint_positions))
     return actions
 
 
@@ -640,9 +882,15 @@ def _pick_payload() -> dict:
                 "target_position": [0.04, 0.04],
             },
             _motion_segment(
-                "approach_to_grasp",
+                "move_to_pregrasp",
                 [
                     (0.0, 0.01, 0.02, 0.03, 0.04, 0.05),
+                    (0.1, 0.11, 0.12, 0.13, 0.14, 0.15),
+                ],
+            ),
+            _motion_segment(
+                "approach_to_grasp",
+                [
                     (0.1, 0.11, 0.12, 0.13, 0.14, 0.15),
                     (0.2, 0.21, 0.22, 0.23, 0.24, 0.25),
                 ],
@@ -658,6 +906,13 @@ def _pick_payload() -> dict:
                 [
                     (0.2, 0.21, 0.22, 0.23, 0.24, 0.25),
                     (0.3, 0.31, 0.32, 0.33, 0.34, 0.35),
+                ],
+            ),
+            _motion_segment(
+                "return_home_after_retreat",
+                [
+                    (0.3, 0.31, 0.32, 0.33, 0.34, 0.35),
+                    (0.0, 0.01, 0.02, 0.03, 0.04, 0.05),
                 ],
             ),
         ],

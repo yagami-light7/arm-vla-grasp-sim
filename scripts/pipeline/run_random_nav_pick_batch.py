@@ -93,7 +93,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--replay-nav-speed", type=float, default=1.0)
     parser.add_argument("--demo-visuals", action="store_true")
     parser.add_argument("--follow-camera-mode", choices=("chase", "front", "overhead", "fixed", "stage"), default="stage")
-    parser.add_argument("--viewport-camera-prim", default="/World/Camera_main")
+    parser.add_argument("--viewport-camera-prim", default="/World/Camera1")
     parser.add_argument("--keep-window-open", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--show-grasp-trajectory", action="store_true")
     parser.add_argument("--use-planner-server", action=argparse.BooleanOptionalAction, default=False)
@@ -116,8 +116,8 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--skip-grasp-on-nav-failure", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--continue-on-failure", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--table-x-range", type=float, nargs=2, default=(0.83, 0.93), metavar=("X_MIN", "X_MAX"))
-    parser.add_argument("--table-y-range", type=float, nargs=2, default=(1.0, 1.5), metavar=("Y_MIN", "Y_MAX"))
+    parser.add_argument("--table-x-range", type=float, nargs=2, default=(0.90, 0.95), metavar=("X_MIN", "X_MAX"))
+    parser.add_argument("--table-y-range", type=float, nargs=2, default=(0.75, 1.5), metavar=("Y_MIN", "Y_MAX"))
     parser.add_argument("--table-z", type=float, default=0.81653, help="World z written directly to generated pick.object_pose_world.z.")
     parser.add_argument(
         "--object-z-offset",

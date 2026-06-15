@@ -138,6 +138,9 @@ class CuroboPlannerServer:
         module.SIDE_GRASP_RETREAT_TO_PREGRASP = bool(
             request.get("side_grasp_retreat_to_pregrasp", module.SIDE_GRASP_RETREAT_TO_PREGRASP)
         )
+        module.SPLIT_PREGRASP_MOTION = bool(
+            request.get("split_pregrasp_motion", module.SPLIT_PREGRASP_MOTION)
+        )
 
         log("")
         log("========== Planner Server Request ==========")
@@ -148,6 +151,7 @@ class CuroboPlannerServer:
         log("[server] side_grasp_plan_vertical_lift:", module.SIDE_GRASP_PLAN_VERTICAL_LIFT)
         log("[server] side_grasp_fallback_retreat:", module.SIDE_GRASP_FALLBACK_RETREAT)
         log("[server] side_grasp_retreat_to_pregrasp:", module.SIDE_GRASP_RETREAT_TO_PREGRASP)
+        log("[server] split_pregrasp_motion:", module.SPLIT_PREGRASP_MOTION)
 
         start = time.perf_counter()
         with contextlib.redirect_stdout(sys.stderr):
@@ -228,6 +232,8 @@ class CuroboPlannerServer:
                 "command": "capabilities",
                 "features": {
                     "side_grasp_retreat_to_pregrasp": True,
+                    "split_pregrasp_motion": True,
+                    "single_retime_split_pregrasp": True,
                 },
                 "workspace": str(WORKSPACE),
             }

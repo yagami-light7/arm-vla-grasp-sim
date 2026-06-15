@@ -101,6 +101,8 @@ class FullPhysicsPipeline:
 
             if self.config.keep_window_open:
                 self.simulation.pause()
+                if hasattr(self.simulation, "refresh_viewport"):
+                    self.simulation.refresh_viewport(reason="keep_window_open")
             final_state = self.simulation.read()
             summary = self._build_summary(
                 started_at=started_at,
@@ -174,6 +176,7 @@ class FullPhysicsPipeline:
                 "object_state_prim_path",
                 "tcp_prim_path",
                 "camera_prim_path",
+                "front_camera_report",
                 "stage_report",
                 "visual_scene_report",
                 "viewport_report",
@@ -322,8 +325,6 @@ class FullPhysicsPipeline:
                 self.config.manipulation.lock_support_joints_during_manipulation
             ),
             "execution_provenance_verified": provenance_verified,
-            "debug_visualization_enabled": self.config.enable_debug_vis,
-            "video_requested": self.config.save_video,
             "simulation_report": simulation_report,
             "navigation_acceptance": navigation_acceptance,
             **provenance,

@@ -12,7 +12,7 @@ class StateLimits:
 
     build_stage: int = 5
     reset_episode: int = 20
-    planning: int = 20
+    planning: int = 180
     navigation: int = 5000
     manipulation: int = 3000
     verification: int = 20
@@ -32,7 +32,7 @@ class NavigationSettings:
     brisk_nav: bool = True
     fast_dwa: bool = True
     control_dt: float = 0.02
-    dwa_replan_interval_steps: int = 1
+    dwa_replan_interval_steps: int = 2
     lookahead_distance: float = 0.35
     prediction_horizon: float = 0.90
     max_linear_velocity: float = 0.50
@@ -61,19 +61,22 @@ class ManipulationSettings:
     lock_base_during_manipulation: bool = True
     lock_support_joints_during_manipulation: bool = True
     replan_pick_from_current_state: bool = True
-    # 对齐稳定 baseline：1.0 表示按 cuRobo 规划时长执行。
-    # 小于 1.0 会加速轨迹，并放大桌面附近的瞬态跟踪误差。
-    arm_motion_time_scale: float = 1.00
-    place_approach_motion_time_scale: float = 0.90
-    arm_post_motion_hold_duration_s: float = 1.00
+    # 相对上一版统一缩短一半执行时长，实现约 2 倍 tracking 速度；
+    # 只改变物理控制目标的时间采样，不修改 cuRobo 路径几何。
+    arm_motion_time_scale: float = 0.50
+    pick_approach_motion_time_scale: float = 0.50
+    place_approach_motion_time_scale: float = 0.50
+    arm_post_motion_hold_duration_s: float = 0.75
     # 对齐 video baseline：松爪后先保持释放位姿，让苹果在桌面稳定，再执行退臂。
     place_release_settle_duration_s: float = 0.50
-    base_lock_settle_steps: int = 10
+    # 对齐稳定 baseline 的 nav->pick/place handoff：只停驻并锁住已有姿态，不改变底盘站高。
+    base_lock_settle_steps: int = 60
     plan_start_state_warning_threshold: float = 0.25
     plan_start_state_failure_threshold: float = 0.75
     fail_on_place_plan_start_state_mismatch: bool = False
-    return_home_after_pick: bool = True
-    # 对齐旧 baseline 的 return-home 最短时间，避免抓取后快速甩回 home。
+    # 通用默认保持关闭；full-physics 工厂会显式开启 main 的反向轨迹回位。
+    return_home_after_pick: bool = False
+    # 仅保留给显式兼容路径；full-physics 默认不会触发该手写段。
     pick_return_home_duration_s: float = 1.5
     # baseline 的 after-pick 额外等待默认为 0；return-home 到位后即可进入 carry。
     pick_home_hold_duration_s: float = 0.0
@@ -81,15 +84,15 @@ class ManipulationSettings:
     return_home_after_place: bool = True
     place_return_home_duration_s: float = 1.20
     place_return_home_skip_tolerance: float = 0.01
-    # 对齐 baseline arm-place：轻放时物体中心只高于目标 1.3 cm。
-    place_release_clearance_min_m: float = 0.013
+    # 对齐 baseline arm-place：轻放时物体中心只高于目标 1.0 cm。
+    place_release_clearance_min_m: float = 0.010
     place_pre_clearance_min_m: float = 0.06
     hold_arm_home_during_carry: bool = True
     carry_home_tracking_tolerance: float = 0.25
     # carry 前后 object-TCP 相对位置变化超过该阈值，视为抓取滑移或掉落。
     carry_object_tcp_slip_tolerance: float = 0.10
     insert_place_plan_start_transition: bool = True
-    place_plan_start_transition_duration_s: float = 1.0
+    place_plan_start_transition_duration_s: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -98,8 +101,8 @@ class RandomizationSettings:
 
     enabled: bool = False
     show_debug_region: bool = False
-    pick_x_range: tuple[float, float] = (0.83, 0.93)
-    pick_y_range: tuple[float, float] = (1.00, 1.50)
+    pick_x_range: tuple[float, float] = (0.90, 0.95)
+    pick_y_range: tuple[float, float] = (0.75, 1.50)
     place_x_range: tuple[float, float] = (0.65285, 0.75285)
     place_y_range: tuple[float, float] = (5.00337, 5.50337)
     clearance_radius: float = 0.20
@@ -111,6 +114,18 @@ class RandomizationSettings:
 
 
 @dataclass(frozen=True)
+class RecordingSettings:
+    """对齐 DWA 仓库的连续数据采集和 LeRobot v2.1 输出参数。"""
+
+    enabled: bool = True
+    fps: int = 5
+    image_height: int = 480
+    image_width: int = 640
+    jpeg_quality: int = 90
+    chunks_size: int = 1000
+
+
+@dataclass(frozen=True)
 class FullPhysicsConfig:
     """Runtime configuration kept intentionally smaller than legacy CLIs."""
 
@@ -119,8 +134,6 @@ class FullPhysicsConfig:
     num_episodes: int = 1
     seed: int = 0
     headless: bool = True
-    enable_debug_vis: bool = False
-    save_video: bool = False
     keep_window_open: bool = False
     dry_run: bool = False
     simulation_smoke: bool = False
@@ -135,6 +148,7 @@ class FullPhysicsConfig:
     navigation: NavigationSettings = field(default_factory=NavigationSettings)
     manipulation: ManipulationSettings = field(default_factory=ManipulationSettings)
     randomization: RandomizationSettings = field(default_factory=RandomizationSettings)
+    recording: RecordingSettings = field(default_factory=RecordingSettings)
     limits: StateLimits = field(default_factory=StateLimits)
 
     def __post_init__(self) -> None:
@@ -160,6 +174,8 @@ class FullPhysicsConfig:
             raise ValueError("replan_pick_from_current_state must be a bool")
         if self.manipulation.arm_motion_time_scale <= 0.0:
             raise ValueError("arm_motion_time_scale must be positive")
+        if self.manipulation.pick_approach_motion_time_scale <= 0.0:
+            raise ValueError("pick_approach_motion_time_scale must be positive")
         if self.manipulation.place_approach_motion_time_scale <= 0.0:
             raise ValueError("place_approach_motion_time_scale must be positive")
         if self.manipulation.arm_post_motion_hold_duration_s <= 0.0:
@@ -211,6 +227,14 @@ class FullPhysicsConfig:
             raise ValueError("randomization edge_margin must be positive")
         if self.randomization.edge_min_clearance < 0.0:
             raise ValueError("randomization edge_min_clearance must be non-negative")
+        if self.recording.fps <= 0:
+            raise ValueError("recording fps must be positive")
+        if self.recording.image_height <= 0 or self.recording.image_width <= 0:
+            raise ValueError("recording image size must be positive")
+        if not 1 <= self.recording.jpeg_quality <= 100:
+            raise ValueError("recording jpeg_quality must be within [1, 100]")
+        if self.recording.chunks_size <= 0:
+            raise ValueError("recording chunks_size must be positive")
         enabled_modes = sum(
             int(value)
             for value in (

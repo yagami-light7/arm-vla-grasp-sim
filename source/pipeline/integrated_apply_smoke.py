@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from source.diagnostics import FullPhysicsVerifier
@@ -13,7 +14,7 @@ from source.manipulation import (
     SegmentedArmExecutor,
     SegmentedArmExecutorConfig,
 )
-from source.recording import JsonlEpisodeRecorder
+from source.recording import JsonlEpisodeRecorder, LeRobotRecordingConfig
 from source.simulation import IsaacLabNavigationRuntime
 
 from .config import FullPhysicsConfig
@@ -46,27 +47,37 @@ def create_full_physics_pipeline(
 
     if config.pick_plan_json is not None or config.place_plan_json is not None:
         raise ValueError("full-physics 模式禁止使用离线 pick/place plan JSON。")
+    # 完整 pipeline 在 pick 后必须先回到抓取起始姿态，才能释放 root/support lock
+    # 并进入 carry nav。这里使用规划 motion 的反向轨迹，不生成无避障 all-zero 直连。
+    full_physics_config = replace(
+        config,
+        manipulation=replace(
+            config.manipulation,
+            return_home_after_pick=True,
+        ),
+    )
     manipulation_planner = CurrentStateCuroboPlanner(
         simulation=simulation,
         config=CurrentStateCuroboPlannerConfig(
             output_dir=Path(episode_dir) / "current_state_curobo",
             project_root=Path(__file__).resolve().parents[2],
             place_plan_json=None,
-            # full_physics 先沿 approach 反向退到 pregrasp，再由状态机受控回 home。
-            # 不能反向回到低位 home，否则 TCP 会下探并拖拽苹果碰桌。
+            # 对齐 random nav-pick-place baseline：侧抓后沿 approach 原路撤回，
+            # 避免 vertical lift 及随后 reverse lift-down 与桌面剐蹭。
             side_grasp_plan_vertical_lift=False,
             side_grasp_fallback_retreat=False,
-            side_grasp_retreat_to_pregrasp=True,
+            side_grasp_retreat_to_pregrasp=False,
+            split_pregrasp_motion=True,
         )
     )
 
     nav_planner, nav_executor, nav_verifier = create_navigation_components(
-        config=config,
+        config=full_physics_config,
         episode_spec=episode_spec,
     )
     gripper = BinaryGripperController()
     return FullPhysicsPipeline(
-        config=config,
+        config=full_physics_config,
         episode_spec=episode_spec,
         episode_seed=episode_seed,
         simulation=simulation,
@@ -77,22 +88,44 @@ def create_full_physics_pipeline(
         arm_executor=SegmentedArmExecutor(
             gripper,
             config=SegmentedArmExecutorConfig(
-                motion_time_scale=config.manipulation.arm_motion_time_scale,
+                # 2 倍速后每个 50 Hz 仿真步都更新关节目标，避免低频命令产生大跳变。
+                arm_command_dt=0.02,
+                motion_time_scale=full_physics_config.manipulation.arm_motion_time_scale,
+                pick_approach_motion_time_scale=(
+                    full_physics_config.manipulation.pick_approach_motion_time_scale
+                ),
                 place_approach_motion_time_scale=(
-                    config.manipulation.place_approach_motion_time_scale
+                    full_physics_config.manipulation.place_approach_motion_time_scale
                 ),
+                # 相邻切片来自同一条 baseline 轨迹；实际已到切分点时跳过重复 settle，
+                # 只有 tracking 落后时才由严格 post-motion hold 等待到位。
+                settle_to_segment_start_skip_error_tolerance=0.005,
                 post_motion_hold_duration=(
-                    config.manipulation.arm_post_motion_hold_duration_s
+                    full_physics_config.manipulation.arm_post_motion_hold_duration_s
                 ),
+                post_motion_joint_error_tolerance=0.030,
+                fail_on_strict_post_motion_state_unavailable=True,
+                require_close_progress_for_motion=True,
                 post_open_release_settle_duration=(
-                    config.manipulation.place_release_settle_duration_s
+                    full_physics_config.manipulation.place_release_settle_duration_s
                 ),
                 # 对齐 baseline 的渐进开合时长，避免瞬间张开夹爪把苹果弹滚。
                 gripper_move_duration=0.70,
-                gripper_hold_duration=0.45,
+                gripper_hold_duration=0.30,
             ),
         ),
         gripper=gripper,
         verifier=FullPhysicsVerifier(nav_verifier),
-        recorder=JsonlEpisodeRecorder(episode_dir),
+        recorder=JsonlEpisodeRecorder(
+            episode_dir,
+            lerobot_config=LeRobotRecordingConfig(
+                enabled=full_physics_config.recording.enabled,
+                control_dt=full_physics_config.navigation.control_dt,
+                fps=full_physics_config.recording.fps,
+                image_height=full_physics_config.recording.image_height,
+                image_width=full_physics_config.recording.image_width,
+                jpeg_quality=full_physics_config.recording.jpeg_quality,
+                chunks_size=full_physics_config.recording.chunks_size,
+            ),
+        ),
     )

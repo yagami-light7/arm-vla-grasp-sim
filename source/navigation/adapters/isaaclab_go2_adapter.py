@@ -120,7 +120,7 @@ class Go2LocomotionAdapter:
         }
 
     def set_support_joint_lock(self, enabled: bool = True) -> dict[str, Any]:
-        """Freeze the quadruped support joints during manipulation phases."""
+        """冻结当前四足支撑关节姿态，不直接改写关节状态。"""
 
         if enabled:
             if len(self.dog_joint_ids) != len(DOG_JOINT_NAMES):
@@ -134,6 +134,7 @@ class Go2LocomotionAdapter:
             "joint_names": list(DOG_JOINT_NAMES) if self._dog_joint_lock_target is not None else [],
             "joint_ids": [int(index) for index in self.dog_joint_ids] if self._dog_joint_lock_target is not None else [],
             "action_indices": list(self.dog_action_indices or []),
+            "uses_direct_joint_state": False,
         }
 
     def _apply_support_joint_lock(self) -> None:
@@ -160,6 +161,10 @@ class Go2LocomotionAdapter:
             "joint_names": list(DOG_JOINT_NAMES),
             "joint_ids": [int(index) for index in self.dog_joint_ids],
             "action_indices": list(self.dog_action_indices or []),
+            "target_positions": [
+                float(value)
+                for value in self._dog_joint_lock_target.reshape(-1).detach().cpu().tolist()
+            ],
             "uses_direct_joint_state": False,
             "lock_mode": "position_velocity_target_only",
         }

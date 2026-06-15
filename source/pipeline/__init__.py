@@ -12,6 +12,7 @@ from .config import (
     ManipulationSettings,
     NavigationSettings,
     RandomizationSettings,
+    RecordingSettings,
     StateLimits,
 )
 from .full_physics_pipeline import FullPhysicsPipeline
@@ -28,6 +29,7 @@ __all__ = [
     "ManipulationSettings",
     "NavigationSettings",
     "RandomizationSettings",
+    "RecordingSettings",
     "PhaseResult",
     "PipelineState",
     "RuntimeStepResult",

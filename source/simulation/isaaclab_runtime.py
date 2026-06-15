@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,8 +21,12 @@ class IsaacLabNavigationRuntimeConfig:
     device: str = "cuda:0"
     terrain_prim_path: str = "/World/scene_collision"
     visual_prim_path: str = "/World/gauss"
-    viewport_camera_prim_path: str = "/World/Camera_main"
+    viewport_camera_prim_path: str = "/World/Camera1"
     hide_navigation_collision_visual: bool = True
+    # 数据相机严格对齐 DWA：Go2 头部前视、480x640 RGB、每个控制步更新。
+    enable_front_camera: bool = False
+    front_camera_height: int = 480
+    front_camera_width: int = 640
     arm_joint_names: tuple[str, ...] = (
         "arm_joint1",
         "arm_joint2",
@@ -37,6 +40,17 @@ class IsaacLabNavigationRuntimeConfig:
     gripper_close_position: float = 0.0
     place_release_clearance_min_m: float = 0.013
     place_pre_clearance_min_m: float = 0.06
+    # 这是 cuRobo 规划用的虚拟障碍膨胀，不改变 Isaac 真实物理碰撞体。
+    # 恢复稳定 baseline 的 2 cm；此前临时增大到 5 cm 会让规划器产生额外绕行。
+    world_collision_padding_m: float = 0.02
+    world_collision_vertical_padding_m: float = 0.02
+    world_collision_min_size_m: float = 0.01
+    world_collision_max_obstacles: int = 16
+    world_collision_local_radius_m: float = 1.25
+    # 稳定 baseline 会过滤大体积支撑物。把这类物体裁剪后重新加入会形成覆盖
+    # 苹果 XY 的巨大 cuboid，迫使侧向 approach 先异常抬高再下降。
+    world_collision_clip_large_support_obstacles: bool = False
+    world_collision_large_obstacle_clip_half_extent_m: float = 0.45
     show_randomization_debug: bool = False
 
 
@@ -237,13 +251,42 @@ def _sanitize_obstacle_name(prim_path: str, index: int) -> str:
     return f"obs_{index:03d}_{safe[-80:]}"
 
 
-def _collision_candidate_sort_key(candidate: dict[str, Any]) -> tuple[float, str]:
+def _collision_candidate_sort_key(candidate: dict[str, Any]) -> tuple[int, float, str]:
     """优先保留任务物体附近的碰撞体，避免 stage 遍历顺序挤掉桌面。"""
 
+    prim_path = str(candidate["prim_path"])
+    table_priority = 0 if any(
+        keyword in prim_path.lower()
+        for keyword in ("table", "tabletop", "desk", "counter")
+    ) else 1
     return (
+        table_priority,
         float(candidate["distance_to_reference_xy_m"]),
-        str(candidate["prim_path"]),
+        prim_path,
     )
+
+
+def _collision_cuboid_diagnostics(
+    cuboids: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """记录桌面碰撞体是否进入 cuRobo 局部 world，避免只看规划结果猜测。"""
+
+    table_keywords = ("table", "tabletop", "desk", "counter")
+    table_paths = [
+        str(cuboid.get("prim_path") or "")
+        for cuboid in cuboids
+        if any(
+            keyword in str(cuboid.get("prim_path") or "").lower()
+            for keyword in table_keywords
+        )
+    ]
+    return {
+        "collision_cuboids_table_present": bool(table_paths),
+        "table_collision_prim_paths": table_paths,
+        "nearest_collision_prim_paths": [
+            str(cuboid.get("prim_path") or "") for cuboid in cuboids[:8]
+        ],
+    }
 
 
 class IsaacLabNavigationRuntime:
@@ -273,6 +316,7 @@ class IsaacLabNavigationRuntime:
         self._manipulation_base_lock_active = False
         self._manipulation_support_joint_lock_active = False
         self._hidden_distractor_root_paths: tuple[str, ...] = ()
+        self._viewport_config_attempts = 0
         self._metadata: dict[str, Any] = {
             "simulation_ready": False,
             "execution_provenance_verified": True,
@@ -411,13 +455,14 @@ class IsaacLabNavigationRuntime:
             episode_spec,
             label="after_runtime_reset",
         )
-        self._configure_viewport()
+        self.refresh_viewport(reason="reset_episode")
 
     def read(self) -> SimulationState:
+        self._retry_viewport_after_stage_updates()
         if self._adapter is None:
             return SimulationState(
                 step_index=self._step_calls,
-                timestamp=time.time(),
+                timestamp=float(self._step_calls) * 0.02,
                 robot_root_pose=(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
                 robot_root_velocity=(0.0,) * 6,
                 metadata=dict(self._metadata),
@@ -433,18 +478,20 @@ class IsaacLabNavigationRuntime:
         metadata = {
             **self._metadata,
             "environment_terminated": self._environment_terminated,
+            "joint_names": tuple(str(name) for name in getattr(robot, "joint_names", ())),
             "base_pose_xyyaw": (
                 _item(root_position[0]),
                 _item(root_position[1]),
                 _quat_to_yaw(root_quaternion),
             ),
             "body_velocity": self._adapter.get_base_velocity_full(),
+            "body_linear_velocity": _as_tuple(robot.data.root_lin_vel_b[0]),
             "last_action_source": self._last_action.source,
         }
         metadata.update(self._adapter.diagnostics())
         return SimulationState(
             step_index=self._step_calls,
-            timestamp=time.time(),
+            timestamp=float(self._step_calls) * float(self._runtime.step_dt),
             robot_root_pose=(
                 *_as_tuple(root_position),
                 *_as_tuple(root_quaternion),
@@ -458,6 +505,7 @@ class IsaacLabNavigationRuntime:
             tcp_pose=self._read_tcp_pose(),
             object_pose=object_pose,
             object_velocity=object_velocity,
+            camera_images=self._read_camera_images(),
             metadata=metadata,
         )
 
@@ -737,10 +785,14 @@ class IsaacLabNavigationRuntime:
             self._metadata["visual_scene_report"] = self._load_visual_scene(episode_spec)
             self._configure_env(env_cfg, episode_spec, sim_utils)
             env_cfg.seed = int(agent_cfg.seed)
-            env = gym.make(self._config.task_name, cfg=env_cfg)
+            env = gym.make(
+                self._config.task_name,
+                cfg=env_cfg,
+                render_mode="rgb_array" if self._config.enable_front_camera else None,
+            )
             wrapped = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
             # wrapper 构造时会触发 env.reset；GUI viewport 只在 reset 完成后切相机。
-            self._configure_viewport()
+            self.refresh_viewport(reason="environment_reset")
             checkpoint = retrieve_file_path(str(self._resolve_checkpoint()))
             if agent_cfg.class_name == "OnPolicyRunner":
                 runner = OnPolicyRunner(
@@ -795,6 +847,7 @@ class IsaacLabNavigationRuntime:
         return str(cfg_prim_path)
 
     def _configure_env(self, env_cfg: Any, episode_spec: EpisodeSpec, sim_utils: Any) -> None:
+        from isaaclab.sensors import CameraCfg
         from isaaclab.terrains import TerrainImporterCfg
         from source.navigation.adapters.terrain_utils import write_collision_terrain_wrapper
 
@@ -857,6 +910,36 @@ class IsaacLabNavigationRuntime:
         env_cfg.terminations.time_out = None
         env_cfg.terminations.illegal_contact = None
         env_cfg.terminations.terrain_out_of_bounds = None
+        if self._config.enable_front_camera:
+            # 与 DWA/play_nav_cs.py 使用同一相机内参、外参和 ROS optical frame 约定。
+            env_cfg.scene.head_camera = CameraCfg(
+                prim_path="{ENV_REGEX_NS}/Robot/base/head_cam",
+                update_period=0.0,
+                height=self._config.front_camera_height,
+                width=self._config.front_camera_width,
+                data_types=["rgb"],
+                spawn=sim_utils.PinholeCameraCfg(
+                    focal_length=24.0,
+                    focus_distance=400.0,
+                    horizontal_aperture=20.955,
+                    clipping_range=(0.1, 1.0e5),
+                ),
+                offset=CameraCfg.OffsetCfg(
+                    pos=(0.28, 0.0, 0.07),
+                    rot=(0.5, -0.5, 0.5, -0.5),
+                    convention="ros",
+                ),
+            )
+            self._metadata["front_camera_report"] = {
+                "enabled": True,
+                "name": "head_camera",
+                "resolution_hw": [
+                    self._config.front_camera_height,
+                    self._config.front_camera_width,
+                ],
+                "data_types": ["rgb"],
+                "source": "dwa_play_nav_cs",
+            }
 
     def _load_visual_scene(self, episode_spec: EpisodeSpec) -> dict[str, Any]:
         import omni.usd
@@ -953,19 +1036,42 @@ class IsaacLabNavigationRuntime:
             "planner_collision_exclusion_enabled": True,
         }
 
-    def _configure_viewport(self) -> None:
+    def refresh_viewport(self, *, reason: str = "manual") -> dict[str, Any]:
+        """重试配置 GUI viewpoint；只影响显示，不推进物理。"""
+
+        return self._configure_viewport(reason=reason)
+
+    def _retry_viewport_after_stage_updates(self) -> None:
+        """IsaacLab 创建窗口和 sublayer 解析可能滞后，前几帧允许轻量重试。"""
+
+        if self._config.viewport_camera_prim_path in {"", "none", "None"}:
+            return
+        report = self._metadata.get("viewport_report")
+        if isinstance(report, dict) and report.get("camera_applied") is True:
+            return
+        if self._viewport_config_attempts >= 12:
+            return
+        if self._step_calls not in {0, 1, 2, 5, 10, 20, 40, 80}:
+            return
+        self.refresh_viewport(reason=f"retry_step_{self._step_calls}")
+
+    def _configure_viewport(self, *, reason: str = "initial") -> dict[str, Any]:
         """复用 baseline 的 GUI 显示语义，不参与仿真控制。"""
 
         from source.simulation.viewport import configure_navigation_viewport
 
+        self._viewport_config_attempts += 1
         report = configure_navigation_viewport(
             camera_prim_path=self._config.viewport_camera_prim_path,
             hide_collision_visual=self._config.hide_navigation_collision_visual,
         )
+        report["configure_reason"] = reason
+        report["configure_attempt"] = self._viewport_config_attempts
         self._metadata["viewport_report"] = report
         selected_camera = report.get("selected_camera_prim_path")
         if selected_camera:
             self._metadata["camera_prim_path"] = selected_camera
+        return report
 
     def _validate_scene_collision(self, scene_usd: Path, prim_path: str) -> dict[str, Any]:
         """提前确认外部 collision payload 已挂载，避免空场景里假跑导航。"""
@@ -1289,6 +1395,7 @@ class IsaacLabNavigationRuntime:
             T_world_base=T_world_base,
             object_bbox_center=np.asarray(bbox["center_xyz"], dtype=float),
         )
+        world_collision_metadata = self._world_collision_export_metadata(collision_cuboids)
 
         robot = self._adapter.robot
         joint_names = tuple(str(name) for name in getattr(robot, "joint_names", ()))
@@ -1310,6 +1417,7 @@ class IsaacLabNavigationRuntime:
             tcp_frame_path=str(tcp_source),
             tcp_mode=tcp_mode,
             world_collision_cuboids=collision_cuboids,
+            world_collision_metadata=world_collision_metadata,
             source="IsaacLabNavigationRuntime.current_state_pick_replan",
         )
         target_payload = build_side_grasp_target_payload(
@@ -1336,7 +1444,13 @@ class IsaacLabNavigationRuntime:
             "world_base": pose_dict_from_matrix(T_world_base),
             "bbox_world": bbox,
             "collision_cuboid_count": len(collision_cuboids),
+            "world_collision_export": world_collision_metadata,
+            **_collision_cuboid_diagnostics(collision_cuboids),
             "hidden_distractor_root_paths": list(self._hidden_distractor_root_paths),
+            "pick_target": {
+                "source": target_payload.get("source", {}),
+                "diagnostics": target_payload.get("diagnostics", {}),
+            },
             "target_grasp_position_base": (
                 target_payload.get("poses", {})
                 .get("grasp", {})
@@ -1354,6 +1468,19 @@ class IsaacLabNavigationRuntime:
             "target_json": str(target_json),
         }
         return report
+
+    def read_object_bbox_world(self) -> dict[str, Any]:
+        """只读返回当前任务物体 bbox，供 target-vs-execution drift 检查。"""
+
+        self._require_ready()
+        if self._episode_spec is None or not self._episode_spec.object_prim_path:
+            raise RuntimeError("当前 episode 未配置 object_prim_path")
+        import omni.usd
+
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            raise RuntimeError("当前没有 USD stage，无法读取 object bbox")
+        return self._compute_object_bbox(stage, self._episode_spec.object_prim_path)
 
     def export_current_curobo_place_inputs(
         self,
@@ -1402,6 +1529,7 @@ class IsaacLabNavigationRuntime:
             T_world_base=T_world_base,
             object_bbox_center=np.asarray(bbox["center_xyz"], dtype=float),
         )
+        world_collision_metadata = self._world_collision_export_metadata(collision_cuboids)
 
         robot = self._adapter.robot
         joint_names = tuple(str(name) for name in getattr(robot, "joint_names", ()))
@@ -1423,6 +1551,7 @@ class IsaacLabNavigationRuntime:
             tcp_frame_path=str(tcp_source),
             tcp_mode=tcp_mode,
             world_collision_cuboids=collision_cuboids,
+            world_collision_metadata=world_collision_metadata,
             source="IsaacLabNavigationRuntime.current_state_place_replan",
         )
         target_payload = build_arm_place_target_payload(
@@ -1453,6 +1582,8 @@ class IsaacLabNavigationRuntime:
             "world_tcp": pose_dict_from_matrix(T_world_tcp),
             "bbox_world": bbox,
             "collision_cuboid_count": len(collision_cuboids),
+            "world_collision_export": world_collision_metadata,
+            **_collision_cuboid_diagnostics(collision_cuboids),
             "hidden_distractor_root_paths": list(self._hidden_distractor_root_paths),
             "desired_final_object_center_world": (
                 target_payload.get("source", {}).get("desired_final_object_center_world")
@@ -1687,10 +1818,13 @@ class IsaacLabNavigationRuntime:
 
         from source.manipulation.current_state_curobo import pose_dict_from_matrix
 
-        padding_m = 0.02
-        min_size_m = 0.01
-        max_obstacles = 16
-        local_radius_m = 1.25
+        padding_xy_m = float(self._config.world_collision_padding_m)
+        padding_z_m = float(self._config.world_collision_vertical_padding_m)
+        min_size_m = float(self._config.world_collision_min_size_m)
+        max_obstacles = int(self._config.world_collision_max_obstacles)
+        local_radius_m = float(self._config.world_collision_local_radius_m)
+        clip_large_support = bool(self._config.world_collision_clip_large_support_obstacles)
+        clip_half_extent_m = float(self._config.world_collision_large_obstacle_clip_half_extent_m)
         max_extent_m = 2.0
         max_height_m = 1.6
         max_volume_m3 = 2.5
@@ -1752,15 +1886,6 @@ class IsaacLabNavigationRuntime:
                 continue
             if not np.all(np.isfinite(bbox_min)) or not np.all(np.isfinite(bbox_max)):
                 continue
-            size = bbox_max - bbox_min
-            if float(np.max(size)) < min_size_m:
-                continue
-            if (
-                float(np.max(size)) > max_extent_m
-                or float(size[2]) > max_height_m
-                or float(np.prod(size)) > max_volume_m3
-            ):
-                continue
             distance_to_reference = _distance_point_to_aabb_xy(
                 reference_point[:2],
                 bbox_min,
@@ -1768,11 +1893,50 @@ class IsaacLabNavigationRuntime:
             )
             if distance_to_reference > local_radius_m:
                 continue
-            if _point_inside_aabb(base_position, bbox_min, bbox_max, margin=padding_m):
+
+            size = bbox_max - bbox_min
+            if float(np.max(size)) < min_size_m:
+                continue
+            clipped_from_large_obstacle = False
+            original_bbox_min = bbox_min.copy()
+            original_bbox_max = bbox_max.copy()
+            original_size = size.copy()
+            if (
+                float(np.max(size)) > max_extent_m
+                or float(size[2]) > max_height_m
+                or float(np.prod(size)) > max_volume_m3
+            ):
+                support_top_z = float(bbox_max[2])
+                support_like_height = (
+                    float(reference_point[2]) - 0.15
+                    <= support_top_z
+                    <= float(reference_point[2]) + 0.04
+                )
+                if not (clip_large_support and support_like_height):
+                    continue
+                clip_min_xy = reference_point[:2] - clip_half_extent_m
+                clip_max_xy = reference_point[:2] + clip_half_extent_m
+                clipped_min_xy = np.maximum(bbox_min[:2], clip_min_xy)
+                clipped_max_xy = np.minimum(bbox_max[:2], clip_max_xy)
+                if np.any(clipped_max_xy <= clipped_min_xy):
+                    continue
+                bbox_min = bbox_min.copy()
+                bbox_max = bbox_max.copy()
+                bbox_min[:2] = clipped_min_xy
+                bbox_max[:2] = clipped_max_xy
+                size = bbox_max - bbox_min
+                if float(np.max(size)) < min_size_m:
+                    continue
+                clipped_from_large_obstacle = True
+            if _point_inside_aabb(base_position, bbox_min, bbox_max, margin=padding_xy_m):
                 continue
 
             center_world = 0.5 * (bbox_min + bbox_max)
-            padded_size = np.maximum(size + 2.0 * padding_m, min_size_m)
+            padding_xyz = np.asarray(
+                [padding_xy_m, padding_xy_m, padding_z_m],
+                dtype=float,
+            )
+            padded_size = np.maximum(size + 2.0 * padding_xyz, min_size_m)
             T_world_obstacle = np.eye(4, dtype=float)
             T_world_obstacle[:3, 3] = center_world
             T_base_obstacle = T_base_world @ T_world_obstacle
@@ -1788,9 +1952,17 @@ class IsaacLabNavigationRuntime:
                         "center_xyz": center_world.tolist(),
                         "size_xyz": size.tolist(),
                     },
+                    "source_raw_bbox_world": {
+                        "min_xyz": original_bbox_min.tolist(),
+                        "max_xyz": original_bbox_max.tolist(),
+                        "size_xyz": original_size.tolist(),
+                    },
                     "pose_world": pose_dict_from_matrix(T_world_obstacle),
                     "pose_base": pose_dict_from_matrix(T_base_obstacle),
-                    "padding_m": padding_m,
+                    "padding_m": padding_xy_m,
+                    "padding_xy_m": padding_xy_m,
+                    "padding_z_m": padding_z_m,
+                    "clipped_from_large_obstacle": clipped_from_large_obstacle,
                 }
             )
 
@@ -1804,6 +1976,43 @@ class IsaacLabNavigationRuntime:
                 index,
             )
         return obstacles
+
+    def _world_collision_export_metadata(
+        self,
+        cuboids: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """记录 cuRobo 虚拟障碍导出参数，便于排查桌沿 clearance。"""
+
+        padding_xy_m = float(self._config.world_collision_padding_m)
+        padding_z_m = float(self._config.world_collision_vertical_padding_m)
+        return {
+            "padding_m": padding_xy_m,
+            "padding_xy_m": padding_xy_m,
+            "padding_z_m": padding_z_m,
+            "clearance_margin_m": padding_xy_m,
+            "min_size_m": float(self._config.world_collision_min_size_m),
+            "max_obstacles": int(self._config.world_collision_max_obstacles),
+            "local_radius_m": float(self._config.world_collision_local_radius_m),
+            "clip_large_support_obstacles": bool(
+                self._config.world_collision_clip_large_support_obstacles
+            ),
+            "large_obstacle_clip_half_extent_m": float(
+                self._config.world_collision_large_obstacle_clip_half_extent_m
+            ),
+            "obstacle_count": len(cuboids),
+            "clipped_large_obstacle_count": sum(
+                1 for cuboid in cuboids if cuboid.get("clipped_from_large_obstacle")
+            ),
+            "nearest_obstacle_distance_xy_m": (
+                None
+                if not cuboids
+                else float(cuboids[0].get("distance_to_reference_xy_m", 0.0))
+            ),
+            "note": (
+                "padding_xy/clearance_margin 只水平膨胀传给 cuRobo 的规划障碍；"
+                "padding_z 保持较小，避免把桌面虚拟抬高到抓取目标。"
+            ),
+        }
 
     def _finish_control_step(self) -> None:
         import torch
@@ -2053,6 +2262,20 @@ class IsaacLabNavigationRuntime:
             return None
         position, quaternion = matrix_to_pose(matrix)
         return (*_as_tuple(position), *_as_tuple(quaternion))
+
+    def _read_camera_images(self) -> dict[str, Any]:
+        """只暴露当前渲染完成的 tensor；JPEG 编码由 5 Hz recorder 负责。"""
+
+        if not self._config.enable_front_camera or self._runtime is None:
+            return {}
+        try:
+            sensor = self._runtime.scene["head_camera"]
+            rgb = sensor.data.output["rgb"]
+        except (KeyError, TypeError, AttributeError):
+            return {}
+        if rgb is None or getattr(rgb, "shape", (0,))[0] < 1:
+            return {}
+        return {"front": rgb[0, :, :, :3]}
 
     def _resolve_checkpoint(self) -> Path:
         candidates = []

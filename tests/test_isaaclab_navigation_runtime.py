@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import unittest
 from pathlib import Path
 
@@ -164,6 +165,32 @@ class FakeAdapter:
 
 
 class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
+    def test_world_collision_padding_matches_stable_baseline(self) -> None:
+        config = IsaacLabNavigationRuntimeConfig()
+
+        self.assertEqual(config.world_collision_padding_m, 0.02)
+        self.assertEqual(config.world_collision_vertical_padding_m, 0.02)
+        self.assertEqual(config.world_collision_min_size_m, 0.01)
+        self.assertEqual(config.world_collision_max_obstacles, 16)
+        self.assertEqual(config.world_collision_local_radius_m, 1.25)
+        self.assertFalse(config.world_collision_clip_large_support_obstacles)
+        self.assertEqual(config.world_collision_large_obstacle_clip_half_extent_m, 0.45)
+
+    def test_place_export_builds_world_collision_metadata_before_payload(self) -> None:
+        source = inspect.getsource(
+            IsaacLabNavigationRuntime.export_current_curobo_place_inputs
+        )
+        assignment = (
+            "world_collision_metadata = "
+            "self._world_collision_export_metadata(collision_cuboids)"
+        )
+
+        self.assertIn(assignment, source)
+        self.assertLess(
+            source.index(assignment),
+            source.index("world_collision_metadata=world_collision_metadata"),
+        )
+
     def test_legacy_place_height_fields_do_not_override_baseline_clearances(self) -> None:
         runtime = object.__new__(IsaacLabNavigationRuntime)
         runtime._config = IsaacLabNavigationRuntimeConfig()
@@ -289,7 +316,7 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
     def test_runtime_defaults_to_current_scene_camera(self) -> None:
         config = IsaacLabNavigationRuntimeConfig()
 
-        self.assertEqual(config.viewport_camera_prim_path, "/World/Camera_main")
+        self.assertEqual(config.viewport_camera_prim_path, "/World/Camera1")
         self.assertTrue(config.hide_navigation_collision_visual)
 
     def test_object_pose_writer_reuses_existing_xform_ops(self) -> None:

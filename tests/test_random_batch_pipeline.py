@@ -20,8 +20,8 @@ class RandomBatchPipelineTest(unittest.TestCase):
         with patch("sys.argv", ["run_random_nav_pick_batch.py", "--num-episodes", "1"]):
             args = _parse_args()
 
-        self.assertEqual(tuple(args.table_x_range), (0.83, 0.93))
-        self.assertEqual(tuple(args.table_y_range), (1.0, 1.5))
+        self.assertEqual(tuple(args.table_x_range), (0.90, 0.95))
+        self.assertEqual(tuple(args.table_y_range), (0.75, 1.5))
         self.assertAlmostEqual(args.table_z, 0.81653)
         self.assertAlmostEqual(args.object_z_offset, 0.0)
         self.assertAlmostEqual(args.object_fixed_z, 0.81653)
@@ -248,7 +248,7 @@ class RandomBatchPipelineTest(unittest.TestCase):
         self.assertFalse(args.restore_nav_place_for_arm_place)
         self.assertTrue(args.demo_visuals)
         self.assertEqual(args.follow_camera_mode, "stage")
-        self.assertEqual(args.viewport_camera_prim, "/World/Camera_main")
+        self.assertEqual(args.viewport_camera_prim, "/World/Camera1")
         self.assertFalse(args.keep_window_open)
         self.assertFalse(args.show_randomization_debug)
         self.assertTrue(args.side_retreat_only)

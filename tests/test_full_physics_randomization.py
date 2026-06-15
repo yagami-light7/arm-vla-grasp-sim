@@ -146,7 +146,7 @@ class FullPhysicsRandomizationTest(unittest.TestCase):
         self.assertFalse(spec["physics_enabled"])
         self.assertFalse(spec["collision_enabled"])
         self.assertEqual(spec["usd_purpose"], "default")
-        self.assertEqual(spec["pick"]["xy_range"], ((0.83, 0.93), (1.0, 1.5)))
+        self.assertEqual(spec["pick"]["xy_range"], ((0.90, 0.95), (0.75, 1.5)))
         self.assertEqual(
             spec["place"]["xy_range"],
             ((0.65285, 0.75285), (5.00337, 5.50337)),

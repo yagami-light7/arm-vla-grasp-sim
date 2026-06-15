@@ -16,25 +16,33 @@ class SegmentedArmExecutorConfig:
     sim_dt: float = 1.0 / 50.0
     arm_command_dt: float = 0.05
     motion_time_scale: float = 1.0
+    pick_approach_motion_time_scale: float = 1.50
     place_approach_motion_time_scale: float = 1.0
     settle_to_segment_start_duration: float = 0.10
     settle_to_segment_start_skip_error_tolerance: float = 0.0
     post_motion_hold_duration: float = 1.50
     post_motion_joint_error_tolerance: float = 0.030
     fail_on_strict_post_motion_timeout: bool = True
+    fail_on_strict_post_motion_state_unavailable: bool = False
     strict_post_motion_hold_segments: tuple[str, ...] = (
         "move_to_pregrasp",
         "approach_to_grasp",
+        "retreat_object",
+        "return_home_after_retreat",
         "move_to_pre_place",
         "approach_to_place",
         "retreat_place",
         "return_home_after_place",
     )
     pre_close_arm_hold_duration: float = 0.10
+    min_close_progress_for_motion: float = 0.05
+    require_close_progress_for_motion: bool = False
     gripper_move_duration: float = 0.70
     gripper_hold_duration: float = 0.45
+    final_motion_hold_duration: float = 0.20
     post_open_release_settle_duration: float = 0.50
     hold_arm_during_gripper: bool = True
+    hold_current_arm_during_gripper_without_motion: bool = True
     hold_gripper_after_close: bool = True
 
     def __post_init__(self) -> None:
@@ -44,6 +52,8 @@ class SegmentedArmExecutorConfig:
             raise ValueError("arm_command_dt must be positive")
         if self.motion_time_scale <= 0.0:
             raise ValueError("motion_time_scale must be positive")
+        if self.pick_approach_motion_time_scale <= 0.0:
+            raise ValueError("pick_approach_motion_time_scale must be positive")
         if self.place_approach_motion_time_scale <= 0.0:
             raise ValueError("place_approach_motion_time_scale must be positive")
         if self.settle_to_segment_start_duration < 0.0:
@@ -56,10 +66,14 @@ class SegmentedArmExecutorConfig:
             raise ValueError("post_motion_joint_error_tolerance must be non-negative")
         if self.pre_close_arm_hold_duration < 0.0:
             raise ValueError("pre_close_arm_hold_duration must be non-negative")
+        if not 0.0 <= self.min_close_progress_for_motion <= 1.0:
+            raise ValueError("min_close_progress_for_motion must be within [0, 1]")
         if self.gripper_move_duration < 0.0:
             raise ValueError("gripper_move_duration must be non-negative")
         if self.gripper_hold_duration < 0.0:
             raise ValueError("gripper_hold_duration must be non-negative")
+        if self.final_motion_hold_duration < 0.0:
+            raise ValueError("final_motion_hold_duration must be non-negative")
         if self.post_open_release_settle_duration < 0.0:
             raise ValueError("post_open_release_settle_duration must be non-negative")
 
@@ -88,7 +102,11 @@ class SegmentedArmExecutor:
         self._latest_metadata: dict[str, Any] = {}
         self._settle_context: dict[tuple[Any, ...], tuple[float, ...]] = {}
         self._gripper_context: dict[tuple[Any, ...], tuple[float, ...]] = {}
+        self._gripper_arm_hold_context: dict[tuple[Any, ...], tuple[float, ...]] = {}
         self._pending_post_motion_hold_step: _ActionStep | None = None
+        self._pending_close_validation: dict[str, Any] | None = None
+        self._close_progress_report: dict[str, Any] = {}
+        self._strict_post_motion_wait_reports: list[dict[str, Any]] = []
         self._failed = False
         self._failure_reason = ""
         self._failure_metadata: dict[str, Any] = {}
@@ -100,7 +118,11 @@ class SegmentedArmExecutor:
         self._latest_metadata = {}
         self._settle_context = {}
         self._gripper_context = {}
+        self._gripper_arm_hold_context = {}
         self._pending_post_motion_hold_step = None
+        self._pending_close_validation = None
+        self._close_progress_report = {}
+        self._strict_post_motion_wait_reports = []
         self._failed = False
         self._failure_reason = ""
         self._failure_metadata = {}
@@ -111,6 +133,7 @@ class SegmentedArmExecutor:
         if self.plan is None:
             raise RuntimeError("arm executor has no plan")
         self._finalize_pending_post_motion_hold(state)
+        self._finalize_pending_close_validation(state)
         if self._failed:
             return RobotAction.idle(source=f"arm_{self.plan.operation}_failed")
         self._skip_settle_to_start_if_allowed(state)
@@ -121,12 +144,17 @@ class SegmentedArmExecutor:
         action = self._materialize_step_action(step, state)
         self._tick_index += 1
         self._remember_pending_post_motion_hold(step)
+        self._remember_pending_close_validation(action)
         self._latest_metadata = dict(action.metadata)
         return action
 
     def is_done(self, state: SimulationState) -> bool:
-        del state
-        return self.plan is not None and self._tick_index >= len(self._steps)
+        self._finalize_pending_post_motion_hold(state)
+        self._finalize_pending_close_validation(state)
+        return (
+            self.plan is not None
+            and (self._failed or self._tick_index >= len(self._steps))
+        )
 
     def status(self) -> dict[str, Any]:
         current = None
@@ -144,6 +172,10 @@ class SegmentedArmExecutor:
             "failed": self._failed,
             "failure_reason": self._failure_reason,
             "failure_metadata": dict(self._failure_metadata),
+            "close_progress_report": dict(self._close_progress_report),
+            "strict_post_motion_wait_reports": tuple(
+                dict(report) for report in self._strict_post_motion_wait_reports
+            ),
             "world_step_owned_by_pipeline": True,
         }
 
@@ -211,6 +243,20 @@ class SegmentedArmExecutor:
         if q_initial is None:
             q_initial = actual_positions if actual_positions is not None else q_target
             self._gripper_context[key] = q_initial
+        arm_joint_positions = step.action.arm_joint_positions
+        if (
+            arm_joint_positions is None
+            and self.config.hold_arm_during_gripper
+            and self.config.hold_current_arm_during_gripper_without_motion
+        ):
+            # baseline 的 gripper-only partial action 不会主动驱动机械臂；IsaacLab
+            # locomotion policy 若接管 arm action 槽，会在开夹爪等待期间造成 TCP 漂移。
+            arm_joint_positions, arm_hold_report = self._current_arm_hold_for_gripper(
+                step,
+                state,
+                metadata,
+            )
+            metadata.update(arm_hold_report)
 
         move_tick = int(metadata.get("gripper_move_tick") or 0)
         move_steps = max(1, int(metadata.get("gripper_move_steps") or 1))
@@ -237,11 +283,53 @@ class SegmentedArmExecutor:
             }
         )
         return RobotAction(
-            arm_joint_positions=step.action.arm_joint_positions,
+            arm_joint_positions=arm_joint_positions,
             gripper_command=step.action.gripper_command,
             source=step.action.source,
             metadata=metadata,
         )
+
+    def _current_arm_hold_for_gripper(
+        self,
+        step: _ActionStep,
+        state: SimulationState,
+        metadata: dict[str, Any],
+    ) -> tuple[tuple[float, ...] | None, dict[str, Any]]:
+        arm_joint_names = tuple(str(name) for name in metadata.get("arm_joint_names", ()))
+        if not arm_joint_names:
+            return None, {
+                "arm_hold_during_gripper": False,
+                "arm_hold_source": "arm_joint_names_unavailable",
+            }
+        key = (
+            metadata.get("operation"),
+            metadata.get("segment_index"),
+            metadata.get("segment_name"),
+            "current_arm_hold",
+        )
+        cached = self._gripper_arm_hold_context.get(key)
+        if cached is not None:
+            return cached, {
+                "arm_hold_during_gripper": True,
+                "arm_hold_source": "current_state_on_segment_entry",
+                "arm_joint_names": arm_joint_names,
+                "arm_hold_joint_positions": cached,
+            }
+        actual_positions, mapping_report = _actual_arm_positions(state, arm_joint_names)
+        if actual_positions is None:
+            return None, {
+                "arm_hold_during_gripper": False,
+                "arm_hold_source": "current_state_unavailable",
+                "arm_joint_mapping": mapping_report,
+            }
+        self._gripper_arm_hold_context[key] = actual_positions
+        return actual_positions, {
+            "arm_hold_during_gripper": True,
+            "arm_hold_source": "current_state_on_segment_entry",
+            "arm_joint_names": arm_joint_names,
+            "arm_hold_joint_positions": actual_positions,
+            "arm_joint_mapping": mapping_report,
+        }
 
     def _finalize_pending_post_motion_hold(self, state: SimulationState) -> None:
         step = self._pending_post_motion_hold_step
@@ -250,15 +338,57 @@ class SegmentedArmExecutor:
         self._pending_post_motion_hold_step = None
         error = self._post_motion_hold_error(state, step)
         if error is None:
+            report = {
+                "segment_name": step.segment_name,
+                "post_motion_hold_converged": False,
+                "post_motion_hold_final_error": None,
+                "post_motion_hold_state_available": False,
+                "post_motion_joint_error_tolerance": (
+                    self.config.post_motion_joint_error_tolerance
+                ),
+            }
+            self._strict_post_motion_wait_reports.append(report)
+            self._latest_metadata = {**dict(step.action.metadata), **report}
+            if self.config.fail_on_strict_post_motion_state_unavailable:
+                self._failed = True
+                self._failure_reason = "arm_post_motion_state_unavailable"
+                self._failure_metadata = {
+                    **report,
+                    "segment_type": step.segment_type,
+                    "operation": self.plan.operation if self.plan is not None else None,
+                }
             return
         metadata = dict(step.action.metadata)
         metadata["post_motion_hold_final_error"] = error
         if error <= self.config.post_motion_joint_error_tolerance:
             metadata["post_motion_hold_converged"] = True
+            self._strict_post_motion_wait_reports.append(
+                {
+                    "segment_name": step.segment_name,
+                    "post_motion_hold_converged": True,
+                    "post_motion_hold_final_error": error,
+                    "post_motion_hold_state_available": True,
+                    "post_motion_joint_error_tolerance": (
+                        self.config.post_motion_joint_error_tolerance
+                    ),
+                }
+            )
             self._latest_metadata = metadata
             return
         metadata["post_motion_hold_converged"] = False
         metadata["post_motion_hold_timeout"] = True
+        self._strict_post_motion_wait_reports.append(
+            {
+                "segment_name": step.segment_name,
+                "post_motion_hold_converged": False,
+                "post_motion_hold_final_error": error,
+                "post_motion_hold_state_available": True,
+                "post_motion_hold_timeout": True,
+                "post_motion_joint_error_tolerance": (
+                    self.config.post_motion_joint_error_tolerance
+                ),
+            }
+        )
         self._latest_metadata = metadata
         if self.config.fail_on_strict_post_motion_timeout:
             self._failed = True
@@ -271,6 +401,74 @@ class SegmentedArmExecutor:
                 "timeout_s": self.config.post_motion_hold_duration,
                 "operation": self.plan.operation if self.plan is not None else None,
             }
+
+    def _remember_pending_close_validation(self, action: RobotAction) -> None:
+        metadata = action.metadata
+        if str(metadata.get("segment_name")) != "close_gripper":
+            return
+        segment_tick = int(metadata.get("segment_tick") or 0)
+        segment_ticks = max(1, int(metadata.get("segment_ticks") or 1))
+        if segment_tick != segment_ticks - 1:
+            return
+        self._pending_close_validation = {
+            "segment_name": "close_gripper",
+            "gripper_joint_names": tuple(
+                str(name) for name in metadata.get("gripper_joint_names", ())
+            ),
+            "q_start": tuple(float(value) for value in metadata.get("gripper_start_positions", ())),
+            "q_target": tuple(
+                float(value) for value in metadata.get("gripper_final_target_positions", ())
+            ),
+        }
+
+    def _finalize_pending_close_validation(self, state: SimulationState) -> None:
+        pending = self._pending_close_validation
+        if pending is None or self._failed:
+            return
+        self._pending_close_validation = None
+        q_final, mapping_report = _actual_named_joint_positions(
+            state,
+            pending["gripper_joint_names"],
+        )
+        if q_final is None:
+            self._close_progress_report = {
+                **pending,
+                "available": False,
+                "close_success": False,
+                "reason": "gripper_joint_state_unavailable",
+                "gripper_joint_mapping": mapping_report,
+            }
+            self._latest_metadata = dict(self._close_progress_report)
+            if self.config.require_close_progress_for_motion:
+                self._failed = True
+                self._failure_reason = "gripper_close_state_unavailable"
+                self._failure_metadata = dict(self._close_progress_report)
+            return
+
+        close_progress = _compute_close_progress(
+            pending["q_start"],
+            q_final,
+            pending["q_target"],
+        )
+        close_success = close_progress >= self.config.min_close_progress_for_motion
+        self._close_progress_report = {
+            **pending,
+            "available": True,
+            "q_final": q_final,
+            "close_progress": close_progress,
+            "min_close_progress_for_motion": self.config.min_close_progress_for_motion,
+            "close_success": close_success,
+            "close_success_rule": "contact_aware_close_progress_not_final_error_to_zero",
+            "gripper_joint_mapping": mapping_report,
+            "gripper_hold_after_close_enabled": self.config.hold_gripper_after_close,
+            "gripper_hold_after_close_source": "close_target",
+            "q_gripper_hold_after_close": pending["q_target"],
+        }
+        self._latest_metadata = dict(self._close_progress_report)
+        if not close_success and self.config.require_close_progress_for_motion:
+            self._failed = True
+            self._failure_reason = "gripper_close_progress_insufficient"
+            self._failure_metadata = dict(self._close_progress_report)
 
     def _remember_pending_post_motion_hold(self, step: _ActionStep) -> None:
         if step.segment_type != "post_motion_hold":
@@ -334,6 +532,18 @@ class SegmentedArmExecutor:
                 {
                     "post_motion_hold_skipped_on_tolerance": True,
                     "post_motion_hold_error": error,
+                }
+            )
+            self._strict_post_motion_wait_reports.append(
+                {
+                    "segment_name": step.segment_name,
+                    "post_motion_hold_converged": True,
+                    "post_motion_hold_final_error": error,
+                    "post_motion_hold_state_available": True,
+                    "post_motion_hold_skipped_on_tolerance": True,
+                    "post_motion_joint_error_tolerance": (
+                        self.config.post_motion_joint_error_tolerance
+                    ),
                 }
             )
             self._latest_metadata = metadata
@@ -448,6 +658,16 @@ class SegmentedArmExecutor:
             else:
                 raise RuntimeError(f"unsupported arm segment type: {segment_type}")
 
+        if last_arm_target is not None and self.config.final_motion_hold_duration > 0.0:
+            steps.extend(
+                self._build_final_motion_hold_steps(
+                    plan=plan,
+                    arm_joint_names=arm_joint_names,
+                    arm_target=last_arm_target,
+                    closed_gripper_target=closed_gripper_target,
+                    closed_gripper_joint_names=closed_gripper_joint_names,
+                )
+            )
         return steps
 
     def _build_motion_segment_steps(
@@ -469,6 +689,12 @@ class SegmentedArmExecutor:
             for row in trajectory.get("qd", _zero_rows_like(q_rows))
         )
         motion_time_scale = self.config.motion_time_scale
+        if name == "approach_to_grasp":
+            # 不改抓取几何，只放慢低 clearance 侧抓接近段，降低 IsaacLab PD 跟踪滞后导致的桌沿碰撞。
+            motion_time_scale = max(
+                motion_time_scale,
+                self.config.pick_approach_motion_time_scale,
+            )
         if name == "approach_to_place":
             # 下放阶段保留更慢速度，其他大范围 motion 才使用统一加速比例。
             motion_time_scale = max(
@@ -484,6 +710,8 @@ class SegmentedArmExecutor:
             segment_index=segment_index,
             arm_joint_names=arm_joint_names,
             q_start=q_rows[0],
+            closed_gripper_target=closed_gripper_target,
+            closed_gripper_joint_names=closed_gripper_joint_names,
         )
         q_target = q_rows[0]
         for step_index in range(num_steps):
@@ -515,8 +743,11 @@ class SegmentedArmExecutor:
                 metadata.update(
                     {
                         "gripper_hold_after_close": True,
+                        "gripper_hold_after_close_enabled": True,
+                        "gripper_hold_after_close_source": "close_target",
                         "gripper_joint_names": closed_gripper_joint_names,
                         "gripper_joint_positions": closed_gripper_target,
+                        "q_gripper_hold_after_close": closed_gripper_target,
                     }
                 )
             steps.append(
@@ -554,6 +785,8 @@ class SegmentedArmExecutor:
         segment_index: int,
         arm_joint_names: tuple[str, ...],
         q_start: tuple[float, ...],
+        closed_gripper_target: tuple[float, ...] | None,
+        closed_gripper_joint_names: tuple[str, ...],
     ) -> list[_ActionStep]:
         if self.config.settle_to_segment_start_duration <= 0.0:
             return []
@@ -581,11 +814,24 @@ class SegmentedArmExecutor:
                 "baseline_settle_to_segment_start": True,
                 "world_step_owned_by_pipeline": True,
             }
+            gripper_command = self.gripper.command_hold()
+            if self.config.hold_gripper_after_close and closed_gripper_target is not None:
+                gripper_command = self.gripper.command_close()
+                metadata.update(
+                    {
+                        "gripper_hold_after_close": True,
+                        "gripper_hold_after_close_enabled": True,
+                        "gripper_hold_after_close_source": "close_target",
+                        "gripper_joint_names": closed_gripper_joint_names,
+                        "gripper_joint_positions": closed_gripper_target,
+                        "q_gripper_hold_after_close": closed_gripper_target,
+                    }
+                )
             steps.append(
                 _ActionStep(
                     action=RobotAction(
                         arm_joint_positions=q_start,
-                        gripper_command=self.gripper.command_hold(),
+                        gripper_command=gripper_command,
                         source=f"arm_{plan.operation}",
                         metadata=metadata,
                     ),
@@ -633,8 +879,11 @@ class SegmentedArmExecutor:
                 metadata.update(
                     {
                         "gripper_hold_after_close": True,
+                        "gripper_hold_after_close_enabled": True,
+                        "gripper_hold_after_close_source": "close_target",
                         "gripper_joint_names": closed_gripper_joint_names,
                         "gripper_joint_positions": closed_gripper_target,
+                        "q_gripper_hold_after_close": closed_gripper_target,
                     }
                 )
             steps.append(
@@ -647,6 +896,59 @@ class SegmentedArmExecutor:
                     ),
                     segment_name=segment_name,
                     segment_type="post_motion_hold",
+                )
+            )
+        return steps
+
+    def _build_final_motion_hold_steps(
+        self,
+        *,
+        plan: ArmPlan,
+        arm_joint_names: tuple[str, ...],
+        arm_target: tuple[float, ...],
+        closed_gripper_target: tuple[float, ...] | None,
+        closed_gripper_joint_names: tuple[str, ...],
+    ) -> list[_ActionStep]:
+        hold_steps = max(
+            1,
+            int(math.ceil(self.config.final_motion_hold_duration / self.config.sim_dt)),
+        )
+        steps: list[_ActionStep] = []
+        for step_index in range(hold_steps):
+            metadata: dict[str, Any] = {
+                "operation": plan.operation,
+                "segment_name": "final_motion_hold",
+                "segment_type": "final_motion_hold",
+                "segment_tick": step_index,
+                "segment_ticks": hold_steps,
+                "arm_joint_names": arm_joint_names,
+                "final_motion_hold_duration_s": self.config.final_motion_hold_duration,
+                "baseline_final_motion_hold": True,
+                "world_step_owned_by_pipeline": True,
+            }
+            gripper_command = self.gripper.command_hold()
+            if self.config.hold_gripper_after_close and closed_gripper_target is not None:
+                gripper_command = self.gripper.command_close()
+                metadata.update(
+                    {
+                        "gripper_hold_after_close": True,
+                        "gripper_hold_after_close_enabled": True,
+                        "gripper_hold_after_close_source": "close_target",
+                        "gripper_joint_names": closed_gripper_joint_names,
+                        "gripper_joint_positions": closed_gripper_target,
+                        "q_gripper_hold_after_close": closed_gripper_target,
+                    }
+                )
+            steps.append(
+                _ActionStep(
+                    action=RobotAction(
+                        arm_joint_positions=arm_target,
+                        gripper_command=gripper_command,
+                        source=f"arm_{plan.operation}",
+                        metadata=metadata,
+                    ),
+                    segment_name="final_motion_hold",
+                    segment_type="final_motion_hold",
                 )
             )
         return steps
@@ -727,9 +1029,18 @@ class SegmentedArmExecutor:
                 "gripper_final_target_positions": target_position,
                 "gripper_move_tick": min(step_index, move_steps),
                 "gripper_move_steps": move_steps,
+                "arm_joint_names": arm_joint_names,
                 # 夹爪闭合/打开期间持续保持上一段 arm 末端，避免 TCP 漂走。
                 "arm_hold_during_gripper": bool(
                     self.config.hold_arm_during_gripper and last_arm_target is not None
+                ),
+                "arm_hold_source": (
+                    "last_motion_target"
+                    if self.config.hold_arm_during_gripper and last_arm_target is not None
+                    else "pending_current_state_capture"
+                    if self.config.hold_arm_during_gripper
+                    and self.config.hold_current_arm_during_gripper_without_motion
+                    else "disabled"
                 ),
                 "world_step_owned_by_pipeline": True,
             }
@@ -795,11 +1106,29 @@ class SegmentedArmExecutor:
 
 
 def _is_close_segment(segment: dict[str, Any]) -> bool:
-    return "close" in str(segment.get("name") or "").lower()
+    return str(segment.get("name") or "").lower() == "close_gripper"
 
 
 def _is_open_segment(segment: dict[str, Any]) -> bool:
-    return "open" in str(segment.get("name") or "").lower()
+    return str(segment.get("name") or "").lower() == "open_gripper"
+
+
+def _compute_close_progress(
+    q_start: tuple[float, ...],
+    q_final: tuple[float, ...],
+    q_target: tuple[float, ...],
+) -> float:
+    """按 main 的 contact-aware 规则计算实际闭合比例。"""
+
+    total_close_distance = math.sqrt(
+        sum((start - target) ** 2 for start, target in zip(q_start, q_target))
+    )
+    if total_close_distance < 1.0e-9:
+        return 1.0
+    actual_close_distance = math.sqrt(
+        sum((start - final) ** 2 for start, final in zip(q_start, q_final))
+    )
+    return max(0.0, min(1.0, actual_close_distance / total_close_distance))
 
 
 def _actual_named_joint_positions(

@@ -22,6 +22,8 @@ class SimulationState:
     tcp_pose: tuple[float, float, float, float, float, float, float] | None = None
     object_pose: tuple[float, float, float, float, float, float, float] | None = None
     object_velocity: tuple[float, float, float, float, float, float] | None = None
+    # 相机帧只在 recorder 采样时编码，不能通过 JSONL 展开为巨大的像素数组。
+    camera_images: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -63,8 +65,18 @@ class SimulationRuntime(Protocol):
 
         ...
 
+    def read_object_bbox_world(self) -> dict[str, Any]:
+        """只读返回当前任务物体 bbox，用于规划后执行前漂移诊断。"""
+
+        ...
+
     def pause(self) -> dict[str, Any]:
         """暂停物理推进，同时保留 stage 和控制目标供 GUI 检查。"""
+
+        ...
+
+    def refresh_viewport(self, *, reason: str = "manual") -> dict[str, Any]:
+        """重新应用 GUI viewpoint；只影响显示，不推进物理。"""
 
         ...
 

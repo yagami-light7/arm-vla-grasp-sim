@@ -13,11 +13,13 @@ from pathlib import Path
 
 from scripts.pipeline.run_full_physics_batch import (
     BatchEpisodeCommand,
+    _build_episode_result,
     _build_child_command,
     _build_parser,
     _color,
     _format_duration,
     _format_progress_suffix,
+    _format_result_table,
     _read_episode_progress,
     _run_child_process,
 )
@@ -49,9 +51,6 @@ class FullPhysicsBatchTest(unittest.TestCase):
                 "3",
                 "--seed",
                 "100",
-                "--full-physics",
-                "--viewport-camera-prim",
-                "/World/Camera1",
                 "--pick-plan-json",
                 str(PICK_PLAN),
                 "--place-plan-json",
@@ -68,18 +67,17 @@ class FullPhysicsBatchTest(unittest.TestCase):
             Path("/tmp/full_physics_batch_test/episode_000002/episode_000000/summary.json"),
         )
         command = episode.command
-        self.assertIn("--full-physics", command)
+        self.assertNotIn("--full-physics", command)
         self.assertIn("--num-episodes", command)
         self.assertEqual(command[command.index("--num-episodes") + 1], "1")
         self.assertEqual(command[command.index("--seed") + 1], "102")
         self.assertIn("--randomize-task", command)
         self.assertIn("--headless", command)
-        self.assertIn("--auto-start-curobo-server", command)
-        self.assertIn("--lock-base-during-manipulation", command)
-        self.assertIn("--lock-support-joints-during-manipulation", command)
-        self.assertIn("--replan-pick-from-current-state", command)
-        self.assertIn("--viewport-camera-prim", command)
-        self.assertEqual(command[command.index("--viewport-camera-prim") + 1], "/World/Camera1")
+        self.assertNotIn("--auto-start-curobo-server", command)
+        self.assertNotIn("--lock-base-during-manipulation", command)
+        self.assertNotIn("--lock-support-joints-during-manipulation", command)
+        self.assertNotIn("--replan-pick-from-current-state", command)
+        self.assertNotIn("--viewport-camera-prim", command)
         self.assertNotIn("--pick-plan-json", command)
         self.assertNotIn("--place-plan-json", command)
 
@@ -96,8 +94,6 @@ class FullPhysicsBatchTest(unittest.TestCase):
                 "--no-randomize-task",
                 "--no-headless",
                 "--show-randomization-debug",
-                "--no-auto-start-curobo-server",
-                "--keep-window-open",
             ]
         )
 
@@ -108,15 +104,102 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertIn("--no-randomize-task", command)
         self.assertIn("--no-headless", command)
         self.assertIn("--show-randomization-debug", command)
-        self.assertIn("--no-auto-start-curobo-server", command)
-        self.assertIn("--keep-window-open", command)
 
     def test_progress_format_helpers(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "--task-json",
+                str(TASK_PATH),
+                "--output-dir",
+                "/tmp/full_physics_batch_test",
+            ]
+        )
         self.assertEqual(_format_duration(3.2), "3s")
         self.assertEqual(_format_duration(65.0), "1m05s")
         self.assertEqual(_format_duration(3661.0), "1h01m01s")
         self.assertEqual(_color("ok", "green", enabled=False), "ok")
         self.assertIn("\033[32m", _color("ok", "green", enabled=True))
+        self.assertEqual(args.progress_interval_s, 5.0)
+
+    def test_result_table_contains_requested_episode_fields_and_colors(self) -> None:
+        episode = BatchEpisodeCommand(
+            episode_index=2,
+            seed=102,
+            output_dir=Path("/tmp/batch/episode_000002"),
+            summary_path=Path("/tmp/batch/episode_000002/episode_000000/summary.json"),
+            command=[],
+        )
+        success_summary = {
+            "success": True,
+            "task_config": {
+                "randomization": {
+                    "object_xy_randomization": {
+                        "sampled_xy": {"x": 0.91234, "y": 1.23456},
+                    },
+                    "place_xy_randomization": {
+                        "sampled_xy": {"x": 0.71234, "y": 5.23456},
+                    },
+                }
+            },
+            "lerobot_export": {
+                "manifest_path": "/tmp/batch/episode_000002/lerobot_manifest.json",
+            },
+        }
+        failed_summary = {
+            "success": False,
+            "failure_reason": "place_plan_failed",
+            "failure_metadata": {"current_state": "plan_place"},
+            "task_config": {
+                "pick": {"object_pose_world": {"x": 0.91, "y": 1.20}},
+                "place": {"place_pose_world": {"x": 0.70, "y": 5.20}},
+            },
+            "data_output_path": "/tmp/batch/episode_000003/episode_000000",
+        }
+        success_result = _build_episode_result(
+            episode=episode,
+            summary=success_summary,
+            success=True,
+            elapsed_seconds=65.0,
+        )
+        failed_result = _build_episode_result(
+            episode=BatchEpisodeCommand(
+                episode_index=3,
+                seed=103,
+                output_dir=Path("/tmp/batch/episode_000003"),
+                summary_path=Path("/tmp/batch/episode_000003/episode_000000/summary.json"),
+                command=[],
+            ),
+            summary=failed_summary,
+            success=False,
+            elapsed_seconds=7.0,
+        )
+
+        plain = _format_result_table(
+            [success_result, failed_result],
+            color_enabled=False,
+        )
+        colored = _format_result_table(
+            [success_result, failed_result],
+            color_enabled=True,
+        )
+
+        self.assertIn("Episode", plain)
+        self.assertIn("随机化 Pick / Place XY", plain)
+        self.assertIn("Pipeline 成功", plain)
+        self.assertIn("失败 State", plain)
+        self.assertIn("LeRobot 数据路径", plain)
+        self.assertIn("Episode 耗时", plain)
+        self.assertIn("pick=(0.9123,1.2346) place=(0.7123,5.2346)", plain)
+        self.assertIn("plan_place", plain)
+        self.assertIn("lerobot_manifest.json", plain)
+        self.assertIn("1m05s", plain)
+        self.assertIn("\033[36m", colored)
+        self.assertIn("\033[35m", colored)
+        self.assertIn("\033[32m", colored)
+        self.assertIn("\033[31m", colored)
+        self.assertIn("\033[33m", colored)
+        self.assertIn("\033[34m", colored)
+        self.assertIn("\033[37m", colored)
 
     def test_child_process_output_is_streamed_with_heartbeat(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

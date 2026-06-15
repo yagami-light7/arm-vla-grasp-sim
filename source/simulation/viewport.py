@@ -16,12 +16,12 @@ def candidate_stage_camera_paths(camera_prim_path: str) -> tuple[str, ...]:
     # 当前 USD 使用 camera1/2/3；Camera_font 仅作为历史命名 fallback。
     candidates.extend(
         (
-            "/World/Camera1",
-            "/World/Camera2",
-            "/World/Camera3",
             "/World/camera1",
             "/World/camera2",
             "/World/camera3",
+            "/World/Camera1",
+            "/World/Camera2",
+            "/World/Camera3",
             "/World/Camera_main",
             "/World/camera_main",
             "/World/Camera_font",
@@ -284,7 +284,7 @@ def _candidate_viewports() -> tuple[tuple[str, Any], ...]:
 
 def configure_navigation_viewport(
     *,
-    camera_prim_path: str = "/World/Camera_main",
+    camera_prim_path: str = "/World/Camera1",
     hide_collision_visual: bool = True,
 ) -> dict[str, Any]:
     """配置导航 GUI；只修改可见性与 viewport，不改动物理属性。"""
@@ -334,14 +334,14 @@ def configure_navigation_viewport(
         dict.fromkeys(
             (
                 camera_prim_path,
-                "/World/Camera_main",
-                "/World/camera_main",
-                "/World/Camera1",
-                "/World/Camera2",
-                "/World/Camera3",
                 "/World/camera1",
                 "/World/camera2",
                 "/World/camera3",
+                "/World/Camera1",
+                "/World/Camera2",
+                "/World/Camera3",
+                "/World/Camera_main",
+                "/World/camera_main",
                 "/World/Camera_font",
                 "/World/camera_font",
                 *candidates,
@@ -412,12 +412,14 @@ def configure_navigation_viewport(
         report["viewport_camera_path_readbacks"] = tuple(readbacks)
         report["applied_viewport_source"] = applied_viewport_source
         selected_camera = UsdGeom.Camera(stage.GetPrimAtPath(selected_path))
-        report["perspective_camera_sync"] = _copy_stage_camera_to_perspective(
+        perspective_sync = _copy_stage_camera_to_perspective(
             camera=selected_camera,
             selected_path=selected_path,
             viewports=viewports,
             sdf_path_factory=Sdf.Path,
         )
+        report["perspective_camera_sync"] = perspective_sync
+        camera_applied = camera_applied or bool(perspective_sync.get("applied"))
         try:
             import omni.kit.app
 

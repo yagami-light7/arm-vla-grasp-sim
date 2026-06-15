@@ -70,6 +70,8 @@ def planner_server_supports_required_features(
         response.get("ok", False)
         and isinstance(features, dict)
         and features.get("side_grasp_retreat_to_pregrasp") is True
+        and features.get("split_pregrasp_motion") is True
+        and features.get("single_retime_split_pregrasp") is True
     )
 
 
@@ -137,10 +139,11 @@ class CuroboPlannerServerProcess:
         env = os.environ.copy()
         env["GO2_X5_WORKSPACE"] = str(self.config.project_root)
         env.setdefault("GO2_X5_CUROBO_SOURCE_ROOT", "/home/light/workspace/curobo")
-        # 常驻服务的默认值必须与 baseline 一致；每次请求仍会显式传入策略。
-        env["GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT"] = "1"
+        # 常驻服务的默认值对齐 random nav-pick-place baseline；每次请求仍会显式传入策略。
+        env["GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT"] = "0"
         env["GO2_X5_SIDE_GRASP_FALLBACK_RETREAT"] = "0"
         env["GO2_X5_SIDE_GRASP_RETREAT_TO_PREGRASP"] = "0"
+        env["GO2_X5_SPLIT_PREGRASP_MOTION"] = "1"
         log_stream = log_path.open("a", encoding="utf-8")
         try:
             self.process = subprocess.Popen(

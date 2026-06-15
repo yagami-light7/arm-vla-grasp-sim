@@ -173,9 +173,31 @@ class InMemorySimulationRuntime:
         self._metadata["object_prepare_for_pick_report"] = report
         return report
 
+    def read_object_bbox_world(self) -> dict[str, Any]:
+        if self._object_pose is None:
+            raise RuntimeError("object pose is unavailable")
+        center = tuple(float(value) for value in self._object_pose[:3])
+        return {
+            "center_xyz": center,
+            "min_xyz": center,
+            "max_xyz": center,
+            "size_xyz": (0.0, 0.0, 0.0),
+            "center_source": "in_memory_object_pose",
+            "read_only": True,
+        }
+
     def pause(self) -> dict[str, Any]:
         report = {"paused": True, "source": "in_memory_runtime"}
         self._metadata["terminal_hold_report"] = report
+        return report
+
+    def refresh_viewport(self, *, reason: str = "manual") -> dict[str, Any]:
+        report = {
+            "camera_applied": False,
+            "reason": "in_memory_runtime_has_no_viewport",
+            "configure_reason": reason,
+        }
+        self._metadata["viewport_report"] = report
         return report
 
     def _record_arm_tracking(self, action: RobotAction) -> None:
@@ -256,6 +278,21 @@ class InMemorySimulationRuntime:
                     self._object_pose[0],
                     self._object_pose[1],
                     self._object_pose[2] + 0.12,
+                    *self._object_pose[3:],
+                )
+        if (
+            operation == "pick"
+            and segment_name == "retreat_object"
+            and self._metadata.get("object_attached")
+            and not self._metadata.get("object_retreated")
+        ):
+            self._metadata["object_retreated"] = True
+            if self._object_pose is not None:
+                # baseline side-retreat 通过原路撤回验证物体被夹住，不要求竖直 lift。
+                self._object_pose = (
+                    self._object_pose[0] + 0.06,
+                    self._object_pose[1],
+                    self._object_pose[2],
                     *self._object_pose[3:],
                 )
         if operation == "place" and event_marker == "gripper_open":

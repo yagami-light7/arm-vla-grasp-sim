@@ -280,7 +280,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 PipelineState.EXEC_NAV_TO_PICK.value,
             )
 
-    def test_cli_help_is_chinese_and_modes_are_explicit(self) -> None:
+    def test_cli_help_is_chinese_and_full_physics_is_default(self) -> None:
         help_text = _build_parser().format_help()
         self.assertIn("任务 JSON 路径", help_text)
         self.assertIn("--dry-run", help_text)
@@ -289,18 +289,20 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertIn("--navigation-carry-smoke", help_text)
         self.assertIn("--manipulation-smoke", help_text)
         self.assertIn("--manipulation-apply-smoke", help_text)
-        self.assertIn("--full-physics", help_text)
-        self.assertIn("--integrated-apply-smoke", help_text)
+        self.assertNotIn("--full-physics", help_text)
+        self.assertNotIn("--integrated-apply-smoke", help_text)
         self.assertIn("--pick-plan-json", help_text)
         self.assertIn("--place-plan-json", help_text)
-        self.assertIn("--viewport-camera-prim", help_text)
-        self.assertIn("--no-lock-base-during-manipulation", help_text)
-        self.assertIn("--no-lock-support-joints-during-manipulation", help_text)
-        self.assertIn("--no-replan-pick-from-current-state", help_text)
-        self.assertIn("--no-auto-start-curobo-server", help_text)
+        self.assertNotIn("--viewport-camera-prim", help_text)
+        self.assertNotIn("--save-video", help_text)
+        self.assertNotIn("--enable-debug-vis", help_text)
+        self.assertNotIn("--no-lock-base-during-manipulation", help_text)
+        self.assertNotIn("--no-lock-support-joints-during-manipulation", help_text)
+        self.assertNotIn("--no-replan-pick-from-current-state", help_text)
+        self.assertNotIn("--no-auto-start-curobo-server", help_text)
         self.assertIn("--no-headless", help_text)
 
-    def test_manipulation_base_lock_defaults_on_and_can_be_disabled(self) -> None:
+    def test_manipulation_stability_defaults_are_fixed_on(self) -> None:
         default_args = _build_parser().parse_args(
             [
                 "--task-json",
@@ -308,23 +310,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 "--dry-run",
             ]
         )
-        disabled_args = _build_parser().parse_args(
-            [
-                "--task-json",
-                "tasks/nav_pick_place_apple_contact.json",
-                "--dry-run",
-                "--no-lock-base-during-manipulation",
-                "--no-lock-support-joints-during-manipulation",
-                "--no-auto-start-curobo-server",
-            ]
-        )
-
-        self.assertTrue(default_args.lock_base_during_manipulation)
-        self.assertTrue(default_args.lock_support_joints_during_manipulation)
-        self.assertTrue(default_args.auto_start_curobo_server)
-        self.assertFalse(disabled_args.lock_base_during_manipulation)
-        self.assertFalse(disabled_args.lock_support_joints_during_manipulation)
-        self.assertFalse(disabled_args.auto_start_curobo_server)
+        self.assertEqual(default_args.mode, "dry_run")
         self.assertTrue(
             FullPhysicsConfig(
                 task_json=PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json",
@@ -342,10 +328,10 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 task_json=PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json",
                 output_dir=PROJECT_ROOT / "outputs/test",
             ).manipulation.base_lock_settle_steps,
-            10,
+            60,
         )
 
-    def test_navigation_defaults_restore_local_stable_brisk_fast_profile(self) -> None:
+    def test_navigation_defaults_use_stable_brisk_fast_profile(self) -> None:
         config = FullPhysicsConfig(
             task_json=PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json",
             output_dir=PROJECT_ROOT / "outputs/test",
@@ -354,7 +340,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
 
         self.assertTrue(config.navigation.brisk_nav)
         self.assertTrue(config.navigation.fast_dwa)
-        self.assertEqual(config.navigation.dwa_replan_interval_steps, 1)
+        self.assertEqual(config.navigation.dwa_replan_interval_steps, 2)
         self.assertAlmostEqual(dwa_config.max_linear_velocity, 0.80)
         self.assertAlmostEqual(dwa_config.min_active_linear_velocity, 0.55)
         self.assertAlmostEqual(dwa_config.near_goal_min_active_linear_velocity, 0.38)
@@ -367,9 +353,11 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertEqual(dwa_config.angular_samples, 7)
         self.assertEqual(dwa_config.path_distance_window, 80)
 
-    def test_cli_requires_an_explicit_execution_mode(self) -> None:
-        with self.assertRaises(SystemExit):
-            main(["--task-json", "tasks/nav_pick_place_apple_contact.json"])
+    def test_cli_defaults_to_full_physics_mode(self) -> None:
+        args = _build_parser().parse_args(
+            ["--task-json", "tasks/nav_pick_place_apple_contact.json"]
+        )
+        self.assertEqual(args.mode, "full_physics")
 
     def test_cli_rejects_missing_external_plan_paths_before_isaac_startup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -389,9 +377,9 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                     ]
                 )
 
-    def test_integrated_apply_smoke_is_cancelled_before_isaac_startup(self) -> None:
-        with self.assertRaisesRegex(SystemExit, "已取消，请改用 --full-physics"):
-            main(
+    def test_removed_integrated_apply_smoke_flag_is_rejected(self) -> None:
+        with self.assertRaises(SystemExit):
+            _build_parser().parse_args(
                 [
                     "--task-json",
                     "tasks/nav_pick_place_apple_contact.json",
@@ -412,7 +400,6 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                     [
                         "--task-json",
                         "tasks/nav_pick_place_apple_contact.json",
-                        "--full-physics",
                         "--pick-plan-json",
                         str(pick_path),
                         "--place-plan-json",
@@ -454,13 +441,52 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             self.assertFalse(
                 pipeline.machine.manipulation_planner._config.side_grasp_fallback_retreat
             )
-            self.assertTrue(
+            self.assertFalse(
                 pipeline.machine.manipulation_planner._config.side_grasp_retreat_to_pregrasp
             )
+            self.assertTrue(
+                pipeline.machine.manipulation_planner._config.split_pregrasp_motion
+            )
+            self.assertFalse(config.manipulation.return_home_after_pick)
             self.assertTrue(pipeline.machine.config.manipulation.return_home_after_pick)
+            self.assertAlmostEqual(
+                pipeline.machine.arm_executor.config.post_motion_hold_duration,
+                0.75,
+            )
+            self.assertTrue(
+                pipeline.machine.arm_executor.config.require_close_progress_for_motion
+            )
+            self.assertTrue(
+                pipeline.machine.arm_executor.config.fail_on_strict_post_motion_state_unavailable
+            )
+            self.assertAlmostEqual(
+                pipeline.machine.arm_executor.config.settle_to_segment_start_skip_error_tolerance,
+                0.005,
+            )
+            self.assertIn(
+                "return_home_after_retreat",
+                pipeline.machine.arm_executor.config.strict_post_motion_hold_segments,
+            )
             self.assertAlmostEqual(
                 pipeline.machine.arm_executor.config.motion_time_scale,
                 config.manipulation.arm_motion_time_scale,
+            )
+            self.assertAlmostEqual(config.manipulation.arm_motion_time_scale, 0.50)
+            self.assertAlmostEqual(
+                pipeline.machine.arm_executor.config.pick_approach_motion_time_scale,
+                config.manipulation.pick_approach_motion_time_scale,
+            )
+            self.assertAlmostEqual(
+                config.manipulation.pick_approach_motion_time_scale,
+                0.50,
+            )
+            self.assertAlmostEqual(
+                pipeline.machine.arm_executor.config.place_approach_motion_time_scale,
+                0.50,
+            )
+            self.assertAlmostEqual(
+                pipeline.machine.arm_executor.config.arm_command_dt,
+                0.02,
             )
             self.assertIsInstance(pipeline.machine.verifier, FullPhysicsVerifier)
 
@@ -480,8 +506,9 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 0.0,
             ),
             robot_root_velocity=(0.0,) * 6,
-            tcp_pose=(0.4, 0.0, 0.8, 1.0, 0.0, 0.0, 0.0),
-            object_pose=(0.45, 0.0, 0.8, 1.0, 0.0, 0.0, 0.0),
+            tcp_pose=(0.4, 0.0, 0.84, 1.0, 0.0, 0.0, 0.0),
+            object_pose=(0.45, 0.0, 0.87, 1.0, 0.0, 0.0, 0.0),
+            object_velocity=(0.0,) * 6,
             metadata={
                 "body_velocity": (0.0, 0.0, 0.0),
                 "gripper_close_apply_count": 2,
@@ -492,7 +519,109 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         pick_result = verifier.verify_pick_success(pick_state, spec)
         self.assertTrue(pick_result.success)
         self.assertEqual(pick_result.failure_reason, "")
-        self.assertEqual(pick_result.metadata["validation_mode"], "object_tcp_contact_window")
+        self.assertEqual(
+            pick_result.metadata["validation_mode"],
+            "main_pick_lift_contact_and_stability",
+        )
+        self.assertGreaterEqual(pick_result.metadata["object_lift_height_m"], 0.04)
+
+        not_lifted_state = replace(
+            pick_state,
+            object_pose=(
+                0.45,
+                0.0,
+                spec.object_initial_pose[2] + 0.01,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+            ),
+        )
+        not_lifted = verifier.verify_pick_success(not_lifted_state, spec)
+        self.assertFalse(not_lifted.success)
+        self.assertEqual(not_lifted.failure_reason, "object_not_lifted")
+
+        returned_home_state = replace(
+            not_lifted_state,
+            tcp_pose=(
+                0.45,
+                0.0,
+                spec.object_initial_pose[2] + 0.02,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+            ),
+            metadata={
+                **not_lifted_state.metadata,
+                "pick_peak_object_lift_height_m": 0.10,
+                "pick_peak_object_pose": (
+                    0.45,
+                    0.0,
+                    spec.object_initial_pose[2] + 0.10,
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ),
+                "pick_peak_step_index": 123,
+            },
+        )
+        returned_home = verifier.verify_pick_success(returned_home_state, spec)
+        self.assertTrue(returned_home.success)
+        self.assertAlmostEqual(
+            returned_home.metadata["verified_object_lift_height_m"],
+            0.10,
+        )
+
+        side_retreat_state = replace(
+            not_lifted_state,
+            object_pose=(
+                spec.object_initial_pose[0] + 0.06,
+                spec.object_initial_pose[1],
+                spec.object_initial_pose[2],
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+            ),
+            tcp_pose=(
+                spec.object_initial_pose[0] + 0.06,
+                spec.object_initial_pose[1],
+                spec.object_initial_pose[2] + 0.01,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+            ),
+            metadata={
+                **not_lifted_state.metadata,
+                "pick_has_lift_segment": False,
+                "pick_has_retreat_segment": True,
+            },
+        )
+        side_retreat = verifier.verify_pick_success(side_retreat_state, spec)
+        self.assertTrue(side_retreat.success)
+        self.assertEqual(
+            side_retreat.metadata["validation_mode"],
+            "side_retreat_contact_and_stability",
+        )
+
+        no_retreat_state = replace(
+            side_retreat_state,
+            object_pose=(
+                spec.object_initial_pose[0] + 0.01,
+                spec.object_initial_pose[1],
+                spec.object_initial_pose[2],
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+            ),
+        )
+        no_retreat = verifier.verify_pick_success(no_retreat_state, spec)
+        self.assertFalse(no_retreat.success)
+        self.assertEqual(no_retreat.failure_reason, "object_not_retreated")
 
     def test_full_physics_mode_reports_stable_success_with_lock_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -503,6 +632,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 output_dir=root,
                 full_physics=True,
                 keep_window_open=True,
+                manipulation=ManipulationSettings(return_home_after_pick=True),
             )
             spec = JsonTaskProvider().load(task_path)
             gripper = BinaryGripperController()
@@ -632,8 +762,18 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                     for frame in manipulation_boundary_frames
                 )
             )
+            carry_arm_target = list(
+                summary["carry_arm_home_target"]["arm_joint_positions"]
+            )
             self.assertTrue(
-                all(frame["action"]["arm_joint_positions"] == [0.0] * 6 for frame in carry_frames)
+                all(
+                    frame["action"]["arm_joint_positions"] == carry_arm_target
+                    for frame in carry_frames
+                )
+            )
+            self.assertEqual(
+                summary["carry_arm_home_target"]["source"],
+                "pick_return_home",
             )
             self.assertTrue(
                 all(
@@ -663,7 +803,10 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 for frame in frames
                 if frame["action"]["source"] == "pick_base_settle"
             ]
-            self.assertEqual(len(pick_settle_frames), 10)
+            self.assertEqual(
+                len(pick_settle_frames),
+                config.manipulation.base_lock_settle_steps,
+            )
             self.assertTrue(
                 all(
                     frame["action"]["metadata"].get("manipulation_base_lock")
@@ -671,6 +814,21 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                     for frame in pick_settle_frames
                 )
             )
+            reverse_pick_frame_indices = [
+                index
+                for index, frame in enumerate(frames)
+                if frame["pipeline_state"] == PipelineState.EXEC_PICK.value
+                and str(frame["action"]["metadata"].get("segment_name", "")).startswith(
+                    "return_home_reverse_"
+                )
+            ]
+            first_carry_nav_index = next(
+                index
+                for index, frame in enumerate(frames)
+                if frame["pipeline_state"] == PipelineState.EXEC_NAV_TO_PLACE.value
+            )
+            self.assertTrue(reverse_pick_frame_indices)
+            self.assertLess(max(reverse_pick_frame_indices), first_carry_nav_index)
             final_action = frames[-1]["action"]
             self.assertTrue(final_action["metadata"]["terminal_hold"])
             self.assertTrue(final_action["metadata"]["manipulation_base_lock"])
@@ -992,6 +1150,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 manipulation_apply_smoke=True,
                 pick_plan_json=pick_path,
                 place_plan_json=place_path,
+                manipulation=ManipulationSettings(return_home_after_pick=True),
             )
             spec = JsonTaskProvider().load(task_path)
             pipeline = create_manipulation_apply_smoke_pipeline(
@@ -1020,7 +1179,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 if frame["action"]["source"] in {"arm_pick", "arm_place"}
             }
             self.assertIn("json_pick_motion", segment_names)
-            self.assertIn("return_home_after_pick", segment_names)
+            self.assertIn("return_home_reverse_json_pick_motion", segment_names)
             self.assertNotIn("hold_home_before_carry", segment_names)
             self.assertIn("json_place_motion", segment_names)
             self.assertIn("return_home_after_place", segment_names)
@@ -1046,13 +1205,22 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 )
             )
 
-    def test_pick_return_home_aligns_place_plan_start_by_default(self) -> None:
+    def test_explicit_pick_return_home_uses_reverse_executed_motion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             pick_path = root / "pick_plan.json"
             place_path = root / "place_plan.json"
             pick_payload = _external_pick_payload()
             pick_payload["segments"][0]["trajectory"]["q"][-1][0] = 1.0
+            pick_payload["segments"].append(
+                _external_motion_segment(
+                    "lift_object",
+                    (
+                        (1.00, 0.04, 0.03, 0.02, 0.01, 0.00),
+                        (1.10, 0.08, 0.06, 0.04, 0.02, 0.01),
+                    ),
+                )
+            )
             place_payload = _external_place_payload()
             place_payload["segments"][0]["trajectory"]["q"][0] = [0.0] * 6
             pick_path.write_text(json.dumps(pick_payload), encoding="utf-8")
@@ -1066,6 +1234,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 manipulation_apply_smoke=True,
                 pick_plan_json=pick_path,
                 place_plan_json=place_path,
+                manipulation=ManipulationSettings(return_home_after_pick=True),
             )
             spec = JsonTaskProvider().load(task_path)
             pipeline = create_manipulation_apply_smoke_pipeline(
@@ -1096,8 +1265,17 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             ]
             self.assertTrue(
                 any(
-                    frame["action"]["metadata"].get("segment_name") == "return_home_after_pick"
+                    frame["action"]["metadata"].get("segment_name")
+                    == "return_home_reverse_json_pick_motion"
                     and frame["action"]["arm_joint_positions"] == [0.0] * 6
+                    for frame in frames
+                    if frame["pipeline_state"] == PipelineState.EXEC_PICK.value
+                )
+            )
+            self.assertTrue(
+                any(
+                    frame["action"]["metadata"].get("segment_name")
+                    == "return_home_reverse_lift_object"
                     for frame in frames
                     if frame["pipeline_state"] == PipelineState.EXEC_PICK.value
                 )

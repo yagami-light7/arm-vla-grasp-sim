@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,10 +11,43 @@ from unittest.mock import Mock, patch
 from source.manipulation.planner_server_process import (
     CuroboPlannerServerProcess,
     CuroboPlannerServerProcessConfig,
+    planner_server_supports_required_features,
 )
 
 
 class CuroboPlannerServerProcessTest(unittest.TestCase):
+    def test_capabilities_require_single_retime_split_pregrasp(self) -> None:
+        def supports(features: dict[str, bool]) -> bool:
+            socket_context = Mock()
+            socket_client = Mock()
+            socket_context.__enter__ = Mock(return_value=socket_client)
+            socket_context.__exit__ = Mock(return_value=False)
+            socket_client.makefile.return_value.readline.return_value = json.dumps(
+                {
+                    "ok": True,
+                    "features": features,
+                }
+            )
+            with patch(
+                "source.manipulation.planner_server_process.socket.create_connection",
+                return_value=socket_context,
+            ):
+                return planner_server_supports_required_features()
+
+        legacy_features = {
+            "side_grasp_retreat_to_pregrasp": True,
+            "split_pregrasp_motion": True,
+        }
+        self.assertFalse(supports(legacy_features))
+        self.assertTrue(
+            supports(
+                {
+                    **legacy_features,
+                    "single_retime_split_pregrasp": True,
+                }
+            )
+        )
+
     def test_existing_server_is_reused_and_not_owned(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             manager = CuroboPlannerServerProcess(
@@ -71,9 +105,10 @@ class CuroboPlannerServerProcessTest(unittest.TestCase):
         env = popen.call_args.kwargs["env"]
         self.assertEqual(command[0], "/tmp/python")
         self.assertIn("grasp_planner_server.py", command[-1])
-        self.assertEqual(env["GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT"], "1")
+        self.assertEqual(env["GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT"], "0")
         self.assertEqual(env["GO2_X5_SIDE_GRASP_FALLBACK_RETREAT"], "0")
         self.assertEqual(env["GO2_X5_SIDE_GRASP_RETREAT_TO_PREGRASP"], "0")
+        self.assertEqual(env["GO2_X5_SPLIT_PREGRASP_MOTION"], "1")
         shutdown.assert_called_once()
         process.wait.assert_called_once_with(timeout=5.0)
 

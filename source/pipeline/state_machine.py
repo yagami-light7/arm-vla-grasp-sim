@@ -65,6 +65,17 @@ _TERMINAL_HOLD_STATES = frozenset(
 )
 
 
+def _vector_norm(values: tuple[float, ...] | list[float], *, limit: int | None = None) -> float:
+    subset = values[:limit] if limit is not None else values
+    return math.sqrt(sum(float(value) * float(value) for value in subset))
+
+
+def _max_abs(values: tuple[float, ...] | list[float]) -> float | None:
+    if not values:
+        return None
+    return max(abs(float(value)) for value in values)
+
+
 def _first_motion_target(plan: Any) -> dict[str, Any] | None:
     segments = plan.metadata.get("segments") if hasattr(plan, "metadata") else None
     if isinstance(segments, list | tuple):
@@ -270,6 +281,217 @@ def _append_pick_return_home(
         ),
         report,
     )
+
+
+def _append_pick_reverse_return_home(
+    plan: ArmPlan,
+    *,
+    hold_duration_s: float,
+) -> tuple[ArmPlan, dict[str, Any]]:
+    """按 main 语义反向回放已规划 motion，避免无避障直连 all-zero home。"""
+
+    raw_segments = plan.metadata.get("segments")
+    if not isinstance(raw_segments, list | tuple):
+        return plan, {"inserted": False, "reason": "plan_segments_unavailable"}
+
+    motion_segments = [
+        segment
+        for segment in raw_segments
+        if str(segment.get("type")) == "motion"
+        and isinstance(segment.get("trajectory"), dict)
+        and segment["trajectory"].get("q")
+    ]
+    if not motion_segments:
+        return plan, {"inserted": False, "reason": "plan_has_no_motion_segments"}
+
+    reverse_segments: list[dict[str, Any]] = []
+    for segment in reversed(motion_segments):
+        trajectory = segment["trajectory"]
+        q_rows = tuple(
+            tuple(float(value) for value in row)
+            for row in trajectory["q"]
+        )
+        raw_times = tuple(float(value) for value in trajectory.get("time_from_start", ()))
+        if len(raw_times) != len(q_rows) or not raw_times:
+            raw_times = tuple(0.05 * index for index in range(len(q_rows)))
+        duration = max(0.0, raw_times[-1] - raw_times[0])
+        reverse_times = tuple(duration - (value - raw_times[0]) for value in reversed(raw_times))
+        reverse_trajectory: dict[str, Any] = {
+            "time_from_start": reverse_times,
+            "q": tuple(reversed(q_rows)),
+        }
+        raw_qd = trajectory.get("qd")
+        if isinstance(raw_qd, list | tuple) and len(raw_qd) == len(q_rows):
+            reverse_trajectory["qd"] = tuple(
+                tuple(-float(value) for value in row)
+                for row in reversed(raw_qd)
+            )
+        original_name = str(segment.get("name") or "motion")
+        reverse_segments.append(
+            {
+                "name": f"return_home_reverse_{original_name}",
+                "type": "motion",
+                "target_name": "reverse_executed_motion",
+                "timing": {
+                    "duration_s": duration,
+                    "num_waypoints": len(q_rows),
+                    "generated_by": "full_physics_pipeline",
+                },
+                "final_error": {},
+                "plan_info": {
+                    "generated_return_home": True,
+                    "return_home_strategy": "reverse_executed_motion",
+                    "source_segment_name": original_name,
+                },
+                "trajectory": reverse_trajectory,
+            }
+        )
+
+    final_home = tuple(float(value) for value in reverse_segments[-1]["trajectory"]["q"][-1])
+    if hold_duration_s > 0.0:
+        reverse_segments.append(
+            {
+                "name": "hold_home_before_carry",
+                "type": "motion",
+                "target_name": "arm_home",
+                "timing": {
+                    "duration_s": float(hold_duration_s),
+                    "num_waypoints": 2,
+                    "generated_by": "full_physics_pipeline",
+                },
+                "final_error": {},
+                "plan_info": {
+                    "generated_home_hold": True,
+                    "reason": "hold_reverse_executed_motion_final_target",
+                },
+                "trajectory": {
+                    "time_from_start": (0.0, float(hold_duration_s)),
+                    "q": (final_home, final_home),
+                },
+            }
+        )
+
+    segments = (*tuple(raw_segments), *tuple(reverse_segments))
+    return_rows = tuple(
+        tuple(float(value) for value in row)
+        for segment in reverse_segments
+        for row in segment["trajectory"]["q"]
+    )
+    report = {
+        "inserted": True,
+        "strategy": "reverse_executed_motion",
+        "segment_names": tuple(segment["name"] for segment in reverse_segments),
+        "source_segment_names": tuple(
+            str(segment.get("name") or "motion") for segment in motion_segments
+        ),
+        "joint_names": tuple(str(name) for name in plan.metadata.get("joint_names") or ()),
+        "home_positions": final_home,
+        "home_hold_inserted": hold_duration_s > 0.0,
+        "home_hold_duration_s": float(hold_duration_s),
+    }
+    return (
+        ArmPlan(
+            operation=plan.operation,
+            joint_trajectory=(
+                *tuple(tuple(float(value) for value in row) for row in plan.joint_trajectory),
+                *return_rows,
+            ),
+            metadata={
+                **plan.metadata,
+                "segments": segments,
+                "pick_return_home": report,
+                "original_trajectory_points": len(plan.joint_trajectory),
+            },
+        ),
+        report,
+    )
+
+
+def _pick_plan_terminal_motion_names(plan: ArmPlan) -> tuple[str, ...]:
+    raw_segments = plan.metadata.get("segments")
+    if not isinstance(raw_segments, list | tuple):
+        return ()
+    return tuple(
+        str(segment.get("name") or "")
+        for segment in raw_segments
+        if str(segment.get("type")) == "motion"
+    )
+
+
+def _target_vs_pre_execution_object_drift(
+    *,
+    plan: ArmPlan,
+    simulation: SimulationRuntime,
+    observation: SimulationState,
+    max_allowed_drift_m: float = 0.012,
+) -> dict[str, Any]:
+    """对比 target 生成时 bbox 与 EXEC_PICK 前 live bbox。"""
+
+    replan_report = plan.metadata.get("current_state_replan")
+    export_report = (
+        replan_report.get("export_report")
+        if isinstance(replan_report, dict)
+        else None
+    )
+    target_bbox = (
+        export_report.get("bbox_world")
+        if isinstance(export_report, dict)
+        else None
+    )
+    target_center = (
+        target_bbox.get("center_xyz")
+        if isinstance(target_bbox, dict)
+        else None
+    )
+    if not isinstance(target_center, list | tuple) or len(target_center) < 3:
+        return {
+            "available": False,
+            "reason": "target_bbox_center_unavailable",
+            "max_allowed_drift_m": float(max_allowed_drift_m),
+        }
+
+    current_bbox = None
+    bbox_reader = getattr(simulation, "read_object_bbox_world", None)
+    if callable(bbox_reader):
+        try:
+            current_bbox = bbox_reader()
+        except Exception as exc:
+            current_bbox = {"read_error": str(exc)}
+    current_center = (
+        current_bbox.get("center_xyz")
+        if isinstance(current_bbox, dict)
+        else None
+    )
+    current_source = "runtime_live_bbox"
+    if not isinstance(current_center, list | tuple) or len(current_center) < 3:
+        if observation.object_pose is None:
+            return {
+                "available": False,
+                "reason": "current_object_bbox_center_unavailable",
+                "target_bbox_center_xyz": tuple(float(value) for value in target_center[:3]),
+                "current_bbox_report": current_bbox,
+                "max_allowed_drift_m": float(max_allowed_drift_m),
+            }
+        current_center = observation.object_pose[:3]
+        current_source = "observation_object_pose_fallback"
+
+    target_xyz = tuple(float(value) for value in target_center[:3])
+    current_xyz = tuple(float(value) for value in current_center[:3])
+    delta = tuple(current - target for current, target in zip(current_xyz, target_xyz))
+    drift_m = math.sqrt(sum(value * value for value in delta))
+    xy_drift_m = math.hypot(delta[0], delta[1])
+    return {
+        "available": True,
+        "target_bbox_center_xyz": target_xyz,
+        "current_bbox_center_xyz": current_xyz,
+        "current_bbox_center_source": current_source,
+        "delta_xyz": delta,
+        "drift_m": drift_m,
+        "xy_drift_m": xy_drift_m,
+        "max_allowed_drift_m": float(max_allowed_drift_m),
+        "within_tolerance": drift_m <= float(max_allowed_drift_m),
+        "current_bbox_report": current_bbox,
+    }
 
 
 def _append_place_return_home(
@@ -517,10 +739,16 @@ class FullPhysicsStateMachine:
         self.state_trace = [self.state.value]
         self.latest_planner_result: dict[str, Any] = {}
         self.latest_executor_status: dict[str, Any] = {}
+        self.pick_planner_result: dict[str, Any] = {}
+        self.pick_executor_status: dict[str, Any] = {}
+        self.pick_verification_result: dict[str, Any] = {}
         self.export_result: dict[str, Any] = {}
         self._carry_gripper_target: dict[str, Any] | None = None
         self._carry_arm_home_target: dict[str, Any] | None = None
         self._carry_object_tcp_offset: tuple[float, float, float] | None = None
+        self._pick_peak_object_lift_height_m: float | None = None
+        self._pick_peak_object_pose: tuple[float, ...] | None = None
+        self._pick_peak_step_index: int | None = None
         self._pending_events = [
             self._event("state_entered", 0),
             self._event("episode_start", 0, {"seed": episode_seed}),
@@ -585,9 +813,15 @@ class FullPhysicsStateMachine:
             "state_trace": list(self.state_trace),
             "latest_planner_result": dict(self.latest_planner_result),
             "latest_executor_status": dict(self.latest_executor_status),
+            "pick_planner_result": dict(self.pick_planner_result),
+            "pick_executor_status": dict(self.pick_executor_status),
+            "pick_verification_result": dict(self.pick_verification_result),
             "lerobot_export": dict(self.export_result),
             "carry_gripper_target": dict(self._carry_gripper_target or {}),
             "carry_arm_home_target": dict(self._carry_arm_home_target or {}),
+            "pick_peak_object_lift_height_m": self._pick_peak_object_lift_height_m,
+            "pick_peak_object_pose": self._pick_peak_object_pose,
+            "pick_peak_step_index": self._pick_peak_step_index,
         }
 
     def _handle_state(
@@ -741,23 +975,68 @@ class FullPhysicsStateMachine:
                     "traceback": traceback.format_exc(),
                 },
             )
-        return_home_report = {"inserted": False, "reason": "disabled"}
+        terminal_motion_names = _pick_plan_terminal_motion_names(plan)
+        has_lift_segment = "lift_object" in terminal_motion_names
+        has_retreat_segment = "retreat_object" in terminal_motion_names
+        protected_terminal_motion_names = tuple(
+            name
+            for name in terminal_motion_names
+            if name == "retreat_object"
+            or name == "return_home_after_retreat"
+            or name.startswith("return_home_reverse_")
+        )
+        return_home_report = {
+            "inserted": False,
+            "reason": "disabled_by_default_main_pick_parity",
+            "configured": bool(self.config.manipulation.return_home_after_pick),
+            "plan_motion_segment_names": terminal_motion_names,
+            "protected_terminal_motion_names": protected_terminal_motion_names,
+        }
         if self.config.manipulation.return_home_after_pick:
-            plan, return_home_report = _append_pick_return_home(
-                plan,
-                duration_s=self.config.manipulation.pick_return_home_duration_s,
-                hold_duration_s=self.config.manipulation.pick_home_hold_duration_s,
-                skip_tolerance=self.config.manipulation.pick_return_home_skip_tolerance,
-            )
+            if protected_terminal_motion_names:
+                return_home_report = {
+                    **return_home_report,
+                    "reason": "planned_retreat_or_reverse_return_present",
+                }
+            else:
+                plan, return_home_report = _append_pick_reverse_return_home(
+                    plan,
+                    hold_duration_s=self.config.manipulation.pick_home_hold_duration_s,
+                )
+        pre_execution_observation = self.simulation.read()
+        target_drift_report = _target_vs_pre_execution_object_drift(
+            plan=plan,
+            simulation=self.simulation,
+            observation=pre_execution_observation,
+        )
+        plan.metadata["target_vs_pre_execution_object_drift"] = target_drift_report
         self._configure_carry_arm_home_target(plan, return_home_report)
-        self.arm_executor.reset(plan)
-        self.latest_planner_result = {
+        planner_result = {
             "type": "manipulation",
             "phase": "pick",
             "trajectory_points": len(plan.joint_trajectory),
             "pick_return_home": return_home_report,
+            "target_vs_pre_execution_object_drift": target_drift_report,
+            "pick_motion_segment_names": terminal_motion_names,
+            "pick_has_lift_segment": has_lift_segment,
+            "pick_has_retreat_segment": has_retreat_segment,
             **plan.metadata,
         }
+        self.latest_planner_result = planner_result
+        self.pick_planner_result = dict(planner_result)
+        if (
+            target_drift_report.get("available") is True
+            and target_drift_report.get("within_tolerance") is not True
+        ):
+            return RobotAction.idle(source="pick_plan"), self._fail(
+                "object_moved_after_target_generation",
+                pre_execution_observation,
+                target_drift_report,
+            )
+        self.arm_executor.reset(plan)
+        self._pick_peak_object_lift_height_m = None
+        self._pick_peak_object_pose = None
+        self._pick_peak_step_index = None
         if return_home_report.get("inserted"):
             events.append(
                 self._event(
@@ -771,13 +1050,41 @@ class FullPhysicsStateMachine:
         return RobotAction.idle(source="pick_plan"), events
 
     def _exec_pick(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
+        self._update_pick_peak_lift(observation)
         return self._execute_arm(observation, PipelineState.VERIFY_PICK_SUCCESS)
 
     def _verify_pick_success(
         self,
         observation: SimulationState,
     ) -> tuple[RobotAction, list[PipelineEvent]]:
-        result = self.verifier.verify_pick_success(observation, self.episode_spec)
+        self._update_pick_peak_lift(observation)
+        verification_observation = replace(
+            observation,
+            metadata={
+                **observation.metadata,
+                "pick_peak_object_lift_height_m": self._pick_peak_object_lift_height_m,
+                "pick_peak_object_pose": self._pick_peak_object_pose,
+                "pick_peak_step_index": self._pick_peak_step_index,
+                "pick_motion_segment_names": tuple(
+                    self.pick_planner_result.get("pick_motion_segment_names") or ()
+                ),
+                "pick_has_lift_segment": bool(
+                    self.pick_planner_result.get("pick_has_lift_segment", True)
+                ),
+                "pick_has_retreat_segment": bool(
+                    self.pick_planner_result.get("pick_has_retreat_segment", False)
+                ),
+            },
+        )
+        result = self.verifier.verify_pick_success(
+            verification_observation,
+            self.episode_spec,
+        )
+        self.pick_verification_result = {
+            "success": bool(result.success),
+            "failure_reason": result.failure_reason,
+            **result.metadata,
+        }
         if not result.success:
             return RobotAction.idle(source="verify_pick_success"), self._fail(
                 result.failure_reason or "grasp_failed",
@@ -1042,6 +1349,16 @@ class FullPhysicsStateMachine:
 
     def _export_lerobot(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
         self.export_result = self.recorder.prepare_lerobot_export()
+        if (
+            self.config.full_physics
+            and self.export_result.get("recording_enabled")
+            and not self.export_result.get("lerobot_exported")
+        ):
+            return RobotAction.idle(source="export_lerobot"), self._fail(
+                "lerobot_export_failed",
+                observation,
+                {"lerobot_export": dict(self.export_result)},
+            )
         events = [
             self._event(
                 "episode_exported",
@@ -1089,6 +1406,8 @@ class FullPhysicsStateMachine:
             )
         executor_status = self.nav_executor.status()
         if executor_status.get("failed"):
+            if self.state == PipelineState.EXEC_PICK:
+                self.pick_executor_status = dict(executor_status)
             return RobotAction.idle(source=self.state.value), self._fail(
                 str(executor_status.get("failure_reason") or "nav_tracking_failed"),
                 observation,
@@ -1129,7 +1448,18 @@ class FullPhysicsStateMachine:
                 executor_status,
             )
         if self.arm_executor.is_done(observation):
-            self.latest_executor_status = executor_status
+            self.latest_executor_status = self.arm_executor.status()
+            if self.state == PipelineState.EXEC_PICK:
+                self.pick_executor_status = dict(self.latest_executor_status)
+            if self.latest_executor_status.get("failed"):
+                return RobotAction.idle(source=self.state.value), self._fail(
+                    str(
+                        self.latest_executor_status.get("failure_reason")
+                        or "arm_execution_failed"
+                    ),
+                    observation,
+                    self.latest_executor_status,
+                )
             return RobotAction.idle(source=self.state.value), self._transition(
                 next_state,
                 observation.step_index,
@@ -1137,6 +1467,8 @@ class FullPhysicsStateMachine:
         action = self.arm_executor.compute_action(observation)
         self._remember_carry_gripper_target(action, observation)
         self.latest_executor_status = self.arm_executor.status()
+        if self.state == PipelineState.EXEC_PICK:
+            self.pick_executor_status = dict(self.latest_executor_status)
         if self.latest_executor_status.get("failed"):
             return RobotAction.idle(source=self.state.value), self._fail(
                 str(
@@ -1150,8 +1482,8 @@ class FullPhysicsStateMachine:
         marker = action.metadata.get("event_marker")
         if marker:
             events.append(self._event(str(marker), observation.step_index))
-        if self.arm_executor.is_done(observation):
-            events.extend(self._transition(next_state, observation.step_index))
+        # 最后一拍 action 必须先经过 apply + world.step，下一 tick 再用新 observation
+        # 完成 close progress / strict wait 验证和状态迁移。
         return action, events
 
     def _remember_carry_gripper_target(
@@ -1384,9 +1716,9 @@ class FullPhysicsStateMachine:
                 "source": "pick_final_arm_pose",
                 "return_home_inserted": False,
                 "return_home_reason": return_home_report.get("reason"),
-                # full_physics 需要真实 carry，因此保持撤离后的抓取姿态，
-                # 不把机械臂拉回 home 破坏苹果与夹爪的接触。
-                "carry_hold_policy": "hold_side_retreat_final_pose",
+                # main-pick parity 默认保持 planned lift/retreat 的安全末端目标，
+                # 不追加未经 cuRobo 避障的 all-zero 直连轨迹。
+                "carry_hold_policy": "hold_planned_pick_final_motion_target",
                 **last_target["metadata"],
             }
             return
@@ -1480,7 +1812,7 @@ class FullPhysicsStateMachine:
                 "arm_joint_names": self._carry_arm_home_target["arm_joint_names"],
             }
         )
-        # baseline carry 阶段维持 0 位 home；这里仍只发 position target，不直接写 joint state。
+        # carry 阶段维持 pick 的安全末端目标；这里只发 position target，不直接写 joint state。
         return replace(
             action,
             arm_joint_positions=tuple(self._carry_arm_home_target["arm_joint_positions"]),
@@ -1577,12 +1909,21 @@ class FullPhysicsStateMachine:
             return None
 
         events: list[PipelineEvent] = []
+        root_linear_speed_mps = _vector_norm(observation.robot_root_velocity, limit=3)
+        root_angular_speed_radps = _vector_norm(observation.robot_root_velocity[3:6])
+        joint_velocity_max_abs = _max_abs(observation.joint_velocities)
+        diagnostics = {
+            "settle_steps": settle_steps,
+            "root_linear_speed_mps": root_linear_speed_mps,
+            "root_angular_speed_radps": root_angular_speed_radps,
+            "joint_velocity_max_abs": joint_velocity_max_abs,
+        }
         if self.state_ticks == 1:
             events.append(
                 self._event(
                     f"{phase}_base_settle_start",
                     observation.step_index,
-                    {"settle_steps": settle_steps},
+                    diagnostics,
                 )
             )
         if self.state_ticks == settle_steps:
@@ -1590,21 +1931,46 @@ class FullPhysicsStateMachine:
                 self._event(
                     f"{phase}_base_settle_complete",
                     observation.step_index,
-                    {"settle_steps": settle_steps},
+                    diagnostics,
                 )
             )
+        metadata = {
+            "manipulation_base_settle": True,
+            "manipulation_base_settle_phase": phase,
+            "manipulation_base_settle_step": self.state_ticks,
+            "manipulation_base_settle_steps": settle_steps,
+            "manipulation_base_settle_root_linear_speed_mps": root_linear_speed_mps,
+            "manipulation_base_settle_root_angular_speed_radps": root_angular_speed_radps,
+            "manipulation_base_settle_joint_velocity_max_abs": joint_velocity_max_abs,
+        }
         return (
             RobotAction(
                 source=f"{phase}_base_settle",
-                metadata={
-                    "manipulation_base_settle": True,
-                    "manipulation_base_settle_phase": phase,
-                    "manipulation_base_settle_step": self.state_ticks,
-                    "manipulation_base_settle_steps": settle_steps,
-                },
+                metadata=metadata,
             ),
             events,
         )
+
+    def _update_pick_peak_lift(self, observation: SimulationState) -> None:
+        """记录 primary pick motion 的峰值抬升，回位后仍可验证真实 lift。"""
+
+        if (
+            observation.object_pose is None
+            or self.episode_spec.object_initial_pose is None
+        ):
+            return
+        lift_height = (
+            float(observation.object_pose[2])
+            - float(self.episode_spec.object_initial_pose[2])
+        )
+        if (
+            self._pick_peak_object_lift_height_m is not None
+            and lift_height <= self._pick_peak_object_lift_height_m
+        ):
+            return
+        self._pick_peak_object_lift_height_m = lift_height
+        self._pick_peak_object_pose = tuple(float(value) for value in observation.object_pose)
+        self._pick_peak_step_index = int(observation.step_index)
 
     def _diagnose_arm_plan_start_state(
         self,
@@ -1725,6 +2091,9 @@ class FullPhysicsStateMachine:
             "object_pose": observation.object_pose,
             "latest_planner_result": dict(self.latest_planner_result),
             "latest_executor_status": dict(self.latest_executor_status),
+            "pick_planner_result": dict(self.pick_planner_result),
+            "pick_executor_status": dict(self.pick_executor_status),
+            "pick_verification_result": dict(self.pick_verification_result),
             **dict(metadata or {}),
         }
         self.state = PipelineState.FAILED

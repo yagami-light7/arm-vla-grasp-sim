@@ -109,6 +109,7 @@ def env_bool(name: str, default: bool) -> bool:
 SIDE_GRASP_PLAN_VERTICAL_LIFT = env_bool("GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT", True)
 SIDE_GRASP_FALLBACK_RETREAT = env_bool("GO2_X5_SIDE_GRASP_FALLBACK_RETREAT", False)
 SIDE_GRASP_RETREAT_TO_PREGRASP = env_bool("GO2_X5_SIDE_GRASP_RETREAT_TO_PREGRASP", False)
+SPLIT_PREGRASP_MOTION = env_bool("GO2_X5_SPLIT_PREGRASP_MOTION", False)
 
 SEGMENT_TIMING = {
     # 仅用于规划日志中的子路径名称；最终不会作为独立 motion 输出。
@@ -129,6 +130,12 @@ SEGMENT_TIMING = {
     },
     # 侧向抓取后不做竖直 lift，而是沿 approach_to_grasp 原路退回 chosen pregrasp。
     "retreat_object": {
+        "min_duration": 1.0,
+        "max_joint_speed": 0.80,
+    },
+    # 侧向抓取先沿 approach 原路退到 pregrasp，再单独回 home。
+    # 这样不会在还没离开桌沿前就开始下降高度。
+    "return_home_after_retreat": {
         "min_duration": 1.0,
         "max_joint_speed": 0.80,
     },
@@ -841,6 +848,85 @@ def build_motion_segment_from_raw_path(
     return segment, q_traj[-1].astype(np.float32)
 
 
+def slice_retimed_motion_segment(
+    source_segment: dict,
+    *,
+    start_index: int,
+    end_index: int,
+    segment_name: str,
+    target_name: str,
+    target_position: np.ndarray,
+    target_quaternion: np.ndarray,
+    plan_info: dict,
+    extra_fields: dict | None = None,
+) -> tuple[dict, np.ndarray]:
+    """从同一条已定时轨迹切出执行段，避免对子路径再次 retime。
+
+    baseline 会先合并 current->pregrasp->grasp，再统一做一次时间参数化。
+    full-physics 需要在 pregrasp 检查跟踪是否到位，因此这里只切分执行边界，
+    不改变 baseline 已生成的关节路径和时间参数化。
+    """
+
+    source_trajectory = dict(source_segment["trajectory"])
+    q_source = np.asarray(source_trajectory["q"], dtype=float)
+    num_source_waypoints = int(q_source.shape[0])
+    if not 0 <= start_index < end_index < num_source_waypoints:
+        raise ValueError(
+            f"{segment_name}: invalid retimed slice "
+            f"[{start_index}, {end_index}] for {num_source_waypoints} waypoints"
+        )
+
+    sliced_trajectory: dict[str, list] = {}
+    for key, values in source_trajectory.items():
+        sliced_values = np.asarray(values)[start_index : end_index + 1]
+        if key == "time_from_start":
+            sliced_values = sliced_values.astype(float)
+            sliced_values = sliced_values - float(sliced_values[0])
+        sliced_trajectory[key] = sliced_values.tolist()
+
+    q_final = np.asarray(sliced_trajectory["q"][-1], dtype=np.float32)
+    final_position = np.asarray(
+        sliced_trajectory["tcp_position_base"][-1],
+        dtype=float,
+    )
+    final_quaternion = np.asarray(
+        sliced_trajectory["tcp_quaternion_base"][-1],
+        dtype=float,
+    )
+    final_position_error = float(
+        np.linalg.norm(final_position - np.asarray(target_position, dtype=float))
+    )
+    final_orientation_error_deg = quat_error_deg(final_quaternion, target_quaternion)
+    duration_s = float(sliced_trajectory["time_from_start"][-1])
+
+    segment = {
+        "name": segment_name,
+        "type": "motion",
+        "target_name": target_name,
+        "target_pose_base": {
+            "position_xyz": np.asarray(target_position, dtype=float).tolist(),
+            "quaternion_wxyz": np.asarray(target_quaternion, dtype=float).tolist(),
+        },
+        "plan_info": plan_info,
+        "timing": {
+            "dt": float(TRAJECTORY_DT),
+            "duration_s": duration_s,
+            "num_waypoints": len(sliced_trajectory["q"]),
+        },
+        "final_error": {
+            "position_m": final_position_error,
+            "orientation_deg": final_orientation_error_deg,
+        },
+        "trajectory": sliced_trajectory,
+        "split_from_single_retimed_motion": True,
+        "source_motion_segment": source_segment["name"],
+        "source_waypoint_range": [int(start_index), int(end_index)],
+    }
+    if extra_fields:
+        segment.update(extra_fields)
+    return segment, q_final
+
+
 def build_motion_segment(
     planner: MotionPlanner,
     q_start: np.ndarray,
@@ -937,11 +1023,11 @@ def build_pregrasp_to_grasp_segment(
     grasp_position: np.ndarray,
     grasp_quaternion: np.ndarray,
     T_world_base: np.ndarray,
-) -> tuple[dict, np.ndarray]:
-    """规划 current -> pregrasp -> grasp，并输出为一条连续 motion。
+) -> tuple[tuple[dict, ...], np.ndarray]:
+    """规划 current -> pregrasp -> grasp。
 
-    关键点：pregrasp 只作为途经点，不再作为 Isaac 执行时的独立 motion segment。
-    这样执行脚本不会在 pregrasp 处调用 settle_arm_to_start，从根源上减少段间抖动。
+    默认兼容旧 JSON：pregrasp 作为途经点。full-physics 可开启 split 模式，
+    强制 pregrasp 到位后才进入 grasp，避免 TCP 尚未抬升到安全高度就深入桌面。
     """
     attempts = []
     q_path_to_pregrasp = None
@@ -1138,6 +1224,17 @@ def build_pregrasp_to_grasp_segment(
             "pregrasp_fallback_label": chosen_pregrasp_label,
             "orientation_fallback_label": chosen_orientation_label,
         },
+        "reverse_home_after_pregrasp": {
+            "description": "先退到 chosen pregrasp 后，再沿 current->pregrasp 的反向路径回到本轮任务 home pose。",
+            "q_path_raw": q_path_to_pregrasp[::-1].copy().tolist(),
+            "target_pose_base": {
+                "position_xyz": return_home_position.tolist(),
+                "quaternion_wxyz": return_home_quaternion.tolist(),
+            },
+            "source_motion": "reverse of selected current-to-pregrasp raw path",
+            "pregrasp_fallback_label": chosen_pregrasp_label,
+            "orientation_fallback_label": chosen_orientation_label,
+        },
         "via_targets": [
             {
                 "name": "pregrasp",
@@ -1152,10 +1249,7 @@ def build_pregrasp_to_grasp_segment(
         ],
     }
 
-    # 这里故意保留 name="approach_to_grasp"：
-    # 1. 兼容执行脚本中 STRICT_POST_MOTION_WAIT_SEGMENTS={"approach_to_grasp"}
-    # 2. close_gripper 前仍会等待机械臂真正到达 grasp 位姿
-    return build_motion_segment_from_raw_path(
+    approach_segment, q_final = build_motion_segment_from_raw_path(
         planner=planner,
         q_path_raw=q_path_merged,
         plan_info=plan_info,
@@ -1166,6 +1260,90 @@ def build_pregrasp_to_grasp_segment(
         T_world_base=T_world_base,
         extra_fields=extra_fields,
     )
+    if not SPLIT_PREGRASP_MOTION:
+        # 默认兼容旧 JSON：pregrasp 作为 via waypoint，但不单独停顿。
+        return (approach_segment,), q_final
+
+    merged_q_traj = np.asarray(approach_segment["trajectory"]["q"], dtype=float)
+    q_pregrasp_target = np.asarray(q_path_to_pregrasp[-1], dtype=float)
+    pregrasp_joint_errors = np.linalg.norm(
+        merged_q_traj - q_pregrasp_target[None, :],
+        axis=1,
+    )
+    split_index = int(np.argmin(pregrasp_joint_errors))
+    if split_index <= 0 or split_index >= merged_q_traj.shape[0] - 1:
+        raise RuntimeError(
+            "合并后的 baseline 轨迹中未找到有效 pregrasp 切分点："
+            f"split_index={split_index}, waypoints={merged_q_traj.shape[0]}"
+        )
+
+    # 先按 baseline 对整条路径统一 retime，再切执行边界。不能对两个子路径
+    # 分别 retime，否则每段 S 曲线都会重新插值，TCP 会产生不必要的竖直绕行。
+    pregrasp_segment, _q_pregrasp_final = slice_retimed_motion_segment(
+        approach_segment,
+        start_index=0,
+        end_index=split_index,
+        segment_name="move_to_pregrasp",
+        target_name="pregrasp",
+        target_position=chosen_pregrasp_position,
+        target_quaternion=chosen_pregrasp_quaternion,
+        plan_info={
+            "planner_success": bool(pregrasp_info["planner_success"]),
+            "planner_position_error_m": pregrasp_info["planner_position_error_m"],
+            "planner_rotation_error_rad": pregrasp_info["planner_rotation_error_rad"],
+            "pose_converged": bool(pregrasp_info["pose_converged"]),
+            "split_pregrasp_motion": True,
+            "sub_plan": pregrasp_info,
+        },
+        extra_fields={
+            "split_pregrasp_motion": True,
+            "temporal_barrier_before": "approach_to_grasp",
+            "reason": "wait_for_tcp_lift_to_pregrasp_before_horizontal_approach",
+            "merged_retimed_split_index": split_index,
+            "pregrasp_joint_error_norm": float(pregrasp_joint_errors[split_index]),
+        },
+    )
+    split_approach_segment, q_final = slice_retimed_motion_segment(
+        approach_segment,
+        start_index=split_index,
+        end_index=merged_q_traj.shape[0] - 1,
+        segment_name="approach_to_grasp",
+        target_name="grasp",
+        target_position=grasp_position,
+        target_quaternion=chosen_grasp_quaternion,
+        plan_info={
+            "planner_success": bool(grasp_info["planner_success"]),
+            "planner_position_error_m": grasp_info["planner_position_error_m"],
+            "planner_rotation_error_rad": grasp_info["planner_rotation_error_rad"],
+            "pose_converged": bool(grasp_info["pose_converged"]),
+            "split_pregrasp_motion": True,
+            "sub_plan": grasp_info,
+        },
+        extra_fields={
+            **extra_fields,
+            "split_pregrasp_motion": True,
+            "temporal_barrier_after": "move_to_pregrasp",
+            "merged_retimed_split_index": split_index,
+            "pregrasp_joint_error_norm": float(pregrasp_joint_errors[split_index]),
+        },
+    )
+
+    # 回撤继续复用刚才实际输出的稠密轨迹。这样 grasp->pregrasp->home
+    # 与进入路径严格反向，不再因重新使用稀疏 raw path 产生额外绕行。
+    split_approach_segment["reverse_approach_lift"]["q_path_raw"] = (
+        np.asarray(split_approach_segment["trajectory"]["q"], dtype=float)[::-1]
+        .copy()
+        .tolist()
+    )
+    split_approach_segment["reverse_home_after_pregrasp"]["q_path_raw"] = (
+        np.asarray(pregrasp_segment["trajectory"]["q"], dtype=float)[::-1]
+        .copy()
+        .tolist()
+    )
+    split_approach_segment["reverse_full_approach_return"]["q_path_raw"] = (
+        merged_q_traj[::-1].copy().tolist()
+    )
+    return (pregrasp_segment, split_approach_segment), q_final
 
 
 def build_lift_segment_from_reverse_approach(
@@ -1281,10 +1459,10 @@ def plan_grasp_segments(
 
         segments.append(make_gripper_segment("open_gripper", gripper_open, gripper_joint_names))
 
-        # 关键修改：
-        # 仍然让 cuRobo 分别求 current -> pregrasp 和 pregrasp -> grasp，
-        # 但输出给 Isaac 的时候合并成一条连续 motion，避免 pregrasp 处切段抖动。
-        segment, q_current = build_pregrasp_to_grasp_segment(
+        # cuRobo 仍分别求 current->pregrasp 和 pregrasp->grasp，但与 baseline
+        # 一样先合并成单条路径统一 retime。full-physics 只切执行边界，用于
+        # tracking 落后时等待 pregrasp 到位，不改变原始轨迹几何。
+        approach_segments, q_current = build_pregrasp_to_grasp_segment(
             planner=planner,
             q_start=q_current,
             pregrasp_position=pregrasp_pos,
@@ -1293,49 +1471,44 @@ def plan_grasp_segments(
             grasp_quaternion=grasp_quat,
             T_world_base=T_world_base,
         )
-        segments.append(segment)
-        approach_segment = segment
+        segments.extend(approach_segments)
+        approach_segment = approach_segments[-1]
 
         segments.append(make_gripper_segment("close_gripper", gripper_close, gripper_joint_names))
 
+        post_grasp_segments: list[dict] = []
         if grasp_mode == "side" and not SIDE_GRASP_PLAN_VERTICAL_LIFT:
             print("[side grasp] legacy mode: skip vertical lift; retreat by reversing approach path.")
-            reverse_info_key = (
-                "reverse_approach_lift"
-                if SIDE_GRASP_RETREAT_TO_PREGRASP
-                else "reverse_full_approach_return"
-            )
-            target_name = "pregrasp" if SIDE_GRASP_RETREAT_TO_PREGRASP else "home"
-            segment, q_current = build_lift_segment_from_reverse_approach(
-                planner=planner,
-                approach_segment=approach_segment,
-                T_world_base=T_world_base,
-                segment_name="retreat_object",
-                target_name=target_name,
-                reverse_info_key=reverse_info_key,
-            )
-            segment["retreat_strategy"] = (
-                "reverse_approach_path_to_pregrasp_for_side_grasp"
-                if SIDE_GRASP_RETREAT_TO_PREGRASP
-                else "reverse_full_approach_path_for_side_grasp"
-            )
-        else:
-            try:
-                segment, q_current = build_motion_segment(
+            if SPLIT_PREGRASP_MOTION:
+                segment, q_current = build_lift_segment_from_reverse_approach(
                     planner=planner,
-                    q_start=q_current,
-                    target_name="lift",
-                    target_position=lift_pos,
-                    target_quaternion=lift_quat,
-                    segment_name="lift_object",
+                    approach_segment=approach_segment,
                     T_world_base=T_world_base,
+                    segment_name="retreat_object",
+                    target_name="pregrasp",
+                    reverse_info_key="reverse_approach_lift",
                 )
-                if grasp_mode == "side":
-                    segment["lift_strategy"] = "vertical_lift_after_side_grasp"
-            except Exception:
-                if grasp_mode != "side" or not SIDE_GRASP_FALLBACK_RETREAT:
-                    raise
-                print("[side grasp] vertical lift planning failed; fallback to reverse retreat.")
+                segment["retreat_strategy"] = (
+                    "reverse_approach_path_to_pregrasp_before_home_for_side_grasp"
+                )
+                segment["temporal_barrier_before"] = "return_home_after_retreat"
+                post_grasp_segments.append(segment)
+
+                if not SIDE_GRASP_RETREAT_TO_PREGRASP:
+                    segment, q_current = build_lift_segment_from_reverse_approach(
+                        planner=planner,
+                        approach_segment=approach_segment,
+                        T_world_base=T_world_base,
+                        segment_name="return_home_after_retreat",
+                        target_name="home",
+                        reverse_info_key="reverse_home_after_pregrasp",
+                    )
+                    segment["retreat_strategy"] = (
+                        "reverse_pregrasp_to_home_after_side_grasp_clearance"
+                    )
+                    segment["temporal_barrier_after"] = "retreat_object"
+                    post_grasp_segments.append(segment)
+            else:
                 reverse_info_key = (
                     "reverse_approach_lift"
                     if SIDE_GRASP_RETREAT_TO_PREGRASP
@@ -1351,11 +1524,77 @@ def plan_grasp_segments(
                     reverse_info_key=reverse_info_key,
                 )
                 segment["retreat_strategy"] = (
-                    "reverse_approach_path_to_pregrasp_for_side_grasp_after_lift_failure"
+                    "reverse_approach_path_to_pregrasp_for_side_grasp"
                     if SIDE_GRASP_RETREAT_TO_PREGRASP
-                    else "reverse_full_approach_path_for_side_grasp_after_lift_failure"
+                    else "reverse_full_approach_path_for_side_grasp"
                 )
-        segments.append(segment)
+                post_grasp_segments.append(segment)
+        else:
+            try:
+                segment, q_current = build_motion_segment(
+                    planner=planner,
+                    q_start=q_current,
+                    target_name="lift",
+                    target_position=lift_pos,
+                    target_quaternion=lift_quat,
+                    segment_name="lift_object",
+                    T_world_base=T_world_base,
+                )
+                if grasp_mode == "side":
+                    segment["lift_strategy"] = "vertical_lift_after_side_grasp"
+                post_grasp_segments.append(segment)
+            except Exception:
+                if grasp_mode != "side" or not SIDE_GRASP_FALLBACK_RETREAT:
+                    raise
+                print("[side grasp] vertical lift planning failed; fallback to reverse retreat.")
+                if SPLIT_PREGRASP_MOTION:
+                    segment, q_current = build_lift_segment_from_reverse_approach(
+                        planner=planner,
+                        approach_segment=approach_segment,
+                        T_world_base=T_world_base,
+                        segment_name="retreat_object",
+                        target_name="pregrasp",
+                        reverse_info_key="reverse_approach_lift",
+                    )
+                    segment["retreat_strategy"] = (
+                        "reverse_approach_path_to_pregrasp_for_side_grasp_after_lift_failure"
+                    )
+                    post_grasp_segments.append(segment)
+                    if not SIDE_GRASP_RETREAT_TO_PREGRASP:
+                        segment, q_current = build_lift_segment_from_reverse_approach(
+                            planner=planner,
+                            approach_segment=approach_segment,
+                            T_world_base=T_world_base,
+                            segment_name="return_home_after_retreat",
+                            target_name="home",
+                            reverse_info_key="reverse_home_after_pregrasp",
+                        )
+                        segment["retreat_strategy"] = (
+                            "reverse_pregrasp_to_home_after_lift_failure_clearance"
+                        )
+                        post_grasp_segments.append(segment)
+                else:
+                    reverse_info_key = (
+                        "reverse_approach_lift"
+                        if SIDE_GRASP_RETREAT_TO_PREGRASP
+                        else "reverse_full_approach_return"
+                    )
+                    target_name = "pregrasp" if SIDE_GRASP_RETREAT_TO_PREGRASP else "home"
+                    segment, q_current = build_lift_segment_from_reverse_approach(
+                        planner=planner,
+                        approach_segment=approach_segment,
+                        T_world_base=T_world_base,
+                        segment_name="retreat_object",
+                        target_name=target_name,
+                        reverse_info_key=reverse_info_key,
+                    )
+                    segment["retreat_strategy"] = (
+                        "reverse_approach_path_to_pregrasp_for_side_grasp_after_lift_failure"
+                        if SIDE_GRASP_RETREAT_TO_PREGRASP
+                        else "reverse_full_approach_path_for_side_grasp_after_lift_failure"
+                    )
+                    post_grasp_segments.append(segment)
+        segments.extend(post_grasp_segments)
 
     finally:
         if planner is not None and owns_planner and destroy_planner:
@@ -1387,6 +1626,7 @@ def plan_grasp_segments(
             "side_grasp_plan_vertical_lift": SIDE_GRASP_PLAN_VERTICAL_LIFT,
             "side_grasp_fallback_retreat": SIDE_GRASP_FALLBACK_RETREAT,
             "side_grasp_retreat_to_pregrasp": SIDE_GRASP_RETREAT_TO_PREGRASP,
+            "split_pregrasp_motion": SPLIT_PREGRASP_MOTION,
         },
     }
 

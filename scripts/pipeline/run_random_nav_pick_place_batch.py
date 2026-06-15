@@ -37,8 +37,8 @@ DEFAULT_PLACE_TEMPLATE_TASK = "tasks/nav_pick_place_apple_contact.json"
 DEFAULT_OUTPUT_TASK_DIR = "outputs/random_tasks/apple_pick_place_07_far_manual"
 DEFAULT_DATASET_ROOT = "outputs/random_pick_place_dataset/apple_pick_place_07_far_manual"
 DEFAULT_PICK_PLACE_BASE_GOAL_OFFSET_XY_M = (0.35, -0.08)
-DEFAULT_PICK_X_RANGE_M = (0.83, 0.93)
-DEFAULT_PICK_Y_RANGE_M = (1.00, 1.50)
+DEFAULT_PICK_X_RANGE_M = (0.90, 0.95)
+DEFAULT_PICK_Y_RANGE_M = (0.75, 1.50)
 DEFAULT_PLACE_X_RANGE_M = (0.65285, 0.75285)
 DEFAULT_PLACE_Y_RANGE_M = (5.00337, 5.50337)
 HANDOFF_MODE = "multi_process_json"
@@ -111,7 +111,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--nav-headless", action="store_true")
     parser.add_argument("--demo-visuals", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--follow-camera-mode", choices=("chase", "front", "overhead", "fixed", "stage"), default="stage")
-    parser.add_argument("--viewport-camera-prim", default="/World/Camera_main")
+    parser.add_argument("--viewport-camera-prim", default="/World/Camera1")
     parser.add_argument("--replay-nav-before-grasp", action="store_true")
     parser.add_argument("--replay-nav-real-time", action="store_true")
     parser.add_argument("--replay-nav-speed", type=float, default=1.0)

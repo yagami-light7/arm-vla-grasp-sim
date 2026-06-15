@@ -175,6 +175,7 @@ def build_curobo_state_payload(
     tcp_frame_path: str,
     tcp_mode: str,
     world_collision_cuboids: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
+    world_collision_metadata: dict[str, Any] | None = None,
     source: str = "IsaacLabNavigationRuntime",
 ) -> dict[str, Any]:
     """组装 `03_plan_grasp_trajectory.py` 所需的最小状态 JSON。"""
@@ -251,6 +252,7 @@ def build_curobo_state_payload(
                 "IsaacLab current CollisionAPI world AABB exported as cuRobo cuboids "
                 "in arm_base_link frame"
             ),
+            **dict(world_collision_metadata or {}),
             "cuboids_base": list(world_collision_cuboids),
         },
     }
@@ -684,10 +686,12 @@ class CurrentStateCuroboPlannerConfig:
         "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python",
     )
     use_planner_server: bool = True
-    # 默认保持旧抓取规划语义；full_physics factory 会显式改成退回 pregrasp。
-    side_grasp_plan_vertical_lift: bool = True
+    # full-physics 对齐 random nav-pick-place baseline：侧抓后沿 approach 原路撤回，避免 lift/down 剐蹭桌面。
+    side_grasp_plan_vertical_lift: bool = False
     side_grasp_fallback_retreat: bool = False
     side_grasp_retreat_to_pregrasp: bool = False
+    # full-physics 里必须显式等待 pregrasp 到位，再进入 grasp；回撤同理先离开桌沿再回 home。
+    split_pregrasp_motion: bool = True
 
 
 class CurrentStateCuroboPlanner:
@@ -711,6 +715,7 @@ class CurrentStateCuroboPlanner:
                     side_grasp_plan_vertical_lift=config.side_grasp_plan_vertical_lift,
                     side_grasp_fallback_retreat=config.side_grasp_fallback_retreat,
                     side_grasp_retreat_to_pregrasp=config.side_grasp_retreat_to_pregrasp,
+                    split_pregrasp_motion=config.split_pregrasp_motion,
                 )
             )
             plan_runner = grasp_pipeline.plan
@@ -749,6 +754,17 @@ class CurrentStateCuroboPlanner:
         elapsed_s = time.time() - started_at
         if not isinstance(payload, dict):
             payload = load_curobo_plan_json(plan_json)
+        segment_names = _motion_segment_names(payload)
+        expected_side_retreat = not self._config.side_grasp_plan_vertical_lift
+        if expected_side_retreat and (
+            "lift_object" in segment_names or "retreat_object" not in segment_names
+        ):
+            raise RuntimeError(
+                "full-physics pick 必须使用 baseline side-retreat 轨迹："
+                "需要 retreat_object，且禁止 lift_object。"
+                f"当前 cuRobo 返回 motion segments={segment_names}。"
+                "如果正在复用 planner server，请重启 server 后再试。"
+            )
         plan = arm_plan_from_curobo_payload(
             payload,
             operation="pick",
@@ -762,6 +778,18 @@ class CurrentStateCuroboPlanner:
             "plan_json": str(task.plan_json),
             "elapsed_wall_time_s": elapsed_s,
             "export_report": _json_safe(export_report),
+        }
+        plan.metadata["current_state_pick_strategy"] = {
+            "expected": (
+                "baseline_side_retreat"
+                if expected_side_retreat
+                else "vertical_lift_after_side_grasp"
+            ),
+            "motion_segment_names": segment_names,
+            "side_grasp_plan_vertical_lift": self._config.side_grasp_plan_vertical_lift,
+            "side_grasp_fallback_retreat": self._config.side_grasp_fallback_retreat,
+            "side_grasp_retreat_to_pregrasp": self._config.side_grasp_retreat_to_pregrasp,
+            "split_pregrasp_motion": self._config.split_pregrasp_motion,
         }
         return plan
 
@@ -835,6 +863,18 @@ def run_curobo_plan_subprocess(
             "GO2_X5_PLAN_JSON": task.plan_json,
             "GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT": os.environ.get(
                 "GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT",
+                "0",
+            ),
+            "GO2_X5_SIDE_GRASP_FALLBACK_RETREAT": os.environ.get(
+                "GO2_X5_SIDE_GRASP_FALLBACK_RETREAT",
+                "0",
+            ),
+            "GO2_X5_SIDE_GRASP_RETREAT_TO_PREGRASP": os.environ.get(
+                "GO2_X5_SIDE_GRASP_RETREAT_TO_PREGRASP",
+                "0",
+            ),
+            "GO2_X5_SPLIT_PREGRASP_MOTION": os.environ.get(
+                "GO2_X5_SPLIT_PREGRASP_MOTION",
                 "1",
             ),
         }
@@ -866,6 +906,19 @@ def _json_safe(value: Any) -> Any:
     if hasattr(value, "tolist"):
         return value.tolist()
     return value
+
+
+def _motion_segment_names(payload: dict[str, Any]) -> tuple[str, ...]:
+    """从 cuRobo payload 中读取 motion 段名，用于保护 full-physics pick 语义。"""
+
+    segments = payload.get("segments")
+    if not isinstance(segments, list | tuple):
+        return ()
+    return tuple(
+        str(segment.get("name") or "")
+        for segment in segments
+        if isinstance(segment, dict) and str(segment.get("type")) == "motion"
+    )
 
 
 def write_json(path: str | Path, payload: dict[str, Any]) -> Path:

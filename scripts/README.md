@@ -65,8 +65,7 @@ PYTHONDONTWRITEBYTECODE=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   --task-json tasks/nav_pick_place_apple_contact.json \
   --output-dir /tmp/full_physics_random_batch \
   --num-episodes 3 \
-  --seed 100 \
-  --full-physics
+  --seed 100
 ```
 
 The batch launcher writes per-run summaries under
@@ -120,27 +119,46 @@ PYTHONDONTWRITEBYTECODE=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   --task-json tasks/nav_pick_place_apple_contact.json \
   --output-dir /tmp/full_physics_online_place_gui \
   --seed 100 \
-  --full-physics \
-  --randomize-task \
   --show-randomization-debug \
   --no-headless \
   --keep-window-open
 ```
 
-`--full-physics` uses one IsaacLab stage/runtime for nav-to-pick, online
+Full physics is the default mode. It uses one IsaacLab stage/runtime for nav-to-pick, online
 current-state cuRobo pick planning, physical pick execution, closed-gripper
 carry navigation, online current-state cuRobo place planning, physical place
 execution, and LeRobot export. It does not accept `--pick-plan-json` or
 `--place-plan-json`; those offline plan files are only for
-`--manipulation-apply-smoke`. The old `--integrated-apply-smoke` flag is kept
-only as an error message that points to `--full-physics`.
+`--manipulation-apply-smoke`.
 
 Mechanical-arm execution locks the floating base root pose and support joints
 by default because the current locomotion policy was not trained for large
-arm-induced center of mass changes. Use
-`--no-lock-base-during-manipulation --no-lock-support-joints-during-manipulation`
-only when validating a new locomotion policy. The default lock applies only in
-manipulation and terminal hold phases; navigation remains physically driven.
+arm-induced center of mass changes. These stable defaults are fixed in
+`FullPhysicsConfig` rather than exposed as production CLI switches. The lock
+applies only in manipulation and terminal hold phases; navigation remains physically driven.
 Any lock use is recorded as `used_manipulation_base_lock=true` and
 `used_manipulation_support_joint_lock=true`, so successful default runs report
 `stable_physics_success=true` and `pure_physics_success=false`.
+
+Full-physics data recording follows `/home/light/workspace/DWA`:
+
+- physics `dt=0.0025` (400 Hz in the current DWA source), control 50 Hz;
+- one synchronized sample every 10 control steps, yielding 5 Hz;
+- `480x640` RGB JPEG at quality 90, named `camera0_00000.jpg`;
+- raw files: `data.csv` and `images/front/`;
+- LeRobot v2.1 files: `data/chunk-*/*.parquet`,
+  `videos/chunk-*/observation.images.front/*.mp4`, and `meta/*`.
+
+The raw `data.csv` keeps DWA's 17-dimensional robot state and measured base
+velocity columns. `samples.jsonl` adds synchronized object state, TCP
+quaternion, pipeline phase, and the trainable 10-dimensional command vector:
+base command 3 + arm joint targets 6 + gripper target 1. The LeRobot `action`
+feature uses this 10-dimensional command vector.
+
+Batch runs merge all successful episodes into `<output-dir>/lerobot_dataset`.
+Existing raw episodes can be converted again without rerunning simulation:
+
+```bash
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m source.data.lerobot_converter \
+  --episodes-root outputs/full_physics_batch
+```

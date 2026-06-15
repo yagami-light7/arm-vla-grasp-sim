@@ -89,6 +89,10 @@ class GraspPipelineConfig:
         "GO2_X5_SIDE_GRASP_RETREAT_TO_PREGRASP",
         False,
     )
+    split_pregrasp_motion: bool = _env_bool(
+        "GO2_X5_SPLIT_PREGRASP_MOTION",
+        False,
+    )
 
 
 class GraspPipeline:
@@ -154,6 +158,9 @@ class GraspPipeline:
                 ),
                 "GO2_X5_SIDE_GRASP_RETREAT_TO_PREGRASP": (
                     "1" if self.config.side_grasp_retreat_to_pregrasp else "0"
+                ),
+                "GO2_X5_SPLIT_PREGRASP_MOTION": (
+                    "1" if self.config.split_pregrasp_motion else "0"
                 ),
             }
         )
@@ -246,6 +253,7 @@ class GraspPipeline:
             "side_grasp_plan_vertical_lift": self.config.side_grasp_plan_vertical_lift,
             "side_grasp_fallback_retreat": self.config.side_grasp_fallback_retreat,
             "side_grasp_retreat_to_pregrasp": self.config.side_grasp_retreat_to_pregrasp,
+            "split_pregrasp_motion": self.config.split_pregrasp_motion,
         }
         try:
             with socket.create_connection((self.config.planner_host, self.config.planner_port), timeout=1.0) as sock:
