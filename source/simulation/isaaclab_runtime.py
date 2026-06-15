@@ -953,7 +953,7 @@ class IsaacLabNavigationRuntime:
             }
         if self._config.enable_wrist_camera:
             # 对齐 DWA ground-pick 的 arm_camera：挂在稳定存在的 arm_link6，
-            # 相机原点位于夹爪根部中心，沿末端局部 +X 方向观察。
+            # 相机原点于夹爪中心略微偏移，沿末端局部 +X 方向观察。
             env_cfg.scene.arm_camera = CameraCfg(
                 prim_path="{ENV_REGEX_NS}/Robot/arm_link6/arm_vla_camera",
                 update_period=0.0,
@@ -967,8 +967,8 @@ class IsaacLabNavigationRuntime:
                     clipping_range=(0.03, 5.0),
                 ),
                 offset=CameraCfg.OffsetCfg(
-                    pos=(0.08657, 0.0, 0.0),
-                    rot=(0.5, -0.5, 0.5, -0.5),
+                    pos=(0.0, 0.0, 0.10),
+                    rot=(0.353553, -0.612372, 0.612372, -0.353553),
                     convention="ros",
                 ),
             )

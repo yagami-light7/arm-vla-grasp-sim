@@ -8,6 +8,8 @@ AGENTS.md
 tutorial/**/README.md
 episodes/
 outputs/
+tests/
+json/
 *.pt
 __pycache__/
 *.py[cod]
