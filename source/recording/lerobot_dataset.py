@@ -590,22 +590,31 @@ def materialize_lerobot_dataset(
             / f"episode_{episode_index:06d}.mp4"
         )
         video_path.parent.mkdir(parents=True, exist_ok=True)
-        writer = cv2.VideoWriter(
-            str(video_path),
-            cv2.VideoWriter_fourcc(*"mp4v"),
-            float(fps),
-            (image_width, image_height),
+        local_episode_video = (
+            episode_dir
+            / "lerobot_dataset"
+            / "videos/chunk-000/observation.images.front/episode_000000.mp4"
         )
-        if not writer.isOpened():
-            raise RuntimeError(f"failed to create MP4 video: {video_path}")
-        try:
-            for image_path in image_paths:
-                frame = cv2.imread(str(image_path))
-                if frame is None:
-                    raise RuntimeError(f"failed to read episode image: {image_path}")
-                writer.write(frame)
-        finally:
-            writer.release()
+        if local_episode_video.is_file() and not local_episode_video.is_relative_to(output_path):
+            # batch 合并时复用子 episode 已编码的视频，避免再次逐帧压缩。
+            shutil.copyfile(local_episode_video, video_path)
+        else:
+            writer = cv2.VideoWriter(
+                str(video_path),
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                float(fps),
+                (image_width, image_height),
+            )
+            if not writer.isOpened():
+                raise RuntimeError(f"failed to create MP4 video: {video_path}")
+            try:
+                for image_path in image_paths:
+                    frame = cv2.imread(str(image_path))
+                    if frame is None:
+                        raise RuntimeError(f"failed to read episode image: {image_path}")
+                    writer.write(frame)
+            finally:
+                writer.release()
 
         episodes_meta.append(
             {
