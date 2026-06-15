@@ -6,6 +6,8 @@ import inspect
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 from source.interfaces import EpisodeSpec, NavGoal, RobotAction
 from source.navigation.adapters.isaaclab_go2_adapter import (
     ARM_JOINT_NAMES,
@@ -318,6 +320,68 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
 
         self.assertEqual(config.viewport_camera_prim_path, "/World/Camera1")
         self.assertTrue(config.hide_navigation_collision_visual)
+
+    def test_runtime_reads_front_and_wrist_camera_images(self) -> None:
+        class FakeSensor:
+            def __init__(self, value: int):
+                self.data = type(
+                    "Data",
+                    (),
+                    {
+                        "output": {
+                            "rgb": np.full(
+                                (1, 4, 6, 4),
+                                value,
+                                dtype=np.uint8,
+                            )
+                        }
+                    },
+                )()
+
+        runtime = object.__new__(IsaacLabNavigationRuntime)
+        runtime._config = IsaacLabNavigationRuntimeConfig(
+            enable_front_camera=True,
+            enable_wrist_camera=True,
+        )
+        runtime._metadata = {}
+        runtime._runtime = type(
+            "Runtime",
+            (),
+            {
+                "scene": {
+                    "head_camera": FakeSensor(11),
+                    "arm_camera": FakeSensor(22),
+                }
+            },
+        )()
+
+        images = runtime._read_camera_images()
+
+        self.assertEqual(set(images), {"front", "wrist"})
+        self.assertEqual(images["front"].shape, (4, 6, 3))
+        self.assertEqual(images["wrist"].shape, (4, 6, 3))
+        self.assertTrue(np.all(images["wrist"] == 22))
+        self.assertEqual(
+            runtime._metadata["camera_capture_report"]["available_camera_keys"],
+            ["front", "wrist"],
+        )
+        self.assertEqual(
+            runtime._metadata["camera_capture_report"]["missing_camera_keys"],
+            [],
+        )
+
+    def test_wrist_camera_matches_dwa_ground_pick_mount(self) -> None:
+        source_text = (
+            PROJECT_ROOT / "source/simulation/isaaclab_runtime.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'prim_path="{ENV_REGEX_NS}/Robot/arm_link6/arm_vla_camera"',
+            source_text,
+        )
+        self.assertIn("focal_length=18.0", source_text)
+        self.assertIn("pos=(0.08657, 0.0, 0.0)", source_text)
+        self.assertIn("rot=(0.5, -0.5, 0.5, -0.5)", source_text)
 
     def test_object_pose_writer_reuses_existing_xform_ops(self) -> None:
         source_text = (

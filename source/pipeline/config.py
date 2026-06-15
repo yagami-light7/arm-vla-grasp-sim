@@ -123,7 +123,7 @@ class RecordingSettings:
     image_width: int = 640
     jpeg_quality: int = 90
     chunks_size: int = 1000
-    # recorder 支持任意相机字典；当前 runtime 只有 front，缺失流只记录 warning。
+    # front/wrist 由 IsaacLab runtime 直接采集；overview 缺失时只记录 warning。
     camera_keys: tuple[str, ...] = ("front", "wrist", "overview")
     primary_camera_key: str = "front"
     save_raw_images: bool = True

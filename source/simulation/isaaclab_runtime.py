@@ -27,6 +27,10 @@ class IsaacLabNavigationRuntimeConfig:
     enable_front_camera: bool = False
     front_camera_height: int = 480
     front_camera_width: int = 640
+    # 末端相机外参与 DWA ground-pick 环境保持一致；输出分辨率由 recorder 配置统一。
+    enable_wrist_camera: bool = False
+    wrist_camera_height: int = 480
+    wrist_camera_width: int = 640
     arm_joint_names: tuple[str, ...] = (
         "arm_joint1",
         "arm_joint2",
@@ -788,7 +792,14 @@ class IsaacLabNavigationRuntime:
             env = gym.make(
                 self._config.task_name,
                 cfg=env_cfg,
-                render_mode="rgb_array" if self._config.enable_front_camera else None,
+                render_mode=(
+                    "rgb_array"
+                    if (
+                        self._config.enable_front_camera
+                        or self._config.enable_wrist_camera
+                    )
+                    else None
+                ),
             )
             wrapped = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
             # wrapper 构造时会触发 env.reset；GUI viewport 只在 reset 完成后切相机。
@@ -939,6 +950,38 @@ class IsaacLabNavigationRuntime:
                 ],
                 "data_types": ["rgb"],
                 "source": "dwa_play_nav_cs",
+            }
+        if self._config.enable_wrist_camera:
+            # 对齐 DWA ground-pick 的 arm_camera：挂在稳定存在的 arm_link6，
+            # 相机原点位于夹爪根部中心，沿末端局部 +X 方向观察。
+            env_cfg.scene.arm_camera = CameraCfg(
+                prim_path="{ENV_REGEX_NS}/Robot/arm_link6/arm_vla_camera",
+                update_period=0.0,
+                height=self._config.wrist_camera_height,
+                width=self._config.wrist_camera_width,
+                data_types=["rgb"],
+                spawn=sim_utils.PinholeCameraCfg(
+                    focal_length=18.0,
+                    focus_distance=400.0,
+                    horizontal_aperture=20.955,
+                    clipping_range=(0.03, 5.0),
+                ),
+                offset=CameraCfg.OffsetCfg(
+                    pos=(0.08657, 0.0, 0.0),
+                    rot=(0.5, -0.5, 0.5, -0.5),
+                    convention="ros",
+                ),
+            )
+            self._metadata["wrist_camera_report"] = {
+                "enabled": True,
+                "name": "arm_camera",
+                "prim_path": "{ENV_REGEX_NS}/Robot/arm_link6/arm_vla_camera",
+                "resolution_hw": [
+                    self._config.wrist_camera_height,
+                    self._config.wrist_camera_width,
+                ],
+                "data_types": ["rgb"],
+                "source": "dwa_ground_pick_arm_camera",
             }
 
     def _load_visual_scene(self, episode_spec: EpisodeSpec) -> dict[str, Any]:
@@ -2266,16 +2309,36 @@ class IsaacLabNavigationRuntime:
     def _read_camera_images(self) -> dict[str, Any]:
         """只暴露当前渲染完成的 tensor；JPEG 编码由 5 Hz recorder 负责。"""
 
-        if not self._config.enable_front_camera or self._runtime is None:
+        if self._runtime is None:
             return {}
-        try:
-            sensor = self._runtime.scene["head_camera"]
-            rgb = sensor.data.output["rgb"]
-        except (KeyError, TypeError, AttributeError):
-            return {}
-        if rgb is None or getattr(rgb, "shape", (0,))[0] < 1:
-            return {}
-        return {"front": rgb[0, :, :, :3]}
+        images: dict[str, Any] = {}
+        sensor_names = []
+        if self._config.enable_front_camera:
+            sensor_names.append(("front", "head_camera"))
+        if self._config.enable_wrist_camera:
+            sensor_names.append(("wrist", "arm_camera"))
+        for camera_key, sensor_name in sensor_names:
+            try:
+                sensor = self._runtime.scene[sensor_name]
+                rgb = sensor.data.output["rgb"]
+            except (KeyError, TypeError, AttributeError):
+                continue
+            if rgb is None or getattr(rgb, "shape", (0,))[0] < 1:
+                continue
+            images[camera_key] = rgb[0, :, :, :3]
+        metadata = getattr(self, "_metadata", None)
+        if isinstance(metadata, dict):
+            requested = [camera_key for camera_key, _sensor_name in sensor_names]
+            metadata["camera_capture_report"] = {
+                "requested_camera_keys": requested,
+                "available_camera_keys": sorted(images),
+                "missing_camera_keys": sorted(set(requested) - set(images)),
+                "image_shapes": {
+                    key: [int(value) for value in getattr(image, "shape", ())]
+                    for key, image in images.items()
+                },
+            }
+        return images
 
     def _resolve_checkpoint(self) -> Path:
         candidates = []

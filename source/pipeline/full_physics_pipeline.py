@@ -177,6 +177,8 @@ class FullPhysicsPipeline:
                 "tcp_prim_path",
                 "camera_prim_path",
                 "front_camera_report",
+                "wrist_camera_report",
+                "camera_capture_report",
                 "stage_report",
                 "visual_scene_report",
                 "viewport_report",

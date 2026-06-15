@@ -373,9 +373,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                         simulation_app=app_launcher.app,
                         project_root=PROJECT_ROOT,
                         config=IsaacLabNavigationRuntimeConfig(
-                            enable_front_camera=config.recording.enabled,
+                            enable_front_camera=(
+                                config.recording.enabled
+                                and "front" in config.recording.camera_keys
+                            ),
                             front_camera_height=config.recording.image_height,
                             front_camera_width=config.recording.image_width,
+                            enable_wrist_camera=(
+                                config.recording.enabled
+                                and "wrist" in config.recording.camera_keys
+                            ),
+                            wrist_camera_height=config.recording.image_height,
+                            wrist_camera_width=config.recording.image_width,
                             place_release_clearance_min_m=(
                                 config.manipulation.place_release_clearance_min_m
                             ),

@@ -256,6 +256,60 @@ class FullPhysicsLeRobotTest(unittest.TestCase):
                     ).is_file()
                 )
 
+    def test_wrist_camera_generates_lerobot_video(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            episode_dir = Path(tmp_dir) / "episode_000000"
+            recorder = JsonlEpisodeRecorder(
+                episode_dir,
+                lerobot_config=LeRobotRecordingConfig(
+                    enabled=True,
+                    control_dt=0.02,
+                    dataset_fps=10,
+                    image_height=48,
+                    image_width=64,
+                    camera_keys=("front", "wrist"),
+                    save_raw_images=False,
+                ),
+            )
+            recorder.save_task(
+                type(
+                    "Spec",
+                    (),
+                    {"raw_task": {"instruction": "Move the apple."}},
+                )()
+            )
+            front = np.full((48, 64, 3), 64, dtype=np.uint8)
+            wrist = np.full((48, 64, 3), 192, dtype=np.uint8)
+            for step_index in (1, 6):
+                state = replace(
+                    _state(step_index, front),
+                    camera_images={"front": front, "wrist": wrist},
+                )
+                recorder.record_step(
+                    StepRecord(
+                        step_index=step_index,
+                        timestamp=state.timestamp,
+                        pipeline_state="exec_pick",
+                        observation=state,
+                        action=RobotAction(source="arm"),
+                        post_step_observation=state,
+                    )
+                )
+
+            export = recorder.prepare_lerobot_export()
+
+            self.assertTrue(export["lerobot_exported"], export)
+            self.assertEqual(export["camera_keys"], ["front", "wrist"])
+            self.assertNotIn("wrist", export["missing_camera_keys"])
+            self.assertTrue(
+                (
+                    Path(export["dataset_path"])
+                    / "videos/chunk-000"
+                    / "observation.images.wrist"
+                    / "episode_000000.mp4"
+                ).is_file()
+            )
+
     def test_training_row_uses_pre_step_observation_and_two_gripper_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             episode_dir = Path(tmp_dir) / "episode_000000"
