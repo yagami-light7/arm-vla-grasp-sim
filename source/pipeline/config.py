@@ -118,11 +118,18 @@ class RecordingSettings:
     """对齐 DWA 仓库的连续数据采集和 LeRobot v2.1 输出参数。"""
 
     enabled: bool = True
-    fps: int = 5
+    dataset_fps: float = 5.0
     image_height: int = 480
     image_width: int = 640
     jpeg_quality: int = 90
     chunks_size: int = 1000
+    # recorder 支持任意相机字典；当前 runtime 只有 front，缺失流只记录 warning。
+    camera_keys: tuple[str, ...] = ("front", "wrist", "overview")
+    primary_camera_key: str = "front"
+    save_raw_images: bool = True
+    debug_per_episode_lerobot: bool = True
+    unified_dataset: bool = True
+    validate_export: bool = True
 
 
 @dataclass(frozen=True)
@@ -227,14 +234,18 @@ class FullPhysicsConfig:
             raise ValueError("randomization edge_margin must be positive")
         if self.randomization.edge_min_clearance < 0.0:
             raise ValueError("randomization edge_min_clearance must be non-negative")
-        if self.recording.fps <= 0:
-            raise ValueError("recording fps must be positive")
+        if self.recording.dataset_fps <= 0:
+            raise ValueError("recording dataset_fps must be positive")
         if self.recording.image_height <= 0 or self.recording.image_width <= 0:
             raise ValueError("recording image size must be positive")
         if not 1 <= self.recording.jpeg_quality <= 100:
             raise ValueError("recording jpeg_quality must be within [1, 100]")
         if self.recording.chunks_size <= 0:
             raise ValueError("recording chunks_size must be positive")
+        if not self.recording.camera_keys:
+            raise ValueError("recording camera_keys must not be empty")
+        if self.recording.primary_camera_key not in self.recording.camera_keys:
+            raise ValueError("recording primary_camera_key must be included in camera_keys")
         enabled_modes = sum(
             int(value)
             for value in (

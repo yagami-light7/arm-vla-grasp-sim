@@ -21,6 +21,7 @@ from scripts.pipeline.run_full_physics_batch import (
     _format_progress_suffix,
     _format_result_table,
     _read_episode_progress,
+    _read_summary,
     _run_child_process,
 )
 
@@ -64,7 +65,7 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertEqual(episode.output_dir, Path("/tmp/full_physics_batch_test/episode_000002"))
         self.assertEqual(
             episode.summary_path,
-            Path("/tmp/full_physics_batch_test/episode_000002/episode_000000/summary.json"),
+            Path("/tmp/full_physics_batch_test/episode_000002/summary.json"),
         )
         command = episode.command
         self.assertNotIn("--full-physics", command)
@@ -126,7 +127,7 @@ class FullPhysicsBatchTest(unittest.TestCase):
             episode_index=2,
             seed=102,
             output_dir=Path("/tmp/batch/episode_000002"),
-            summary_path=Path("/tmp/batch/episode_000002/episode_000000/summary.json"),
+            summary_path=Path("/tmp/batch/episode_000002/summary.json"),
             command=[],
         )
         success_summary = {
@@ -153,7 +154,7 @@ class FullPhysicsBatchTest(unittest.TestCase):
                 "pick": {"object_pose_world": {"x": 0.91, "y": 1.20}},
                 "place": {"place_pose_world": {"x": 0.70, "y": 5.20}},
             },
-            "data_output_path": "/tmp/batch/episode_000003/episode_000000",
+            "data_output_path": "/tmp/batch/episode_000003",
         }
         success_result = _build_episode_result(
             episode=episode,
@@ -166,7 +167,7 @@ class FullPhysicsBatchTest(unittest.TestCase):
                 episode_index=3,
                 seed=103,
                 output_dir=Path("/tmp/batch/episode_000003"),
-                summary_path=Path("/tmp/batch/episode_000003/episode_000000/summary.json"),
+                summary_path=Path("/tmp/batch/episode_000003/summary.json"),
                 command=[],
             ),
             summary=failed_summary,
@@ -332,6 +333,20 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertEqual(progress.step_index, 99)
         self.assertEqual(progress.source, "frames")
         self.assertIn("state=exec_place", _format_progress_suffix(progress, color_enabled=False))
+
+    def test_summary_reader_accepts_legacy_nested_episode_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            episode_dir = Path(tmp_dir) / "episode_000002"
+            legacy_dir = episode_dir / "episode_000000"
+            legacy_dir.mkdir(parents=True)
+            (legacy_dir / "summary.json").write_text(
+                json.dumps({"success": True}),
+                encoding="utf-8",
+            )
+
+            summary = _read_summary(episode_dir / "summary.json")
+
+        self.assertEqual(summary, {"success": True})
 
 
 if __name__ == "__main__":

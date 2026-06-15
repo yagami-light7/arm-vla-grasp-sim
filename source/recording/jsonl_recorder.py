@@ -10,8 +10,14 @@ from typing import Any
 from source.interfaces import EpisodeSpec, SimulationState, StepRecord
 
 from .lerobot_dataset import (
+    ACTION_NAMES,
+    BASE_VELOCITY_NAMES,
     DwaEpisodeWriter,
     LeRobotRecordingConfig,
+    OBJECT_STATE_NAMES,
+    SCHEMA_VERSION,
+    STATE_NAMES,
+    TCP_POSE_NAMES,
     materialize_lerobot_dataset,
 )
 
@@ -78,22 +84,81 @@ class JsonlEpisodeRecorder:
             "observation": _simulation_state_payload(record.observation),
             "action": _json_safe(record.action),
             "post_step_observation": _simulation_state_payload(record.post_step_observation),
+            "dataset_frame_index": (
+                sample_report.get("frame_index") if sample_report is not None else None
+            ),
+            "dataset_timestamp": (
+                sample_report.get("timestamp") if sample_report is not None else None
+            ),
+            "video_features": (
+                sample_report.get("video_features", {}) if sample_report is not None else {}
+            ),
             "metadata": _json_safe(metadata),
         }
         self._append_jsonl(self.frames_path, payload)
         self.frame_count += 1
 
     def prepare_lerobot_export(self) -> dict[str, Any]:
+        writer_report = self._dataset_writer.finalize()
+        camera_keys = list(writer_report["camera_keys"])
+        feature_keys = [
+            "observation.state",
+            "observation.base_velocity",
+            "observation.object_state",
+            "observation.tcp_pose",
+            "pipeline_state",
+            "action",
+            "next.done",
+            "timestamp",
+            "frame_index",
+            "episode_index",
+            "index",
+            "task_index",
+            *(f"observation.images.{key}" for key in camera_keys),
+        ]
         raw_payload = {
+            "schema_version": SCHEMA_VERSION,
             "recording_enabled": self._lerobot_config.enabled,
             "raw_episode_ready": self._dataset_writer.frame_count > 0,
+            "episode_index": 0,
+            "episode_dir": str(self.output_dir),
+            "dataset_root": str(self.output_dir / "lerobot_dataset"),
+            "parquet_path": None,
             "raw_data_path": str(self._dataset_writer.csv_path),
-            "raw_image_dir": str(self._dataset_writer.image_dir),
+            "raw_image_dir": (
+                str(self._dataset_writer.image_root)
+                if self._lerobot_config.save_raw_images
+                else None
+            ),
             "raw_samples_path": str(self._dataset_writer.samples_path),
             "sampled_frame_count": self._dataset_writer.frame_count,
-            "fps": self._lerobot_config.fps,
+            "fps": self._lerobot_config.dataset_fps,
+            "dataset_fps": self._lerobot_config.dataset_fps,
             "capture_every_n_steps": self._lerobot_config.capture_every_n_steps,
             "jpeg_quality": self._lerobot_config.jpeg_quality,
+            "camera_keys_requested": list(self._lerobot_config.camera_keys),
+            "camera_keys": camera_keys,
+            "missing_camera_keys": writer_report["missing_camera_keys"],
+            "video_paths": {
+                key: str(
+                    self._dataset_writer.video_staging_root
+                    / f"observation.images.{key}"
+                    / "episode.mp4"
+                )
+                for key in camera_keys
+            },
+            "feature_keys": feature_keys,
+            "observation_state_names": list(STATE_NAMES),
+            "action_names": list(ACTION_NAMES),
+            "object_state_names": list(OBJECT_STATE_NAMES),
+            "tcp_pose_names": list(TCP_POSE_NAMES),
+            "base_velocity_names": list(BASE_VELOCITY_NAMES),
+            "task_index": 0,
+            "task_text": str(
+                self._task_payload.get("instruction")
+                or "Complete the navigation pick and place task."
+            ),
+            "raw_images_saved": self._lerobot_config.save_raw_images,
             "image_size": [
                 self._lerobot_config.image_height,
                 self._lerobot_config.image_width,
@@ -101,6 +166,7 @@ class JsonlEpisodeRecorder:
             "frequency_report": dict(self._dataset_writer.frequency_report),
             "source_frames": str(self.frames_path),
             "frame_count": self.frame_count,
+            "num_frames": self._dataset_writer.frame_count,
         }
         if not self._lerobot_config.enabled:
             payload = {
@@ -114,13 +180,27 @@ class JsonlEpisodeRecorder:
                 "lerobot_exported": False,
                 "reason": "no_synchronized_front_camera_frames",
             }
+        elif not self._lerobot_config.debug_per_episode_lerobot:
+            # batch 模式可只保留原始 episode，结束后统一生成 dataset root。
+            unified_root = self.output_dir.parents[1] / "lerobot_dataset"
+            payload = {
+                **raw_payload,
+                "dataset_root": str(unified_root),
+                "lerobot_exported": True,
+                "success": True,
+                "failure_reason": None,
+                "export_deferred_to_unified_dataset": True,
+                "reason": None,
+                "validation_report": None,
+            }
         else:
             try:
                 conversion = materialize_lerobot_dataset(
                     [self.output_dir],
                     self.output_dir / "lerobot_dataset",
-                    fps=self._lerobot_config.fps,
+                    fps=self._lerobot_config.dataset_fps,
                     chunks_size=self._lerobot_config.chunks_size,
+                    validate=self._lerobot_config.validate_export,
                 )
             except Exception as exc:
                 conversion = {
@@ -134,6 +214,7 @@ class JsonlEpisodeRecorder:
         return {**payload, "manifest_path": str(path)}
 
     def close(self, summary: dict[str, Any]) -> Path:
+        self._dataset_writer.finalize()
         payload = {
             **summary,
             "event_count": self.event_count,

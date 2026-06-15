@@ -262,6 +262,8 @@ def _progress_from_summary(path: Path) -> EpisodeProgress | None:
 
 def _read_episode_progress(episode: BatchEpisodeCommand) -> EpisodeProgress:
     frames_path = episode.summary_path.parent / "frames.jsonl"
+    if not frames_path.is_file():
+        frames_path = episode.output_dir / "episode_000000" / "frames.jsonl"
     frame = _last_json_line(frames_path)
     if frame is not None:
         state = frame.get("pipeline_state")
@@ -500,13 +502,16 @@ def _build_child_command(
         episode_index=episode_index,
         seed=episode_seed,
         output_dir=episode_output_dir,
-        # 单 episode 入口内部仍按 episode_000000 存 summary。
-        summary_path=episode_output_dir / "episode_000000/summary.json",
+        summary_path=episode_output_dir / "summary.json",
         command=command,
     )
 
 
 def _read_summary(path: Path) -> dict[str, object] | None:
+    if not path.is_file():
+        legacy_path = path.parent / "episode_000000" / path.name
+        if legacy_path.is_file():
+            path = legacy_path
     if not path.is_file():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
@@ -624,12 +629,14 @@ def _write_batch_record(
     stream.flush()
 
 
-def _materialize_batch_lerobot(output_root: Path) -> dict[str, object]:
-    """把成功子进程的原始 episode 合并成一个全局 LeRobot 数据集。"""
+def _materialize_batch_lerobot(
+    output_root: Path,
+    episode_dirs: Sequence[Path],
+) -> dict[str, object]:
+    """只把本次 batch 成功的 episode 合并，避免旧目录污染训练数据。"""
 
-    from source.recording import discover_recorded_episodes, materialize_lerobot_dataset
+    from source.recording import materialize_lerobot_dataset
 
-    episode_dirs = discover_recorded_episodes(output_root, require_success=True)
     report = materialize_lerobot_dataset(
         episode_dirs,
         output_root / "lerobot_dataset",
@@ -659,11 +666,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     # 子进程 stdout 进入 pipe 时默认可能块缓冲；强制无缓冲便于实时观察仿真进度。
     env["PYTHONUNBUFFERED"] = "1"
+    # batch 只在全部子进程结束后生成统一 dataset，避免每个 episode 重复编码一份。
+    env["FULL_PHYSICS_DEFER_LEROBOT_EXPORT"] = "1"
+    # 子进程已经位于 batch episode 目录，不再额外创建 episode_000000。
+    env["FULL_PHYSICS_FLAT_EPISODE_OUTPUT"] = "1"
     all_success = True
     completed = 0
     batch_started_at = time.monotonic()
     color_enabled = bool(args.color) and "NO_COLOR" not in env
     episode_results: list[BatchEpisodeResult] = []
+    successful_episode_dirs: list[Path] = []
     _print_banner(
         (
             f"[full-physics-batch] mode={args.mode} episodes={args.num_episodes} "
@@ -693,6 +705,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 elapsed_seconds=episode_elapsed_seconds,
             )
             episode_results.append(result)
+            if success:
+                successful_episode_dirs.append(episode.output_dir)
             all_success = all_success and success
             completed += 1
             _write_batch_record(
@@ -722,7 +736,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 break
     lerobot_report: dict[str, object] | None = None
     if args.mode == "full_physics":
-        lerobot_report = _materialize_batch_lerobot(output_root)
+        lerobot_report = _materialize_batch_lerobot(
+            output_root,
+            successful_episode_dirs,
+        )
         export_status = "success" if lerobot_report.get("lerobot_exported") else "pending"
         export_color = "green" if export_status == "success" else "yellow"
         print(

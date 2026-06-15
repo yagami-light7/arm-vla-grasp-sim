@@ -143,22 +143,39 @@ Any lock use is recorded as `used_manipulation_base_lock=true` and
 Full-physics data recording follows `/home/light/workspace/DWA`:
 
 - physics `dt=0.0025` (400 Hz in the current DWA source), control 50 Hz;
-- one synchronized sample every 10 control steps, yielding 5 Hz;
+- `RecordingSettings.dataset_fps` defaults to 5 Hz and samples on a fixed
+  dataset-time grid; it can be changed to 10/15 Hz without changing physics;
 - `480x640` RGB JPEG at quality 90, named `camera0_00000.jpg`;
-- raw files: `data.csv` and `images/front/`;
+- raw files: `data.csv`, `samples.jsonl`, and optionally `images/<camera>/`;
 - LeRobot v2.1 files: `data/chunk-*/*.parquet`,
-  `videos/chunk-*/observation.images.front/*.mp4`, and `meta/*`.
+  `videos/chunk-*/observation.images.<camera>/*.mp4`, and `meta/*`.
 
 The raw `data.csv` keeps DWA's 17-dimensional robot state and measured base
 velocity columns. `samples.jsonl` adds synchronized object state, TCP
 quaternion, pipeline phase, and the trainable 10-dimensional command vector:
-base command 3 + arm joint targets 6 + gripper target 1. The LeRobot `action`
-feature uses this 10-dimensional command vector.
+base command 3 + arm joint targets 6 + two gripper joint targets. The LeRobot
+`action` feature uses this 11-dimensional high-level command vector. Parquet
+also stores body-frame `observation.base_velocity=[vx,vy,wz]` and
+`pipeline_state`; image features remain video-backed and are declared in
+`meta/info.json`.
 
-Batch runs merge all successful episodes into `<output-dir>/lerobot_dataset`.
+Batch episode files are written directly under
+`<output-dir>/episode_000000/`, `<output-dir>/episode_000001/`, and so on.
+There is no second nested `episode_000000` directory. Batch runs merge all
+successful episodes into `<output-dir>/lerobot_dataset`.
+The merger only uses successful episodes from the current batch invocation, so
+an existing output directory cannot silently inject older episodes.
 Existing raw episodes can be converted again without rerunning simulation:
 
 ```bash
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m source.data.lerobot_converter \
   --episodes-root outputs/full_physics_batch
+```
+
+Validate either a single episode or the unified dataset:
+
+```bash
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python \
+  scripts/pipeline/validate_lerobot_episode.py \
+  --dataset-root outputs/full_physics_batch/lerobot_dataset
 ```

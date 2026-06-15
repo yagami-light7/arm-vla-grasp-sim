@@ -6,6 +6,7 @@ import csv
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +46,7 @@ def _state(step_index: int, image: np.ndarray | None) -> SimulationState:
         camera_images={} if image is None else {"front": image},
         metadata={
             "joint_names": joint_names,
+            "body_velocity": (0.3, -0.1, 0.2),
             "body_linear_velocity": (0.3, -0.1, 0.02),
         },
     )
@@ -59,7 +61,7 @@ class FullPhysicsLeRobotTest(unittest.TestCase):
                 lerobot_config=LeRobotRecordingConfig(
                     enabled=True,
                     control_dt=0.02,
-                    fps=5,
+                    dataset_fps=5,
                     image_height=480,
                     image_width=640,
                     jpeg_quality=90,
@@ -113,9 +115,15 @@ class FullPhysicsLeRobotTest(unittest.TestCase):
                 for line in (episode_dir / "samples.jsonl").read_text(encoding="utf-8").splitlines()
             ]
             self.assertEqual(len(samples), 2)
-            self.assertEqual(len(samples[0]["action"]), 10)
+            self.assertEqual(samples[0]["pipeline_state"], "exec_nav_to_pick")
+            self.assertEqual(samples[0]["base_velocity"], [0.3, -0.1, 0.2])
+            self.assertEqual(len(samples[0]["action"]), 11)
             self.assertEqual(len(samples[0]["object_state"]), 13)
             self.assertEqual(len(samples[0]["tcp_pose"]), 7)
+            self.assertEqual(
+                samples[0]["camera_frames"]["front"]["feature_key"],
+                "observation.images.front",
+            )
 
             frames = [
                 json.loads(line)
@@ -129,31 +137,39 @@ class FullPhysicsLeRobotTest(unittest.TestCase):
             self.assertEqual(export["sampled_frame_count"], 2)
             self.assertEqual(export["capture_every_n_steps"], 10)
             self.assertIn("dataset_path", export)
-            if export["lerobot_exported"]:
-                import pyarrow.parquet as pq
+            self.assertTrue(export["lerobot_exported"], export)
+            import pyarrow.parquet as pq
 
-                dataset_path = Path(export["dataset_path"])
-                parquet_path = dataset_path / "data/chunk-000/episode_000000.parquet"
-                video_path = (
-                    dataset_path
-                    / "videos/chunk-000/observation.images.front/episode_000000.mp4"
-                )
-                info = json.loads(
-                    (dataset_path / "meta/info.json").read_text(encoding="utf-8")
-                )
-                table = pq.read_table(parquet_path)
-                self.assertEqual(table.num_rows, 2)
-                self.assertEqual(len(table["observation.state"][0].as_py()), 17)
-                self.assertEqual(len(table["observation.base_linear_velocity"][0].as_py()), 3)
-                self.assertEqual(len(table["observation.object_state"][0].as_py()), 13)
-                self.assertEqual(len(table["observation.tcp_pose"][0].as_py()), 7)
-                self.assertEqual(len(table["action"][0].as_py()), 10)
-                self.assertFalse(table["next.done"][0].as_py())
-                self.assertTrue(table["next.done"][1].as_py())
-                self.assertTrue(video_path.is_file())
-                self.assertEqual(info["fps"], 5)
-                self.assertEqual(info["features"]["observation.images.front"]["shape"], [480, 640, 3])
-                self.assertEqual(info["features"]["action"]["shape"], [10])
+            dataset_path = Path(export["dataset_path"])
+            parquet_path = dataset_path / "data/chunk-000/episode_000000.parquet"
+            video_path = (
+                dataset_path
+                / "videos/chunk-000/observation.images.front/episode_000000.mp4"
+            )
+            info = json.loads(
+                (dataset_path / "meta/info.json").read_text(encoding="utf-8")
+            )
+            table = pq.read_table(parquet_path)
+            self.assertEqual(table.num_rows, 2)
+            self.assertEqual(len(table["observation.state"][0].as_py()), 17)
+            self.assertEqual(len(table["observation.base_velocity"][0].as_py()), 3)
+            self.assertEqual(len(table["observation.object_state"][0].as_py()), 13)
+            self.assertEqual(len(table["observation.tcp_pose"][0].as_py()), 7)
+            self.assertEqual(table["pipeline_state"][0].as_py(), "exec_nav_to_pick")
+            self.assertEqual(len(table["action"][0].as_py()), 11)
+            self.assertFalse(table["next.done"][0].as_py())
+            self.assertTrue(table["next.done"][1].as_py())
+            self.assertTrue(video_path.is_file())
+            self.assertEqual(info["fps"], 5)
+            self.assertEqual(info["features"]["observation.images.front"]["shape"], [480, 640, 3])
+            self.assertEqual(info["features"]["action"]["shape"], [11])
+            self.assertEqual(
+                info["features"]["observation.base_velocity"]["names"],
+                ["vx_body", "vy_body", "wz_body"],
+            )
+            self.assertIn("pipeline_state", info["features"])
+            self.assertIn("next.done", info["features"])
+            self.assertEqual(info["camera_keys"], ["front"])
 
     def test_discovers_only_successful_raw_episodes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -176,6 +192,117 @@ class FullPhysicsLeRobotTest(unittest.TestCase):
 
             episodes = discover_recorded_episodes(root, require_success=True)
             self.assertEqual(episodes, [root / "episode_000000"])
+
+    def test_multi_camera_video_export_without_raw_images(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            episode_dir = Path(tmp_dir) / "episode_000000"
+            recorder = JsonlEpisodeRecorder(
+                episode_dir,
+                lerobot_config=LeRobotRecordingConfig(
+                    enabled=True,
+                    control_dt=0.02,
+                    dataset_fps=10,
+                    image_height=48,
+                    image_width=64,
+                    camera_keys=("front", "wrist", "overview"),
+                    save_raw_images=False,
+                ),
+            )
+            recorder.save_task(
+                type(
+                    "Spec",
+                    (),
+                    {"raw_task": {"instruction": "Move the apple."}},
+                )()
+            )
+            image = np.full((48, 64, 3), 127, dtype=np.uint8)
+            for step_index in (1, 6):
+                state = replace(
+                    _state(step_index, image),
+                    camera_images={"front": image, "overview": image},
+                )
+                recorder.record_step(
+                    StepRecord(
+                        step_index=step_index,
+                        timestamp=state.timestamp,
+                        pipeline_state="exec_pick",
+                        observation=state,
+                        action=RobotAction(source="arm"),
+                        post_step_observation=state,
+                    )
+                )
+
+            export = recorder.prepare_lerobot_export()
+
+            self.assertTrue(export["lerobot_exported"], export)
+            self.assertFalse(export["raw_images_saved"])
+            self.assertEqual(export["camera_keys"], ["front", "overview"])
+            self.assertIn("wrist", export["missing_camera_keys"])
+            self.assertFalse((episode_dir / "images/front").exists())
+            info = json.loads(
+                (Path(export["dataset_path"]) / "meta/info.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(info["fps"], 10)
+            self.assertEqual(info["camera_keys"], ["front", "overview"])
+            for camera_key in ("front", "overview"):
+                self.assertTrue(
+                    (
+                        Path(export["dataset_path"])
+                        / "videos/chunk-000"
+                        / f"observation.images.{camera_key}"
+                        / "episode_000000.mp4"
+                    ).is_file()
+                )
+
+    def test_training_row_uses_pre_step_observation_and_two_gripper_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            episode_dir = Path(tmp_dir) / "episode_000000"
+            recorder = JsonlEpisodeRecorder(
+                episode_dir,
+                lerobot_config=LeRobotRecordingConfig(
+                    enabled=True,
+                    dataset_fps=5,
+                    image_height=48,
+                    image_width=64,
+                ),
+            )
+            image = np.zeros((48, 64, 3), dtype=np.uint8)
+            before = replace(
+                _state(1, image),
+                robot_root_pose=(1.0, 2.0, 0.35, 1.0, 0.0, 0.0, 0.0),
+                object_pose=(0.9, 1.2, 0.82, 1.0, 0.0, 0.0, 0.0),
+            )
+            after = replace(
+                before,
+                robot_root_pose=(9.0, 8.0, 0.35, 1.0, 0.0, 0.0, 0.0),
+                object_pose=(7.0, 6.0, 0.82, 1.0, 0.0, 0.0, 0.0),
+            )
+            recorder.record_step(
+                StepRecord(
+                    step_index=0,
+                    timestamp=0.0,
+                    pipeline_state="exec_pick",
+                    observation=before,
+                    action=RobotAction(
+                        base_velocity=(0.1, 0.2, 0.3),
+                        arm_joint_positions=(1.0, 2.0, 3.0, 4.0, 5.0, 6.0),
+                        metadata={"gripper_joint_positions": (0.01, 0.03)},
+                    ),
+                    post_step_observation=after,
+                )
+            )
+
+            with (episode_dir / "data.csv").open("r", encoding="utf-8") as stream:
+                row = next(csv.DictReader(stream))
+            sample = json.loads(
+                (episode_dir / "samples.jsonl").read_text(encoding="utf-8").strip()
+            )
+
+            self.assertEqual(float(row["位置X"]), 1.0)
+            self.assertEqual(sample["object_state"][0:2], [0.9, 1.2])
+            self.assertEqual(sample["action"], [0.1, 0.2, 0.3, 1, 2, 3, 4, 5, 6, 0.01, 0.03])
 
 
 if __name__ == "__main__":

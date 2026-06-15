@@ -121,11 +121,19 @@ def create_full_physics_pipeline(
             lerobot_config=LeRobotRecordingConfig(
                 enabled=full_physics_config.recording.enabled,
                 control_dt=full_physics_config.navigation.control_dt,
-                fps=full_physics_config.recording.fps,
+                dataset_fps=full_physics_config.recording.dataset_fps,
                 image_height=full_physics_config.recording.image_height,
                 image_width=full_physics_config.recording.image_width,
                 jpeg_quality=full_physics_config.recording.jpeg_quality,
                 chunks_size=full_physics_config.recording.chunks_size,
+                camera_keys=full_physics_config.recording.camera_keys,
+                primary_camera_key=full_physics_config.recording.primary_camera_key,
+                save_raw_images=full_physics_config.recording.save_raw_images,
+                debug_per_episode_lerobot=(
+                    full_physics_config.recording.debug_per_episode_lerobot
+                ),
+                unified_dataset=full_physics_config.recording.unified_dataset,
+                validate_export=full_physics_config.recording.validate_export,
             ),
         ),
     )

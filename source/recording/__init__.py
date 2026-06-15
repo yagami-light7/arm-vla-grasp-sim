@@ -8,6 +8,7 @@ from .lerobot_dataset import (
     discover_recorded_episodes,
     materialize_lerobot_dataset,
 )
+from .lerobot_validator import validate_lerobot_dataset, validate_lerobot_episode
 
 __all__ = [
     "DWA_CSV_COLUMNS",
@@ -16,4 +17,6 @@ __all__ = [
     "LeRobotRecordingConfig",
     "discover_recorded_episodes",
     "materialize_lerobot_dataset",
+    "validate_lerobot_dataset",
+    "validate_lerobot_episode",
 ]

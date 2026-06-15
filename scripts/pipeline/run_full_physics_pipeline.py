@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -17,6 +18,7 @@ from source.pipeline import (  # noqa: E402
     FullPhysicsConfig,
     ManipulationSettings,
     RandomizationSettings,
+    RecordingSettings,
 )
 from source.pipeline.dry_run import create_dry_run_pipeline  # noqa: E402
 from source.tasks import JsonTaskProvider, prepare_episode_spec  # noqa: E402
@@ -188,6 +190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     manipulation_smoke = mode == "manipulation_smoke"
     manipulation_apply_smoke = mode == "manipulation_apply_smoke"
     full_physics = mode == "full_physics"
+    flat_episode_output = os.environ.get("FULL_PHYSICS_FLAT_EPISODE_OUTPUT") == "1"
     if full_physics and (args.pick_plan_json or args.place_plan_json):
         raise SystemExit("默认 full-physics 模式禁止使用离线 plan JSON；pick/place 必须按当前仿真状态在线规划。")
     if args.keep_window_open and args.headless:
@@ -200,6 +203,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         or full_physics
     ) and args.num_episodes != 1:
         raise SystemExit("真实 Isaac smoke 目前只支持 --num-episodes 1。")
+    if flat_episode_output and args.num_episodes != 1:
+        raise SystemExit("batch 扁平输出模式只支持单 episode 子进程。")
 
     config = FullPhysicsConfig(
         task_json=_project_path(args.task_json),
@@ -222,12 +227,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             enabled=args.randomize_task,
             show_debug_region=args.show_randomization_debug,
         ),
+        recording=RecordingSettings(
+            debug_per_episode_lerobot=(
+                os.environ.get("FULL_PHYSICS_DEFER_LEROBOT_EXPORT") != "1"
+            ),
+        ),
     )
     _validate_external_plan_paths(config)
     base_spec = JsonTaskProvider().load(config.task_json)
     config.output_dir.mkdir(parents=True, exist_ok=True)
-    batch_summary_path = config.output_dir / "batch_summary.jsonl"
-    batch_summary_path.write_text("", encoding="utf-8")
+    batch_summary_path = None
+    if not flat_episode_output:
+        batch_summary_path = config.output_dir / "batch_summary.jsonl"
+        batch_summary_path.write_text("", encoding="utf-8")
 
     app_launcher = None
     planner_server = None
@@ -299,7 +311,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"pick_xy={pick_xy} place_xy={place_xy}",
                     flush=True,
                 )
-            episode_dir = config.output_dir / f"episode_{episode_index:06d}"
+            episode_dir = (
+                config.output_dir
+                if flat_episode_output
+                else config.output_dir / f"episode_{episode_index:06d}"
+            )
             if dry_run:
                 pipeline = create_dry_run_pipeline(
                     config=config,
@@ -429,9 +445,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             if config.keep_window_open:
                 retained_simulation = pipeline.simulation
             all_success = all_success and bool(summary["success"])
-            with batch_summary_path.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
-                stream.write("\n")
+            if batch_summary_path is not None:
+                with batch_summary_path.open("a", encoding="utf-8") as stream:
+                    stream.write(
+                        json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+                    )
+                    stream.write("\n")
             print(
                 f"[full-physics] episode={episode_index} seed={episode_seed} "
                 f"mode={summary['execution_mode']} success={summary['success']} "

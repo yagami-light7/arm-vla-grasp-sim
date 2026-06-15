@@ -61,6 +61,12 @@ def main() -> None:
         "--output-root",
         help="LeRobot 输出目录；默认写入 <episodes-root>/lerobot_dataset。",
     )
+    parser.add_argument(
+        "--dataset-fps",
+        type=float,
+        default=None,
+        help="覆盖数据集采样帧率；默认从 episode manifest 读取，旧数据回退为 5 Hz。",
+    )
     args = parser.parse_args()
     if args.episodes_root:
         episodes_root = Path(args.episodes_root).expanduser().resolve()
@@ -70,7 +76,11 @@ def main() -> None:
             else episodes_root / "lerobot_dataset"
         )
         episode_dirs = discover_recorded_episodes(episodes_root, require_success=True)
-        manifest = materialize_lerobot_dataset(episode_dirs, output_root)
+        manifest = materialize_lerobot_dataset(
+            episode_dirs,
+            output_root,
+            fps=args.dataset_fps,
+        )
     else:
         manifest = validate_episode(args.episode_dir)
     if args.manifest:

@@ -1,4 +1,4 @@
-"""DWA-compatible raw episode recording and LeRobot v2.1 materialization."""
+"""Full-physics 原始数据记录与 LeRobot v2.1 数据集生成。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from PIL import Image
 from source.interfaces import StepRecord
 
 
-DWA_CSV_COLUMNS = (
+LEGACY_DWA_CSV_COLUMNS = (
     "时间戳(秒)",
     "位置X",
     "位置Y",
@@ -41,6 +41,9 @@ DWA_CSV_COLUMNS = (
     "前摄像头图像",
 )
 
+# 保留 DWA 数值列，同时显式记录 pipeline state，便于离线按阶段筛选。
+DWA_CSV_COLUMNS = (*LEGACY_DWA_CSV_COLUMNS, "pipeline_state")
+
 STATE_COLUMNS = (
     "位置X",
     "位置Y",
@@ -61,40 +64,44 @@ STATE_COLUMNS = (
     "夹爪",
 )
 
-ACTION_COLUMNS = ("线速度X", "线速度Y", "线速度Z")
-
 STATE_NAMES = (
-    "pos_x",
-    "pos_y",
-    "pos_z",
-    "yaw",
-    "ee_x",
-    "ee_y",
-    "ee_z",
-    "ee_roll",
-    "ee_pitch",
-    "ee_yaw",
-    "joint1",
-    "joint2",
-    "joint3",
-    "joint4",
-    "joint5",
-    "joint6",
-    "gripper",
+    "base_x",
+    "base_y",
+    "base_z",
+    "base_yaw",
+    "tcp_x",
+    "tcp_y",
+    "tcp_z",
+    "tcp_roll",
+    "tcp_pitch",
+    "tcp_yaw",
+    "arm_joint1",
+    "arm_joint2",
+    "arm_joint3",
+    "arm_joint4",
+    "arm_joint5",
+    "arm_joint6",
+    "gripper_joint7_joint8_mean",
 )
 
-ACTION_NAMES = ("vel_x", "vel_y", "vel_z")
-FULL_ACTION_NAMES = (
+BASE_VELOCITY_NAMES = (
+    "vx_body",
+    "vy_body",
+    "wz_body",
+)
+
+ACTION_NAMES = (
     "base_cmd_vx",
     "base_cmd_vy",
     "base_cmd_wz",
-    "arm_target_joint1",
-    "arm_target_joint2",
-    "arm_target_joint3",
-    "arm_target_joint4",
-    "arm_target_joint5",
-    "arm_target_joint6",
-    "gripper_target",
+    "arm_joint1_target",
+    "arm_joint2_target",
+    "arm_joint3_target",
+    "arm_joint4_target",
+    "arm_joint5_target",
+    "arm_joint6_target",
+    "gripper_joint7_target",
+    "gripper_joint8_target",
 )
 
 OBJECT_STATE_NAMES = (
@@ -105,12 +112,12 @@ OBJECT_STATE_NAMES = (
     "object_quat_x",
     "object_quat_y",
     "object_quat_z",
-    "object_vel_x",
-    "object_vel_y",
-    "object_vel_z",
-    "object_ang_vel_x",
-    "object_ang_vel_y",
-    "object_ang_vel_z",
+    "object_vx",
+    "object_vy",
+    "object_vz",
+    "object_wx",
+    "object_wy",
+    "object_wz",
 )
 
 TCP_POSE_NAMES = (
@@ -123,22 +130,32 @@ TCP_POSE_NAMES = (
     "tcp_quat_z",
 )
 
+SCHEMA_VERSION = "full_physics_lerobot_v2.1.1"
+
 
 @dataclass(frozen=True)
 class LeRobotRecordingConfig:
-    """固定为 DWA 数据合同的采样和编码参数。"""
+    """LeRobot 采样、相机和本地调试输出配置。"""
 
     enabled: bool = False
     control_dt: float = 0.02
-    fps: int = 5
+    dataset_fps: float = 5.0
     image_height: int = 480
     image_width: int = 640
     jpeg_quality: int = 90
     chunks_size: int = 1000
+    camera_keys: tuple[str, ...] = ("front", "wrist", "overview")
+    primary_camera_key: str = "front"
+    save_raw_images: bool = True
+    debug_per_episode_lerobot: bool = True
+    unified_dataset: bool = True
+    validate_export: bool = True
 
     @property
-    def capture_every_n_steps(self) -> int:
-        return max(1, round((1.0 / float(self.fps)) / float(self.control_dt)))
+    def capture_every_n_steps(self) -> float:
+        """返回平均控制步间隔；15 FPS 等非整数比率由时间栅格调度。"""
+
+        return (1.0 / float(self.dataset_fps)) / float(self.control_dt)
 
 
 def _quat_wxyz_to_rpy(quat: tuple[float, ...]) -> tuple[float, float, float]:
@@ -151,7 +168,7 @@ def _quat_wxyz_to_rpy(quat: tuple[float, ...]) -> tuple[float, float, float]:
     return roll, pitch, yaw
 
 
-def _image_to_rgb_uint8(image: Any) -> np.ndarray:
+def _image_to_rgb_uint8(image: Any, *, camera_key: str) -> np.ndarray:
     if hasattr(image, "detach"):
         image = image.detach().cpu()
     if hasattr(image, "numpy"):
@@ -160,7 +177,7 @@ def _image_to_rgb_uint8(image: Any) -> np.ndarray:
     if array.ndim == 4 and array.shape[0] == 1:
         array = array[0]
     if array.ndim != 3 or array.shape[2] not in {3, 4}:
-        raise ValueError(f"front camera image must be HxWx3/4, got {array.shape}")
+        raise ValueError(f"{camera_key} camera image must be HxWx3/4, got {array.shape}")
     array = array[..., :3]
     if array.dtype != np.uint8:
         if np.issubdtype(array.dtype, np.floating) and float(array.max(initial=0.0)) <= 1.0:
@@ -169,8 +186,8 @@ def _image_to_rgb_uint8(image: Any) -> np.ndarray:
     return np.ascontiguousarray(array)
 
 
-def _joint_values(record: StepRecord) -> tuple[tuple[float, ...], float]:
-    state = record.post_step_observation
+def _joint_values(record: StepRecord) -> tuple[tuple[float, ...], tuple[float, float]]:
+    state = record.observation
     joint_names = tuple(str(name) for name in state.metadata.get("joint_names", ()))
     positions = tuple(float(value) for value in state.joint_positions)
     by_name = dict(zip(joint_names, positions))
@@ -181,94 +198,148 @@ def _joint_values(record: StepRecord) -> tuple[tuple[float, ...], float]:
         if name in by_name
     ]
     if len(gripper_values) == 2:
-        gripper = sum(gripper_values) / 2.0
+        gripper = (gripper_values[0], gripper_values[1])
     elif len(positions) >= 8 and not joint_names:
         arm = tuple(positions[-8:-2])
-        gripper = sum(positions[-2:]) / 2.0
+        gripper = (float(positions[-2]), float(positions[-1]))
     else:
-        gripper = 0.0
+        gripper = (0.0, 0.0)
     return arm, gripper
 
 
+def _measured_base_velocity(record: StepRecord) -> tuple[float, float, float]:
+    """优先读取 adapter 已转换到 body frame 的 vx/vy/wz。"""
+
+    state = record.observation
+    body_velocity = state.metadata.get("body_velocity")
+    if isinstance(body_velocity, (list, tuple)) and len(body_velocity) >= 3:
+        return tuple(float(value) for value in body_velocity[:3])
+    return (
+        float(state.robot_root_velocity[0]),
+        float(state.robot_root_velocity[1]),
+        float(state.robot_root_velocity[5]),
+    )
+
+
 class DwaEpisodeWriter:
-    """按 DWA 的 5 Hz CSV/JPEG 约定记录一个连续 full-physics episode。"""
+    """按固定数据时间栅格记录一个连续 full-physics episode。"""
 
     def __init__(self, episode_dir: str | Path, config: LeRobotRecordingConfig):
         self.episode_dir = Path(episode_dir).expanduser().resolve()
         self.config = config
         self.csv_path = self.episode_dir / "data.csv"
-        self.image_dir = self.episode_dir / "images" / "front"
+        self.image_root = self.episode_dir / "images"
+        self.image_dir = self.image_root / config.primary_camera_key
+        self.video_staging_root = self.episode_dir / "recording_videos"
         self.samples_path = self.episode_dir / "samples.jsonl"
         self.frame_count = 0
         self._last_sampled_sim_step = -1
-        self._next_sample_sim_step: int | None = None
+        self._next_sample_timestamp: float | None = None
         self._last_arm_target: tuple[float, ...] | None = None
-        self._last_gripper_target: float | None = None
+        self._last_gripper_target: tuple[float, float] | None = None
+        self._video_writers: dict[str, Any] = {}
+        self._camera_frame_counts: dict[str, int] = {}
+        self._camera_shapes: dict[str, tuple[int, int, int]] = {}
+        self._missing_camera_keys: set[str] = set()
+        self._finalized = False
         self.frequency_report: dict[str, Any] = {
             "physics_dt": None,
             "physics_hz": None,
             "control_dt": self.config.control_dt,
             "control_hz": 1.0 / self.config.control_dt,
-            "capture_fps": self.config.fps,
+            "dataset_fps": self.config.dataset_fps,
             "capture_every_n_control_steps": self.config.capture_every_n_steps,
+            "sampling_mode": "fixed_dataset_time_grid",
         }
         if not self.config.enabled:
             return
-        self.image_dir.mkdir(parents=True, exist_ok=True)
-        for stale_image in self.image_dir.glob("camera0_*.jpg"):
-            stale_image.unlink()
+        self.episode_dir.mkdir(parents=True, exist_ok=True)
+        if self.config.save_raw_images:
+            for camera_key in self.config.camera_keys:
+                image_dir = self.image_root / camera_key
+                image_dir.mkdir(parents=True, exist_ok=True)
+                for stale_image in image_dir.glob("*.jpg"):
+                    stale_image.unlink()
+        if self.video_staging_root.exists():
+            shutil.rmtree(self.video_staging_root)
+        self.video_staging_root.mkdir(parents=True, exist_ok=True)
         self.samples_path.write_text("", encoding="utf-8")
         with self.csv_path.open("w", encoding="utf-8", newline="") as stream:
             csv.DictWriter(stream, fieldnames=DWA_CSV_COLUMNS).writeheader()
+
+    @property
+    def actual_camera_keys(self) -> tuple[str, ...]:
+        return tuple(
+            key
+            for key in self.config.camera_keys
+            if self._camera_frame_counts.get(key) == self.frame_count and self.frame_count > 0
+        )
+
+    @property
+    def missing_camera_keys(self) -> tuple[str, ...]:
+        return tuple(sorted(self._missing_camera_keys))
+
+    @property
+    def raw_images_saved(self) -> bool:
+        return bool(self.config.save_raw_images)
 
     def record(self, record: StepRecord) -> dict[str, Any] | None:
         if not self.config.enabled:
             return None
         full_action = self._update_full_action(record)
-        state = record.post_step_observation
+        state = record.observation
         sim_step = int(state.step_index)
         if sim_step <= self._last_sampled_sim_step:
             return None
-        if (
-            self._next_sample_sim_step is not None
-            and sim_step < self._next_sample_sim_step
-        ):
-            return None
-        front_image = state.camera_images.get("front")
-        if front_image is None:
-            return None
-        physics_dt = state.metadata.get("physics_dt")
-        control_dt = state.metadata.get("control_dt")
-        if isinstance(physics_dt, (int, float)) and float(physics_dt) > 0.0:
-            self.frequency_report["physics_dt"] = float(physics_dt)
-            self.frequency_report["physics_hz"] = 1.0 / float(physics_dt)
-        if isinstance(control_dt, (int, float)) and float(control_dt) > 0.0:
-            self.frequency_report["control_dt"] = float(control_dt)
-            self.frequency_report["control_hz"] = 1.0 / float(control_dt)
 
-        image = _image_to_rgb_uint8(front_image)
-        expected_size = (self.config.image_width, self.config.image_height)
-        if (image.shape[1], image.shape[0]) != expected_size:
-            image = np.asarray(Image.fromarray(image).resize(expected_size, Image.Resampling.BILINEAR))
+        # 第一个有效相机帧立即采样；后续按 dataset timestamp 选择最近控制帧。
+        sim_timestamp = float(state.timestamp)
+        if self._next_sample_timestamp is not None:
+            half_control_dt = 0.5 * float(self.config.control_dt)
+            if sim_timestamp + half_control_dt < self._next_sample_timestamp:
+                return None
+        primary_image = state.camera_images.get(self.config.primary_camera_key)
+        if primary_image is None:
+            self._missing_camera_keys.add(self.config.primary_camera_key)
+            return None
 
-        image_name = f"camera0_{self.frame_count:05d}.jpg"
-        Image.fromarray(image).save(
-            self.image_dir / image_name,
-            format="JPEG",
-            quality=self.config.jpeg_quality,
+        self._update_frequency_report(state.metadata)
+        camera_frames: dict[str, dict[str, Any]] = {}
+        for camera_key in self.config.camera_keys:
+            camera_image = state.camera_images.get(camera_key)
+            if camera_image is None:
+                self._missing_camera_keys.add(camera_key)
+                continue
+            image = self._prepare_image(camera_image, camera_key=camera_key)
+            raw_path = self._write_raw_image(camera_key, image)
+            self._write_video_frame(camera_key, image)
+            camera_frames[camera_key] = {
+                "feature_key": f"observation.images.{camera_key}",
+                "frame_index": self.frame_count,
+                "timestamp": float(self.frame_count) / float(self.config.dataset_fps),
+                "raw_image_path": raw_path,
+            }
+
+        primary_raw_path = camera_frames[self.config.primary_camera_key]["raw_image_path"]
+        row = self._build_row(
+            record,
+            image_name=Path(primary_raw_path).name if primary_raw_path else "",
         )
-        row = self._build_row(record, image_name=image_name)
         with self.csv_path.open("a", encoding="utf-8", newline="") as stream:
             csv.DictWriter(stream, fieldnames=DWA_CSV_COLUMNS).writerow(row)
         sample = {
             "frame_index": self.frame_count,
+            "timestamp": float(self.frame_count) / float(self.config.dataset_fps),
             "simulation_step": sim_step,
+            "simulation_timestamp": sim_timestamp,
             "pipeline_state": record.pipeline_state,
+            "base_velocity": list(_measured_base_velocity(record)),
             "action": list(full_action),
             "object_state": self._object_state(record),
             "tcp_pose": list(
                 state.tcp_pose or (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
             ),
+            "camera_frames": camera_frames,
         }
         with self.samples_path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(sample, ensure_ascii=False, separators=(",", ":")))
@@ -276,14 +347,103 @@ class DwaEpisodeWriter:
 
         report = {
             "frame_index": self.frame_count,
+            "timestamp": sample["timestamp"],
             "simulation_step": sim_step,
-            "timestamp": row["时间戳(秒)"],
-            "image": f"images/front/{image_name}",
+            "simulation_timestamp": sim_timestamp,
+            "pipeline_state": record.pipeline_state,
+            "video_features": {
+                key: value["feature_key"] for key, value in camera_frames.items()
+            },
+            "raw_images": {
+                key: value["raw_image_path"] for key, value in camera_frames.items()
+            },
         }
         self.frame_count += 1
         self._last_sampled_sim_step = sim_step
-        self._next_sample_sim_step = sim_step + self.config.capture_every_n_steps
+        if self._next_sample_timestamp is None:
+            self._next_sample_timestamp = sim_timestamp
+        self._next_sample_timestamp += 1.0 / float(self.config.dataset_fps)
         return report
+
+    def finalize(self) -> dict[str, Any]:
+        """结束 MP4 编码，保证转换器读取到完整 moov/frame metadata。"""
+
+        if self._finalized:
+            return self.report()
+        for writer in self._video_writers.values():
+            writer.release()
+        self._video_writers.clear()
+        self._finalized = True
+        return self.report()
+
+    def report(self) -> dict[str, Any]:
+        return {
+            "sampled_frame_count": self.frame_count,
+            "camera_keys": list(self.actual_camera_keys),
+            "missing_camera_keys": list(self.missing_camera_keys),
+            "camera_frame_counts": dict(self._camera_frame_counts),
+            "camera_shapes": {
+                key: list(shape) for key, shape in self._camera_shapes.items()
+            },
+            "raw_images_saved": self.raw_images_saved,
+            "video_staging_root": str(self.video_staging_root),
+        }
+
+    def _prepare_image(self, image: Any, *, camera_key: str) -> np.ndarray:
+        image = _image_to_rgb_uint8(image, camera_key=camera_key)
+        expected_size = (self.config.image_width, self.config.image_height)
+        if (image.shape[1], image.shape[0]) != expected_size:
+            image = np.asarray(
+                Image.fromarray(image).resize(expected_size, Image.Resampling.BILINEAR)
+            )
+        return np.ascontiguousarray(image)
+
+    def _write_raw_image(self, camera_key: str, image: np.ndarray) -> str | None:
+        if not self.config.save_raw_images:
+            return None
+        prefix = "camera0" if camera_key == "front" else camera_key
+        image_name = f"{prefix}_{self.frame_count:05d}.jpg"
+        image_path = self.image_root / camera_key / image_name
+        Image.fromarray(image).save(
+            image_path,
+            format="JPEG",
+            quality=self.config.jpeg_quality,
+        )
+        return str(image_path.relative_to(self.episode_dir))
+
+    def _write_video_frame(self, camera_key: str, image: np.ndarray) -> None:
+        import cv2
+
+        writer = self._video_writers.get(camera_key)
+        if writer is None:
+            video_path = (
+                self.video_staging_root
+                / f"observation.images.{camera_key}"
+                / "episode.mp4"
+            )
+            video_path.parent.mkdir(parents=True, exist_ok=True)
+            writer = cv2.VideoWriter(
+                str(video_path),
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                float(self.config.dataset_fps),
+                (image.shape[1], image.shape[0]),
+            )
+            if not writer.isOpened():
+                raise RuntimeError(f"failed to create staged camera video: {video_path}")
+            self._video_writers[camera_key] = writer
+            self._camera_shapes[camera_key] = tuple(int(value) for value in image.shape)
+        writer.write(cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+        self._camera_frame_counts[camera_key] = self._camera_frame_counts.get(camera_key, 0) + 1
+
+    def _update_frequency_report(self, metadata: dict[str, Any]) -> None:
+        physics_dt = metadata.get("physics_dt")
+        control_dt = metadata.get("control_dt")
+        if isinstance(physics_dt, (int, float)) and float(physics_dt) > 0.0:
+            self.frequency_report["physics_dt"] = float(physics_dt)
+            self.frequency_report["physics_hz"] = 1.0 / float(physics_dt)
+        if isinstance(control_dt, (int, float)) and float(control_dt) > 0.0:
+            self.frequency_report["control_dt"] = float(control_dt)
+            self.frequency_report["control_hz"] = 1.0 / float(control_dt)
 
     def _update_full_action(self, record: StepRecord) -> tuple[float, ...]:
         arm_actual, gripper_actual = _joint_values(record)
@@ -297,55 +457,55 @@ class DwaEpisodeWriter:
         metadata = record.action.metadata or {}
         gripper_positions = metadata.get("gripper_joint_positions")
         if isinstance(gripper_positions, (list, tuple)) and gripper_positions:
-            self._last_gripper_target = sum(
-                float(value) for value in gripper_positions
-            ) / len(gripper_positions)
+            values = tuple(float(value) for value in gripper_positions)
+            self._last_gripper_target = (
+                values[0],
+                values[1] if len(values) > 1 else values[0],
+            )
         elif record.action.gripper_command == "open":
-            self._last_gripper_target = 0.04
+            self._last_gripper_target = (0.04, 0.04)
         elif record.action.gripper_command == "close":
-            self._last_gripper_target = 0.0
+            self._last_gripper_target = (0.0, 0.0)
         elif self._last_gripper_target is None:
             self._last_gripper_target = gripper_actual
 
         return (
             *(float(value) for value in record.action.base_velocity),
             *self._last_arm_target,
-            float(self._last_gripper_target),
+            *self._last_gripper_target,
         )
 
     @staticmethod
     def _object_state(record: StepRecord) -> list[float]:
-        state = record.post_step_observation
+        state = record.observation
         pose = state.object_pose or (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
         velocity = state.object_velocity or (0.0,) * 6
         return [*(float(value) for value in pose), *(float(value) for value in velocity)]
 
     def _build_row(self, record: StepRecord, *, image_name: str) -> dict[str, Any]:
-        state = record.post_step_observation
+        state = record.observation
         root_pose = state.robot_root_pose
         root_yaw = _quat_wxyz_to_rpy(tuple(root_pose[3:7]))[2]
-        body_velocity = tuple(
+        # CSV 历史列继续保存线速度 XYZ；训练用 vx/vy/wz 单独写入 samples/parquet。
+        body_linear_velocity = tuple(
             float(value) for value in state.metadata.get("body_linear_velocity", ())
         )
-        if len(body_velocity) < 3:
-            body_velocity = (
-                float(state.robot_root_velocity[0]),
-                float(state.robot_root_velocity[1]),
-                float(state.robot_root_velocity[2]),
-            )
+        if len(body_linear_velocity) < 3:
+            body_linear_velocity = tuple(float(value) for value in state.robot_root_velocity[:3])
 
         tcp_pose = state.tcp_pose or (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
         tcp_rpy = _quat_wxyz_to_rpy(tuple(tcp_pose[3:7]))
-        arm, gripper = _joint_values(record)
+        arm, gripper_positions = _joint_values(record)
+        gripper = sum(gripper_positions) / len(gripper_positions)
         row = {
-            "时间戳(秒)": f"{float(self.frame_count) / float(self.config.fps):.6f}",
+            "时间戳(秒)": f"{float(self.frame_count) / float(self.config.dataset_fps):.6f}",
             "位置X": f"{float(root_pose[0]):.6f}",
             "位置Y": f"{float(root_pose[1]):.6f}",
             "位置Z": f"{float(root_pose[2]):.6f}",
             "偏航角": f"{root_yaw:.6f}",
-            "线速度X": f"{body_velocity[0]:.6f}",
-            "线速度Y": f"{body_velocity[1]:.6f}",
-            "线速度Z": f"{body_velocity[2]:.6f}",
+            "线速度X": f"{body_linear_velocity[0]:.6f}",
+            "线速度Y": f"{body_linear_velocity[1]:.6f}",
+            "线速度Z": f"{body_linear_velocity[2]:.6f}",
             "末端X": f"{float(tcp_pose[0]):.6f}",
             "末端Y": f"{float(tcp_pose[1]):.6f}",
             "末端Z": f"{float(tcp_pose[2]):.6f}",
@@ -354,6 +514,7 @@ class DwaEpisodeWriter:
             "末端Yaw": f"{tcp_rpy[2]:.6f}",
             "夹爪": f"{gripper:.6f}",
             "前摄像头图像": image_name,
+            "pipeline_state": record.pipeline_state,
         }
         for index, value in enumerate(arm, start=1):
             row[f"关节{index}"] = f"{value:.6f}"
@@ -369,7 +530,8 @@ def _read_episode_rows(episode_dir: Path) -> list[dict[str, str]]:
     csv_path = episode_dir / "data.csv"
     with csv_path.open("r", encoding="utf-8", newline="") as stream:
         reader = csv.DictReader(stream)
-        if tuple(reader.fieldnames or ()) != DWA_CSV_COLUMNS:
+        fieldnames = tuple(reader.fieldnames or ())
+        if fieldnames not in {DWA_CSV_COLUMNS, LEGACY_DWA_CSV_COLUMNS}:
             raise ValueError(f"{csv_path} has unexpected DWA columns")
         return list(reader)
 
@@ -385,7 +547,71 @@ def _read_episode_samples(episode_dir: Path) -> list[dict[str, Any]]:
     ]
     if not all(isinstance(sample, dict) for sample in samples):
         raise ValueError(f"{path} contains a non-object JSONL record")
+    body_velocity_by_step = _read_body_velocity_by_sim_step(episode_dir)
+    for sample in samples:
+        action = sample.get("action")
+        if isinstance(action, list) and len(action) == 10:
+            # 第一版把双指夹爪平均成1维；离线迁移时恢复为两个相同目标。
+            sample["action"] = [*action[:9], action[9], action[9]]
+        if "base_velocity" not in sample:
+            simulation_step = sample.get("simulation_step")
+            if isinstance(simulation_step, int) and simulation_step in body_velocity_by_step:
+                sample["base_velocity"] = list(body_velocity_by_step[simulation_step])
     return samples
+
+
+def _read_body_velocity_by_sim_step(
+    episode_dir: Path,
+) -> dict[int, tuple[float, float, float]]:
+    """从 50 Hz frames 恢复旧样本缺失的 body-frame vx/vy/wz。"""
+
+    frames_path = episode_dir / "frames.jsonl"
+    if not frames_path.is_file():
+        return {}
+    result: dict[int, tuple[float, float, float]] = {}
+    with frames_path.open("r", encoding="utf-8") as stream:
+        for line in stream:
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            for observation_key in ("observation", "post_step_observation"):
+                observation = payload.get(observation_key)
+                if not isinstance(observation, dict):
+                    continue
+                simulation_step = observation.get("step_index")
+                metadata = observation.get("metadata")
+                body_velocity = (
+                    metadata.get("body_velocity") if isinstance(metadata, dict) else None
+                )
+                if (
+                    isinstance(simulation_step, int)
+                    and isinstance(body_velocity, list)
+                    and len(body_velocity) >= 3
+                ):
+                    result[simulation_step] = tuple(
+                        float(value) for value in body_velocity[:3]
+                    )
+    return result
+
+
+def _source_episode_metadata(episode_dir: Path) -> dict[str, Any]:
+    """保留 batch 子进程的原 episode/seed，避免统一重编号后丢失来源。"""
+
+    summary_path = episode_dir / "summary.json"
+    payload: dict[str, Any] = {}
+    if summary_path.is_file():
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        for key in ("episode_id", "episode_index", "seed"):
+            value = summary.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                payload[f"source_{key}"] = int(value)
+    parent_name = episode_dir.parent.name
+    if parent_name.startswith("episode_"):
+        try:
+            payload.setdefault("source_episode_index", int(parent_name.split("_", 1)[1]))
+        except ValueError:
+            pass
+    return payload
 
 
 def discover_recorded_episodes(
@@ -393,7 +619,7 @@ def discover_recorded_episodes(
     *,
     require_success: bool = True,
 ) -> list[Path]:
-    """发现 full-physics 输出中的原始 CSV/JPEG episode。"""
+    """发现 full-physics 输出中的原始 episode。"""
 
     root = Path(episodes_root).expanduser().resolve()
     episodes: list[Path] = []
@@ -420,17 +646,222 @@ def _compute_stats(array: np.ndarray) -> dict[str, list[float]]:
         "max": array.max(axis=0).tolist(),
         "mean": array.mean(axis=0).tolist(),
         "std": array.std(axis=0).tolist(),
+        "count": [int(array.shape[0])],
     }
+
+
+def _infer_dataset_fps(episode_dirs: list[Path], requested_fps: float | None) -> float:
+    if requested_fps is not None:
+        return float(requested_fps)
+    detected: list[float] = []
+    for episode_dir in episode_dirs:
+        manifest_path = episode_dir / "lerobot_manifest.json"
+        if not manifest_path.is_file():
+            continue
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        value = payload.get("fps") or payload.get("dataset_fps")
+        if isinstance(value, (int, float)) and float(value) > 0.0:
+            detected.append(float(value))
+    if detected and any(abs(value - detected[0]) > 1.0e-6 for value in detected[1:]):
+        raise ValueError(f"recorded episodes use inconsistent dataset fps: {detected}")
+    return detected[0] if detected else 5.0
+
+
+def _sample_camera_keys(
+    rows: list[dict[str, str]],
+    samples: list[dict[str, Any]],
+) -> tuple[str, ...]:
+    complete_keys: set[str] | None = None
+    for sample in samples:
+        camera_frames = sample.get("camera_frames")
+        if not isinstance(camera_frames, dict):
+            continue
+        keys = {str(key) for key in camera_frames}
+        complete_keys = keys if complete_keys is None else complete_keys & keys
+    if complete_keys:
+        return tuple(sorted(complete_keys))
+    if rows and all(row.get("前摄像头图像") for row in rows):
+        return ("front",)
+    return ()
+
+
+def _copy_or_encode_video(
+    *,
+    episode_dir: Path,
+    output_path: Path,
+    camera_key: str,
+    episode_index: int,
+    chunk_index: int,
+    rows: list[dict[str, str]],
+    samples: list[dict[str, Any]],
+    fps: float,
+) -> tuple[Path, tuple[int, int, int]]:
+    import cv2
+
+    video_path = (
+        output_path
+        / "videos"
+        / f"chunk-{chunk_index:03d}"
+        / f"observation.images.{camera_key}"
+        / f"episode_{episode_index:06d}.mp4"
+    )
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+    candidates = [
+        episode_dir
+        / "recording_videos"
+        / f"observation.images.{camera_key}"
+        / "episode.mp4",
+        episode_dir
+        / "lerobot_dataset"
+        / "videos/chunk-000"
+        / f"observation.images.{camera_key}"
+        / "episode_000000.mp4",
+    ]
+    source_video = next((path for path in candidates if path.is_file()), None)
+    if source_video is not None and not _video_matches(
+        source_video,
+        expected_frames=len(rows),
+        expected_fps=fps,
+    ):
+        source_video = None
+    if source_video is not None and source_video.resolve() != video_path.resolve():
+        shutil.copyfile(source_video, video_path)
+    elif source_video is None:
+        image_paths: list[Path] = []
+        for row, sample in zip(rows, samples):
+            camera_frames = sample.get("camera_frames")
+            raw_path = None
+            if isinstance(camera_frames, dict):
+                frame_info = camera_frames.get(camera_key)
+                if isinstance(frame_info, dict):
+                    raw_path = frame_info.get("raw_image_path")
+            if not raw_path and camera_key == "front":
+                image_name = row.get("前摄像头图像")
+                raw_path = f"images/front/{image_name}" if image_name else None
+            if not raw_path:
+                raise RuntimeError(
+                    f"{episode_dir} camera {camera_key} has no staged video or raw image"
+                )
+            image_paths.append(episode_dir / str(raw_path))
+        first_image = cv2.imread(str(image_paths[0]))
+        if first_image is None:
+            raise RuntimeError(f"failed to read episode image: {image_paths[0]}")
+        image_height, image_width = first_image.shape[:2]
+        writer = cv2.VideoWriter(
+            str(video_path),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            float(fps),
+            (image_width, image_height),
+        )
+        if not writer.isOpened():
+            raise RuntimeError(f"failed to create MP4 video: {video_path}")
+        try:
+            for image_path in image_paths:
+                frame = cv2.imread(str(image_path))
+                if frame is None:
+                    raise RuntimeError(f"failed to read episode image: {image_path}")
+                writer.write(frame)
+        finally:
+            writer.release()
+
+    capture = cv2.VideoCapture(str(video_path))
+    try:
+        width = int(round(capture.get(cv2.CAP_PROP_FRAME_WIDTH)))
+        height = int(round(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+    finally:
+        capture.release()
+    return video_path, (height, width, 3)
+
+
+def _video_matches(
+    video_path: Path,
+    *,
+    expected_frames: int,
+    expected_fps: float,
+) -> bool:
+    """只复用帧数和 FPS 均正确的旧视频，防止历史少帧继续传播。"""
+
+    import cv2
+
+    capture = cv2.VideoCapture(str(video_path))
+    try:
+        if not capture.isOpened():
+            return False
+        frame_count = int(round(capture.get(cv2.CAP_PROP_FRAME_COUNT)))
+        video_fps = float(capture.get(cv2.CAP_PROP_FPS))
+    finally:
+        capture.release()
+    return frame_count == expected_frames and math.isclose(
+        video_fps,
+        expected_fps,
+        rel_tol=1.0e-3,
+        abs_tol=1.0e-2,
+    )
+
+
+def _feature_metadata(
+    *,
+    camera_shapes: dict[str, tuple[int, int, int]],
+    fps: float,
+) -> dict[str, Any]:
+    features: dict[str, Any] = {
+        "observation.state": {
+            "dtype": "float32",
+            "shape": [len(STATE_NAMES)],
+            "names": list(STATE_NAMES),
+        },
+        "observation.base_velocity": {
+            "dtype": "float32",
+            "shape": [len(BASE_VELOCITY_NAMES)],
+            "names": list(BASE_VELOCITY_NAMES),
+        },
+        "observation.object_state": {
+            "dtype": "float32",
+            "shape": [len(OBJECT_STATE_NAMES)],
+            "names": list(OBJECT_STATE_NAMES),
+        },
+        "observation.tcp_pose": {
+            "dtype": "float32",
+            "shape": [len(TCP_POSE_NAMES)],
+            "names": list(TCP_POSE_NAMES),
+        },
+        "pipeline_state": {"dtype": "string", "shape": [1], "names": None},
+        "action": {
+            "dtype": "float32",
+            "shape": [len(ACTION_NAMES)],
+            "names": list(ACTION_NAMES),
+        },
+        "next.done": {"dtype": "bool", "shape": [1], "names": None},
+        "timestamp": {"dtype": "float32", "shape": [1], "names": None},
+        "frame_index": {"dtype": "int64", "shape": [1], "names": None},
+        "episode_index": {"dtype": "int64", "shape": [1], "names": None},
+        "index": {"dtype": "int64", "shape": [1], "names": None},
+        "task_index": {"dtype": "int64", "shape": [1], "names": None},
+    }
+    for camera_key, shape in sorted(camera_shapes.items()):
+        features[f"observation.images.{camera_key}"] = {
+            "dtype": "video",
+            "shape": list(shape),
+            "names": ["height", "width", "channels"],
+            "video_info": {
+                "video.fps": float(fps),
+                "video.codec": "mp4v",
+                "video.pix_fmt": "yuv420p",
+                "video.is_depth_map": False,
+            },
+        }
+    return features
 
 
 def materialize_lerobot_dataset(
     episode_dirs: Iterable[str | Path],
     output_root: str | Path,
     *,
-    fps: int = 5,
+    fps: float | None = None,
     chunks_size: int = 1000,
+    validate: bool = True,
 ) -> dict[str, Any]:
-    """将 DWA-compatible raw episodes 转成相同的 LeRobot v2.1 目录。"""
+    """把一个或多个原始 episode 合并为统一 LeRobot 数据集。"""
 
     episodes = [Path(path).expanduser().resolve() for path in episode_dirs]
     valid_episodes: list[
@@ -442,37 +873,48 @@ def materialize_lerobot_dataset(
         if not task_path.is_file() or not csv_path.is_file():
             continue
         rows = _read_episode_rows(episode_dir)
-        if rows:
-            samples = _read_episode_samples(episode_dir)
-            if len(samples) != len(rows):
-                raise ValueError(
-                    f"{episode_dir} data.csv/samples.jsonl length mismatch: "
-                    f"{len(rows)} != {len(samples)}"
-                )
-            valid_episodes.append(
-                (episode_dir, _read_instruction(task_path), rows, samples)
+        if not rows:
+            continue
+        samples = _read_episode_samples(episode_dir)
+        if len(samples) != len(rows):
+            raise ValueError(
+                f"{episode_dir} data.csv/samples.jsonl length mismatch: "
+                f"{len(rows)} != {len(samples)}"
             )
+        valid_episodes.append((episode_dir, _read_instruction(task_path), rows, samples))
 
     output_path = Path(output_root).expanduser().resolve()
+    dataset_fps = _infer_dataset_fps(
+        [episode_dir for episode_dir, *_rest in valid_episodes],
+        fps,
+    )
     report: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
         "lerobot_exported": False,
+        "success": False,
+        "failure_reason": None,
+        "dataset_root": str(output_path),
         "dataset_path": str(output_path),
         "episode_count": len(valid_episodes),
-        "fps": int(fps),
+        "fps": dataset_fps,
         "chunks_size": int(chunks_size),
-        "format": "lerobot_v2.1_dwa_compatible",
+        "format": "lerobot_v2.1_full_physics",
+        "observation_state_names": list(STATE_NAMES),
+        "action_names": list(ACTION_NAMES),
+        "object_state_names": list(OBJECT_STATE_NAMES),
+        "tcp_pose_names": list(TCP_POSE_NAMES),
+        "base_velocity_names": list(BASE_VELOCITY_NAMES),
     }
     if not valid_episodes:
-        return {**report, "reason": "no_recorded_episode_frames"}
+        return {**report, "failure_reason": "no_recorded_episode_frames"}
 
     try:
-        import cv2
         import pyarrow as pa
         import pyarrow.parquet as pq
     except ImportError as exc:
         return {
             **report,
-            "reason": "missing_conversion_dependency",
+            "failure_reason": "missing_conversion_dependency",
             "missing_dependency": exc.name,
         }
 
@@ -496,23 +938,38 @@ def materialize_lerobot_dataset(
             pa.field("frame_index", pa.int64()),
             pa.field("timestamp", pa.float32()),
             pa.field("task_index", pa.int64()),
-            pa.field("observation.state", pa.list_(pa.float32())),
-            pa.field("observation.base_linear_velocity", pa.list_(pa.float32())),
-            pa.field("observation.object_state", pa.list_(pa.float32())),
-            pa.field("observation.tcp_pose", pa.list_(pa.float32())),
-            pa.field("action", pa.list_(pa.float32())),
+            pa.field("observation.state", pa.list_(pa.float32(), len(STATE_NAMES))),
+            pa.field(
+                "observation.base_velocity",
+                pa.list_(pa.float32(), len(BASE_VELOCITY_NAMES)),
+            ),
+            pa.field(
+                "observation.object_state",
+                pa.list_(pa.float32(), len(OBJECT_STATE_NAMES)),
+            ),
+            pa.field(
+                "observation.tcp_pose",
+                pa.list_(pa.float32(), len(TCP_POSE_NAMES)),
+            ),
+            pa.field("pipeline_state", pa.string()),
+            pa.field("action", pa.list_(pa.float32(), len(ACTION_NAMES))),
             pa.field("next.done", pa.bool_()),
         ]
     )
-    all_states: list[np.ndarray] = []
-    all_base_velocities: list[np.ndarray] = []
-    all_object_states: list[np.ndarray] = []
-    all_tcp_poses: list[np.ndarray] = []
-    all_actions: list[np.ndarray] = []
+    all_feature_arrays: dict[str, list[np.ndarray]] = {
+        "observation.state": [],
+        "observation.base_velocity": [],
+        "observation.object_state": [],
+        "observation.tcp_pose": [],
+        "action": [],
+    }
     episodes_meta: list[dict[str, Any]] = []
+    episode_stats: list[dict[str, Any]] = []
+    episode_exports: list[dict[str, Any]] = []
     global_frame_index = 0
-    image_height = 480
-    image_width = 640
+    shared_camera_keys: set[str] | None = None
+    camera_shapes: dict[str, tuple[int, int, int]] = {}
+    all_raw_images_saved = True
 
     for episode_index, (episode_dir, instruction, rows, samples) in enumerate(valid_episodes):
         chunk_index = episode_index // chunks_size
@@ -521,23 +978,35 @@ def materialize_lerobot_dataset(
             dtype=np.float32,
         )
         base_velocities = np.asarray(
-            [[float(row[column]) for column in ACTION_COLUMNS] for row in rows],
+            [
+                sample.get(
+                    "base_velocity",
+                    [
+                        float(row["线速度X"]),
+                        float(row["线速度Y"]),
+                        0.0,
+                    ],
+                )
+                for row, sample in zip(rows, samples)
+            ],
             dtype=np.float32,
         )
-        actions = np.asarray(
-            [sample["action"] for sample in samples],
-            dtype=np.float32,
-        )
+        actions = np.asarray([sample["action"] for sample in samples], dtype=np.float32)
         object_states = np.asarray(
             [sample["object_state"] for sample in samples],
             dtype=np.float32,
         )
-        tcp_poses = np.asarray(
-            [sample["tcp_pose"] for sample in samples],
-            dtype=np.float32,
-        )
-        timestamps = [float(row["时间戳(秒)"]) for row in rows]
+        tcp_poses = np.asarray([sample["tcp_pose"] for sample in samples], dtype=np.float32)
+        pipeline_states = [
+            str(sample.get("pipeline_state") or row.get("pipeline_state") or "unknown")
+            for row, sample in zip(rows, samples)
+        ]
+        timestamps = [
+            float(sample.get("timestamp", frame_index / dataset_fps))
+            for frame_index, sample in enumerate(samples)
+        ]
         frame_count = len(rows)
+        task_index = task_index_map[instruction]
         table = pa.table(
             {
                 "index": pa.array(
@@ -547,24 +1016,28 @@ def materialize_lerobot_dataset(
                 "episode_index": pa.array([episode_index] * frame_count, type=pa.int64()),
                 "frame_index": pa.array(range(frame_count), type=pa.int64()),
                 "timestamp": pa.array(timestamps, type=pa.float32()),
-                "task_index": pa.array(
-                    [task_index_map[instruction]] * frame_count,
-                    type=pa.int64(),
+                "task_index": pa.array([task_index] * frame_count, type=pa.int64()),
+                "observation.state": pa.array(
+                    states.tolist(),
+                    type=pa.list_(pa.float32(), len(STATE_NAMES)),
                 ),
-                "observation.state": pa.array(states.tolist(), type=pa.list_(pa.float32())),
-                "observation.base_linear_velocity": pa.array(
+                "observation.base_velocity": pa.array(
                     base_velocities.tolist(),
-                    type=pa.list_(pa.float32()),
+                    type=pa.list_(pa.float32(), len(BASE_VELOCITY_NAMES)),
                 ),
                 "observation.object_state": pa.array(
                     object_states.tolist(),
-                    type=pa.list_(pa.float32()),
+                    type=pa.list_(pa.float32(), len(OBJECT_STATE_NAMES)),
                 ),
                 "observation.tcp_pose": pa.array(
                     tcp_poses.tolist(),
-                    type=pa.list_(pa.float32()),
+                    type=pa.list_(pa.float32(), len(TCP_POSE_NAMES)),
                 ),
-                "action": pa.array(actions.tolist(), type=pa.list_(pa.float32())),
+                "pipeline_state": pa.array(pipeline_states, type=pa.string()),
+                "action": pa.array(
+                    actions.tolist(),
+                    type=pa.list_(pa.float32(), len(ACTION_NAMES)),
+                ),
                 "next.done": pa.array(
                     [False] * (frame_count - 1) + [True],
                     type=pa.bool_(),
@@ -577,58 +1050,97 @@ def materialize_lerobot_dataset(
         parquet_path = data_dir / f"episode_{episode_index:06d}.parquet"
         pq.write_table(table, parquet_path)
 
-        image_paths = [episode_dir / "images" / "front" / row["前摄像头图像"] for row in rows]
-        first_image = cv2.imread(str(image_paths[0]))
-        if first_image is None:
-            raise RuntimeError(f"failed to read episode image: {image_paths[0]}")
-        image_height, image_width = first_image.shape[:2]
-        video_path = (
-            output_path
-            / "videos"
-            / f"chunk-{chunk_index:03d}"
-            / "observation.images.front"
-            / f"episode_{episode_index:06d}.mp4"
+        camera_keys = _sample_camera_keys(rows, samples)
+        if not camera_keys:
+            raise RuntimeError(f"{episode_dir} has no complete camera stream")
+        shared_camera_keys = (
+            set(camera_keys)
+            if shared_camera_keys is None
+            else shared_camera_keys & set(camera_keys)
         )
-        video_path.parent.mkdir(parents=True, exist_ok=True)
-        local_episode_video = (
-            episode_dir
-            / "lerobot_dataset"
-            / "videos/chunk-000/observation.images.front/episode_000000.mp4"
-        )
-        if local_episode_video.is_file() and not local_episode_video.is_relative_to(output_path):
-            # batch 合并时复用子 episode 已编码的视频，避免再次逐帧压缩。
-            shutil.copyfile(local_episode_video, video_path)
-        else:
-            writer = cv2.VideoWriter(
-                str(video_path),
-                cv2.VideoWriter_fourcc(*"mp4v"),
-                float(fps),
-                (image_width, image_height),
+        video_paths: dict[str, str] = {}
+        for camera_key in camera_keys:
+            video_path, shape = _copy_or_encode_video(
+                episode_dir=episode_dir,
+                output_path=output_path,
+                camera_key=camera_key,
+                episode_index=episode_index,
+                chunk_index=chunk_index,
+                rows=rows,
+                samples=samples,
+                fps=dataset_fps,
             )
-            if not writer.isOpened():
-                raise RuntimeError(f"failed to create MP4 video: {video_path}")
-            try:
-                for image_path in image_paths:
-                    frame = cv2.imread(str(image_path))
-                    if frame is None:
-                        raise RuntimeError(f"failed to read episode image: {image_path}")
-                    writer.write(frame)
-            finally:
-                writer.release()
+            camera_shapes[camera_key] = shape
+            video_paths[camera_key] = str(video_path)
 
+        raw_images_saved = any(
+            isinstance(sample.get("camera_frames"), dict)
+            and any(
+                isinstance(value, dict) and bool(value.get("raw_image_path"))
+                for value in sample["camera_frames"].values()
+            )
+            for sample in samples
+        ) or any((episode_dir / "images").rglob("*.jpg"))
+        all_raw_images_saved = all_raw_images_saved and raw_images_saved
+        feature_stats = {
+            "observation.state": _compute_stats(states),
+            "observation.base_velocity": _compute_stats(base_velocities),
+            "observation.object_state": _compute_stats(object_states),
+            "observation.tcp_pose": _compute_stats(tcp_poses),
+            "action": _compute_stats(actions),
+        }
         episodes_meta.append(
             {
                 "episode_index": episode_index,
                 "tasks": [instruction],
                 "length": frame_count,
+                **_source_episode_metadata(episode_dir),
             }
         )
-        all_states.append(states)
-        all_base_velocities.append(base_velocities)
-        all_object_states.append(object_states)
-        all_tcp_poses.append(tcp_poses)
-        all_actions.append(actions)
+        episode_stats.append(
+            {
+                "episode_index": episode_index,
+                "stats": feature_stats,
+            }
+        )
+        episode_exports.append(
+            {
+                "episode_index": episode_index,
+                "episode_dir": str(episode_dir),
+                **_source_episode_metadata(episode_dir),
+                "parquet_path": str(parquet_path),
+                "video_paths": video_paths,
+                "camera_keys": list(camera_keys),
+                "num_frames": frame_count,
+                "task_index": task_index,
+                "task_text": instruction,
+                "raw_images_saved": raw_images_saved,
+            }
+        )
+        for key, array in (
+            ("observation.state", states),
+            ("observation.base_velocity", base_velocities),
+            ("observation.object_state", object_states),
+            ("observation.tcp_pose", tcp_poses),
+            ("action", actions),
+        ):
+            all_feature_arrays[key].append(array)
         global_frame_index += frame_count
+
+    actual_camera_keys = tuple(sorted(shared_camera_keys or ()))
+    if not actual_camera_keys:
+        raise RuntimeError("episodes do not share any complete camera stream")
+    # 统一数据集只能声明所有 episode 都存在的 camera feature。
+    for episode_export in episode_exports:
+        episode_export["camera_keys"] = list(actual_camera_keys)
+        episode_export["video_paths"] = {
+            key: value
+            for key, value in episode_export["video_paths"].items()
+            if key in actual_camera_keys
+        }
+    camera_shapes = {
+        key: shape for key, shape in camera_shapes.items() if key in actual_camera_keys
+    }
 
     with (meta_dir / "episodes.jsonl").open("w", encoding="utf-8") as stream:
         for payload in episodes_meta:
@@ -636,109 +1148,109 @@ def materialize_lerobot_dataset(
     with (meta_dir / "tasks.jsonl").open("w", encoding="utf-8") as stream:
         for task, task_index in sorted(task_index_map.items(), key=lambda item: item[1]):
             stream.write(
-                json.dumps({"task_index": task_index, "task": task}, ensure_ascii=False) + "\n"
+                json.dumps({"task_index": task_index, "task": task}, ensure_ascii=False)
+                + "\n"
             )
+    with (meta_dir / "episodes_stats.jsonl").open("w", encoding="utf-8") as stream:
+        for payload in episode_stats:
+            stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
-    states_array = np.concatenate(all_states, axis=0)
-    base_velocities_array = np.concatenate(all_base_velocities, axis=0)
-    object_states_array = np.concatenate(all_object_states, axis=0)
-    tcp_poses_array = np.concatenate(all_tcp_poses, axis=0)
-    actions_array = np.concatenate(all_actions, axis=0)
     stats = {
-        "observation.state": _compute_stats(states_array),
-        "observation.base_linear_velocity": _compute_stats(base_velocities_array),
-        "observation.object_state": _compute_stats(object_states_array),
-        "observation.tcp_pose": _compute_stats(tcp_poses_array),
-        "action": _compute_stats(actions_array),
-        "observation.images.front": {
+        key: _compute_stats(np.concatenate(arrays, axis=0))
+        for key, arrays in all_feature_arrays.items()
+    }
+    for camera_key in actual_camera_keys:
+        stats[f"observation.images.{camera_key}"] = {
             "min": [[[0.0, 0.0, 0.0]]],
             "max": [[[1.0, 1.0, 1.0]]],
             "mean": [[[0.5, 0.5, 0.5]]],
             "std": [[[0.5, 0.5, 0.5]]],
-        },
-    }
+            "count": [global_frame_index],
+        }
+    # 保留旧 stats.jsonl，避免已有下游脚本突然失效。
     with (meta_dir / "stats.jsonl").open("w", encoding="utf-8") as stream:
         for key, value in stats.items():
             stream.write(json.dumps({key: value}, ensure_ascii=False) + "\n")
 
     total_episodes = len(valid_episodes)
+    features = _feature_metadata(camera_shapes=camera_shapes, fps=dataset_fps)
     info = {
         "codebase_version": "v2.1",
-        "robot_type": "mobile_arm",
+        "schema_version": SCHEMA_VERSION,
+        "robot_type": "go2_x5_mobile_manipulator",
         "total_episodes": total_episodes,
         "total_frames": global_frame_index,
         "total_tasks": len(task_index_map),
+        "total_videos": total_episodes * len(actual_camera_keys),
         "total_chunks": (total_episodes + chunks_size - 1) // chunks_size,
         "chunks_size": chunks_size,
-        "fps": fps,
+        "splits": {"train": f"0:{total_episodes}"},
+        "fps": dataset_fps,
         "video": True,
-        "features": {
-            "observation.state": {
-                "dtype": "float32",
-                "shape": [len(STATE_NAMES)],
-                "names": list(STATE_NAMES),
-            },
-            "action": {
-                "dtype": "float32",
-                "shape": [len(FULL_ACTION_NAMES)],
-                "names": list(FULL_ACTION_NAMES),
-            },
-            "observation.base_linear_velocity": {
-                "dtype": "float32",
-                "shape": [len(ACTION_NAMES)],
-                "names": list(ACTION_NAMES),
-            },
-            "observation.object_state": {
-                "dtype": "float32",
-                "shape": [len(OBJECT_STATE_NAMES)],
-                "names": list(OBJECT_STATE_NAMES),
-            },
-            "observation.tcp_pose": {
-                "dtype": "float32",
-                "shape": [len(TCP_POSE_NAMES)],
-                "names": list(TCP_POSE_NAMES),
-            },
-            "observation.images.front": {
-                "dtype": "video",
-                "shape": [image_height, image_width, 3],
-                "names": ["height", "width", "channels"],
-                "video_info": {
-                    "video.fps": fps,
-                    "video.codec": "mp4v",
-                    "video.pix_fmt": "yuv420p",
-                    "video.is_depth_map": False,
-                },
-            },
-            "timestamp": {"dtype": "float32", "shape": [1], "names": None},
-            "frame_index": {"dtype": "int64", "shape": [1], "names": None},
-            "episode_index": {"dtype": "int64", "shape": [1], "names": None},
-            "index": {"dtype": "int64", "shape": [1], "names": None},
-            "task_index": {"dtype": "int64", "shape": [1], "names": None},
-        },
+        "camera_keys": list(actual_camera_keys),
+        "features": features,
+        "observation_state_names": list(STATE_NAMES),
+        "action_names": list(ACTION_NAMES),
+        "object_state_names": list(OBJECT_STATE_NAMES),
+        "tcp_pose_names": list(TCP_POSE_NAMES),
+        "base_velocity_names": list(BASE_VELOCITY_NAMES),
         "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
         "video_path": (
             "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
         ),
     }
-    (meta_dir / "info.json").write_text(
+    info_path = meta_dir / "info.json"
+    info_path.write_text(
         json.dumps(info, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    return {
+
+    result: dict[str, Any] = {
         **report,
         "lerobot_exported": True,
+        "success": True,
         "frame_count": global_frame_index,
+        "num_frames": global_frame_index,
         "task_count": len(task_index_map),
-        "info_path": str(meta_dir / "info.json"),
+        "camera_keys": list(actual_camera_keys),
+        "feature_keys": list(features),
+        "raw_images_saved": all_raw_images_saved,
+        "info_path": str(info_path),
+        "episodes": episode_exports,
     }
+    if len(episode_exports) == 1:
+        result.update(episode_exports[0])
+
+    if validate:
+        from .lerobot_validator import validate_lerobot_dataset
+
+        validation_report = validate_lerobot_dataset(output_path)
+        validation_success = bool(
+            validation_report.get("success", validation_report.get("valid", False))
+        )
+        result["validation_report"] = validation_report
+        result["success"] = validation_success
+        result["lerobot_exported"] = validation_success
+        result["failure_reason"] = (
+            None
+            if validation_success
+            else validation_report.get("failure_reason", "lerobot_validation_failed")
+        )
+    return result
 
 
 __all__ = [
-    "ACTION_COLUMNS",
+    "ACTION_NAMES",
+    "BASE_VELOCITY_NAMES",
     "DWA_CSV_COLUMNS",
     "DwaEpisodeWriter",
+    "LEGACY_DWA_CSV_COLUMNS",
     "LeRobotRecordingConfig",
+    "OBJECT_STATE_NAMES",
+    "SCHEMA_VERSION",
     "STATE_COLUMNS",
+    "STATE_NAMES",
+    "TCP_POSE_NAMES",
     "discover_recorded_episodes",
     "materialize_lerobot_dataset",
 ]
