@@ -15,12 +15,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from source.pipeline import (  # noqa: E402
+    BaseGoalRandomizationSettings,
     FullPhysicsConfig,
     ManipulationSettings,
     RandomizationSettings,
     RecordingSettings,
 )
 from source.pipeline.dry_run import create_dry_run_pipeline  # noqa: E402
+from source.pipeline.isaac_compat import patch_numpy_for_isaacsim  # noqa: E402
 from source.tasks import JsonTaskProvider, prepare_episode_spec  # noqa: E402
 
 
@@ -58,6 +60,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--show-randomization-debug",
         action="store_true",
         help="显示 pick/place 随机区域和采样点的非物理 USD guide；默认关闭。",
+    )
+    parser.add_argument(
+        "--randomize-base-goal",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="开启 pick/place 导航交接 base_goal 极坐标随机化；默认开启，可用 --no-randomize-base-goal 关闭。",
     )
     parser.add_argument(
         "--keep-window-open",
@@ -226,6 +234,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         randomization=RandomizationSettings(
             enabled=args.randomize_task,
             show_debug_region=args.show_randomization_debug,
+            base_goal=BaseGoalRandomizationSettings(
+                enabled=args.randomize_base_goal,
+            ),
         ),
         recording=RecordingSettings(
             debug_per_episode_lerobot=(
@@ -264,6 +275,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             or manipulation_apply_smoke
             or full_physics
         ):
+            compat_report = patch_numpy_for_isaacsim()
+            if compat_report["patched_broadcast_to"]:
+                print(
+                    "[full-physics] patched NumPy for Isaac Sim: "
+                    f"broadcast_to restored; numpy={compat_report['numpy_version']} "
+                    f"file={compat_report['numpy_file']}",
+                    flush=True,
+                )
             from isaaclab.app import AppLauncher
 
             app_launcher = AppLauncher(
@@ -288,7 +307,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 seed=episode_seed,
                 settings=config.randomization,
             )
-            if config.randomization.enabled:
+            if config.randomization.enabled or config.randomization.base_goal.enabled:
                 pick_xy = (
                     "unavailable"
                     if episode_spec.object_initial_pose is None
@@ -311,6 +330,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"pick_xy={pick_xy} place_xy={place_xy}",
                     flush=True,
                 )
+            base_goal_randomization = (
+                episode_spec.raw_task.get("randomization", {})
+                .get("base_goal_randomization")
+            )
+            if isinstance(base_goal_randomization, dict) and base_goal_randomization.get("enabled"):
+                print(
+                    "[base-goal-randomization] "
+                    f"enabled=True seed={base_goal_randomization.get('seed')}",
+                    flush=True,
+                )
+                for label in ("pick", "place"):
+                    sample = base_goal_randomization.get(label)
+                    if not isinstance(sample, dict) or not sample.get("valid"):
+                        continue
+                    if sample.get("fallback_used"):
+                        print(
+                            "[base-goal-randomization][warning] "
+                            f"{label} sampling fallback used: {sample.get('fallback_reason')}",
+                            flush=True,
+                        )
+                    goal = sample.get("sampled_base_goal_xyyaw") or ()
+                    target = sample.get("target_xy") or ()
+                    if len(goal) >= 3 and len(target) >= 2:
+                        print(
+                            f"[{label}-base-goal] "
+                            f"target=({float(target[0]):.4f},{float(target[1]):.4f}) "
+                            f"sampled=({float(goal[0]):.4f},{float(goal[1]):.4f},"
+                            f"{float(goal[2]):.4f}) "
+                            f"radius={float(sample.get('radius_m', 0.0)):.4f} "
+                            f"attempt={sample.get('attempt')}",
+                            flush=True,
+                        )
             episode_dir = (
                 config.output_dir
                 if flat_episode_output

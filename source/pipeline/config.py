@@ -7,6 +7,39 @@ from pathlib import Path
 
 
 @dataclass(frozen=True)
+class BaseGoalRandomizationSettings:
+    """pick/place 导航交接位姿随机化参数。"""
+
+    enabled: bool = True
+    pick_radius_min_m: float = 0.45
+    pick_radius_max_m: float = 0.60
+    pick_angle_noise_deg: float = 20.0
+    pick_yaw_noise_deg: float = 0.0
+    # place 周围障碍更密集，使用矩形 offset 而不是极坐标采样。
+    place_offset_x_range_m: tuple[float, float] = (0.30, 0.40)
+    place_offset_y_range_m: tuple[float, float] = (-0.15, -0.08)
+    place_radius_min_m: float = 0.35
+    place_radius_max_m: float = 0.40
+    place_angle_noise_deg: float = 0.0
+    place_yaw_noise_deg: float = 0.0
+    arm_base_offset_x_m: float = 0.12
+    arm_base_offset_y_m: float = 0.0
+    arm_workspace_min_xy_radius_m: float = 0.35
+    arm_workspace_max_xy_radius_m: float = 0.58
+    # place 需要给导航终止误差和真实 tracking 留余量，不能贴着机械臂可达边界采样。
+    place_workspace_max_xy_radius_m: float = 0.45
+    # place 阶段 yaw 不参与导航到达判定，真实 arm-base 可能偏离名义估计；
+    # 额外限制目标到 robot base 的半径，给 XY 终止误差和 yaw-free frame 留余量。
+    place_robot_base_max_xy_radius_m: float = 0.43
+    nav_map_min_clearance_m: float = 0.10
+    max_goal_sample_attempts: int = 100
+    max_place_target_sample_attempts: int = 50
+    fallback_to_fixed_offset: bool = True
+    seed_offset: int = 12137
+    validate_with_curobo: bool = False
+
+
+@dataclass(frozen=True)
 class StateLimits:
     """Maximum ticks allowed in each type of pipeline phase."""
 
@@ -93,6 +126,9 @@ class ManipulationSettings:
     carry_object_tcp_slip_tolerance: float = 0.10
     insert_place_plan_start_transition: bool = True
     place_plan_start_transition_duration_s: float = 0.5
+    # full-physics 在 pick 后回 home 并 carry；place 默认保持当前 TCP 姿态，
+    # 避免把旧 pick 姿态强加到真实导航后的 base frame 里导致 pre-place 不可解。
+    reuse_pick_grasp_orientation_for_place: bool = False
 
 
 @dataclass(frozen=True)
@@ -103,14 +139,17 @@ class RandomizationSettings:
     show_debug_region: bool = False
     pick_x_range: tuple[float, float] = (0.90, 0.95)
     pick_y_range: tuple[float, float] = (0.75, 1.50)
-    place_x_range: tuple[float, float] = (0.65285, 0.75285)
-    place_y_range: tuple[float, float] = (5.00337, 5.50337)
+    place_x_range: tuple[float, float] = (0.75, 0.80)
+    place_y_range: tuple[float, float] = (5.00, 5.30)
     clearance_radius: float = 0.20
     min_boundary_clearance: float = 0.25
     edge_biased: bool = True
     edge_margin: float = 0.12
     edge_min_clearance: float = 0.03
     place_seed_offset: int = 9173
+    base_goal: BaseGoalRandomizationSettings = field(
+        default_factory=BaseGoalRandomizationSettings,
+    )
 
 
 @dataclass(frozen=True)
@@ -234,6 +273,59 @@ class FullPhysicsConfig:
             raise ValueError("randomization edge_margin must be positive")
         if self.randomization.edge_min_clearance < 0.0:
             raise ValueError("randomization edge_min_clearance must be non-negative")
+        base_goal_randomization = self.randomization.base_goal
+        for name, bounds in (
+            (
+                "base_goal.pick_radius",
+                (
+                    base_goal_randomization.pick_radius_min_m,
+                    base_goal_randomization.pick_radius_max_m,
+                ),
+            ),
+            (
+                "base_goal.place_radius",
+                (
+                    base_goal_randomization.place_radius_min_m,
+                    base_goal_randomization.place_radius_max_m,
+                ),
+            ),
+            (
+                "base_goal.arm_workspace_radius",
+                (
+                    base_goal_randomization.arm_workspace_min_xy_radius_m,
+                    base_goal_randomization.arm_workspace_max_xy_radius_m,
+                ),
+            ),
+        ):
+            if bounds[0] < 0.0 or bounds[0] > bounds[1]:
+                raise ValueError(f"{name} must contain ordered non-negative min/max values")
+        for name, bounds in (
+            ("base_goal.place_offset_x", base_goal_randomization.place_offset_x_range_m),
+            ("base_goal.place_offset_y", base_goal_randomization.place_offset_y_range_m),
+        ):
+            if len(bounds) != 2 or bounds[0] > bounds[1]:
+                raise ValueError(f"{name} must contain ordered min/max values")
+        if base_goal_randomization.place_offset_x_range_m[0] < 0.0:
+            raise ValueError("base_goal place_offset_x must be non-negative")
+        if base_goal_randomization.place_offset_y_range_m[1] > 0.0:
+            raise ValueError("base_goal place_offset_y must be non-positive")
+        if base_goal_randomization.max_goal_sample_attempts < 1:
+            raise ValueError("base_goal max_goal_sample_attempts must be at least 1")
+        if base_goal_randomization.nav_map_min_clearance_m < 0.0:
+            raise ValueError("base_goal nav_map_min_clearance_m must be non-negative")
+        if base_goal_randomization.seed_offset < 0:
+            raise ValueError("base_goal seed_offset must be non-negative")
+        if base_goal_randomization.place_workspace_max_xy_radius_m <= 0.0:
+            raise ValueError("base_goal place_workspace_max_xy_radius_m must be positive")
+        if (
+            base_goal_randomization.place_workspace_max_xy_radius_m
+            > base_goal_randomization.arm_workspace_max_xy_radius_m
+        ):
+            raise ValueError("base_goal place_workspace_max_xy_radius_m must not exceed arm workspace max")
+        if base_goal_randomization.place_robot_base_max_xy_radius_m <= 0.0:
+            raise ValueError("base_goal place_robot_base_max_xy_radius_m must be positive")
+        if base_goal_randomization.max_place_target_sample_attempts < 1:
+            raise ValueError("base_goal max_place_target_sample_attempts must be at least 1")
         if self.recording.dataset_fps <= 0:
             raise ValueError("recording dataset_fps must be positive")
         if self.recording.image_height <= 0 or self.recording.image_width <= 0:

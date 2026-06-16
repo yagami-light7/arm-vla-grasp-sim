@@ -664,6 +664,8 @@ class FullPhysicsManipulationTest(unittest.TestCase):
         self.assertEqual(payload["sequence"], ["pre_place", "place", "open_gripper", "retreat"])
 
     def test_current_state_pick_planner_calls_exporter_and_replans_place(self) -> None:
+        exported_place_pick_quats = []
+
         class FakeCurrentStateSimulation:
             def export_current_curobo_pick_inputs(self, *, output_dir, episode_spec, state):
                 del episode_spec, state
@@ -672,7 +674,23 @@ class FullPhysicsManipulationTest(unittest.TestCase):
                 state_json = output_path / "pick_state.json"
                 target_json = output_path / "pick_target.json"
                 state_json.write_text("{}", encoding="utf-8")
-                target_json.write_text("{}", encoding="utf-8")
+                target_json.write_text(
+                    json.dumps(
+                        {
+                            "poses": {
+                                "grasp": {
+                                    "quaternion_wxyz": [
+                                        0.9238795,
+                                        0.0,
+                                        0.0,
+                                        0.3826834,
+                                    ]
+                                }
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
                 return {
                     "state_json": state_json,
                     "target_json": target_json,
@@ -689,6 +707,7 @@ class FullPhysicsManipulationTest(unittest.TestCase):
                 pick_grasp_quaternion_base,
             ):
                 del episode_spec, state
+                exported_place_pick_quats.append(pick_grasp_quaternion_base)
                 output_path = Path(output_dir)
                 output_path.mkdir(parents=True, exist_ok=True)
                 state_json = output_path / "place_state.json"
@@ -736,6 +755,114 @@ class FullPhysicsManipulationTest(unittest.TestCase):
         self.assertIn("place_state.json", calls[1].state_json)
         self.assertEqual(calls[1].curobo_task_mode, "place")
         self.assertFalse(calls[1].use_planner_server)
+        self.assertEqual(exported_place_pick_quats, [None])
+        self.assertFalse(
+            place_plan.metadata["current_state_place_orientation"][
+                "reuse_pick_grasp_orientation_for_place"
+            ]
+        )
+        self.assertIsNone(
+            place_plan.metadata["current_state_place_orientation"][
+                "exported_pick_grasp_quaternion_base"
+            ]
+        )
+        self.assertIsNotNone(
+            place_plan.metadata["current_state_place_orientation"][
+                "stored_pick_grasp_quaternion_base"
+            ]
+        )
+
+    def test_current_state_place_can_reuse_pick_orientation_when_enabled(self) -> None:
+        exported_place_pick_quats = []
+
+        class FakeCurrentStateSimulation:
+            def export_current_curobo_pick_inputs(self, *, output_dir, episode_spec, state):
+                del episode_spec, state
+                output_path = Path(output_dir)
+                output_path.mkdir(parents=True, exist_ok=True)
+                state_json = output_path / "pick_state.json"
+                target_json = output_path / "pick_target.json"
+                state_json.write_text("{}", encoding="utf-8")
+                target_json.write_text(
+                    json.dumps(
+                        {
+                            "poses": {
+                                "grasp": {
+                                    "quaternion_wxyz": [
+                                        0.9238795,
+                                        0.0,
+                                        0.0,
+                                        0.3826834,
+                                    ]
+                                }
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return {
+                    "state_json": state_json,
+                    "target_json": target_json,
+                    "object_prim_path": "/World/apple",
+                }
+
+            def export_current_curobo_place_inputs(
+                self,
+                *,
+                output_dir,
+                episode_spec,
+                state,
+                pick_grasp_quaternion_base,
+            ):
+                del episode_spec, state
+                exported_place_pick_quats.append(pick_grasp_quaternion_base)
+                output_path = Path(output_dir)
+                output_path.mkdir(parents=True, exist_ok=True)
+                state_json = output_path / "place_state.json"
+                target_json = output_path / "place_target.json"
+                state_json.write_text("{}", encoding="utf-8")
+                target_json.write_text("{}", encoding="utf-8")
+                return {
+                    "state_json": state_json,
+                    "target_json": target_json,
+                    "object_prim_path": "/World/apple",
+                }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+
+            def fake_runner(task):
+                payload = _place_payload() if task.curobo_task_mode == "place" else _pick_payload()
+                Path(task.plan_json).write_text(json.dumps(payload), encoding="utf-8")
+                return payload
+
+            planner = CurrentStateCuroboPlanner(
+                simulation=FakeCurrentStateSimulation(),
+                config=CurrentStateCuroboPlannerConfig(
+                    output_dir=root / "online",
+                    project_root=root,
+                    place_plan_json=None,
+                    use_planner_server=False,
+                    reuse_pick_grasp_orientation_for_place=True,
+                ),
+                plan_runner=fake_runner,
+            )
+
+            planner.plan_pick(_state(), None)  # type: ignore[arg-type]
+            place_plan = planner.plan_place(_state(), _episode_spec())
+
+        self.assertEqual(len(exported_place_pick_quats), 1)
+        self.assertIsNotNone(exported_place_pick_quats[0])
+        self.assertTrue(
+            place_plan.metadata["current_state_place_orientation"][
+                "reuse_pick_grasp_orientation_for_place"
+            ]
+        )
+        self.assertIsNotNone(
+            place_plan.metadata["current_state_place_orientation"][
+                "exported_pick_grasp_quaternion_base"
+            ]
+        )
 
     def test_current_state_planner_rejects_lift_pick_when_side_retreat_expected(self) -> None:
         class FakeCurrentStateSimulation:

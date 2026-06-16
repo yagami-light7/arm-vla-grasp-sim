@@ -31,6 +31,18 @@ class IsaacLabNavigationRuntimeConfig:
     enable_wrist_camera: bool = False
     wrist_camera_height: int = 480
     wrist_camera_width: int = 640
+    patch_gripper_collision: bool = True
+    gripper_collision_robot_root: str = "/World/go2_x5"
+    gripper_collision_links: tuple[str, str] = ("arm_link7", "arm_link8")
+    gripper_collision_approximation: str = "convexDecomposition"
+    gripper_collision_contact_offset: float = 0.002
+    gripper_collision_rest_offset: float = 0.0
+    patch_apple_collision: bool = True
+    apple_collision_root_path: str = "/World"
+    apple_collision_keywords: tuple[str, ...] = ("apple", "Apple")
+    apple_collision_approximation: str = "convexDecomposition"
+    apple_collision_contact_offset: float = 0.001
+    apple_collision_rest_offset: float = 0.0
     arm_joint_names: tuple[str, ...] = (
         "arm_joint1",
         "arm_joint2",
@@ -801,6 +813,35 @@ class IsaacLabNavigationRuntime:
                     else None
                 ),
             )
+            if self._config.patch_gripper_collision or self._config.patch_apple_collision:
+                from source.simulation.collision_patch import (
+                    gripper_collision_patch_report,
+                    keyword_collision_patch_report,
+                )
+
+                robot_spawn_cfg = env.unwrapped.scene["robot"].cfg.spawn
+                if self._config.patch_gripper_collision:
+                    patch_report = gripper_collision_patch_report(robot_spawn_cfg)
+                    self._metadata["gripper_collision_patch_report"] = (
+                        patch_report
+                        if patch_report is not None
+                        else {
+                            "applied": False,
+                            "reason": "spawn_patch_report_missing",
+                            "patch_count": 0,
+                        }
+                    )
+                if self._config.patch_apple_collision:
+                    apple_patch_report = keyword_collision_patch_report(robot_spawn_cfg)
+                    self._metadata["apple_collision_patch_report"] = (
+                        apple_patch_report
+                        if apple_patch_report is not None
+                        else {
+                            "applied": False,
+                            "reason": "spawn_patch_report_missing",
+                            "patch_count": 0,
+                        }
+                    )
             wrapped = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
             # wrapper 构造时会触发 env.reset；GUI viewport 只在 reset 完成后切相机。
             self.refresh_viewport(reason="environment_reset")
@@ -921,6 +962,26 @@ class IsaacLabNavigationRuntime:
         env_cfg.terminations.time_out = None
         env_cfg.terminations.illegal_contact = None
         env_cfg.terminations.terrain_out_of_bounds = None
+        if self._config.patch_gripper_collision or self._config.patch_apple_collision:
+            from source.simulation.collision_patch import (
+                install_gripper_collision_patch_on_spawn,
+            )
+
+            install_gripper_collision_patch_on_spawn(
+                env_cfg.scene.robot.spawn,
+                enable_gripper_patch=self._config.patch_gripper_collision,
+                enable_keyword_patch=self._config.patch_apple_collision,
+                robot_root=self._config.gripper_collision_robot_root,
+                gripper_links=self._config.gripper_collision_links,
+                approximation=self._config.gripper_collision_approximation,
+                contact_offset=self._config.gripper_collision_contact_offset,
+                rest_offset=self._config.gripper_collision_rest_offset,
+                keyword_root_path=self._config.apple_collision_root_path,
+                keywords=self._config.apple_collision_keywords,
+                keyword_approximation=self._config.apple_collision_approximation,
+                keyword_contact_offset=self._config.apple_collision_contact_offset,
+                keyword_rest_offset=self._config.apple_collision_rest_offset,
+            )
         if self._config.enable_front_camera:
             # 与 DWA/play_nav_cs.py 使用同一相机内参、外参和 ROS optical frame 约定。
             env_cfg.scene.head_camera = CameraCfg(

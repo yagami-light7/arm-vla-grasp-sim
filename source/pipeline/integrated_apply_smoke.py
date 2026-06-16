@@ -68,6 +68,9 @@ def create_full_physics_pipeline(
             side_grasp_fallback_retreat=False,
             side_grasp_retreat_to_pregrasp=False,
             split_pregrasp_motion=True,
+            reuse_pick_grasp_orientation_for_place=(
+                full_physics_config.manipulation.reuse_pick_grasp_orientation_for_place
+            ),
         )
     )
 

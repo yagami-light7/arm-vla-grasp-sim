@@ -31,6 +31,7 @@ from source.pipeline import (
     StateLimits,
 )
 from source.pipeline.dry_run import create_dry_run_pipeline
+from source.pipeline.isaac_compat import patch_numpy_for_isaacsim
 from source.pipeline.integrated_apply_smoke import create_full_physics_pipeline
 from source.pipeline.manipulation_apply_smoke import create_manipulation_apply_smoke_pipeline
 from source.pipeline.manipulation_smoke import create_manipulation_smoke_pipeline
@@ -44,6 +45,24 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class FullPhysicsPipelineTest(unittest.TestCase):
+    def test_numpy_isaacsim_compat_restores_broadcast_to_alias(self) -> None:
+        import numpy as np
+        import numpy.lib.stride_tricks as stride_tricks
+
+        original = getattr(stride_tricks, "broadcast_to", None)
+        if hasattr(stride_tricks, "broadcast_to"):
+            delattr(stride_tricks, "broadcast_to")
+        try:
+            report = patch_numpy_for_isaacsim()
+
+            self.assertTrue(report["has_broadcast_to"])
+            self.assertIs(stride_tricks.broadcast_to, np.broadcast_to)
+        finally:
+            if original is not None:
+                stride_tricks.broadcast_to = original
+            elif hasattr(stride_tricks, "broadcast_to"):
+                delattr(stride_tricks, "broadcast_to")
+
     def _run_task(
         self,
         task_name: str,
@@ -446,6 +465,9 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             )
             self.assertTrue(
                 pipeline.machine.manipulation_planner._config.split_pregrasp_motion
+            )
+            self.assertFalse(
+                pipeline.machine.manipulation_planner._config.reuse_pick_grasp_orientation_for_place
             )
             self.assertFalse(config.manipulation.return_home_after_pick)
             self.assertTrue(pipeline.machine.config.manipulation.return_home_after_pick)

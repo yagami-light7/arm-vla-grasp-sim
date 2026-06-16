@@ -94,6 +94,7 @@ class BatchEpisodeResult:
     episode_index: int
     seed: int
     pick_place_xy: str
+    base_goal_relative_xy: str
     success: bool
     failed_state: str
     lerobot_path: str
@@ -135,6 +136,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--show-randomization-debug",
         action="store_true",
         help="显示 pick/place 随机区域和采样点；默认关闭。",
+    )
+    parser.add_argument(
+        "--randomize-base-goal",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="转发给单 episode pipeline：开启 pick/place base_goal 极坐标随机化；默认开启。",
     )
     parser.add_argument(
         "--headless",
@@ -220,10 +227,17 @@ def _format_state(state: str | None, *, color_enabled: bool) -> str:
     return _color(label, _state_color(state), enabled=color_enabled)
 
 
-def _last_json_line(path: Path, *, max_bytes: int = 262_144) -> dict[str, object] | None:
+def _last_json_line(
+    path: Path,
+    *,
+    max_bytes: int = 262_144,
+    min_mtime: float | None = None,
+) -> dict[str, object] | None:
     """只读取文件尾部来解析最后一条 JSONL，避免 heartbeat 扫描完整 frames。"""
 
     if not path.is_file():
+        return None
+    if min_mtime is not None and path.stat().st_mtime < float(min_mtime):
         return None
     size = path.stat().st_size
     if size <= 0:
@@ -243,8 +257,12 @@ def _last_json_line(path: Path, *, max_bytes: int = 262_144) -> dict[str, object
     return None
 
 
-def _progress_from_summary(path: Path) -> EpisodeProgress | None:
-    summary = _read_summary(path)
+def _progress_from_summary(
+    path: Path,
+    *,
+    min_mtime: float | None = None,
+) -> EpisodeProgress | None:
+    summary = _read_summary(path, min_mtime=min_mtime)
     if summary is None:
         return None
     state = summary.get("final_state")
@@ -260,11 +278,15 @@ def _progress_from_summary(path: Path) -> EpisodeProgress | None:
     )
 
 
-def _read_episode_progress(episode: BatchEpisodeCommand) -> EpisodeProgress:
+def _read_episode_progress(
+    episode: BatchEpisodeCommand,
+    *,
+    min_mtime: float | None = None,
+) -> EpisodeProgress:
     frames_path = episode.summary_path.parent / "frames.jsonl"
     if not frames_path.is_file():
         frames_path = episode.output_dir / "episode_000000" / "frames.jsonl"
-    frame = _last_json_line(frames_path)
+    frame = _last_json_line(frames_path, min_mtime=min_mtime)
     if frame is not None:
         state = frame.get("pipeline_state")
         step_index = frame.get("step_index")
@@ -273,10 +295,34 @@ def _read_episode_progress(episode: BatchEpisodeCommand) -> EpisodeProgress:
             step_index=int(step_index) if isinstance(step_index, int) else None,
             source="frames",
         )
-    summary_progress = _progress_from_summary(episode.summary_path)
+    summary_progress = _progress_from_summary(episode.summary_path, min_mtime=min_mtime)
     if summary_progress is not None:
         return summary_progress
     return EpisodeProgress()
+
+
+def _print_progress_line(
+    episode: BatchEpisodeCommand,
+    *,
+    elapsed_seconds: float,
+    progress: EpisodeProgress,
+    color_enabled: bool,
+) -> None:
+    """用独立块打印 batch heartbeat，避免被 Isaac 多行日志夹断。"""
+
+    prefix = _color("[progress] ", "yellow", enabled=color_enabled)
+    progress_line = (
+        prefix
+        + (
+            f"episode={episode.episode_index} seed={episode.seed} "
+            f"running elapsed={_format_duration(elapsed_seconds)}"
+        )
+        + _format_progress_suffix(progress, color_enabled=color_enabled)
+    )
+    line = _color("-" * 88, "dim", enabled=color_enabled)
+    print(line, flush=True)
+    print(progress_line, flush=True)
+    print(line, flush=True)
 
 
 def _format_progress_suffix(
@@ -322,6 +368,87 @@ def _summary_xy(summary: dict[str, object] | None) -> str:
         return "-" if value is None else f"({value[0]:.4f},{value[1]:.4f})"
 
     return f"pick={_format_xy(pick_xy)} place={_format_xy(place_xy)}"
+
+
+def _summary_base_goal_relative_xy(summary: dict[str, object] | None) -> str:
+    """汇总随机化 base_goal，并给出 base_goal 相对目标点的世界系 XY 偏移。"""
+
+    if not summary:
+        return "pick=- place=-"
+    task = summary.get("task_config")
+    task = task if isinstance(task, dict) else {}
+    randomization = task.get("randomization")
+    randomization = randomization if isinstance(randomization, dict) else {}
+    base_goal_randomization = randomization.get("base_goal_randomization")
+    base_goal_randomization = (
+        base_goal_randomization if isinstance(base_goal_randomization, dict) else {}
+    )
+
+    def _task_target_xy(section: str, pose_key: str) -> tuple[float, float] | None:
+        task_section = task.get(section)
+        if not isinstance(task_section, dict):
+            return None
+        pose = task_section.get(pose_key)
+        if isinstance(pose, dict) and "x" in pose and "y" in pose:
+            return float(pose["x"]), float(pose["y"])
+        return None
+
+    def _task_goal_xyyaw(section: str) -> tuple[float, float, float] | None:
+        task_section = task.get(section)
+        if not isinstance(task_section, dict):
+            return None
+        goal = task_section.get("base_goal")
+        if isinstance(goal, dict) and "x" in goal and "y" in goal:
+            return (
+                float(goal["x"]),
+                float(goal["y"]),
+                float(goal.get("yaw", 0.0)),
+            )
+        return None
+
+    def _stage_summary(
+        stage_name: str,
+        section: str,
+        pose_key: str,
+        top_level_key: str,
+    ) -> str:
+        sample = base_goal_randomization.get(stage_name)
+        sample = sample if isinstance(sample, dict) else {}
+        goal = sample.get("sampled_base_goal_xyyaw")
+        target = sample.get("target_xy")
+        if not (isinstance(goal, (list, tuple)) and len(goal) >= 3):
+            goal = summary.get(top_level_key)
+        if not (isinstance(goal, (list, tuple)) and len(goal) >= 3):
+            goal = _task_goal_xyyaw(section)
+        if not (isinstance(target, (list, tuple)) and len(target) >= 2):
+            target = _task_target_xy(section, pose_key)
+        if not (isinstance(goal, (list, tuple)) and len(goal) >= 3):
+            return f"{stage_name}=-"
+        goal_x, goal_y, goal_yaw = float(goal[0]), float(goal[1]), float(goal[2])
+        if isinstance(target, (list, tuple)) and len(target) >= 2:
+            dx = goal_x - float(target[0])
+            dy = goal_y - float(target[1])
+            delta = f" Δ=({dx:+.4f},{dy:+.4f})"
+        else:
+            delta = " Δ=-"
+        return f"{stage_name}_bg=({goal_x:.4f},{goal_y:.4f},{goal_yaw:.3f}){delta}"
+
+    return " ".join(
+        (
+            _stage_summary(
+                "pick",
+                "pick",
+                "object_pose_world",
+                "pick_base_goal_sampled",
+            ),
+            _stage_summary(
+                "place",
+                "place",
+                "place_pose_world",
+                "place_base_goal_sampled",
+            ),
+        )
+    )
 
 
 def _failed_state(summary: dict[str, object] | None, *, success: bool) -> str:
@@ -378,6 +505,7 @@ def _build_episode_result(
         episode_index=episode.episode_index,
         seed=episode.seed,
         pick_place_xy=_summary_xy(summary),
+        base_goal_relative_xy=_summary_base_goal_relative_xy(summary),
         success=success,
         failed_state=_failed_state(summary, success=success),
         lerobot_path=_lerobot_path(episode, summary),
@@ -411,6 +539,7 @@ def _format_result_table(
     headers = (
         "Episode",
         "随机化 Pick / Place XY",
+        "随机化 BaseGoal / 相对目标",
         "Pipeline 成功",
         "失败 State",
         "LeRobot 数据路径",
@@ -420,6 +549,7 @@ def _format_result_table(
         (
             f"{result.episode_index} (seed={result.seed})",
             result.pick_place_xy,
+            result.base_goal_relative_xy,
             "成功" if result.success else "失败",
             result.failed_state,
             result.lerobot_path,
@@ -431,14 +561,14 @@ def _format_result_table(
         max(_display_width(headers[index]), *(_display_width(row[index]) for row in rows))
         for index in range(len(headers))
     ]
-    column_colors = ("cyan", "magenta", "green", "yellow", "blue", "white")
+    column_colors = ("cyan", "magenta", "yellow", "green", "red", "blue", "white")
     separator = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
 
     def _row(values: Sequence[str], *, header: bool = False) -> str:
         cells: list[str] = []
         for index, value in enumerate(values):
             color_name = column_colors[index]
-            if not header and index == 2 and value == "失败":
+            if not header and index == 3 and value == "失败":
                 color_name = "red"
             padded = _pad_cell(value, widths[index])
             cells.append(_color(padded, color_name, enabled=color_enabled))
@@ -485,6 +615,11 @@ def _build_child_command(
         "--seed",
         str(episode_seed),
         _bool_flag(args.randomize_task, "--randomize-task", "--no-randomize-task"),
+        _bool_flag(
+            args.randomize_base_goal,
+            "--randomize-base-goal",
+            "--no-randomize-base-goal",
+        ),
         _bool_flag(args.headless, "--headless", "--no-headless"),
     ]
     if args.mode == "dry_run":
@@ -507,12 +642,18 @@ def _build_child_command(
     )
 
 
-def _read_summary(path: Path) -> dict[str, object] | None:
+def _read_summary(
+    path: Path,
+    *,
+    min_mtime: float | None = None,
+) -> dict[str, object] | None:
     if not path.is_file():
         legacy_path = path.parent / "episode_000000" / path.name
         if legacy_path.is_file():
             path = legacy_path
     if not path.is_file():
+        return None
+    if min_mtime is not None and path.stat().st_mtime < float(min_mtime):
         return None
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -526,7 +667,23 @@ def _run_child_process(
 ) -> int:
     """实时转发子进程日志，并在无输出时打印 batch 心跳。"""
 
+    def _drain_available_output(timeout_s: float) -> None:
+        """尽量排空当前 pipe，避免 heartbeat 插入 Isaac 的多行表格中间。"""
+
+        while True:
+            events = selector.select(timeout=timeout_s)
+            if not events:
+                return
+            timeout_s = 0.0
+            for key, _ in events:
+                line = key.fileobj.readline()
+                if line:
+                    print(line, end="", flush=True)
+                else:
+                    return
+
     started_at = time.monotonic()
+    started_at_epoch = time.time()
     progress_interval_s = max(0.1, float(progress_interval_s))
     _print_banner(
         f"[full-physics-batch] start episode={episode.episode_index} seed={episode.seed}",
@@ -555,29 +712,44 @@ def _run_child_process(
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
     last_progress_at = started_at
-    last_child_output_at = started_at
+    last_printed_progress: EpisodeProgress | None = None
+    last_unknown_progress_at = started_at
     select_timeout_s = min(0.5, progress_interval_s * 0.5)
+    launching_progress = EpisodeProgress(state="launching", source="batch")
+    _print_progress_line(
+        episode,
+        elapsed_seconds=0.0,
+        progress=launching_progress,
+        color_enabled=color_enabled,
+    )
+    last_printed_progress = launching_progress
     try:
         while True:
-            for key, _ in selector.select(timeout=select_timeout_s):
-                line = key.fileobj.readline()
-                if line:
-                    last_child_output_at = time.monotonic()
-                    print(line, end="", flush=True)
+            _drain_available_output(select_timeout_s)
             returncode = process.poll()
             now = time.monotonic()
-            quiet_elapsed = now - max(last_progress_at, last_child_output_at)
-            if quiet_elapsed >= progress_interval_s:
-                progress = _read_episode_progress(episode)
-                print(
-                    _color("[progress] ", "yellow", enabled=color_enabled)
-                    + (
-                        f"episode={episode.episode_index} seed={episode.seed} "
-                        f"running elapsed={_format_duration(now - started_at)}"
-                    ),
-                    _format_progress_suffix(progress, color_enabled=color_enabled),
-                    flush=True,
+            if now - last_progress_at >= progress_interval_s:
+                _drain_available_output(0.0)
+                progress = _read_episode_progress(
+                    episode,
+                    min_mtime=started_at_epoch,
                 )
+                should_print = (
+                    progress.source != "unavailable"
+                    or last_printed_progress is None
+                    or progress.state != last_printed_progress.state
+                    or now - last_unknown_progress_at >= max(30.0, progress_interval_s)
+                )
+                if should_print:
+                    _print_progress_line(
+                        episode,
+                        elapsed_seconds=now - started_at,
+                        progress=progress,
+                        color_enabled=color_enabled,
+                    )
+                    last_printed_progress = progress
+                    if progress.source == "unavailable":
+                        last_unknown_progress_at = now
                 last_progress_at = now
             if returncode is not None:
                 remaining = process.stdout.read()
@@ -619,7 +791,19 @@ def _write_batch_record(
         "success": bool(summary.get("success")) if summary else False,
         "failure_reason": summary.get("failure_reason") if summary else "summary_missing",
         "execution_mode": summary.get("execution_mode") if summary else None,
+        "base_goal_randomization_enabled": (
+            summary.get("base_goal_randomization_enabled") if summary else None
+        ),
+        "pick_base_goal_sampled": summary.get("pick_base_goal_sampled") if summary else None,
+        "place_base_goal_sampled": summary.get("place_base_goal_sampled") if summary else None,
+        "pick_base_goal_fallback_used": (
+            summary.get("pick_base_goal_fallback_used") if summary else None
+        ),
+        "place_base_goal_fallback_used": (
+            summary.get("place_base_goal_fallback_used") if summary else None
+        ),
         "pick_place_xy": result.pick_place_xy,
+        "base_goal_relative_xy": result.base_goal_relative_xy,
         "failed_state": result.failed_state,
         "lerobot_path": result.lerobot_path,
         "elapsed_seconds": result.elapsed_seconds,
@@ -689,6 +873,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             episode = _build_child_command(args, episode_index=episode_index)
             episode.output_dir.mkdir(parents=True, exist_ok=True)
             episode_started_at = time.monotonic()
+            episode_started_at_epoch = time.time()
             returncode = _run_child_process(
                 episode,
                 env=env,
@@ -696,7 +881,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 color_enabled=color_enabled,
             )
             episode_elapsed_seconds = time.monotonic() - episode_started_at
-            summary = _read_summary(episode.summary_path)
+            summary = _read_summary(
+                episode.summary_path,
+                min_mtime=episode_started_at_epoch,
+            )
             success = returncode == 0 and bool(summary and summary.get("success"))
             result = _build_episode_result(
                 episode=episode,
@@ -718,8 +906,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             status_text = "success" if success else "failed"
             status_color = "green" if success else "red"
-            final_progress = _progress_from_summary(episode.summary_path) or _read_episode_progress(
-                episode
+            final_progress = _progress_from_summary(
+                episode.summary_path,
+                min_mtime=episode_started_at_epoch,
+            ) or _read_episode_progress(
+                episode,
+                min_mtime=episode_started_at_epoch,
             )
             print(
                 _color(f"[{status_text}] ", status_color, enabled=color_enabled)
@@ -763,4 +955,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("[full-physics-batch] interrupted by user", flush=True)
+        raise SystemExit(130)

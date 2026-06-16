@@ -179,6 +179,8 @@ class FullPhysicsPipeline:
                 "front_camera_report",
                 "wrist_camera_report",
                 "camera_capture_report",
+                "gripper_collision_patch_report",
+                "apple_collision_patch_report",
                 "stage_report",
                 "visual_scene_report",
                 "viewport_report",
@@ -272,6 +274,22 @@ class FullPhysicsPipeline:
                 "linear_velocity_tolerance": self.config.navigation.stable_linear_velocity,
                 "angular_velocity_tolerance": self.config.navigation.stable_angular_velocity,
             }
+        randomization = self.episode_spec.raw_task.get("randomization")
+        randomization = randomization if isinstance(randomization, dict) else {}
+        base_goal_randomization = randomization.get("base_goal_randomization")
+        base_goal_randomization = (
+            base_goal_randomization
+            if isinstance(base_goal_randomization, dict)
+            else {}
+        )
+        pick_base_goal_sample = base_goal_randomization.get("pick")
+        pick_base_goal_sample = (
+            pick_base_goal_sample if isinstance(pick_base_goal_sample, dict) else {}
+        )
+        place_base_goal_sample = base_goal_randomization.get("place")
+        place_base_goal_sample = (
+            place_base_goal_sample if isinstance(place_base_goal_sample, dict) else {}
+        )
         return {
             "episode_id": self.episode_spec.episode_id,
             "task_id": self.episode_spec.task_id,
@@ -329,6 +347,21 @@ class FullPhysicsPipeline:
             "execution_provenance_verified": provenance_verified,
             "simulation_report": simulation_report,
             "navigation_acceptance": navigation_acceptance,
+            "base_goal_randomization_enabled": bool(
+                base_goal_randomization.get("enabled", False)
+            ),
+            "pick_base_goal_sampled": pick_base_goal_sample.get(
+                "sampled_base_goal_xyyaw",
+            ),
+            "place_base_goal_sampled": place_base_goal_sample.get(
+                "sampled_base_goal_xyyaw",
+            ),
+            "pick_base_goal_fallback_used": bool(
+                pick_base_goal_sample.get("fallback_used", False)
+            ),
+            "place_base_goal_fallback_used": bool(
+                place_base_goal_sample.get("fallback_used", False)
+            ),
             **provenance,
             **machine_fields,
         }

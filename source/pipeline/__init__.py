@@ -8,6 +8,7 @@ from .contact_pick_place_state_machine import (
     RuntimeStepResult,
 )
 from .config import (
+    BaseGoalRandomizationSettings,
     FullPhysicsConfig,
     ManipulationSettings,
     NavigationSettings,
@@ -23,6 +24,7 @@ __all__ = [
     "ContactPickPlaceLimits",
     "ContactPickPlacePhase",
     "ContactPickPlaceStateMachine",
+    "BaseGoalRandomizationSettings",
     "FullPhysicsConfig",
     "FullPhysicsPipeline",
     "FullPhysicsStateMachine",

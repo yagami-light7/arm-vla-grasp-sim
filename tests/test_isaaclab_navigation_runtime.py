@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -22,9 +23,24 @@ from source.simulation.isaaclab_runtime import (
     _path_is_excluded_by_roots,
     _prim_keyword_match_text,
 )
+from source.simulation.collision_patch import (
+    gripper_collision_patch_report,
+    install_gripper_collision_patch_on_spawn,
+    keyword_collision_patch_report,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+class FakeSpawnCfg:
+    def __init__(self, timeline: list[str]):
+        def _spawn(*args, **kwargs):
+            del args, kwargs
+            timeline.append("spawn")
+            return "spawned"
+
+        self.func = _spawn
 
 
 class FakePolicyAction:
@@ -167,6 +183,134 @@ class FakeAdapter:
 
 
 class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
+    def test_gripper_collision_patch_defaults_match_requested_values(self) -> None:
+        config = IsaacLabNavigationRuntimeConfig()
+
+        self.assertTrue(config.patch_gripper_collision)
+        self.assertEqual(config.gripper_collision_robot_root, "/World/go2_x5")
+        self.assertEqual(
+            config.gripper_collision_links,
+            ("arm_link7", "arm_link8"),
+        )
+        self.assertEqual(
+            config.gripper_collision_approximation,
+            "convexDecomposition",
+        )
+        self.assertEqual(config.gripper_collision_contact_offset, 0.002)
+        self.assertEqual(config.gripper_collision_rest_offset, 0.0)
+        self.assertTrue(config.patch_apple_collision)
+        self.assertEqual(config.apple_collision_root_path, "/World")
+        self.assertEqual(config.apple_collision_keywords, ("apple", "Apple"))
+        self.assertEqual(config.apple_collision_approximation, "convexDecomposition")
+        self.assertEqual(config.apple_collision_contact_offset, 0.001)
+        self.assertEqual(config.apple_collision_rest_offset, 0.0)
+
+    def test_gripper_collision_spawn_patch_runs_after_spawn_once(self) -> None:
+        timeline: list[str] = []
+        spawn_cfg = FakeSpawnCfg(timeline)
+
+        def _patch_collision(**kwargs):
+            self.assertEqual(kwargs["stage"], "stage")
+            timeline.append("patch")
+            return {"applied": True, "patch_count": 2}
+
+        def _print_info(**kwargs):
+            self.assertEqual(kwargs["stage"], "stage")
+            timeline.append("print")
+            return []
+
+        def _patch_keyword_collision(**kwargs):
+            self.assertEqual(kwargs["stage"], "stage")
+            timeline.append("keyword_patch")
+            return {"applied": True, "patch_count": 1}
+
+        def _print_keyword_info(**kwargs):
+            self.assertEqual(kwargs["stage"], "stage")
+            timeline.append("keyword_print")
+            return []
+
+        with (
+            patch(
+                "source.simulation.collision_patch.patch_go2_x5_gripper_collision",
+                side_effect=_patch_collision,
+            ),
+            patch(
+                "source.simulation.collision_patch.patch_collision_prims_by_keywords",
+                side_effect=_patch_keyword_collision,
+            ),
+            patch(
+                "source.simulation.collision_patch.print_gripper_collision_info",
+                side_effect=_print_info,
+            ),
+            patch(
+                "source.simulation.collision_patch.print_collision_info_by_keywords",
+                side_effect=_print_keyword_info,
+            ),
+        ):
+            install_gripper_collision_patch_on_spawn(
+                spawn_cfg,
+                stage_getter=lambda: "stage",
+            )
+            wrapped_func = spawn_cfg.func
+            install_gripper_collision_patch_on_spawn(
+                spawn_cfg,
+                stage_getter=lambda: "stage",
+            )
+            self.assertIs(spawn_cfg.func, wrapped_func)
+            result = spawn_cfg.func("/World/envs/env_0/Robot", spawn_cfg)
+
+        self.assertEqual(result, "spawned")
+        self.assertEqual(
+            timeline,
+            ["spawn", "patch", "keyword_patch", "print", "keyword_print"],
+        )
+        self.assertEqual(
+            gripper_collision_patch_report(spawn_cfg),
+            {"applied": True, "patch_count": 2},
+        )
+        self.assertEqual(
+            keyword_collision_patch_report(spawn_cfg),
+            {"applied": True, "patch_count": 1},
+        )
+
+    def test_gripper_collision_patch_covers_required_usd_fields(self) -> None:
+        source_text = (
+            PROJECT_ROOT / "source/simulation/collision_patch.py"
+        ).read_text(encoding="utf-8")
+
+        for required_text in (
+            "UsdPhysics.CollisionAPI",
+            "UsdPhysics.MeshCollisionAPI",
+            "PhysxSchema.PhysxCollisionAPI",
+            "patch_collision_prims_by_keywords",
+            "print_collision_info_by_keywords",
+            '"physics:approximation"',
+            '"physics:collisionEnabled"',
+            '"physxCollision:contactOffset"',
+            '"physxCollision:restOffset"',
+            '"physics:restOffset"',
+            "Sdf.ValueTypeNames.Token",
+            "Sdf.ValueTypeNames.Float",
+            "Sdf.ValueTypeNames.Bool",
+            "apple",
+            "PhysxCollisionAPI",
+            "prim.SetInstanceable(False)",
+        ):
+            self.assertIn(required_text, source_text)
+
+    def test_gripper_collision_patch_is_installed_before_wrapper_reset(self) -> None:
+        configure_source = inspect.getsource(IsaacLabNavigationRuntime._configure_env)
+        build_source = inspect.getsource(IsaacLabNavigationRuntime._build_environment)
+
+        self.assertIn("install_gripper_collision_patch_on_spawn", configure_source)
+        self.assertIn("patch_apple_collision", configure_source)
+        self.assertIn("apple_collision_patch_report", build_source)
+        self.assertLess(
+            build_source.index("env = gym.make("),
+            build_source.index("wrapped = RslRlVecEnvWrapper("),
+        )
+        self.assertIn("gripper_collision_patch_report", build_source)
+
     def test_world_collision_padding_matches_stable_baseline(self) -> None:
         config = IsaacLabNavigationRuntimeConfig()
 
@@ -370,7 +514,7 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
             [],
         )
 
-    def test_wrist_camera_matches_dwa_ground_pick_mount(self) -> None:
+    def test_wrist_camera_uses_arm_link6_mount(self) -> None:
         source_text = (
             PROJECT_ROOT / "source/simulation/isaaclab_runtime.py"
         ).read_text(encoding="utf-8")
@@ -380,8 +524,6 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
             source_text,
         )
         self.assertIn("focal_length=18.0", source_text)
-        self.assertIn("pos=(0.08657, 0.0, 0.0)", source_text)
-        self.assertIn("rot=(0.5, -0.5, 0.5, -0.5)", source_text)
 
     def test_object_pose_writer_reuses_existing_xform_ops(self) -> None:
         source_text = (

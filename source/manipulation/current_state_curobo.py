@@ -692,6 +692,8 @@ class CurrentStateCuroboPlannerConfig:
     side_grasp_retreat_to_pregrasp: bool = False
     # full-physics 里必须显式等待 pregrasp 到位，再进入 grasp；回撤同理先离开桌沿再回 home。
     split_pregrasp_motion: bool = True
+    # pick 后回 home/carry 时 TCP 姿态已经不同于 pick grasp；place 默认保持当前 TCP 姿态。
+    reuse_pick_grasp_orientation_for_place: bool = False
 
 
 class CurrentStateCuroboPlanner:
@@ -803,11 +805,16 @@ class CurrentStateCuroboPlanner:
 
         replan_dir = self._config.output_dir / f"place_replan_step_{state.step_index:06d}"
         replan_dir.mkdir(parents=True, exist_ok=True)
+        place_pick_quat = (
+            self._last_pick_grasp_quaternion_base
+            if self._config.reuse_pick_grasp_orientation_for_place
+            else None
+        )
         export_report = exporter(
             output_dir=replan_dir,
             episode_spec=episode_spec,
             state=state,
-            pick_grasp_quaternion_base=self._last_pick_grasp_quaternion_base,
+            pick_grasp_quaternion_base=place_pick_quat,
         )
         plan_json = replan_dir / "place_plan.json"
         task = GraspTask(
@@ -838,6 +845,15 @@ class CurrentStateCuroboPlanner:
             "plan_json": str(task.plan_json),
             "elapsed_wall_time_s": elapsed_s,
             "export_report": _json_safe(export_report),
+        }
+        plan.metadata["current_state_place_orientation"] = {
+            "reuse_pick_grasp_orientation_for_place": (
+                self._config.reuse_pick_grasp_orientation_for_place
+            ),
+            "stored_pick_grasp_quaternion_base": self._last_pick_grasp_quaternion_base,
+            "exported_pick_grasp_quaternion_base": (
+                None if place_pick_quat is None else list(place_pick_quat)
+            ),
         }
         return plan
 

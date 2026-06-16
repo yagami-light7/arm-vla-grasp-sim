@@ -1216,13 +1216,17 @@ class FullPhysicsStateMachine:
         try:
             plan = self.manipulation_planner.plan_place(observation, self.episode_spec)
         except Exception as exc:
+            error_report = {
+                "type": "manipulation",
+                "phase": "place",
+                "error": str(exc),
+                "traceback": traceback.format_exc(),
+            }
+            self.latest_planner_result = error_report
             return RobotAction.idle(source="place_plan"), self._fail(
                 "place_plan_failed",
                 observation,
-                {
-                    "error": str(exc),
-                    "traceback": traceback.format_exc(),
-                },
+                error_report,
             )
         start_state_check = self._diagnose_arm_plan_start_state(
             observation,

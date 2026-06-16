@@ -267,7 +267,11 @@ class GraspPipeline:
             return False
         response = json.loads(response_line)
         if not response.get("ok", False):
-            print("[grasp] planner server failed, using one-shot planner:", response.get("error"))
+            print(
+                "[grasp] planner server returned planning failure; "
+                "running one-shot planner for diagnostics:",
+                response.get("error"),
+            )
             return False
         return Path(task.plan_json).exists()
 

@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -73,6 +74,7 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertEqual(command[command.index("--num-episodes") + 1], "1")
         self.assertEqual(command[command.index("--seed") + 1], "102")
         self.assertIn("--randomize-task", command)
+        self.assertIn("--randomize-base-goal", command)
         self.assertIn("--headless", command)
         self.assertNotIn("--auto-start-curobo-server", command)
         self.assertNotIn("--lock-base-during-manipulation", command)
@@ -93,6 +95,7 @@ class FullPhysicsBatchTest(unittest.TestCase):
                 "5",
                 "--dry-run",
                 "--no-randomize-task",
+                "--no-randomize-base-goal",
                 "--no-headless",
                 "--show-randomization-debug",
             ]
@@ -103,6 +106,7 @@ class FullPhysicsBatchTest(unittest.TestCase):
 
         self.assertIn("--dry-run", command)
         self.assertIn("--no-randomize-task", command)
+        self.assertIn("--no-randomize-base-goal", command)
         self.assertIn("--no-headless", command)
         self.assertIn("--show-randomization-debug", command)
 
@@ -139,6 +143,17 @@ class FullPhysicsBatchTest(unittest.TestCase):
                     },
                     "place_xy_randomization": {
                         "sampled_xy": {"x": 0.71234, "y": 5.23456},
+                    },
+                    "base_goal_randomization": {
+                        "enabled": True,
+                        "pick": {
+                            "target_xy": [0.91234, 1.23456],
+                            "sampled_base_goal_xyyaw": [1.01234, 1.13456, -3.0],
+                        },
+                        "place": {
+                            "target_xy": [0.71234, 5.23456],
+                            "sampled_base_goal_xyyaw": [1.11234, 5.43456, 2.9],
+                        },
                     },
                 }
             },
@@ -186,11 +201,20 @@ class FullPhysicsBatchTest(unittest.TestCase):
 
         self.assertIn("Episode", plain)
         self.assertIn("随机化 Pick / Place XY", plain)
+        self.assertIn("随机化 BaseGoal / 相对目标", plain)
         self.assertIn("Pipeline 成功", plain)
         self.assertIn("失败 State", plain)
         self.assertIn("LeRobot 数据路径", plain)
         self.assertIn("Episode 耗时", plain)
         self.assertIn("pick=(0.9123,1.2346) place=(0.7123,5.2346)", plain)
+        self.assertIn(
+            "pick_bg=(1.0123,1.1346,-3.000) Δ=(+0.1000,-0.1000)",
+            plain,
+        )
+        self.assertIn(
+            "place_bg=(1.1123,5.4346,2.900) Δ=(+0.4000,+0.2000)",
+            plain,
+        )
         self.assertIn("plan_place", plain)
         self.assertIn("lerobot_manifest.json", plain)
         self.assertIn("1m05s", plain)
@@ -250,10 +274,10 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertIn("child-start", output)
         self.assertIn("child-done", output)
         self.assertIn("[progress] episode=0 seed=123 running", output)
-        self.assertIn("state=exec_nav_to_pick", output)
-        self.assertIn("step=12", output)
+        self.assertIn("state=launching", output)
+        self.assertIn("source=batch", output)
 
-    def test_heartbeat_waits_for_quiet_child_output(self) -> None:
+    def test_heartbeat_prints_from_zero_even_when_child_is_chatty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             episode_dir = Path(tmp_dir)
             frames_path = episode_dir / "frames.jsonl"
@@ -292,7 +316,9 @@ class FullPhysicsBatchTest(unittest.TestCase):
         output = stream.getvalue()
         self.assertEqual(returncode, 0)
         self.assertIn("child-0", output)
-        self.assertNotIn("[progress] episode=0 seed=123 running", output)
+        self.assertIn("[progress] episode=0 seed=123 running elapsed=0s", output)
+        self.assertIn("state=launching", output)
+        self.assertIn("source=batch", output)
 
     def test_episode_progress_reads_frames_before_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -333,6 +359,39 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertEqual(progress.step_index, 99)
         self.assertEqual(progress.source, "frames")
         self.assertIn("state=exec_place", _format_progress_suffix(progress, color_enabled=False))
+
+    def test_episode_progress_ignores_stale_files_from_previous_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            episode_dir = Path(tmp_dir)
+            summary_path = episode_dir / "summary.json"
+            frames_path = episode_dir / "frames.jsonl"
+            frames_path.write_text(
+                json.dumps({"pipeline_state": "exec_nav_to_place", "step_index": 999})
+                + "\n",
+                encoding="utf-8",
+            )
+            summary_path.write_text(
+                json.dumps({"final_state": "failed", "duration_steps": 1000}),
+                encoding="utf-8",
+            )
+            stale_mtime = time.time() - 60.0
+            os.utime(frames_path, (stale_mtime, stale_mtime))
+            os.utime(summary_path, (stale_mtime, stale_mtime))
+            episode = BatchEpisodeCommand(
+                episode_index=0,
+                seed=0,
+                output_dir=episode_dir,
+                summary_path=summary_path,
+                command=[],
+            )
+
+            progress = _read_episode_progress(episode, min_mtime=time.time())
+            summary = _read_summary(summary_path, min_mtime=time.time())
+
+        self.assertIsNone(summary)
+        self.assertIsNone(progress.state)
+        self.assertIsNone(progress.step_index)
+        self.assertEqual(progress.source, "unavailable")
 
     def test_summary_reader_accepts_legacy_nested_episode_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
