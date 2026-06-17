@@ -102,8 +102,10 @@ class ManipulationSettings:
     arm_post_motion_hold_duration_s: float = 0.75
     # 对齐 video baseline：松爪后先保持释放位姿，让苹果在桌面稳定，再执行退臂。
     place_release_settle_duration_s: float = 0.50
-    # 对齐稳定 baseline 的 nav->pick/place handoff：只停驻并锁住已有姿态，不改变底盘站高。
+    # 对齐稳定 baseline 的 nav->pick handoff：只停驻并锁住已有姿态，不改变底盘站高。
     base_lock_settle_steps: int = 60
+    # carry 到 place 后苹果已经由真实接触夹持；长时间停驻会放大滑移风险。
+    place_base_lock_settle_steps: int = 0
     plan_start_state_warning_threshold: float = 0.25
     plan_start_state_failure_threshold: float = 0.75
     fail_on_place_plan_start_state_mismatch: bool = False
@@ -139,7 +141,7 @@ class RandomizationSettings:
     show_debug_region: bool = False
     pick_x_range: tuple[float, float] = (0.90, 0.95)
     pick_y_range: tuple[float, float] = (0.75, 1.50)
-    place_x_range: tuple[float, float] = (0.75, 0.80)
+    place_x_range: tuple[float, float] = (0.70, 0.75)
     place_y_range: tuple[float, float] = (5.00, 5.30)
     clearance_radius: float = 0.20
     min_boundary_clearance: float = 0.25
@@ -232,6 +234,12 @@ class FullPhysicsConfig:
             raise ValueError("base_lock_settle_steps must be non-negative")
         if self.manipulation.base_lock_settle_steps >= self.limits.planning:
             raise ValueError("base_lock_settle_steps must be smaller than planning tick limit")
+        if self.manipulation.place_base_lock_settle_steps < 0:
+            raise ValueError("place_base_lock_settle_steps must be non-negative")
+        if self.manipulation.place_base_lock_settle_steps >= self.limits.planning:
+            raise ValueError(
+                "place_base_lock_settle_steps must be smaller than planning tick limit"
+            )
         if self.manipulation.plan_start_state_failure_threshold < 0.0:
             raise ValueError("plan_start_state_failure_threshold must be non-negative")
         if self.manipulation.pick_return_home_duration_s <= 0.0:

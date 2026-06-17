@@ -35,7 +35,15 @@ class EpisodeRecorder(Protocol):
     def record_step(self, record: StepRecord) -> None:
         ...
 
-    def prepare_lerobot_export(self) -> dict[str, Any]:
+    def mark_training_eligible(self, eligible: bool, *, reason: str | None = None) -> None:
+        ...
+
+    def prepare_lerobot_export(
+        self,
+        *,
+        training_eligible: bool | None = None,
+        training_eligibility_reason: str | None = None,
+    ) -> dict[str, Any]:
         ...
 
     def close(self, summary: dict[str, Any]) -> Path:

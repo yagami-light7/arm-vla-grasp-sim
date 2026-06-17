@@ -193,6 +193,57 @@ class FullPhysicsLeRobotTest(unittest.TestCase):
             episodes = discover_recorded_episodes(root, require_success=True)
             self.assertEqual(episodes, [root / "episode_000000"])
 
+    def test_failed_episode_close_removes_lerobot_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            episode_dir = Path(tmp_dir) / "episode_000000"
+            recorder = JsonlEpisodeRecorder(
+                episode_dir,
+                lerobot_config=LeRobotRecordingConfig(
+                    enabled=True,
+                    dataset_fps=5,
+                    image_height=48,
+                    image_width=64,
+                ),
+            )
+            recorder.save_task(
+                type(
+                    "Spec",
+                    (),
+                    {"raw_task": {"instruction": "Move the apple."}},
+                )()
+            )
+            image = np.zeros((48, 64, 3), dtype=np.uint8)
+            state = _state(1, image)
+            recorder.record_step(
+                StepRecord(
+                    step_index=0,
+                    timestamp=0.0,
+                    pipeline_state="exec_pick",
+                    observation=state,
+                    action=RobotAction(source="arm"),
+                    post_step_observation=state,
+                )
+            )
+
+            recorder.mark_training_eligible(True, reason="unit_test_force_export")
+            export = recorder.prepare_lerobot_export()
+            self.assertTrue(export["lerobot_exported"], export)
+            self.assertTrue((episode_dir / "lerobot_manifest.json").is_file())
+            self.assertTrue((episode_dir / "lerobot_dataset").is_dir())
+
+            summary_path = recorder.close(
+                {"success": False, "failure_reason": "place_plan_failed"}
+            )
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+            self.assertFalse((episode_dir / "lerobot_manifest.json").exists())
+            self.assertFalse((episode_dir / "lerobot_dataset").exists())
+            self.assertFalse(summary["lerobot_training_eligible"])
+            self.assertTrue(summary["lerobot_export_skipped"])
+            self.assertEqual(summary["lerobot_export_skip_reason"], "place_plan_failed")
+            self.assertFalse(summary["lerobot_export"]["lerobot_exported"])
+            self.assertFalse(summary["lerobot_export"]["training_eligible"])
+
     def test_multi_camera_video_export_without_raw_images(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             episode_dir = Path(tmp_dir) / "episode_000000"

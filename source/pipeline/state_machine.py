@@ -1352,7 +1352,10 @@ class FullPhysicsStateMachine:
         return RobotAction.idle(source="verify_place_success"), events
 
     def _export_lerobot(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
-        self.export_result = self.recorder.prepare_lerobot_export()
+        self.export_result = self.recorder.prepare_lerobot_export(
+            training_eligible=True,
+            training_eligibility_reason="episode_success_verified",
+        )
         if (
             self.config.full_physics
             and self.export_result.get("recording_enabled")
@@ -1904,8 +1907,14 @@ class FullPhysicsStateMachine:
     ) -> tuple[RobotAction, list[PipelineEvent]] | None:
         """在规划和机械臂动作前留出明确停驻窗口，避免与导航视觉上连成一段。"""
 
+        if phase == "place":
+            configured_settle_steps = (
+                self.config.manipulation.place_base_lock_settle_steps
+            )
+        else:
+            configured_settle_steps = self.config.manipulation.base_lock_settle_steps
         settle_steps = (
-            self.config.manipulation.base_lock_settle_steps
+            configured_settle_steps
             if self.config.manipulation.lock_base_during_manipulation
             else 0
         )

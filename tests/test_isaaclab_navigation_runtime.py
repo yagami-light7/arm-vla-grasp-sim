@@ -204,6 +204,16 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         self.assertEqual(config.apple_collision_approximation, "convexDecomposition")
         self.assertEqual(config.apple_collision_contact_offset, 0.001)
         self.assertEqual(config.apple_collision_rest_offset, 0.0)
+        self.assertTrue(config.hide_object_collision_visual)
+        self.assertEqual(config.object_collision_visual_root_path, "/World")
+        self.assertEqual(
+            config.object_collision_visual_hide_keywords,
+            ("Apple_M_Apple",),
+        )
+        self.assertEqual(
+            config.object_collision_visual_keep_keywords,
+            ("visual_video",),
+        )
 
     def test_gripper_collision_spawn_patch_runs_after_spawn_once(self) -> None:
         timeline: list[str] = []
@@ -464,6 +474,20 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
 
         self.assertEqual(config.viewport_camera_prim_path, "/World/Camera1")
         self.assertTrue(config.hide_navigation_collision_visual)
+
+    def test_object_collision_visual_hide_runs_after_task_object_visibility(self) -> None:
+        source_text = inspect.getsource(IsaacLabNavigationRuntime._load_visual_scene)
+
+        self.assertLess(
+            source_text.index("_show_only_task_object"),
+            source_text.index("_hide_object_collision_visual"),
+        )
+        self.assertIn("object_collision_visual_hide_report", source_text)
+        builder_source = inspect.getsource(IsaacLabNavigationRuntime._build_environment)
+        self.assertLess(
+            builder_source.index("object_collision_visual_hide_after_spawn_report"),
+            builder_source.index("wrapped = RslRlVecEnvWrapper"),
+        )
 
     def test_runtime_reads_front_and_wrist_camera_images(self) -> None:
         class FakeSensor:

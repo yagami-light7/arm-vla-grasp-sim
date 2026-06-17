@@ -43,6 +43,10 @@ class IsaacLabNavigationRuntimeConfig:
     apple_collision_approximation: str = "convexDecomposition"
     apple_collision_contact_offset: float = 0.001
     apple_collision_rest_offset: float = 0.0
+    hide_object_collision_visual: bool = True
+    object_collision_visual_root_path: str = "/World"
+    object_collision_visual_hide_keywords: tuple[str, ...] = ("Apple_M_Apple",)
+    object_collision_visual_keep_keywords: tuple[str, ...] = ("visual_video",)
     arm_joint_names: tuple[str, ...] = (
         "arm_joint1",
         "arm_joint2",
@@ -842,6 +846,15 @@ class IsaacLabNavigationRuntime:
                             "patch_count": 0,
                         }
                     )
+            # collision patch 可能取消实例化并重新组合苹果 prim；reset 和相机采集前再隐藏一次。
+            import omni.usd
+
+            stage_after_collision_patch = omni.usd.get_context().get_stage()
+            self._metadata["object_collision_visual_hide_after_spawn_report"] = (
+                self._hide_object_collision_visual(stage_after_collision_patch)
+                if stage_after_collision_patch is not None
+                else {"applied": False, "reason": "usd_stage_unavailable"}
+            )
             wrapped = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
             # wrapper 构造时会触发 env.reset；GUI viewport 只在 reset 完成后切相机。
             self.refresh_viewport(reason="environment_reset")
@@ -1072,6 +1085,10 @@ class IsaacLabNavigationRuntime:
         self._metadata["object_pose_setup_report"] = self._apply_object_pose(episode_spec)
         object_visibility = self._show_only_task_object(stage, episode_spec)
         self._metadata["object_visibility_report"] = object_visibility
+        object_collision_visual_hide = self._hide_object_collision_visual(stage)
+        self._metadata["object_collision_visual_hide_report"] = (
+            object_collision_visual_hide
+        )
         return {
             "loaded": True,
             "load_mode": "sublayer",
@@ -1084,7 +1101,22 @@ class IsaacLabNavigationRuntime:
                 "/World/mec_arm_6dof",
             ),
             "object_visibility": object_visibility,
+            "object_collision_visual_hide": object_collision_visual_hide,
         }
+
+    def _hide_object_collision_visual(self, stage: Any) -> dict[str, Any]:
+        """隐藏 Apple_M_Apple 碰撞视觉层，避免相机采集到占位碰撞网格。"""
+
+        if not self._config.hide_object_collision_visual:
+            return {"applied": False, "reason": "disabled_by_config"}
+        from source.simulation.visibility_patch import hide_visual_prims_by_keywords
+
+        return hide_visual_prims_by_keywords(
+            root_path=self._config.object_collision_visual_root_path,
+            hide_keywords=self._config.object_collision_visual_hide_keywords,
+            keep_keywords=self._config.object_collision_visual_keep_keywords,
+            stage=stage,
+        )
 
     def _show_only_task_object(self, stage: Any, episode_spec: EpisodeSpec) -> dict[str, Any]:
         """复用 baseline 语义：隐藏 apple/orange/bottle 中的非任务物体。"""

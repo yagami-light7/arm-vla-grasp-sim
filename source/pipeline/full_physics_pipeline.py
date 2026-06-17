@@ -64,6 +64,7 @@ class FullPhysicsPipeline:
         duration_steps = 0
         last_action: dict[str, Any] = {}
         self.recorder.save_task(self.episode_spec)
+        self.recorder.mark_training_eligible(False, reason="episode_not_verified_yet")
         try:
             while True:
                 observation = self.simulation.read()
@@ -320,6 +321,13 @@ class FullPhysicsPipeline:
             "duration_steps": duration_steps,
             "duration_seconds": time.time() - started_at,
             "data_output_path": str(self.recorder.output_dir),
+            "lerobot_training_eligible": bool(success),
+            "lerobot_export_skipped": not bool(success),
+            "lerobot_export_skip_reason": (
+                machine_fields.get("failure_reason") or "episode_failed"
+                if not success
+                else None
+            ),
             "execution_mode": execution_mode,
             "success_semantics": success_semantics,
             "pure_physics_success": pure_physics_success,

@@ -349,6 +349,13 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             ).manipulation.base_lock_settle_steps,
             60,
         )
+        self.assertEqual(
+            FullPhysicsConfig(
+                task_json=PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json",
+                output_dir=PROJECT_ROOT / "outputs/test",
+            ).manipulation.place_base_lock_settle_steps,
+            0,
+        )
 
     def test_navigation_defaults_use_stable_brisk_fast_profile(self) -> None:
         config = FullPhysicsConfig(
@@ -713,8 +720,8 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             self.assertIn("place_success", event_names)
             self.assertIn("pick_base_settle_start", event_names)
             self.assertIn("pick_base_settle_complete", event_names)
-            self.assertIn("place_base_settle_start", event_names)
-            self.assertIn("place_base_settle_complete", event_names)
+            self.assertNotIn("place_base_settle_start", event_names)
+            self.assertNotIn("place_base_settle_complete", event_names)
             self.assertNotIn("object_lift_success", event_names)
             self.assertNotIn("integrated_apply_smoke_place_apply_success", event_names)
             frames = [
@@ -899,6 +906,10 @@ class FullPhysicsPipelineTest(unittest.TestCase):
 
             self.assertFalse(summary["success"])
             self.assertEqual(summary["failure_reason"], "object_out_of_place")
+            self.assertFalse(summary["lerobot_training_eligible"])
+            self.assertTrue(summary["lerobot_export_skipped"])
+            self.assertFalse((root / "episode" / "lerobot_manifest.json").exists())
+            self.assertFalse((root / "episode" / "lerobot_dataset").exists())
             self.assertTrue(summary["simulation_report"]["terminal_hold_report"]["paused"])
             final_action = frames[-1]["action"]
             self.assertTrue(final_action["metadata"]["terminal_hold"])

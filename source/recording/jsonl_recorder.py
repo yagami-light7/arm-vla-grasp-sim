@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,8 @@ class JsonlEpisodeRecorder:
         self._lerobot_config = lerobot_config or LeRobotRecordingConfig()
         self._dataset_writer = DwaEpisodeWriter(self._output_dir, self._lerobot_config)
         self._task_payload: dict[str, Any] = {}
+        self._training_eligible = True
+        self._training_eligibility_reason: str | None = None
         self.event_count = 0
         self.frame_count = 0
 
@@ -98,7 +101,23 @@ class JsonlEpisodeRecorder:
         self._append_jsonl(self.frames_path, payload)
         self.frame_count += 1
 
-    def prepare_lerobot_export(self) -> dict[str, Any]:
+    def mark_training_eligible(self, eligible: bool, *, reason: str | None = None) -> None:
+        """标记当前 episode 是否允许导出训练数据；失败样本只能保留诊断文件。"""
+
+        self._training_eligible = bool(eligible)
+        self._training_eligibility_reason = reason
+
+    def prepare_lerobot_export(
+        self,
+        *,
+        training_eligible: bool | None = None,
+        training_eligibility_reason: str | None = None,
+    ) -> dict[str, Any]:
+        if training_eligible is not None:
+            self.mark_training_eligible(
+                bool(training_eligible),
+                reason=training_eligibility_reason,
+            )
         writer_report = self._dataset_writer.finalize()
         camera_keys = list(writer_report["camera_keys"])
         feature_keys = [
@@ -167,7 +186,18 @@ class JsonlEpisodeRecorder:
             "source_frames": str(self.frames_path),
             "frame_count": self.frame_count,
             "num_frames": self._dataset_writer.frame_count,
+            "training_eligible": bool(self._training_eligible),
         }
+        if not self._training_eligible:
+            return {
+                **raw_payload,
+                "lerobot_exported": False,
+                "success": False,
+                "failure_reason": "episode_not_training_eligible",
+                "reason": self._training_eligibility_reason
+                or "episode_not_training_eligible",
+                "manifest_path": None,
+            }
         if not self._lerobot_config.enabled:
             payload = {
                 **raw_payload,
@@ -215,13 +245,49 @@ class JsonlEpisodeRecorder:
 
     def close(self, summary: dict[str, Any]) -> Path:
         self._dataset_writer.finalize()
+        success = bool(summary.get("success", False))
+        if not success:
+            failure_reason = str(summary.get("failure_reason") or "episode_failed")
+            self.mark_training_eligible(False, reason=failure_reason)
+            self._remove_lerobot_artifacts()
         payload = {
             **summary,
             "event_count": self.event_count,
             "frame_count": self.frame_count,
             "data_output_path": str(self.output_dir),
+            "lerobot_training_eligible": success,
+            "lerobot_export_skipped": not success,
         }
+        if not success:
+            payload["lerobot_export_skip_reason"] = (
+                self._training_eligibility_reason or "episode_failed"
+            )
+            existing_export = dict(payload.get("lerobot_export") or {})
+            payload["lerobot_export"] = {
+                **existing_export,
+                "lerobot_exported": False,
+                "training_eligible": False,
+                "reason": payload["lerobot_export_skip_reason"],
+                "manifest_path": None,
+            }
+            if existing_export:
+                payload["lerobot_export"]["original_lerobot_exported"] = existing_export.get(
+                    "lerobot_exported"
+                )
+                payload["lerobot_export"]["original_reason"] = existing_export.get(
+                    "reason"
+                )
         return self._write_json("summary.json", payload)
+
+    def _remove_lerobot_artifacts(self) -> None:
+        """失败 episode 不留下 LeRobot manifest/dataset，避免被后续训练误收集。"""
+
+        manifest_path = self.output_dir / "lerobot_manifest.json"
+        if manifest_path.exists():
+            manifest_path.unlink()
+        dataset_path = self.output_dir / "lerobot_dataset"
+        if dataset_path.exists():
+            shutil.rmtree(dataset_path)
 
     def _write_json(self, name: str, payload: Any) -> Path:
         path = self.output_dir / name
