@@ -210,7 +210,7 @@ class FullPhysicsManipulationTest(unittest.TestCase):
         self.assertTrue(
             all(
                 action.metadata.get("gripper_hold_after_close_source")
-                == "actual_after_close"
+                == "close_target"
                 for action in retreat_settle_actions
             )
         )
@@ -475,6 +475,47 @@ class FullPhysicsManipulationTest(unittest.TestCase):
 
         self.assertEqual(action.metadata["motion_time_scale"], 2.0)
         self.assertEqual(action.metadata["segment_ticks"], 3)
+
+    def test_place_carry_segments_keep_baseline_time_scale(self) -> None:
+        payload = _place_payload()
+        payload["segments"] = [
+            _motion_segment(
+                "move_to_pre_place",
+                [
+                    (0.2, 0.21, 0.22, 0.23, 0.24, 0.25),
+                    (0.3, 0.31, 0.32, 0.33, 0.34, 0.35),
+                ],
+            ),
+            *payload["segments"],
+        ]
+        plan = arm_plan_from_curobo_payload(payload)
+        executor = SegmentedArmExecutor(
+            BinaryGripperController(),
+            config=SegmentedArmExecutorConfig(
+                sim_dt=0.02,
+                arm_command_dt=0.02,
+                motion_time_scale=0.5,
+                place_move_to_pre_place_motion_time_scale=1.0,
+                place_approach_motion_time_scale=1.0,
+                place_retreat_motion_time_scale=1.0,
+                settle_to_segment_start_duration=0.0,
+                post_motion_hold_duration=0.0,
+                gripper_move_duration=0.02,
+                gripper_hold_duration=0.0,
+            ),
+        )
+        executor.reset(plan)
+
+        actions = _drain_executor(executor)
+        scale_by_segment = {
+            action.metadata["segment_name"]: action.metadata["motion_time_scale"]
+            for action in actions
+            if action.metadata.get("segment_type") == "motion"
+        }
+
+        self.assertEqual(scale_by_segment["move_to_pre_place"], 1.0)
+        self.assertEqual(scale_by_segment["approach_to_place"], 1.0)
+        self.assertEqual(scale_by_segment["retreat_place"], 1.0)
 
     def test_place_plan_emits_gripper_open_event_without_internal_world_step(self) -> None:
         plan = arm_plan_from_curobo_payload(_place_payload())

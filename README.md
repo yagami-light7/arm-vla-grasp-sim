@@ -4,14 +4,17 @@
 
 大致流程为：
 
+
+
 ```mermaid
-flowchart LR
-    A[随机化] --> B[nav2pick]
-    B --> C[pick]
-    C --> D[nav2place]
-    D --> E[place]
-    E --> F[LeRobot 数据导出]
+graph LR
+    A["随机化"] --> B["nav2pick"]
+    B --> C["pick"]
+    C --> D["nav2place"]
+    D --> E["place"]
+    E --> F["LeRobot 数据导出"]
 ```
+
 
 ## 一、环境依赖
 

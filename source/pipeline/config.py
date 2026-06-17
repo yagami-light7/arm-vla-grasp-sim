@@ -98,7 +98,10 @@ class ManipulationSettings:
     # 只改变物理控制目标的时间采样，不修改 cuRobo 路径几何。
     arm_motion_time_scale: float = 0.50
     pick_approach_motion_time_scale: float = 0.50
-    place_approach_motion_time_scale: float = 0.50
+    # place 携物段对齐稳定 baseline。pick 仍可保持 2 倍速，place 三段不再使用全局 2 倍速。
+    place_move_to_pre_place_motion_time_scale: float = 1.00
+    place_approach_motion_time_scale: float = 1.00
+    place_retreat_motion_time_scale: float = 1.00
     arm_post_motion_hold_duration_s: float = 0.75
     # 对齐 video baseline：松爪后先保持释放位姿，让苹果在桌面稳定，再执行退臂。
     place_release_settle_duration_s: float = 0.50
@@ -224,8 +227,12 @@ class FullPhysicsConfig:
             raise ValueError("arm_motion_time_scale must be positive")
         if self.manipulation.pick_approach_motion_time_scale <= 0.0:
             raise ValueError("pick_approach_motion_time_scale must be positive")
+        if self.manipulation.place_move_to_pre_place_motion_time_scale <= 0.0:
+            raise ValueError("place_move_to_pre_place_motion_time_scale must be positive")
         if self.manipulation.place_approach_motion_time_scale <= 0.0:
             raise ValueError("place_approach_motion_time_scale must be positive")
+        if self.manipulation.place_retreat_motion_time_scale <= 0.0:
+            raise ValueError("place_retreat_motion_time_scale must be positive")
         if self.manipulation.arm_post_motion_hold_duration_s <= 0.0:
             raise ValueError("arm_post_motion_hold_duration_s must be positive")
         if self.manipulation.place_release_settle_duration_s < 0.0:

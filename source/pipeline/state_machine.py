@@ -1498,6 +1498,7 @@ class FullPhysicsStateMachine:
         action: RobotAction,
         observation: SimulationState,
     ) -> None:
+        del observation
         command = action.gripper_command
         marker = str(action.metadata.get("event_marker") or "")
         if command == self.gripper.command_open() or marker == "gripper_open":
@@ -1519,24 +1520,10 @@ class FullPhysicsStateMachine:
             target["gripper_joint_names"] = joint_names
         if joint_positions is not None:
             target["gripper_joint_positions"] = joint_positions
-            hold_source = str(
-                action.metadata.get("gripper_hold_after_close_source")
-                or "action_gripper_joint_positions"
-            )
-            target["hold_position_source"] = hold_source
-            target["commanded_close_positions"] = tuple(
-                float(value)
-                for value in action.metadata.get(
-                    "q_gripper_commanded_close_target",
-                    joint_positions,
-                )
-            )
-            if "q_gripper_actual_after_close" in action.metadata:
-                target["actual_after_close_positions"] = tuple(
-                    float(value)
-                    for value in action.metadata["q_gripper_actual_after_close"]
-                )
-            target["capture_step_index"] = observation.step_index
+            # baseline 的导航 carry 会强制保持 close target，而不是被动冻结实际开度。
+            # 实际开度的 position error 接近 0，无法持续提供夹紧力，起步时容易松开。
+            target["hold_position_source"] = "forced_close_target_for_carry"
+            target["commanded_close_positions"] = joint_positions
         if "operation" in action.metadata:
             target["operation"] = action.metadata["operation"]
         if "segment_name" in action.metadata:

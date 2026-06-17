@@ -97,8 +97,14 @@ def create_full_physics_pipeline(
                 pick_approach_motion_time_scale=(
                     full_physics_config.manipulation.pick_approach_motion_time_scale
                 ),
+                place_move_to_pre_place_motion_time_scale=(
+                    full_physics_config.manipulation.place_move_to_pre_place_motion_time_scale
+                ),
                 place_approach_motion_time_scale=(
                     full_physics_config.manipulation.place_approach_motion_time_scale
+                ),
+                place_retreat_motion_time_scale=(
+                    full_physics_config.manipulation.place_retreat_motion_time_scale
                 ),
                 # 相邻切片来自同一条 baseline 轨迹；实际已到切分点时跳过重复 settle，
                 # 只有 tracking 落后时才由严格 post-motion hold 等待到位。

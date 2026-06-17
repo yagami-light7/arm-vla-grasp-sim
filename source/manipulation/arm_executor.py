@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 from source.interfaces import ArmPlan, GripperController, RobotAction, SimulationState
@@ -17,7 +17,9 @@ class SegmentedArmExecutorConfig:
     arm_command_dt: float = 0.05
     motion_time_scale: float = 1.0
     pick_approach_motion_time_scale: float = 1.50
+    place_move_to_pre_place_motion_time_scale: float = 1.0
     place_approach_motion_time_scale: float = 1.0
+    place_retreat_motion_time_scale: float = 1.0
     settle_to_segment_start_duration: float = 0.10
     settle_to_segment_start_skip_error_tolerance: float = 0.0
     post_motion_hold_duration: float = 1.50
@@ -44,7 +46,6 @@ class SegmentedArmExecutorConfig:
     hold_arm_during_gripper: bool = True
     hold_current_arm_during_gripper_without_motion: bool = True
     hold_gripper_after_close: bool = True
-    gripper_hold_after_close_source: str = "actual"
 
     def __post_init__(self) -> None:
         if self.sim_dt <= 0.0:
@@ -55,8 +56,12 @@ class SegmentedArmExecutorConfig:
             raise ValueError("motion_time_scale must be positive")
         if self.pick_approach_motion_time_scale <= 0.0:
             raise ValueError("pick_approach_motion_time_scale must be positive")
+        if self.place_move_to_pre_place_motion_time_scale <= 0.0:
+            raise ValueError("place_move_to_pre_place_motion_time_scale must be positive")
         if self.place_approach_motion_time_scale <= 0.0:
             raise ValueError("place_approach_motion_time_scale must be positive")
+        if self.place_retreat_motion_time_scale <= 0.0:
+            raise ValueError("place_retreat_motion_time_scale must be positive")
         if self.settle_to_segment_start_duration < 0.0:
             raise ValueError("settle_to_segment_start_duration must be non-negative")
         if self.settle_to_segment_start_skip_error_tolerance < 0.0:
@@ -77,8 +82,6 @@ class SegmentedArmExecutorConfig:
             raise ValueError("final_motion_hold_duration must be non-negative")
         if self.post_open_release_settle_duration < 0.0:
             raise ValueError("post_open_release_settle_duration must be non-negative")
-        if self.gripper_hold_after_close_source not in {"actual", "target"}:
-            raise ValueError("gripper_hold_after_close_source must be 'actual' or 'target'")
 
 
 @dataclass(frozen=True)
@@ -109,8 +112,6 @@ class SegmentedArmExecutor:
         self._pending_post_motion_hold_step: _ActionStep | None = None
         self._pending_close_validation: dict[str, Any] | None = None
         self._close_progress_report: dict[str, Any] = {}
-        self._actual_gripper_hold_after_close: tuple[float, ...] | None = None
-        self._actual_gripper_hold_joint_names: tuple[str, ...] = ()
         self._strict_post_motion_wait_reports: list[dict[str, Any]] = []
         self._failed = False
         self._failure_reason = ""
@@ -127,8 +128,6 @@ class SegmentedArmExecutor:
         self._pending_post_motion_hold_step = None
         self._pending_close_validation = None
         self._close_progress_report = {}
-        self._actual_gripper_hold_after_close = None
-        self._actual_gripper_hold_joint_names = ()
         self._strict_post_motion_wait_reports = []
         self._failed = False
         self._failure_reason = ""
@@ -149,7 +148,6 @@ class SegmentedArmExecutor:
             return RobotAction.idle(source=f"arm_{self.plan.operation}_done")
         step = self._steps[self._tick_index]
         action = self._materialize_step_action(step, state)
-        action = self._with_actual_gripper_hold_after_close(action)
         self._tick_index += 1
         self._remember_pending_post_motion_hold(step)
         self._remember_pending_close_validation(action)
@@ -296,38 +294,6 @@ class SegmentedArmExecutor:
             source=step.action.source,
             metadata=metadata,
         )
-
-    def _with_actual_gripper_hold_after_close(self, action: RobotAction) -> RobotAction:
-        """闭合后保持实际接触开度，避免后续阶段继续向零开度挤压物体。"""
-
-        if (
-            not self.config.hold_gripper_after_close
-            or self.config.gripper_hold_after_close_source != "actual"
-            or self._actual_gripper_hold_after_close is None
-            or not action.metadata.get("gripper_hold_after_close")
-        ):
-            return action
-        metadata = dict(action.metadata)
-        joint_names = tuple(metadata.get("gripper_joint_names") or ())
-        if not joint_names:
-            joint_names = self._actual_gripper_hold_joint_names
-        if len(joint_names) != len(self._actual_gripper_hold_after_close):
-            return action
-        commanded_target = tuple(
-            float(value) for value in metadata.get("gripper_joint_positions") or ()
-        )
-        metadata.update(
-            {
-                "gripper_joint_names": joint_names,
-                "gripper_joint_positions": self._actual_gripper_hold_after_close,
-                "gripper_hold_after_close_source": "actual_after_close",
-                "q_gripper_hold_after_close": self._actual_gripper_hold_after_close,
-                "q_gripper_actual_after_close": self._actual_gripper_hold_after_close,
-            }
-        )
-        if commanded_target:
-            metadata["q_gripper_commanded_close_target"] = commanded_target
-        return replace(action, metadata=metadata)
 
     def _current_arm_hold_for_gripper(
         self,
@@ -491,15 +457,6 @@ class SegmentedArmExecutor:
             pending["q_target"],
         )
         close_success = close_progress >= self.config.min_close_progress_for_motion
-        hold_source = (
-            self.config.gripper_hold_after_close_source
-            if self.config.hold_gripper_after_close
-            else "disabled"
-        )
-        q_hold_after_close = q_final if hold_source == "actual" else pending["q_target"]
-        if self.config.hold_gripper_after_close and hold_source == "actual":
-            self._actual_gripper_hold_after_close = q_final
-            self._actual_gripper_hold_joint_names = tuple(pending["gripper_joint_names"])
         self._close_progress_report = {
             **pending,
             "available": True,
@@ -510,12 +467,8 @@ class SegmentedArmExecutor:
             "close_success_rule": "contact_aware_close_progress_not_final_error_to_zero",
             "gripper_joint_mapping": mapping_report,
             "gripper_hold_after_close_enabled": self.config.hold_gripper_after_close,
-            "gripper_hold_after_close_source": (
-                "actual_after_close" if hold_source == "actual" else "close_target"
-            ),
-            "q_gripper_hold_after_close": q_hold_after_close,
-            "q_gripper_actual_after_close": q_final,
-            "q_gripper_commanded_close_target": pending["q_target"],
+            "gripper_hold_after_close_source": "close_target",
+            "q_gripper_hold_after_close": pending["q_target"],
         }
         self._latest_metadata = dict(self._close_progress_report)
         if not close_success and self.config.require_close_progress_for_motion:
@@ -753,6 +706,18 @@ class SegmentedArmExecutor:
             motion_time_scale = max(
                 motion_time_scale,
                 self.config.place_approach_motion_time_scale,
+            )
+        if name == "move_to_pre_place":
+            # 对齐稳定 baseline：携物进入 pre-place 时不使用全局 2 倍速，
+            # 否则个别 seed 会在第一段 place motion 中把苹果从夹爪中甩出。
+            motion_time_scale = max(
+                motion_time_scale,
+                self.config.place_move_to_pre_place_motion_time_scale,
+            )
+        if name == "retreat_place":
+            motion_time_scale = max(
+                motion_time_scale,
+                self.config.place_retreat_motion_time_scale,
             )
         duration = max(0.0, time_from_start[-1] * motion_time_scale)
         num_steps = max(1, int(math.ceil(duration / self.config.sim_dt)) + 1)
