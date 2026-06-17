@@ -19,7 +19,7 @@ class SegmentedArmExecutorConfig:
     pick_approach_motion_time_scale: float = 1.50
     place_move_to_pre_place_motion_time_scale: float = 1.0
     place_approach_motion_time_scale: float = 1.0
-    place_retreat_motion_time_scale: float = 1.0
+    place_retreat_motion_time_scale: float = 0.5
     settle_to_segment_start_duration: float = 0.10
     settle_to_segment_start_skip_error_tolerance: float = 0.0
     post_motion_hold_duration: float = 1.50

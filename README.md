@@ -4,8 +4,6 @@
 
 大致流程为：
 
-
-
 ```mermaid
 graph LR
     A["随机化"] --> B["nav2pick"]
@@ -15,6 +13,7 @@ graph LR
     E --> F["LeRobot 数据导出"]
 ```
 
+![overview](requirements/image_video/overview.png)
 
 ## 一、环境依赖
 
