@@ -1,0 +1,29 @@
+# LeRobot v2 / Rerun conversion environment.
+# Intended interpreter:
+#   /data/conda_envs/lerobot_rerun/bin/python
+#
+# This environment is for tools/lerobot_to_rerun.py and dataset inspection only.
+# Do not import or install Isaac Sim packages here.
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+lerobot==0.4.4
+rerun-sdk==0.26.2
+
+numpy==2.2.6
+pandas==2.3.3
+pyarrow==24.0.0
+pillow==12.2.0
+opencv-python==4.13.0.92
+tqdm==4.68.2
+imageio==2.37.3
+imageio-ffmpeg==0.6.0
+
+torch==2.10.0+cu128
+torchvision==0.25.0+cu128
+pyyaml==6.0.3
+huggingface-hub==0.35.3
+datasets==4.8.5
+safetensors==0.8.0
+av==15.1.0
+packaging==25.0

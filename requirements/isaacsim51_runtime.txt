@@ -1,0 +1,35 @@
+# Isaac Sim 5.1 / Isaac Lab runtime environment.
+# Intended interpreter:
+#   /data/conda_envs/isaacsim51_3dgs_grasp/bin/python
+#
+# Do not install lerobot or rerun-sdk into this environment.
+# Isaac Sim / Isaac Lab packages themselves should still be installed following
+# the NVIDIA / local IsaacLab setup. This file pins the ordinary pip packages
+# that are known to work with the current full-physics pipeline.
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+numpy==1.26.0
+scipy==1.15.3
+packaging==23.0
+psutil==5.9.8
+websockets==12.0
+
+torch==2.7.0+cu128
+torchvision==0.22.0+cu128
+torchaudio==2.7.0+cu128
+
+pillow==11.3.0
+opencv-python-headless==4.11.0.86
+pyarrow==24.0.0
+pandas==3.0.3
+tqdm==4.67.3
+imageio==2.37.0
+imageio-ffmpeg==0.6.0
+
+gymnasium==1.2.1
+hydra-core==1.3.2
+omegaconf==2.3.0
+trimesh==4.5.1
+networkx==3.3
+matplotlib==3.10.3

@@ -170,7 +170,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 self.assertEqual(action["gripper_command"], "close")
                 self.assertTrue(action["metadata"].get("carry_gripper_hold"))
 
-    def test_carry_gripper_forces_close_target_like_baseline(self) -> None:
+    def test_carry_gripper_uses_actual_contact_hold_when_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_path = PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json"
             config = FullPhysicsConfig(
@@ -204,19 +204,23 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 metadata={
                     "event_marker": "gripper_close",
                     "gripper_joint_names": ("arm_joint7", "arm_joint8"),
-                    "gripper_joint_positions": (0.0, 0.0),
+                    "gripper_joint_positions": (0.035, 0.020),
+                    "gripper_hold_after_close_source": "actual_after_close",
+                    "q_gripper_actual_after_close": (0.035, 0.020),
+                    "q_gripper_commanded_close_target": (0.0, 0.0),
                 },
             )
             pipeline.machine._remember_carry_gripper_target(close_action, open_observation)
 
             target = pipeline.machine._carry_gripper_target
             self.assertIsNotNone(target)
-            self.assertEqual(target["gripper_joint_positions"], (0.0, 0.0))
+            self.assertEqual(target["gripper_joint_positions"], (0.035, 0.020))
             self.assertEqual(
                 target["hold_position_source"],
-                "forced_close_target_for_carry",
+                "actual_after_close",
             )
             self.assertEqual(target["commanded_close_positions"], (0.0, 0.0))
+            self.assertEqual(target["actual_after_close_positions"], (0.035, 0.020))
 
             contact_observation = replace(
                 open_observation,
@@ -229,7 +233,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             )
             self.assertEqual(
                 pipeline.machine._carry_gripper_target["gripper_joint_positions"],
-                (0.0, 0.0),
+                (0.035, 0.020),
             )
 
     def test_carry_object_tracking_is_read_only_and_reports_drop(self) -> None:
@@ -816,7 +820,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                     frame["action"]["metadata"].get(
                         "carry_gripper_hold_position_source"
                     )
-                    == "forced_close_target_for_carry"
+                    == "close_target"
                     for frame in carry_frames
                 )
             )

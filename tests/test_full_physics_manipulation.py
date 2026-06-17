@@ -209,7 +209,8 @@ class FullPhysicsManipulationTest(unittest.TestCase):
         )
         self.assertTrue(
             all(
-                action.metadata.get("gripper_hold_after_close_source") == "close_target"
+                action.metadata.get("gripper_hold_after_close_source")
+                == "actual_after_close"
                 for action in retreat_settle_actions
             )
         )
