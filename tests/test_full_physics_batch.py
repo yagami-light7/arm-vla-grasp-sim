@@ -32,12 +32,12 @@ TASK_PATH = PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json"
 PICK_PLAN = (
     PROJECT_ROOT
     / "outputs/random_pick_place_dataset/apple_pick_place_contact/episode_0000"
-    / "single_stage_arm_place_debug/pick_plan.json"
+    / "legacy_arm_place_debug/pick_plan.json"
 )
 PLACE_PLAN = (
     PROJECT_ROOT
     / "outputs/random_pick_place_dataset/apple_pick_place_contact/episode_0000"
-    / "single_stage_arm_place_debug/arm_place_plan.json"
+    / "legacy_arm_place_debug/arm_place_plan.json"
 )
 
 

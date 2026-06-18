@@ -259,7 +259,7 @@ def load_place_target() -> dict:
     """读取 07 arm-place 生成的放置目标。"""
     data = load_json(
         TARGET_JSON,
-        "scripts/isaac/07_run_pick_put_demo_from_nav_results.py --put-mode arm-place",
+        "scripts/pipeline/run_full_physics_pipeline.py",
     )
 
     if "poses" not in data:

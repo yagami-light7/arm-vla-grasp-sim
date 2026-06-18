@@ -46,6 +46,8 @@ _COLORS = {
 
 
 _STATE_COLORS = {
+    "launching": "cyan",
+    "isaac_startup": "yellow",
     "build_stage": "blue",
     "reset_episode": "cyan",
     "plan_nav_to_pick": "magenta",
@@ -283,9 +285,16 @@ def _read_episode_progress(
     *,
     min_mtime: float | None = None,
 ) -> EpisodeProgress:
-    frames_path = episode.summary_path.parent / "frames.jsonl"
-    if not frames_path.is_file():
-        frames_path = episode.output_dir / "episode_000000" / "frames.jsonl"
+    frames_candidates = [
+        episode.summary_path.parent / "frames.jsonl",
+        episode.output_dir / "episode_000000" / "frames.jsonl",
+    ]
+    summary_candidates = [
+        episode.summary_path,
+        episode.summary_path.parent / "episode_000000" / episode.summary_path.name,
+    ]
+    any_progress_file_exists = any(path.is_file() for path in frames_candidates + summary_candidates)
+    frames_path = next((path for path in frames_candidates if path.is_file()), frames_candidates[0])
     frame = _last_json_line(frames_path, min_mtime=min_mtime)
     if frame is not None:
         state = frame.get("pipeline_state")
@@ -298,7 +307,9 @@ def _read_episode_progress(
     summary_progress = _progress_from_summary(episode.summary_path, min_mtime=min_mtime)
     if summary_progress is not None:
         return summary_progress
-    return EpisodeProgress()
+    if any_progress_file_exists:
+        return EpisodeProgress()
+    return EpisodeProgress(state="isaac_startup", source="batch")
 
 
 def _print_progress_line(
@@ -734,8 +745,9 @@ def _run_child_process(
                     episode,
                     min_mtime=started_at_epoch,
                 )
+                startup_waiting = progress.source == "batch" and progress.state == "isaac_startup"
                 should_print = (
-                    progress.source != "unavailable"
+                    (progress.source != "unavailable" and not startup_waiting)
                     or last_printed_progress is None
                     or progress.state != last_printed_progress.state
                     or now - last_unknown_progress_at >= max(30.0, progress_interval_s)
@@ -748,7 +760,7 @@ def _run_child_process(
                         color_enabled=color_enabled,
                     )
                     last_printed_progress = progress
-                    if progress.source == "unavailable":
+                    if progress.source == "batch" and progress.state == "isaac_startup":
                         last_unknown_progress_at = now
                 last_progress_at = now
             if returncode is not None:

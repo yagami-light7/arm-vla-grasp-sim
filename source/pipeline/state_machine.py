@@ -1095,13 +1095,9 @@ class FullPhysicsStateMachine:
             "pick_success"
             if self.config.full_physics
             else (
-                "integrated_apply_smoke_pick_apply_success"
-                if self.config.integrated_apply_smoke
-                else (
-                    "manipulation_apply_smoke_pick_apply_success"
-                    if self.config.manipulation_apply_smoke
-                    else "object_lift_success"
-                )
+                "manipulation_apply_smoke_pick_apply_success"
+                if self.config.manipulation_apply_smoke
+                else "object_lift_success"
             )
         )
         events = [self._event(pick_success_event, observation.step_index, result.metadata)]
@@ -1158,8 +1154,8 @@ class FullPhysicsStateMachine:
                 result.metadata,
             )
         events = [self._event("nav_to_place_success", observation.step_index, result.metadata)]
-        if self.config.navigation_carry_smoke or self.config.integrated_apply_smoke or self.config.full_physics:
-            if self.config.integrated_apply_smoke or self.config.full_physics:
+        if self.config.navigation_carry_smoke or self.config.full_physics:
+            if self.config.full_physics:
                 object_carry_check = self._verify_carry_object_tracking(observation)
                 if not object_carry_check["success"]:
                     return RobotAction.idle(source="verify_place_reachable"), self._fail(
@@ -1169,7 +1165,7 @@ class FullPhysicsStateMachine:
                     )
             carry_check = self._verify_navigation_carry_targets(
                 observation,
-                latest_sample_only=self.config.integrated_apply_smoke or self.config.full_physics,
+                latest_sample_only=self.config.full_physics,
             )
             if not carry_check["success"]:
                 return RobotAction.idle(source="verify_place_reachable"), self._fail(
@@ -1177,10 +1173,10 @@ class FullPhysicsStateMachine:
                     observation,
                     carry_check,
                 )
-            if self.config.integrated_apply_smoke or self.config.full_physics:
+            if self.config.full_physics:
                 events.append(
                     self._event(
-                        "carry_control_success" if self.config.full_physics else "integrated_apply_smoke_carry_control_success",
+                        "carry_control_success",
                         observation.step_index,
                         carry_check,
                     )
@@ -1200,7 +1196,7 @@ class FullPhysicsStateMachine:
         return RobotAction.idle(source="verify_place_reachable"), events
 
     def _plan_place(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
-        if self.config.integrated_apply_smoke or self.config.full_physics:
+        if self.config.full_physics:
             object_carry_check = self._verify_carry_object_tracking(observation)
             if not object_carry_check["success"]:
                 return RobotAction.idle(source="plan_place"), self._fail(
@@ -1332,13 +1328,9 @@ class FullPhysicsStateMachine:
             "place_success"
             if self.config.full_physics
             else (
-                "integrated_apply_smoke_place_apply_success"
-                if self.config.integrated_apply_smoke
-                else (
-                    "manipulation_apply_smoke_place_apply_success"
-                    if self.config.manipulation_apply_smoke
-                    else "place_success"
-                )
+                "manipulation_apply_smoke_place_apply_success"
+                if self.config.manipulation_apply_smoke
+                else "place_success"
             )
         )
         events = [self._event(place_success_event, observation.step_index, result.metadata)]

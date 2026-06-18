@@ -193,7 +193,6 @@ class FullPhysicsConfig:
     manipulation_smoke: bool = False
     manipulation_apply_smoke: bool = False
     full_physics: bool = False
-    integrated_apply_smoke: bool = False
     pick_plan_json: Path | None = None
     place_plan_json: Path | None = None
     navigation: NavigationSettings = field(default_factory=NavigationSettings)
@@ -363,7 +362,6 @@ class FullPhysicsConfig:
                 self.manipulation_smoke,
                 self.manipulation_apply_smoke,
                 self.full_physics,
-                self.integrated_apply_smoke,
             )
         )
         if enabled_modes > 1:

@@ -32,7 +32,7 @@ from source.pipeline import (
 )
 from source.pipeline.dry_run import create_dry_run_pipeline
 from source.pipeline.isaac_compat import patch_numpy_for_isaacsim
-from source.pipeline.integrated_apply_smoke import create_full_physics_pipeline
+from source.pipeline.factory import create_full_physics_pipeline
 from source.pipeline.manipulation_apply_smoke import create_manipulation_apply_smoke_pipeline
 from source.pipeline.manipulation_smoke import create_manipulation_smoke_pipeline
 from source.pipeline.navigation_smoke import _build_dwa_config
@@ -731,7 +731,6 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             self.assertNotIn("place_base_settle_start", event_names)
             self.assertNotIn("place_base_settle_complete", event_names)
             self.assertNotIn("object_lift_success", event_names)
-            self.assertNotIn("integrated_apply_smoke_place_apply_success", event_names)
             frames = [
                 json.loads(line)
                 for line in (root / "episode" / "frames.jsonl")

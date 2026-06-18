@@ -1,4 +1,4 @@
-"""单 stage full-physics nav-pick-place 组装器。"""
+"""Full-physics nav-pick-place pipeline factory."""
 
 from __future__ import annotations
 
@@ -20,19 +20,6 @@ from source.simulation import IsaacLabNavigationRuntime
 from .config import FullPhysicsConfig
 from .full_physics_pipeline import FullPhysicsPipeline
 from .navigation_smoke import create_navigation_components
-
-
-def create_integrated_apply_smoke_pipeline(
-    *,
-    config: FullPhysicsConfig,
-    episode_spec: EpisodeSpec,
-    episode_seed: int,
-    episode_dir: str | Path,
-    simulation: IsaacLabNavigationRuntime,
-) -> FullPhysicsPipeline:
-    """旧 integrated smoke 已取消，避免继续误用离线 place plan。"""
-
-    raise RuntimeError("--integrated-apply-smoke 已取消，请改用 --full-physics。")
 
 
 def create_full_physics_pipeline(

@@ -484,7 +484,7 @@ def build_arm_place_target_payload(
             "joint_names": list(GRIPPER_JOINT_NAMES),
         },
         "source": {
-            "type": "single_stage_arm_place_target",
+            "type": "full_physics_arm_place_target",
             "mode": "arm_place",
             "object_prim_path": object_prim_path,
             "place_pose_world": {

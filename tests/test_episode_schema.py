@@ -10,7 +10,6 @@ from pathlib import Path
 
 from source.data import EPISODE_COLUMNS, EpisodeRecorder
 from source.data.lerobot_converter import validate_episode
-from source.manipulation import GraspPipeline
 
 
 class EpisodeSchemaTest(unittest.TestCase):
@@ -31,34 +30,6 @@ class EpisodeSchemaTest(unittest.TestCase):
             self.assertEqual(manifest["phases"]["nav"]["rows"], 1)
             self.assertEqual(manifest["phases"]["yaw_align"]["rows"], 1)
 
-    def test_grasp_execution_logs_are_adapted_to_schema(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            recorder = EpisodeRecorder(tmp_dir, 1, 3)
-            recorder.save_task({"task_id": 1, "episode_id": 3})
-            pipeline = GraspPipeline(recorder=recorder)
-            pipeline._record_execution(
-                {
-                    "execution_logs": [
-                        {
-                            "type": "motion",
-                            "time": [0.0],
-                            "target_q_arm": [[1, 2, 3, 4, 5, 6]],
-                            "actual_q_arm": [[0, 1, 2, 3, 4, 5]],
-                        },
-                        {
-                            "type": "gripper",
-                            "time": [0.0],
-                            "target_position": [0.0, 0.0],
-                            "actual_q_gripper": [[0.01, 0.01]],
-                        },
-                    ]
-                }
-            )
-            recorder.write_summary({"success": True})
-            rows = recorder.phase_csv("grasp").read_text(encoding="utf-8").strip().splitlines()
-            self.assertEqual(len(rows), 3)
-            self.assertIn("arm_action_joint6", rows[0])
-
     def test_summary_is_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             recorder = EpisodeRecorder(tmp_dir, 4, 5)
@@ -68,6 +39,8 @@ class EpisodeSchemaTest(unittest.TestCase):
 
     def test_rejects_grasp_target_far_from_navigation_base(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "grasp_target_unreachable"):
+            from source.manipulation.grasp_pipeline import GraspPipeline
+
             GraspPipeline._validate_target_workspace(
                 {
                     "diagnostics": {

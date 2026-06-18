@@ -13,8 +13,6 @@ graph LR
     E --> F["LeRobot 数据导出"]
 ```
 
-![overview](requirements/image_video/overview.png)
-
 ## 一、环境依赖
 
 ### Isaac Sim 5.1 / Isaac Lab 环境
@@ -102,28 +100,103 @@ python -m pip install -r requirements/lerobot_rerun.txt
 ```text
 scripts/
 └── pipeline/
-    ├── run_full_physics_pipeline.py    # 单 episode / smoke 入口
-    ├── run_full_physics_batch.py       # 批量自动化入口
-    └── validate_lerobot_episode.py     # LeRobot 数据集校验入口
+    ├── run_full_physics_pipeline.py        # 单 episode / smoke 入口
+    ├── run_full_physics_batch.py           # 批量自动化入口
+    └── validate_lerobot_episode.py         # LeRobot 数据集校验入口
 
 tools/
-└── lerobot_to_rerun.py                 # LeRobot episode -> Rerun .rrd
+└── lerobot_to_rerun.py                     # LeRobot episode -> Rerun .rrd
 
 source/
-├── interfaces/                         # navigation / manipulation / simulation / recording 协议
-├── pipeline/                           # config、状态机、pipeline 主循环、工厂函数
-├── simulation/                         # IsaacLab runtime、viewport、collision patch
-├── navigation/                         # A* / DWA / Go2 locomotion adapter
-├── manipulation/                       # current-state cuRobo、planner server、arm executor
-├── diagnostics/                        # 成功判据、随机化可视化、报告
-├── recording/                          # raw episode、LeRobot v2 写出与校验
-└── tasks/                              # task loader、随机化、episode spec
+├── interfaces/                             # 跨模块协议层，只定义数据结构和抽象接口
+│   ├── navigation.py                       # NavGoal / NavPlan / NavigationPlanner / NavigationExecutor
+│   ├── manipulation.py                     # ArmPlan / RobotAction / ManipulationPlanner / ArmExecutor
+│   ├── simulation.py                       # SimulationState / SimulationRuntime / action apply 协议
+│   ├── recording.py                        # EpisodeRecorder / 数据记录接口
+│   ├── task.py                             # EpisodeSpec / TaskProvider 任务协议
+│   └── verification.py                     # VerificationResult / 成功判据接口
+├── pipeline/                               # full-physics 状态机和主循环
+│   ├── config.py                           # FullPhysicsConfig 及 nav/manip/randomization/recording 参数
+│   ├── states.py                           # PipelineState 枚举
+│   ├── events.py                           # PipelineEvent 事件结构
+│   ├── state_machine.py                    # nav -> pick -> carry nav -> place -> export 状态机
+│   ├── full_physics_pipeline.py            # 单 World step loop、summary、LeRobot export 调度
+│   ├── factory.py                          # 组装 nav planner、manip planner、executor、runtime、recorder
+│   ├── dry_run.py                          # 无 Isaac 依赖的控制流 dry-run factory
+│   ├── simulation_smoke.py                 # stage/reset smoke factory
+│   ├── navigation_smoke.py                 # nav-only / carry-nav smoke factory
+│   ├── manipulation_smoke.py               # manipulation contract smoke factory
+│   ├── manipulation_apply_smoke.py         # 真实 Isaac action apply smoke factory
+│   └── isaac_compat.py                     # Isaac/Kit 兼容辅助
+├── simulation/                             # Isaac Sim / Isaac Lab runtime 与 USD patch
+│   ├── isaaclab_runtime.py                 # 当前 full-physics 主 runtime，负责场景、传感器、状态导出、step
+│   ├── isaac_runtime.py                    # 轻量 Isaac Sim runtime，保留给 apply/smoke 路径
+│   ├── action_applier.py                   # arm/gripper/base action 下发与 tracking report
+│   ├── collision_patch.py                  # 夹爪/苹果 collision approximation 与 offset patch
+│   ├── visibility_patch.py                 # 视觉层隐藏/显示 patch，例如隐藏碰撞苹果 mesh
+│   ├── viewport.py                         # GUI viewport camera 选择与同步
+│   └── in_memory.py                        # 测试用内存 simulation backend
+├── navigation/                             # A* / DWA / Go2 locomotion policy 封装
+│   ├── planner_adapter.py                  # 将 navlib A*/DWA 包装为 NavigationPlanner
+│   ├── executor.py                         # waypoint / velocity command 执行器
+│   ├── dry_run.py                          # 无 Isaac 的导航 dry-run
+│   ├── adapters/
+│   │   ├── dwa_nav_adapter.py              # DWA 局部规划 adapter
+│   │   ├── isaaclab_go2_adapter.py         # IsaacLab Go2-X5 locomotion policy adapter
+│   │   ├── frame_utils.py                  # world/map/body 坐标变换
+│   │   ├── stall_detector.py               # 导航卡住检测
+│   │   ├── terrain_utils.py                # terrain / collision 辅助
+│   │   └── yaw_align.py                    # 终端 yaw 对齐控制
+│   └── navlib/
+│       ├── astar.py                        # 全局 A* 路径规划
+│       ├── dwa.py                          # DWA 速度采样与 rollout
+│       ├── grid_map.py                     # occupancy grid 数据结构
+│       ├── path_tracking.py                # waypoint lookahead / tracking
+│       ├── rasterization.py                # USD collision -> occupancy rasterization
+│       └── serialization.py                # nav map JSON/PGM 读写
+├── manipulation/                           # cuRobo 在线规划、机械臂执行、夹爪控制
+│   ├── current_state_curobo.py             # 从当前仿真状态导出 cuRobo pick/place state + target
+│   ├── grasp_pipeline.py                   # cuRobo planner-only wrapper，server 或 one-shot fallback
+│   ├── planner_server_process.py           # 自动启动/复用 grasp_planner_server.py
+│   ├── curobo_adapter.py                   # cuRobo JSON plan -> ArmPlan segment 转换
+│   ├── arm_executor.py                     # 分段轨迹 tracking、strict wait、return-home、open/close 时序
+│   ├── gripper_controller.py               # 二值夹爪 open/close target 生成
+│   ├── smoke.py                            # manipulation smoke planner
+│   └── dry_run.py                          # manipulation dry-run planner/executor
+├── diagnostics/                            # 成功判据、调试可视化、报告
+│   ├── full_physics.py                     # pick/carry/place success verifier
+│   ├── navigation.py                       # navigation verifier
+│   ├── manipulation_apply.py               # action apply smoke verifier
+│   ├── integrated_apply.py                 # 历史诊断兼容；不作为主入口
+│   ├── randomization_debug.py              # pick/place/base_goal 随机区域可视化
+│   └── dry_run.py                          # dry-run verifier
+├── recording/                              # full-physics raw frames 与 LeRobot v2 写出
+│   ├── jsonl_recorder.py                   # frames/events/samples/jsonl 与 LeRobot export 调度
+│   ├── lerobot_dataset.py                  # LeRobot v2 parquet/video/meta 写出
+│   └── lerobot_validator.py                # LeRobot v2 结构、时间戳、feature 校验
+├── data/                                   # 旧数据 schema / converter 兼容层
+│   ├── task_schema.py                      # task JSON dataclass/schema helper
+│   ├── random_task.py                      # 旧随机任务生成 helper
+│   ├── episode_recorder.py                 # 旧多 phase CSV recorder
+│   ├── vla_episode_recorder.py             # VLA episode recorder 兼容接口
+│   └── lerobot_converter.py                # 旧 LeRobot converter 兼容接口
+├── tasks/                                  # task loader 与随机化逻辑
+│   ├── task_loader.py                      # JSON task -> EpisodeSpec
+│   └── randomizer.py                       # pick/place XY 和 base_goal 随机化
+├── scene/                                  # USD 场景、物体资产和导航地图
+│   ├── 839920_go2_x5.usd                   # 当前主场景 USD
+│   ├── nav_maps/839920/                    # occupancy map / metadata
+│   ├── apple/                              # apple visual/collision asset
+│   ├── bottle/                             # distractor asset
+│   └── orange/                             # distractor asset
+├── robot/                                  # Go2-X5 URDF / robot 资产源文件
+└── robot_lab/                              # Isaac Lab extension / Go2-X5 task registration
 
 tasks/
-└── nav_pick_place_apple_contact.json   # 当前主任务
+└── nav_pick_place_apple_contact.json       # 当前主任务
 
 checkpoints/
-└── go2_x5/flat/model_8500.pt           # 本地 locomotion checkpoint，通常不提交 git
+└── go2_x5/flat/model_8500.pt               # 本地 locomotion checkpoint，通常不提交 git
 ```
 
 ## 三、Pipeline 流程
@@ -198,7 +271,7 @@ batch 合并统一数据集时只合并成功 episode。
 
 full-physics 成功后会导出 raw episode 和 LeRobot v2 数据。
 
-单 episode 典型输出：
+单 episode 输出结构：
 
 ```text
 outputs/run_name/episode_000000/
@@ -218,7 +291,7 @@ outputs/run_name/episode_000000/
     └── meta/
 ```
 
-batch 典型输出：
+batch 输出结构：
 
 ```text
 outputs/batch_run_name/
@@ -228,22 +301,130 @@ outputs/batch_run_name/
 ├── batch_summary.jsonl
 ├── lerobot_export_manifest.json
 └── lerobot_dataset/
+    ├── data/
+    │   └── chunk-000/
+    │       ├── episode_000000.parquet
+    │       ├── episode_000001.parquet
+    │       └── ...
+    ├── videos/
+    │   └── chunk-000/
+    │       ├── observation.images.front/
+    │       │   ├── episode_000000.mp4
+    │       │   ├── episode_000001.mp4
+    │       │   └── ...
+    │       └── observation.images.wrist/
+    │           ├── episode_000000.mp4
+    │           ├── episode_000001.mp4
+    │           └── ...
+    ├── meta/
+    │   ├── info.json
+    │   ├── episodes.jsonl
+    │   ├── episodes_stats.jsonl
+    │   ├── stats.jsonl
+    │   ├── task_index_map.json
+    │   └── tasks.jsonl
+    └── validation_report.json
 ```
 
-关键 feature：
+每个 `episode_XXXXXX.parquet` 的列：
 
+| 列 | 类型 | 说明 |
+| --- | --- | --- |
+| `index` | `int64` | 全局帧编号，跨 episode 单调递增。 |
+| `episode_index` | `int64` | episode 编号。 |
+| `frame_index` | `int64` | episode 内帧序号，从 0 开始。 |
+| `timestamp` | `float32` | episode 内时间戳，单位为秒，当前数据集 `fps=5.0`。 |
+| `task_index` | `int64` | 指向 LeRobot `meta/tasks.jsonl` / task metadata 的任务编号。 |
+| `observation.state` | `list[float32] × 17` | 机器人主状态向量，维度顺序见下表。 |
+| `observation.base_velocity` | `list[float32] × 3` | 机体系底盘速度 `[vx_body, vy_body, wz_body]`。 |
+| `observation.object_state` | `list[float32] × 13` | 目标物体 pose 和速度，维度顺序见下表。 |
+| `observation.tcp_pose` | `list[float32] × 7` | TCP 位姿 `[x, y, z, quat_w, quat_x, quat_y, quat_z]`。 |
+| `pipeline_state` | `string` | 当前 full-physics 状态机阶段，例如 `exec_nav_to_pick`、`exec_pick`。 |
+| `action` | `list[float32] × 11` | 控制动作，维度顺序见下表。 |
+| `next.done` | `bool` | episode 末帧为 `True`，其余帧为 `False`。 |
 
-| Feature                     | 内容                                                     |
-| --------------------------- | -------------------------------------------------------- |
-| `observation.state`         | base pose、TCP、arm joints、gripper、object 等 17 维状态 |
-| `observation.base_velocity` | body-frame base velocity                                 |
-| `observation.object_state`  | object pose / velocity                                   |
-| `observation.tcp_pose`      | TCP pose                                                 |
-| `observation.images.front`  | front camera MP4                                         |
-| `observation.images.wrist`  | wrist camera MP4                                         |
-| `pipeline_state`            | 当前状态机阶段                                           |
-| `action`                    | base3 + arm6 + gripper2，共 11 维                        |
-| `next.done`                 | episode 末帧标记                                         |
+图像数据不直接写入 parquet 列。LeRobot v2 中图像作为 video feature 存储：
+
+| Feature | 类型 | 文件位置 | 说明 |
+| --- | --- | --- | --- |
+| `observation.images.front` | `video[480, 640, 3]` | `videos/chunk-000/observation.images.front/episode_XXXXXX.mp4` | 前视相机 RGB 视频。 |
+| `observation.images.wrist` | `video[480, 640, 3]` | `videos/chunk-000/observation.images.wrist/episode_XXXXXX.mp4` | 腕部相机 RGB 视频。 |
+
+`observation.state` 17 维顺序：
+
+| 维度 | 名称 | 说明 |
+| --- | --- | --- |
+| 0 | `base_x` | 底盘世界系 x。 |
+| 1 | `base_y` | 底盘世界系 y。 |
+| 2 | `base_z` | 底盘世界系 z。 |
+| 3 | `base_yaw` | 底盘 yaw。 |
+| 4 | `tcp_x` | TCP 世界系 x。 |
+| 5 | `tcp_y` | TCP 世界系 y。 |
+| 6 | `tcp_z` | TCP 世界系 z。 |
+| 7 | `tcp_roll` | TCP roll。 |
+| 8 | `tcp_pitch` | TCP pitch。 |
+| 9 | `tcp_yaw` | TCP yaw。 |
+| 10 | `arm_joint1` | 机械臂第 1 关节位置。 |
+| 11 | `arm_joint2` | 机械臂第 2 关节位置。 |
+| 12 | `arm_joint3` | 机械臂第 3 关节位置。 |
+| 13 | `arm_joint4` | 机械臂第 4 关节位置。 |
+| 14 | `arm_joint5` | 机械臂第 5 关节位置。 |
+| 15 | `arm_joint6` | 机械臂第 6 关节位置。 |
+| 16 | `gripper_joint7_joint8_mean` | 两个夹爪关节位置均值。 |
+
+`observation.base_velocity` 3 维顺序：
+
+| 维度 | 名称 | 说明 |
+| --- | --- | --- |
+| 0 | `vx_body` | 机体系前向线速度。 |
+| 1 | `vy_body` | 机体系横向线速度。 |
+| 2 | `wz_body` | 机体系 yaw 角速度。 |
+
+`observation.object_state` 13 维顺序：
+
+| 维度 | 名称 | 说明 |
+| --- | --- | --- |
+| 0 | `object_x` | 物体世界系 x。 |
+| 1 | `object_y` | 物体世界系 y。 |
+| 2 | `object_z` | 物体世界系 z。 |
+| 3 | `object_quat_w` | 物体姿态四元数 w。 |
+| 4 | `object_quat_x` | 物体姿态四元数 x。 |
+| 5 | `object_quat_y` | 物体姿态四元数 y。 |
+| 6 | `object_quat_z` | 物体姿态四元数 z。 |
+| 7 | `object_vx` | 物体世界系线速度 x。 |
+| 8 | `object_vy` | 物体世界系线速度 y。 |
+| 9 | `object_vz` | 物体世界系线速度 z。 |
+| 10 | `object_wx` | 物体世界系角速度 x。 |
+| 11 | `object_wy` | 物体世界系角速度 y。 |
+| 12 | `object_wz` | 物体世界系角速度 z。 |
+
+`observation.tcp_pose` 7 维顺序：
+
+| 维度 | 名称 | 说明 |
+| --- | --- | --- |
+| 0 | `tcp_x` | TCP 世界系 x。 |
+| 1 | `tcp_y` | TCP 世界系 y。 |
+| 2 | `tcp_z` | TCP 世界系 z。 |
+| 3 | `tcp_quat_w` | TCP 姿态四元数 w。 |
+| 4 | `tcp_quat_x` | TCP 姿态四元数 x。 |
+| 5 | `tcp_quat_y` | TCP 姿态四元数 y。 |
+| 6 | `tcp_quat_z` | TCP 姿态四元数 z。 |
+
+`action` 11 维顺序：
+
+| 维度 | 名称 | 说明 |
+| --- | --- | --- |
+| 0 | `base_cmd_vx` | 底盘前向速度指令。 |
+| 1 | `base_cmd_vy` | 底盘横向速度指令。 |
+| 2 | `base_cmd_wz` | 底盘 yaw 角速度指令。 |
+| 3 | `arm_joint1_target` | 机械臂第 1 关节目标位置。 |
+| 4 | `arm_joint2_target` | 机械臂第 2 关节目标位置。 |
+| 5 | `arm_joint3_target` | 机械臂第 3 关节目标位置。 |
+| 6 | `arm_joint4_target` | 机械臂第 4 关节目标位置。 |
+| 7 | `arm_joint5_target` | 机械臂第 5 关节目标位置。 |
+| 8 | `arm_joint6_target` | 机械臂第 6 关节目标位置。 |
+| 9 | `gripper_joint7_target` | 第 7 夹爪关节目标位置。 |
+| 10 | `gripper_joint8_target` | 第 8 夹爪关节目标位置。 |
 
 校验单 episode：
 

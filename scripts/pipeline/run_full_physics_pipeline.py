@@ -141,23 +141,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def _validate_external_plan_paths(config: FullPhysicsConfig) -> None:
     if config.full_physics and (config.pick_plan_json is not None or config.place_plan_json is not None):
         raise SystemExit("full-physics 模式按当前仿真状态在线规划 pick/place，不接受 --pick-plan-json/--place-plan-json。")
-    if (
-        config.integrated_apply_smoke
-        and config.place_plan_json is None
-        and config.manipulation.replan_pick_from_current_state
-    ):
-        raise SystemExit(
-            "integrated apply smoke 当前仍需要 --place-plan-json；pick 默认会按当前状态重规划。"
-        )
-    if (
-        config.integrated_apply_smoke
-        and not config.manipulation.replan_pick_from_current_state
-        and (config.pick_plan_json is None or config.place_plan_json is None)
-    ):
-        raise SystemExit(
-            "关闭 current-state pick replan 时，integrated apply smoke 必须同时提供 "
-            "--pick-plan-json 和 --place-plan-json。"
-        )
     missing_paths = [
         (label, path)
         for label, path in (
@@ -407,7 +390,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                 )
             elif full_physics:
-                from source.pipeline.integrated_apply_smoke import (
+                from source.pipeline.factory import (
                     create_full_physics_pipeline,
                 )
                 from source.simulation import (

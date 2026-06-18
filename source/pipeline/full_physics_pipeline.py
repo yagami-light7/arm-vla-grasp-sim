@@ -133,7 +133,6 @@ class FullPhysicsPipeline:
         navigation_carry_smoke = bool(self.config.navigation_carry_smoke)
         manipulation_smoke = bool(self.config.manipulation_smoke)
         manipulation_apply_smoke = bool(self.config.manipulation_apply_smoke)
-        integrated_apply_smoke = bool(self.config.integrated_apply_smoke)
         full_physics = bool(self.config.full_physics)
         provenance = {
             "used_base_teleport": bool(final_state.metadata.get("used_base_teleport", False)),
@@ -161,7 +160,6 @@ class FullPhysicsPipeline:
             and not navigation_carry_smoke
             and not manipulation_smoke
             and not manipulation_apply_smoke
-            and not integrated_apply_smoke
             and provenance_verified
             and not any(provenance.values())
         )
@@ -243,9 +241,6 @@ class FullPhysicsPipeline:
         elif manipulation_apply_smoke:
             execution_mode = "manipulation_apply_smoke"
             success_semantics = "isaac_joint_action_apply_only"
-        elif integrated_apply_smoke:
-            execution_mode = "integrated_apply_smoke"
-            success_semantics = "single_stage_nav_manipulation_action_apply_only"
         elif full_physics:
             execution_mode = "full_physics"
             success_semantics = (
@@ -260,7 +255,7 @@ class FullPhysicsPipeline:
             execution_mode = "full_physics"
             success_semantics = "physical_execution"
         navigation_acceptance = None
-        if navigation_smoke or navigation_carry_smoke or integrated_apply_smoke or full_physics:
+        if navigation_smoke or navigation_carry_smoke or full_physics:
             navigation_acceptance = {
                 "mode": (
                     "xy_yaw_stable"
@@ -334,18 +329,17 @@ class FullPhysicsPipeline:
             "stable_physics_success": stable_physics_success,
             "physical_navigation_success": bool(
                 success
-                and (navigation_smoke or navigation_carry_smoke or integrated_apply_smoke or full_physics)
+                and (navigation_smoke or navigation_carry_smoke or full_physics)
                 and provenance_verified
             ),
             "carry_control_success": bool(
-                success and (navigation_carry_smoke or integrated_apply_smoke or full_physics)
+                success and (navigation_carry_smoke or full_physics)
             ),
             "object_carry_verified": bool(success and full_physics),
             "physical_manipulation_success": bool(success and full_physics),
             "manipulation_apply_success": bool(
-                success and (manipulation_apply_smoke or integrated_apply_smoke or full_physics)
+                success and (manipulation_apply_smoke or full_physics)
             ),
-            "integrated_control_success": bool(success and integrated_apply_smoke),
             "manipulation_base_lock_requested": bool(
                 self.config.manipulation.lock_base_during_manipulation
             ),

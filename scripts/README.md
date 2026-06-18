@@ -1,18 +1,16 @@
 # Go2-X5 Script Layout
 
-The final pick and retreat demo uses one ordered script chain:
+This repository now keeps only the full-physics nav-pick-place pipeline and its
+supporting tools.  The old Script Editor/video-baseline handoff scripts have
+been removed from this branch.
 
-1. `isaac/01_export_go2_x5_state.py`
-2. `isaac/02_generate_grasp_target.py`
-3. `curobo/03_plan_grasp_trajectory.py`
-4. `isaac/04_execute_grasp_sequence.py`
-5. `isaac/05_run_pick_retreat_demo.py`
+Current maintained entrypoints:
 
-Run step 05 from Isaac Sim Script Editor for the one-click demo. It calls steps
-01, 02, 03, and 04 in order.
-
-`curobo/grasp_planner_server.py` is the optional persistent planner service for
-step 03.
+1. `pipeline/run_full_physics_pipeline.py` for one episode.
+2. `pipeline/run_full_physics_batch.py` for automation.
+3. `pipeline/validate_lerobot_episode.py` for exported data checks.
+4. `curobo/03_plan_grasp_trajectory.py` for cuRobo one-shot planning fallback.
+5. `curobo/grasp_planner_server.py` for persistent online planning.
 
 Setup, inspection, FK checks, and single-purpose diagnostics live under
 `dev_tools/` so they do not look like required demo steps.
@@ -32,7 +30,7 @@ The experimental single-process pipeline starts at:
 ```
 
 The dependency-free control-flow dry run always sets
-`pure_physics_success=false`; the existing video baseline remains unchanged.
+`pure_physics_success=false`; legacy video-baseline paths are not maintained in this branch.
 
 Episode-level pick/place XY randomization is enabled by default. Use
 `--no-randomize-task` when reproducing the validated fixed task:

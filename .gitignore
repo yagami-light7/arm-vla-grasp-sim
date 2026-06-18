@@ -1,5 +1,7 @@
 project_status.json
 object_pose_debug_report.json
+CLEANUP_INVENTORY.md
+CLEANUP_REPORT.md
 .vscode/
 .agents/
 .codex/
