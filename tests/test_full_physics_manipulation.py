@@ -517,6 +517,57 @@ class FullPhysicsManipulationTest(unittest.TestCase):
         self.assertEqual(scale_by_segment["approach_to_place"], 1.0)
         self.assertEqual(scale_by_segment["retreat_place"], 1.0)
 
+    def test_place_pre_open_segments_hold_gripper_closed_without_close_segment(self) -> None:
+        payload = _place_payload()
+        payload["segments"] = [
+            _motion_segment(
+                "move_to_pre_place",
+                [
+                    (0.2, 0.21, 0.22, 0.23, 0.24, 0.25),
+                    (0.3, 0.31, 0.32, 0.33, 0.34, 0.35),
+                ],
+            ),
+            *payload["segments"],
+        ]
+        plan = arm_plan_from_curobo_payload(payload)
+        executor = SegmentedArmExecutor(
+            BinaryGripperController(),
+            config=SegmentedArmExecutorConfig(
+                sim_dt=0.02,
+                arm_command_dt=0.02,
+                settle_to_segment_start_duration=0.0,
+                post_motion_hold_duration=0.0,
+                gripper_move_duration=0.02,
+                gripper_hold_duration=0.0,
+            ),
+        )
+        executor.reset(plan)
+
+        actions = _drain_executor(executor)
+        first_open_index = next(
+            index
+            for index, action in enumerate(actions)
+            if action.metadata.get("segment_name") == "open_gripper"
+        )
+        pre_open_motion_actions = [
+            action
+            for action in actions[:first_open_index]
+            if action.metadata.get("segment_type") == "motion"
+            and action.metadata.get("segment_name") in {"move_to_pre_place", "approach_to_place"}
+        ]
+
+        self.assertTrue(pre_open_motion_actions)
+        self.assertTrue(all(action.gripper_command == "close" for action in pre_open_motion_actions))
+        self.assertTrue(
+            all(
+                tuple(action.metadata.get("gripper_joint_positions", ())) == (0.0, 0.0)
+                for action in pre_open_motion_actions
+            )
+        )
+        self.assertTrue(
+            all(action.metadata.get("gripper_hold_after_close") for action in pre_open_motion_actions)
+        )
+
     def test_place_plan_emits_gripper_open_event_without_internal_world_step(self) -> None:
         plan = arm_plan_from_curobo_payload(_place_payload())
         executor = SegmentedArmExecutor(

@@ -631,8 +631,13 @@ class SegmentedArmExecutor:
         arm_joint_names = tuple(plan.metadata.get("joint_names") or ())
         steps: list[_ActionStep] = []
         last_arm_target: tuple[float, ...] | None = None
-        closed_gripper_target: tuple[float, ...] | None = None
-        closed_gripper_joint_names: tuple[str, ...] = ()
+        # place 规划语义是 current closed-gripper pose -> pre_place -> place -> open。
+        # cuRobo 输出里通常没有显式 close_gripper 段，因此这里必须在 open 之前
+        # 持续下发闭合目标，不能依赖上一个 pipeline phase 留下的 hold target。
+        closed_gripper_target, closed_gripper_joint_names = self._initial_closed_gripper_hold(
+            plan,
+            segments,
+        )
 
         for segment_index, segment in enumerate(segments):
             segment_type = str(segment.get("type"))
@@ -675,6 +680,25 @@ class SegmentedArmExecutor:
                 )
             )
         return steps
+
+    def _initial_closed_gripper_hold(
+        self,
+        plan: ArmPlan,
+        segments: Any,
+    ) -> tuple[tuple[float, ...] | None, tuple[str, ...]]:
+        """place 进入 pre-place 前显式保持夹爪闭合。"""
+
+        if str(plan.operation).lower() != "place":
+            return None, ()
+        for segment in segments:
+            if not isinstance(segment, dict) or str(segment.get("type")) != "gripper":
+                continue
+            joint_names = tuple(str(name) for name in segment.get("joint_names", ()))
+            if _is_open_segment(segment) and joint_names:
+                return tuple(0.0 for _ in joint_names), joint_names
+            if _is_close_segment(segment) and joint_names:
+                return tuple(float(value) for value in segment["target_position"]), joint_names
+        return None, ()
 
     def _build_motion_segment_steps(
         self,
