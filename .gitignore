@@ -9,6 +9,11 @@ CLEANUP_REPORT.md
 AGENTS.md
 tutorial/**/README.md
 episodes/
+# Ignore generated outputs, except Rerun recordings.
+# outputs/**
+# !outputs/
+# !outputs/**/
+# !outputs/**/*.rrd
 outputs/
 tests/
 json/
