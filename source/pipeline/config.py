@@ -177,6 +177,33 @@ class RecordingSettings:
 
 
 @dataclass(frozen=True)
+class VideoRecordingSettings:
+    """展示用 overview 视频录制参数；不参与训练 observation 数据。"""
+
+    enabled: bool = False
+    mode: str = "overview"
+    output_path: Path | None = None
+    fps: float = 25.0
+    overview_camera_mode: str = "auto"
+    width: int = 1280
+    height: int = 720
+    overview_capture_backend: str = "viewport"
+    min_switch_interval_frames: int = 15
+    overview_initial_hold_frames: int = 160
+    overview_exposure: float = 0.0
+    overview_gamma: float = 2.2
+
+    @property
+    def modes(self) -> tuple[str, ...]:
+        mode = self.mode.lower()
+        if mode == "all":
+            return ("overview", "front", "wrist")
+        if mode == "font":
+            return ("front",)
+        return (mode,)
+
+
+@dataclass(frozen=True)
 class FullPhysicsConfig:
     """Runtime configuration kept intentionally smaller than legacy CLIs."""
 
@@ -199,6 +226,7 @@ class FullPhysicsConfig:
     manipulation: ManipulationSettings = field(default_factory=ManipulationSettings)
     randomization: RandomizationSettings = field(default_factory=RandomizationSettings)
     recording: RecordingSettings = field(default_factory=RecordingSettings)
+    video: VideoRecordingSettings = field(default_factory=VideoRecordingSettings)
     limits: StateLimits = field(default_factory=StateLimits)
 
     def __post_init__(self) -> None:
@@ -352,6 +380,28 @@ class FullPhysicsConfig:
             raise ValueError("recording camera_keys must not be empty")
         if self.recording.primary_camera_key not in self.recording.camera_keys:
             raise ValueError("recording primary_camera_key must be included in camera_keys")
+        if self.video.enabled and self.video.mode.lower() not in {
+            "overview",
+            "front",
+            "font",
+            "wrist",
+            "all",
+        }:
+            raise ValueError("video mode must be one of: overview, front, font, wrist, all")
+        if self.video.fps <= 0:
+            raise ValueError("video fps must be positive")
+        if self.video.width <= 0 or self.video.height <= 0:
+            raise ValueError("video image size must be positive")
+        if self.video.overview_camera_mode != "auto":
+            raise ValueError("only overview_camera_mode='auto' is currently supported")
+        if self.video.overview_capture_backend not in {"viewport", "render_product", "auto"}:
+            raise ValueError("video overview_capture_backend must be one of: viewport, render_product, auto")
+        if self.video.min_switch_interval_frames < 0:
+            raise ValueError("video min_switch_interval_frames must be non-negative")
+        if self.video.overview_initial_hold_frames < 0:
+            raise ValueError("video overview_initial_hold_frames must be non-negative")
+        if self.video.overview_gamma <= 0:
+            raise ValueError("video overview_gamma must be positive")
         enabled_modes = sum(
             int(value)
             for value in (
@@ -373,7 +423,7 @@ class FullPhysicsConfig:
 
     @property
     def render(self) -> bool:
-        return not self.headless or self.randomization.show_debug_region
+        return not self.headless or self.randomization.show_debug_region or self.video.enabled
 
     def episode_seed(self, episode_index: int) -> int:
         return self.seed + episode_index

@@ -20,6 +20,7 @@ from source.pipeline import (  # noqa: E402
     ManipulationSettings,
     RandomizationSettings,
     RecordingSettings,
+    VideoRecordingSettings,
 )
 from source.pipeline.dry_run import create_dry_run_pipeline  # noqa: E402
 from source.pipeline.isaac_compat import patch_numpy_for_isaacsim  # noqa: E402
@@ -78,6 +79,69 @@ def _build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=False,
         help="是否以无界面模式运行；使用 --headless 关闭GUI渲染。",
+    )
+    parser.add_argument(
+        "--record-video",
+        action="store_true",
+        help="启用展示用 overview 视频录制；默认关闭。",
+    )
+    parser.add_argument(
+        "--video-mode",
+        choices=("overview", "front", "font", "wrist", "all"),
+        default="overview",
+        help=(
+            "录制视频类型：overview 为第三人称展示视角，front/font 为前视 observation "
+            "camera，wrist 为腕部 observation camera，all 同时导出 overview/front/wrist。"
+        ),
+    )
+    parser.add_argument(
+        "--video-out",
+        help="overview 视频输出目录或 .mp4 文件路径；默认写到 episode_dir/overview_videos。",
+    )
+    parser.add_argument(
+        "--video-width",
+        type=int,
+        default=1280,
+        help="overview 捕获宽度，默认 1280；front/wrist observation 不受影响。",
+    )
+    parser.add_argument(
+        "--video-height",
+        type=int,
+        default=720,
+        help="overview 捕获高度，默认 720；front/wrist observation 不受影响。",
+    )
+    parser.add_argument(
+        "--overview-camera-mode",
+        choices=("auto",),
+        default="auto",
+        help="overview camera 选择模式；auto 会遍历 USD stage 中已有 Camera 并按任务阶段切换。",
+    )
+    parser.add_argument(
+        "--overview-capture-backend",
+        choices=("viewport", "render_product", "auto"),
+        default="viewport",
+        help=(
+            "overview 取帧后端；viewport 抓取最终视口画面，最接近 GUI；"
+            "render_product 使用 Replicator RGB；auto 先尝试 viewport 再回退。"
+        ),
+    )
+    parser.add_argument(
+        "--overview-initial-hold-frames",
+        type=int,
+        default=160,
+        help="overview 初始全局镜头最少保持帧数，默认 160，避免 reset 后立即切走 third_person1。",
+    )
+    parser.add_argument(
+        "--overview-exposure",
+        type=float,
+        default=0.0,
+        help="overview 线性 RGB 转视频前的曝光补偿，单位 EV stops，默认 0。",
+    )
+    parser.add_argument(
+        "--overview-gamma",
+        type=float,
+        default=2.2,
+        help="overview 线性 RGB 转 sRGB 的 gamma，默认 2.2；设为 1.0 可关闭 gamma 提亮。",
     )
     parser.add_argument(
         "--pick-plan-json",
@@ -186,6 +250,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("默认 full-physics 模式禁止使用离线 plan JSON；pick/place 必须按当前仿真状态在线规划。")
     if args.keep_window_open and args.headless:
         raise SystemExit("--keep-window-open 只能与 --no-headless 一起使用。")
+    if args.record_video and dry_run:
+        raise SystemExit("--record-video 需要真实 Isaac stage / camera images，不能与 --dry-run 一起使用。")
+    if args.record_video and args.video_out and Path(args.video_out).suffix.lower() == ".mp4" and args.num_episodes != 1:
+        raise SystemExit("--video-out 指向单个 .mp4 文件时只支持 --num-episodes 1；多 episode 请传输出目录。")
     if (
         simulation_smoke
         or navigation_smoke
@@ -225,6 +293,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             debug_per_episode_lerobot=(
                 os.environ.get("FULL_PHYSICS_DEFER_LEROBOT_EXPORT") != "1"
             ),
+        ),
+        video=VideoRecordingSettings(
+            enabled=bool(args.record_video),
+            mode=str(args.video_mode),
+            output_path=_project_path(args.video_out) if args.video_out else None,
+            overview_camera_mode=str(args.overview_camera_mode),
+            width=int(args.video_width),
+            height=int(args.video_height),
+            overview_capture_backend=str(args.overview_capture_backend),
+            overview_initial_hold_frames=int(args.overview_initial_hold_frames),
+            overview_exposure=float(args.overview_exposure),
+            overview_gamma=float(args.overview_gamma),
         ),
     )
     _validate_external_plan_paths(config)
@@ -273,6 +353,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "headless": config.headless,
                     "enable_cameras": bool(
                         (config.full_physics and config.recording.enabled)
+                        or config.video.enabled
                         or config.randomization.show_debug_region
                         or not config.headless
                     ),
@@ -398,6 +479,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     IsaacLabNavigationRuntimeConfig,
                 )
 
+                video_modes = set(config.video.modes) if config.video.enabled else set()
                 pipeline = create_full_physics_pipeline(
                     config=config,
                     episode_spec=episode_spec,
@@ -408,14 +490,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                         project_root=PROJECT_ROOT,
                         config=IsaacLabNavigationRuntimeConfig(
                             enable_front_camera=(
-                                config.recording.enabled
-                                and "front" in config.recording.camera_keys
+                                (
+                                    config.recording.enabled
+                                    and "front" in config.recording.camera_keys
+                                )
+                                or "front" in video_modes
                             ),
                             front_camera_height=config.recording.image_height,
                             front_camera_width=config.recording.image_width,
                             enable_wrist_camera=(
-                                config.recording.enabled
-                                and "wrist" in config.recording.camera_keys
+                                (
+                                    config.recording.enabled
+                                    and "wrist" in config.recording.camera_keys
+                                )
+                                or "wrist" in video_modes
                             ),
                             wrist_camera_height=config.recording.image_height,
                             wrist_camera_width=config.recording.image_width,

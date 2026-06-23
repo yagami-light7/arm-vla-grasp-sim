@@ -444,7 +444,101 @@ def configure_navigation_viewport(
         return report
 
 
+def set_active_camera(camera_prim_path: str) -> dict[str, Any]:
+    """Switch the active viewport to an existing USD camera prim for display capture."""
+
+    try:
+        import omni.usd
+        from pxr import Sdf, UsdGeom
+    except ImportError as exc:
+        return {
+            "applied": False,
+            "reason": "viewport_dependencies_unavailable",
+            "requested_camera_prim_path": camera_prim_path,
+            "error": str(exc),
+        }
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        return {
+            "applied": False,
+            "reason": "stage_unavailable",
+            "requested_camera_prim_path": camera_prim_path,
+        }
+    prim = stage.GetPrimAtPath(camera_prim_path)
+    if not prim.IsValid() or not prim.IsA(UsdGeom.Camera):
+        return {
+            "applied": False,
+            "reason": "camera_prim_unavailable",
+            "requested_camera_prim_path": camera_prim_path,
+        }
+
+    viewports = _candidate_viewports()
+    if not viewports:
+        return {
+            "applied": False,
+            "reason": "active_viewport_unavailable",
+            "requested_camera_prim_path": camera_prim_path,
+        }
+
+    sdf_path = Sdf.Path(camera_prim_path)
+    all_attempts: list[dict[str, str]] = []
+    applied = False
+    applied_viewport_source = None
+    readbacks: list[dict[str, str]] = []
+    for viewport_source, viewport in viewports:
+        viewport_applied, attempts = _try_apply_viewport_camera(
+            viewport,
+            camera_prim_path,
+            sdf_path,
+        )
+        for attempt in attempts:
+            all_attempts.append({"viewport_source": viewport_source, **attempt})
+        readbacks.append(
+            {
+                "viewport_source": viewport_source,
+                "camera_path": str(getattr(viewport, "camera_path", "")),
+            }
+        )
+        if viewport_applied and not applied:
+            applied = True
+            applied_viewport_source = viewport_source
+
+    perspective_sync = _copy_stage_camera_to_perspective(
+        camera=UsdGeom.Camera(prim),
+        selected_path=camera_prim_path,
+        viewports=viewports,
+        sdf_path_factory=Sdf.Path,
+    )
+    applied = applied or bool(perspective_sync.get("applied"))
+    try:
+        import omni.kit.app
+
+        omni.kit.app.get_app().update()
+        viewport_update_called = True
+        viewport_update_error = None
+    except Exception as exc:
+        viewport_update_called = False
+        viewport_update_error = str(exc)
+    report: dict[str, Any] = {
+        "applied": applied,
+        "requested_camera_prim_path": camera_prim_path,
+        "selected_camera_prim_path": camera_prim_path,
+        "camera_apply_attempts": tuple(all_attempts),
+        "viewport_camera_path_readbacks": tuple(readbacks),
+        "applied_viewport_source": applied_viewport_source,
+        "perspective_camera_sync": perspective_sync,
+        "viewport_update_called": viewport_update_called,
+    }
+    if viewport_update_error is not None:
+        report["viewport_update_error"] = viewport_update_error
+    if not applied:
+        report["reason"] = "camera_apply_failed"
+    return report
+
+
 __all__ = [
     "candidate_stage_camera_paths",
     "configure_navigation_viewport",
+    "set_active_camera",
 ]

@@ -17,6 +17,7 @@ from source.interfaces import (
     SimulationRuntime,
     StepRecord,
 )
+from source.recording.overview_video_recorder import OverviewVideoRecorder
 
 from .config import FullPhysicsConfig
 from .state_machine import FullPhysicsStateMachine
@@ -63,9 +64,29 @@ class FullPhysicsPipeline:
         started_at = time.time()
         duration_steps = 0
         last_action: dict[str, Any] = {}
+        video_recorder = (
+            OverviewVideoRecorder(
+                settings=self.config.video,
+                episode_dir=self.recorder.output_dir,
+                episode_id=self.episode_spec.episode_id,
+            )
+            if self.config.video.enabled
+            else None
+        )
+        video_closed = False
+
+        def _close_video(status: str) -> dict[str, Any] | None:
+            nonlocal video_closed
+            if video_recorder is None or video_closed:
+                return None
+            video_closed = True
+            return video_recorder.close(status=status)
+
         self.recorder.save_task(self.episode_spec)
         self.recorder.mark_training_eligible(False, reason="episode_not_verified_yet")
         try:
+            if video_recorder is not None:
+                video_recorder.start_episode()
             while True:
                 observation = self.simulation.read()
                 decision = self.machine.tick(observation)
@@ -77,6 +98,13 @@ class FullPhysicsPipeline:
                 if not skip_physics_step:
                     self.simulation.step(render=self.config.render)
                 post_step = self.simulation.read()
+                if video_recorder is not None and not skip_physics_step:
+                    video_recorder.add_frame(
+                        state=decision.state.value,
+                        timestamp=post_step.timestamp,
+                        step_index=duration_steps,
+                        camera_images=post_step.camera_images,
+                    )
                 self.recorder.record_step(
                     StepRecord(
                         step_index=duration_steps,
@@ -111,9 +139,16 @@ class FullPhysicsPipeline:
                 final_state=final_state,
                 last_action=last_action,
             )
+            video_summary = _close_video("success" if summary["success"] else "failed")
+            if video_summary is not None:
+                summary["overview_video"] = video_summary
             self.recorder.close(summary)
             return summary
+        except BaseException as exc:
+            _close_video("interrupted" if isinstance(exc, KeyboardInterrupt) else "failed")
+            raise
         finally:
+            _close_video("closed_without_summary")
             if not self.config.keep_window_open:
                 self.simulation.close()
 

@@ -8,6 +8,7 @@ from .config import (
     RandomizationSettings,
     RecordingSettings,
     StateLimits,
+    VideoRecordingSettings,
 )
 from .full_physics_pipeline import FullPhysicsPipeline
 from .state_machine import FullPhysicsStateMachine, TickDecision
@@ -25,4 +26,5 @@ __all__ = [
     "PipelineState",
     "StateLimits",
     "TickDecision",
+    "VideoRecordingSettings",
 ]

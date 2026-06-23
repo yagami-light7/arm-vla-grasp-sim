@@ -2,9 +2,35 @@
 
 from __future__ import annotations
 
+import sys
+import tempfile
+import types
 import unittest
+from dataclasses import dataclass
+from pathlib import Path
+from unittest import mock
 
+import numpy as np
+
+from scripts.pipeline.run_full_physics_pipeline import _build_parser
+from source.recording.overview_video_recorder import OverviewVideoRecorder, _CameraCandidate
 from source.simulation.viewport import candidate_stage_camera_paths
+
+
+@dataclass(frozen=True)
+class _OverviewVideoSettings:
+    enabled: bool = True
+    mode: str = "overview"
+    output_path: Path | None = None
+    fps: float = 25.0
+    overview_camera_mode: str = "auto"
+    width: int = 64
+    height: int = 48
+    overview_capture_backend: str = "viewport"
+    min_switch_interval_frames: int = 5
+    overview_initial_hold_frames: int = 160
+    overview_exposure: float = 0.0
+    overview_gamma: float = 2.2
 
 
 class SimulationViewportTest(unittest.TestCase):
@@ -47,6 +73,244 @@ class SimulationViewportTest(unittest.TestCase):
         self.assertIn("/World/camera_font", candidates)
         self.assertIn("/World/gauss/Camera_font", candidates)
         self.assertIn("/World/contact_visual_scene/camera_font", candidates)
+
+    def test_overview_recorder_writes_mp4_with_at_least_one_frame(self) -> None:
+        import cv2
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir) / "videos"
+            recorder = OverviewVideoRecorder(
+                settings=_OverviewVideoSettings(output_path=output_dir),
+                episode_dir=tmp_dir,
+                episode_id=3,
+            )
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[:, :, 0] = 255
+
+            recorder._write_video_frame(frame)  # noqa: SLF001 - writer smoke test.
+            summary = recorder.close(status="success")
+
+            video_path = Path(summary["video_path"])
+            self.assertEqual(video_path.name, "episode_000003_overview.mp4")
+            self.assertTrue(video_path.is_file())
+            capture = cv2.VideoCapture(str(video_path))
+            try:
+                self.assertTrue(capture.isOpened())
+                self.assertGreater(int(capture.get(cv2.CAP_PROP_FRAME_COUNT)), 0)
+            finally:
+                capture.release()
+
+    def test_all_video_mode_writes_overview_front_and_wrist_mp4s(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir) / "videos"
+            recorder = OverviewVideoRecorder(
+                settings=_OverviewVideoSettings(mode="all", output_path=output_dir),
+                episode_dir=tmp_dir,
+                episode_id=4,
+            )
+            frame = np.full((48, 64, 3), 128, dtype=np.uint8)
+
+            recorder._write_video_frame(frame, stream="overview")  # noqa: SLF001
+            recorder._write_video_frame(frame, stream="front")  # noqa: SLF001
+            recorder._write_video_frame(frame, stream="wrist")  # noqa: SLF001
+            summary = recorder.close(status="success")
+
+            self.assertEqual(set(summary["videos"]), {"overview", "front", "wrist"})
+            for stream in ("overview", "front", "wrist"):
+                video_path = output_dir / f"episode_000004_{stream}.mp4"
+                self.assertTrue(video_path.is_file(), stream)
+                self.assertEqual(summary["videos"][stream]["frame_count"], 1)
+
+    def test_third_person_cameras_are_selected_by_pipeline_state(self) -> None:
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(),
+            episode_dir=".",
+            episode_id=0,
+        )
+        recorder._overview_cameras = tuple(  # noqa: SLF001 - unit-test selection only.
+            _CameraCandidate(
+                path=f"/World/third_person{index}",
+                name=f"third_person{index}",
+                normalized_text=f"/world/third_person{index} third_person{index}",
+                is_observation=False,
+                overview_score=100,
+            )
+            for index in range(1, 5)
+        )
+
+        self.assertEqual(recorder.select_camera_for_state("RESET_EPISODE"), "/World/third_person1")
+        self.assertEqual(recorder.select_camera_for_state("PLAN_NAV_TO_PICK"), "/World/third_person2")
+        self.assertEqual(recorder.select_camera_for_state("EXEC_NAV_TO_PICK"), "/World/third_person2")
+        self.assertEqual(recorder.select_camera_for_state("EXEC_PICK"), "/World/third_person2")
+        self.assertEqual(recorder.select_camera_for_state("PLAN_NAV_TO_PLACE"), "/World/third_person2")
+        self.assertEqual(recorder.select_camera_for_state("EXEC_NAV_TO_PLACE"), "/World/third_person3")
+        self.assertEqual(recorder.select_camera_for_state("VERIFY_PLACE_REACHABLE"), "/World/third_person3")
+        self.assertEqual(recorder.select_camera_for_state("EXEC_PLACE"), "/World/third_person4")
+
+    def test_initial_overview_camera_is_held_before_nav_switch(self) -> None:
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(overview_initial_hold_frames=60),
+            episode_dir=".",
+            episode_id=0,
+        )
+
+        recorder._current_camera_path = "/World/third_person1"  # noqa: SLF001
+        recorder._last_state = "reset_episode"  # noqa: SLF001
+        recorder._last_role = "overview"  # noqa: SLF001
+        recorder._stream_frame_counts["overview"] = 1  # noqa: SLF001
+        recorder._maybe_switch_camera(  # noqa: SLF001
+            "/World/third_person2",
+            state="exec_nav_to_pick",
+            step_index=1,
+        )
+        self.assertEqual(recorder._current_camera_path, "/World/third_person1")  # noqa: SLF001
+
+        recorder._stream_frame_counts["overview"] = 60  # noqa: SLF001
+        recorder._maybe_switch_camera(  # noqa: SLF001
+            "/World/third_person2",
+            state="exec_nav_to_pick",
+            step_index=60,
+        )
+        self.assertEqual(recorder._current_camera_path, "/World/third_person2")  # noqa: SLF001
+
+    def test_recorder_rediscovers_until_real_third_person_cameras_exist(self) -> None:
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(),
+            episode_dir=".",
+            episode_id=0,
+        )
+        kit_camera = _CameraCandidate(
+            path="/OmniverseKit_Top",
+            name="OmniverseKit_Top",
+            normalized_text="/omniversekit_top omniversekit_top",
+            is_observation=False,
+            overview_score=50,
+        )
+        fallback_camera = _CameraCandidate(
+            path="/World/overview_video_cameras/third_person1",
+            name="third_person1",
+            normalized_text="/world/overview_video_cameras/third_person1 third_person1",
+            is_observation=False,
+            overview_score=10_000,
+        )
+        real_camera = _CameraCandidate(
+            path="/World/third_person1",
+            name="third_person1",
+            normalized_text="/world/third_person1 third_person1",
+            is_observation=False,
+            overview_score=100,
+        )
+
+        recorder._all_cameras = (kit_camera,)  # noqa: SLF001
+        recorder._overview_cameras = (kit_camera,)  # noqa: SLF001
+        self.assertTrue(recorder._should_rediscover_cameras())  # noqa: SLF001
+
+        recorder._all_cameras = (fallback_camera,)  # noqa: SLF001
+        recorder._overview_cameras = (fallback_camera,)  # noqa: SLF001
+        self.assertTrue(recorder._should_rediscover_cameras())  # noqa: SLF001
+
+        recorder._all_cameras = (fallback_camera, real_camera)  # noqa: SLF001
+        recorder._overview_cameras = (fallback_camera, real_camera)  # noqa: SLF001
+        self.assertFalse(recorder._should_rediscover_cameras())  # noqa: SLF001
+        self.assertEqual(recorder.select_camera_for_state("RESET_EPISODE"), "/World/third_person1")
+
+    def test_viewport_capture_does_not_call_async_wait_or_tick_app(self) -> None:
+        calls: list[str] = []
+
+        class _FakeCapture:
+            async def wait_for_result(self, _timeout: float = 0.0) -> None:
+                calls.append("wait_for_result")
+                return None
+
+        utility_module = types.ModuleType("omni.kit.viewport.utility")
+        utility_module.get_active_viewport = lambda: object()
+        utility_module.capture_viewport_to_buffer = (
+            lambda _viewport, _callback: _FakeCapture()
+        )
+        viewport_module = types.ModuleType("omni.kit.viewport")
+        kit_module = types.ModuleType("omni.kit")
+        omni_module = types.ModuleType("omni")
+        viewport_module.utility = utility_module
+        kit_module.viewport = viewport_module
+        omni_module.kit = kit_module
+        modules = {
+            "omni": omni_module,
+            "omni.kit": kit_module,
+            "omni.kit.viewport": viewport_module,
+            "omni.kit.viewport.utility": utility_module,
+        }
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(),
+            episode_dir=".",
+            episode_id=0,
+        )
+        recorder._tick_kit_app_once = lambda: calls.append("tick_app")  # noqa: SLF001
+
+        with mock.patch.dict(sys.modules, modules):
+            frame = recorder._capture_viewport_buffer_frame()  # noqa: SLF001
+
+        self.assertIsNone(frame)
+        self.assertEqual(calls, [])
+
+    def test_cli_accepts_overview_video_arguments(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "--task-json",
+                "tasks/nav_pick_place_apple_contact.json",
+                "--record-video",
+                "--video-mode",
+                "overview",
+                "--overview-camera-mode",
+                "auto",
+                "--overview-capture-backend",
+                "viewport",
+                "--video-width",
+                "1280",
+                "--video-height",
+                "720",
+                "--overview-initial-hold-frames",
+                "160",
+                "--overview-exposure",
+                "0",
+                "--overview-gamma",
+                "2.2",
+                "--video-out",
+                "outputs/test_run/videos",
+            ]
+        )
+
+        self.assertTrue(args.record_video)
+        self.assertEqual(args.video_mode, "overview")
+        self.assertEqual(args.overview_camera_mode, "auto")
+        self.assertEqual(args.overview_capture_backend, "viewport")
+        self.assertEqual(args.video_width, 1280)
+        self.assertEqual(args.video_height, 720)
+        self.assertEqual(args.overview_initial_hold_frames, 160)
+        self.assertEqual(args.overview_exposure, 0.0)
+        self.assertEqual(args.overview_gamma, 2.2)
+        self.assertEqual(args.video_out, "outputs/test_run/videos")
+
+        all_args = parser.parse_args(
+            [
+                "--task-json",
+                "tasks/nav_pick_place_apple_contact.json",
+                "--record-video",
+                "--video-mode",
+                "all",
+            ]
+        )
+        font_args = parser.parse_args(
+            [
+                "--task-json",
+                "tasks/nav_pick_place_apple_contact.json",
+                "--record-video",
+                "--video-mode",
+                "font",
+            ]
+        )
+        self.assertEqual(all_args.video_mode, "all")
+        self.assertEqual(font_args.video_mode, "font")
 
 
 if __name__ == "__main__":

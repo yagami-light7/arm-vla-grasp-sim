@@ -110,6 +110,53 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertIn("--no-headless", command)
         self.assertIn("--show-randomization-debug", command)
 
+    def test_batch_forwards_video_recording_arguments(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "--task-json",
+                str(TASK_PATH),
+                "--output-dir",
+                "/tmp/full_physics_batch_test",
+                "--record-video",
+                "--video-mode",
+                "all",
+                "--video-out",
+                "/tmp/full_physics_batch_test/videos",
+                "--video-width",
+                "1280",
+                "--video-height",
+                "720",
+                "--overview-camera-mode",
+                "auto",
+                "--overview-capture-backend",
+                "viewport",
+                "--overview-initial-hold-frames",
+                "160",
+                "--overview-exposure",
+                "0",
+                "--overview-gamma",
+                "2.2",
+            ]
+        )
+
+        episode = _build_child_command(args, episode_index=1)
+        command = episode.command
+
+        self.assertIn("--record-video", command)
+        self.assertEqual(command[command.index("--video-mode") + 1], "all")
+        self.assertNotIn("--video" + "-fps", command)
+        self.assertEqual(command[command.index("--video-width") + 1], "1280")
+        self.assertEqual(command[command.index("--video-height") + 1], "720")
+        self.assertEqual(command[command.index("--overview-camera-mode") + 1], "auto")
+        self.assertEqual(command[command.index("--overview-capture-backend") + 1], "viewport")
+        self.assertEqual(command[command.index("--overview-initial-hold-frames") + 1], "160")
+        self.assertEqual(command[command.index("--overview-exposure") + 1], "0.0")
+        self.assertEqual(command[command.index("--overview-gamma") + 1], "2.2")
+        self.assertEqual(
+            command[command.index("--video-out") + 1],
+            "/tmp/full_physics_batch_test/videos/episode_000001",
+        )
+
     def test_progress_format_helpers(self) -> None:
         args = _build_parser().parse_args(
             [

@@ -604,6 +604,15 @@ python \
 | `--randomize-base-goal` / `--no-randomize-base-goal` | 默认开启                        | 是否随机化 pick/place 导航交接 base_goal            |
 | `--keep-window-open` / `--no-keep-window-open`       | 默认关闭                        | 结束后保留 GUI；必须配合`--no-headless`             |
 | `--headless` / `--no-headless`                       | 默认`--no-headless`             | 是否无界面运行                                      |
+| `--record-video`                                     | 默认关闭                        | 启用 episode 展示/observation MP4 录制；展示视频固定 25fps |
+| `--video-mode`                                       | `overview`                      | `overview` 使用第三人称视角；`front`/`font` 使用前视 observation；`wrist` 使用腕部 observation；`all` 同时导出三路 |
+| `--video-out`                                        | 可选                            | 视频输出目录或单个`.mp4`；多路/多 episode 请传目录  |
+| `--video-width` / `--video-height`                   | `1280` / `720`                  | overview 捕获分辨率；不改变 front/wrist observation |
+| `--overview-camera-mode`                             | `auto`                          | 自动发现 USD Camera；overview 按阶段优先切换`third_person1..4` |
+| `--overview-capture-backend`                         | `viewport`                      | overview 取帧后端；`viewport` 抓最终视口画面最接近 GUI，`render_product` 使用 Replicator RGB，`auto` 先 viewport 后回退 |
+| `--overview-initial-hold-frames`                     | `160`                           | 初始`third_person1`最少保持帧数，避免刚 reset 后立即切到导航镜头 |
+| `--overview-exposure`                                | `0.0`                           | overview 线性 RGB 转视频前曝光补偿，单位 EV stops  |
+| `--overview-gamma`                                   | `2.2`                           | overview 线性 RGB 转 sRGB 的 gamma；设为`1.0`可关闭 gamma 提亮 |
 | `--pick-plan-json`                                   | 可选                            | 仅 manipulation apply smoke 使用；full-physics 禁止 |
 | `--place-plan-json`                                  | 可选                            | 仅 manipulation apply smoke 使用；full-physics 禁止 |
 | `--dry-run`                                          | mode                            | 无 Isaac 内存后端状态机验证                         |
@@ -633,6 +642,15 @@ python \
 | `--place-plan-json`                                  | 可选          | 非 full-physics smoke 可转发离线 place plan |
 | `--progress-interval-s`                              | `5.0`         | heartbeat 进度打印间隔                      |
 | `--color` / `--no-color`                             | 默认开启      | 是否使用 ANSI 彩色输出                      |
+| `--record-video`                                     | 默认关闭      | 转发给单 episode pipeline，启用 MP4 录制；展示视频固定 25fps |
+| `--video-mode`                                       | `overview`    | `overview`/`front`/`font`/`wrist`/`all`；`font` 是 `front` 兼容别名 |
+| `--video-out`                                        | 可选          | 视频输出根目录；batch 会写入其下的`episode_XXXXXX/`子目录，不支持单个`.mp4` |
+| `--video-width` / `--video-height`                   | `1280` / `720`| overview 捕获分辨率；不改变 front/wrist observation |
+| `--overview-camera-mode`                             | `auto`        | 自动发现 USD Camera；overview 按阶段优先切换`third_person1..4` |
+| `--overview-capture-backend`                         | `viewport`    | overview 取帧后端；`viewport` 最接近 GUI，`render_product` 用于排查 fallback |
+| `--overview-initial-hold-frames`                     | `160`         | 初始`third_person1`最少保持帧数              |
+| `--overview-exposure`                                | `0.0`         | overview 曝光补偿，单位 EV stops            |
+| `--overview-gamma`                                   | `2.2`         | overview 线性 RGB 转 sRGB gamma             |
 | `--dry-run`                                          | mode          | 子进程 dry-run                              |
 | `--simulation-smoke`                                 | mode          | 子进程 simulation smoke                     |
 | `--navigation-smoke`                                 | mode          | 子进程 navigation smoke                     |

@@ -177,6 +177,66 @@ def _build_parser() -> argparse.ArgumentParser:
         default=True,
         help="是否使用 ANSI 颜色打印 batch 进度；默认开启，可用 --no-color 关闭。",
     )
+    parser.add_argument(
+        "--record-video",
+        action="store_true",
+        help="转发给单 episode pipeline：启用展示/observation 视频录制；默认关闭。",
+    )
+    parser.add_argument(
+        "--video-mode",
+        choices=("overview", "front", "font", "wrist", "all"),
+        default="overview",
+        help=(
+            "转发给单 episode pipeline：overview 为 third_person 展示视角，front/font 为前视 "
+            "observation，wrist 为腕部 observation，all 同时导出 overview/front/wrist。"
+        ),
+    )
+    parser.add_argument(
+        "--video-out",
+        help="转发给单 episode pipeline：视频输出目录；batch 多 episode 不支持单个 .mp4 文件。",
+    )
+    parser.add_argument(
+        "--video-width",
+        type=int,
+        default=1280,
+        help="转发给单 episode pipeline：overview 捕获宽度，默认 1280。",
+    )
+    parser.add_argument(
+        "--video-height",
+        type=int,
+        default=720,
+        help="转发给单 episode pipeline：overview 捕获高度，默认 720。",
+    )
+    parser.add_argument(
+        "--overview-camera-mode",
+        choices=("auto",),
+        default="auto",
+        help="转发给单 episode pipeline：overview camera 自动发现/切换模式。",
+    )
+    parser.add_argument(
+        "--overview-capture-backend",
+        choices=("viewport", "render_product", "auto"),
+        default="viewport",
+        help="转发给单 episode pipeline：overview 取帧后端；viewport 最接近 GUI。",
+    )
+    parser.add_argument(
+        "--overview-initial-hold-frames",
+        type=int,
+        default=160,
+        help="转发给单 episode pipeline：third_person1 初始镜头最少保持帧数，默认 160。",
+    )
+    parser.add_argument(
+        "--overview-exposure",
+        type=float,
+        default=0.0,
+        help="转发给单 episode pipeline：overview 曝光补偿 EV stops，默认 0。",
+    )
+    parser.add_argument(
+        "--overview-gamma",
+        type=float,
+        default=2.2,
+        help="转发给单 episode pipeline：overview 线性 RGB 转 sRGB gamma，默认 2.2。",
+    )
 
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--dry-run", action="store_const", const="dry_run", dest="mode")
@@ -643,6 +703,24 @@ def _build_child_command(
         command.extend(["--pick-plan-json", str(_project_path(args.pick_plan_json))])
     if args.place_plan_json and args.mode != "full_physics":
         command.extend(["--place-plan-json", str(_project_path(args.place_plan_json))])
+    if args.record_video:
+        command.append("--record-video")
+        command.extend(["--video-mode", str(args.video_mode)])
+        command.extend(["--video-width", str(int(args.video_width))])
+        command.extend(["--video-height", str(int(args.video_height))])
+        command.extend(["--overview-camera-mode", str(args.overview_camera_mode)])
+        command.extend(["--overview-capture-backend", str(args.overview_capture_backend)])
+        command.extend(
+            [
+                "--overview-initial-hold-frames",
+                str(int(args.overview_initial_hold_frames)),
+            ]
+        )
+        command.extend(["--overview-exposure", str(float(args.overview_exposure))])
+        command.extend(["--overview-gamma", str(float(args.overview_gamma))])
+        if args.video_out:
+            video_output_dir = _project_path(args.video_out) / f"episode_{episode_index:06d}"
+            command.extend(["--video-out", str(video_output_dir)])
 
     return BatchEpisodeCommand(
         episode_index=episode_index,
@@ -853,6 +931,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("批量 GUI 运行容易阻塞自动化；多 episode 请使用 --headless。")
     if args.progress_interval_s <= 0.0:
         raise SystemExit("--progress-interval-s must be positive.")
+    if args.record_video and (args.video_width <= 0 or args.video_height <= 0):
+        raise SystemExit("--video-width and --video-height must be positive.")
+    if args.record_video and args.overview_initial_hold_frames < 0:
+        raise SystemExit("--overview-initial-hold-frames must be non-negative.")
+    if args.record_video and args.overview_gamma <= 0:
+        raise SystemExit("--overview-gamma must be positive.")
+    if args.record_video and args.mode == "dry_run":
+        raise SystemExit("--record-video 需要真实 Isaac stage / camera images，不能与 --dry-run 一起使用。")
+    if args.record_video and args.video_out and Path(args.video_out).suffix.lower() == ".mp4":
+        raise SystemExit("batch --video-out 请传输出目录；单个 .mp4 文件只适用于单 episode pipeline。")
     output_root = _project_path(args.output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
     batch_summary_path = output_root / "batch_summary.jsonl"

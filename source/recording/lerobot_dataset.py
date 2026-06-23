@@ -42,7 +42,14 @@ LEGACY_DWA_CSV_COLUMNS = (
 )
 
 # 保留 DWA 数值列，同时显式记录 pipeline state，便于离线按阶段筛选。
-DWA_CSV_COLUMNS = (*LEGACY_DWA_CSV_COLUMNS, "pipeline_state")
+# wrist 图像本来已经进入 samples.jsonl/LeRobot video feature；这里补齐 raw CSV 的人工可读列。
+DWA_CSV_COLUMNS_WITHOUT_WRIST = (*LEGACY_DWA_CSV_COLUMNS, "pipeline_state")
+DWA_CSV_COLUMNS = (*LEGACY_DWA_CSV_COLUMNS, "腕部摄像头图像", "pipeline_state")
+SUPPORTED_DWA_CSV_COLUMNS = {
+    LEGACY_DWA_CSV_COLUMNS,
+    DWA_CSV_COLUMNS_WITHOUT_WRIST,
+    DWA_CSV_COLUMNS,
+}
 
 STATE_COLUMNS = (
     "位置X",
@@ -321,9 +328,11 @@ class DwaEpisodeWriter:
             }
 
         primary_raw_path = camera_frames[self.config.primary_camera_key]["raw_image_path"]
+        wrist_raw_path = camera_frames.get("wrist", {}).get("raw_image_path")
         row = self._build_row(
             record,
             image_name=Path(primary_raw_path).name if primary_raw_path else "",
+            wrist_image_name=Path(wrist_raw_path).name if wrist_raw_path else "",
         )
         with self.csv_path.open("a", encoding="utf-8", newline="") as stream:
             csv.DictWriter(stream, fieldnames=DWA_CSV_COLUMNS).writerow(row)
@@ -482,7 +491,13 @@ class DwaEpisodeWriter:
         velocity = state.object_velocity or (0.0,) * 6
         return [*(float(value) for value in pose), *(float(value) for value in velocity)]
 
-    def _build_row(self, record: StepRecord, *, image_name: str) -> dict[str, Any]:
+    def _build_row(
+        self,
+        record: StepRecord,
+        *,
+        image_name: str,
+        wrist_image_name: str = "",
+    ) -> dict[str, Any]:
         state = record.observation
         root_pose = state.robot_root_pose
         root_yaw = _quat_wxyz_to_rpy(tuple(root_pose[3:7]))[2]
@@ -514,6 +529,7 @@ class DwaEpisodeWriter:
             "末端Yaw": f"{tcp_rpy[2]:.6f}",
             "夹爪": f"{gripper:.6f}",
             "前摄像头图像": image_name,
+            "腕部摄像头图像": wrist_image_name,
             "pipeline_state": record.pipeline_state,
         }
         for index, value in enumerate(arm, start=1):
@@ -531,9 +547,14 @@ def _read_episode_rows(episode_dir: Path) -> list[dict[str, str]]:
     with csv_path.open("r", encoding="utf-8", newline="") as stream:
         reader = csv.DictReader(stream)
         fieldnames = tuple(reader.fieldnames or ())
-        if fieldnames not in {DWA_CSV_COLUMNS, LEGACY_DWA_CSV_COLUMNS}:
+        if fieldnames not in SUPPORTED_DWA_CSV_COLUMNS:
             raise ValueError(f"{csv_path} has unexpected DWA columns")
-        return list(reader)
+        rows = list(reader)
+    for row in rows:
+        # 兼容旧 raw CSV：历史版本只有 front 图像列，wrist 在 samples.jsonl 中。
+        row.setdefault("腕部摄像头图像", "")
+        row.setdefault("pipeline_state", "")
+    return rows
 
 
 def _read_episode_samples(episode_dir: Path) -> list[dict[str, Any]]:
@@ -738,6 +759,9 @@ def _copy_or_encode_video(
             if not raw_path and camera_key == "front":
                 image_name = row.get("前摄像头图像")
                 raw_path = f"images/front/{image_name}" if image_name else None
+            if not raw_path and camera_key == "wrist":
+                image_name = row.get("腕部摄像头图像")
+                raw_path = f"images/wrist/{image_name}" if image_name else None
             if not raw_path:
                 raise RuntimeError(
                     f"{episode_dir} camera {camera_key} has no staged video or raw image"

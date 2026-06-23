@@ -99,6 +99,7 @@ class FullPhysicsLeRobotTest(unittest.TestCase):
             self.assertEqual(len(rows), 2)
             self.assertEqual(tuple(rows[0]), DWA_CSV_COLUMNS)
             self.assertEqual(rows[0]["前摄像头图像"], "camera0_00000.jpg")
+            self.assertEqual(rows[0]["腕部摄像头图像"], "")
             self.assertAlmostEqual(float(rows[0]["时间戳(秒)"]), 0.0)
             self.assertAlmostEqual(float(rows[1]["时间戳(秒)"]), 0.2)
             self.assertAlmostEqual(float(rows[0]["线速度X"]), 0.3)
@@ -306,6 +307,52 @@ class FullPhysicsLeRobotTest(unittest.TestCase):
                         / "episode_000000.mp4"
                     ).is_file()
                 )
+
+    def test_wrist_camera_is_labeled_in_raw_csv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            episode_dir = Path(tmp_dir) / "episode_000000"
+            recorder = JsonlEpisodeRecorder(
+                episode_dir,
+                lerobot_config=LeRobotRecordingConfig(
+                    enabled=True,
+                    control_dt=0.02,
+                    dataset_fps=10,
+                    image_height=48,
+                    image_width=64,
+                    camera_keys=("front", "wrist"),
+                    save_raw_images=True,
+                ),
+            )
+            recorder.save_task(
+                type(
+                    "Spec",
+                    (),
+                    {"raw_task": {"instruction": "Move the apple."}},
+                )()
+            )
+            front = np.full((48, 64, 3), 64, dtype=np.uint8)
+            wrist = np.full((48, 64, 3), 192, dtype=np.uint8)
+            state = replace(
+                _state(1, front),
+                camera_images={"front": front, "wrist": wrist},
+            )
+            recorder.record_step(
+                StepRecord(
+                    step_index=1,
+                    timestamp=state.timestamp,
+                    pipeline_state="exec_pick",
+                    observation=state,
+                    action=RobotAction(source="arm"),
+                    post_step_observation=state,
+                )
+            )
+
+            with (episode_dir / "data.csv").open("r", encoding="utf-8", newline="") as stream:
+                row = next(csv.DictReader(stream))
+
+            self.assertEqual(row["前摄像头图像"], "camera0_00000.jpg")
+            self.assertEqual(row["腕部摄像头图像"], "wrist_00000.jpg")
+            self.assertTrue((episode_dir / "images/wrist/wrist_00000.jpg").is_file())
 
     def test_wrist_camera_generates_lerobot_video(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
