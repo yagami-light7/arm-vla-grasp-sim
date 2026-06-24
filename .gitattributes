@@ -1,0 +1,2 @@
+# Large scene assets must use Git LFS. GitHub rejects regular Git blobs >100 MB.
+source/scene/839920_assets/** filter=lfs diff=lfs merge=lfs -text
