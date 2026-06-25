@@ -1,0 +1,55 @@
+# Go2-X5 PCT multi-floor locomotion policy training design.
+
+environment:
+  framework: Isaac Lab
+  robot: Go2-X5
+  terrain: mutifloor
+  terrain_requirements:
+    - stairs
+    - ramps
+    - floor transitions
+    - long multi-floor routes from PCT paths
+
+policy:
+  backend: rsl_rl
+  profile: pct_multifloor
+  checkpoint_output: checkpoints/go2_x5/pct_multifloor/model_*.pt
+  action_space: Go2-X5 joint targets compatible with the existing RSL-RL policy action interface
+
+commands:
+  source: PCT global path
+  local_command:
+    - local goal vector
+    - desired base velocity
+    - optional slice or floor embedding
+
+observations:
+  - base linear and angular velocity
+  - projected gravity
+  - joint positions and velocities
+  - height scan
+  - local goal vector from the PCT path
+  - optional slice or floor embedding
+
+rewards:
+  path_progress: positive reward for progress along the PCT route
+  goal_reaching: terminal reward near the local and final goal
+  upright_stability: penalty for excessive roll, pitch, or falls
+  energy: torque and action-rate penalties
+  slip_stall: penalties for foot slip and low progress under command
+  traversal: rewards for stable stairs and ramp traversal
+
+curriculum:
+  - flat
+  - slope_and_ramp
+  - stairs
+  - multi_floor_long_route
+
+evaluation:
+  metrics:
+    - single_floor_success_rate
+    - multi_floor_success_rate
+    - path_tracking_error
+    - fall_rate
+    - stuck_rate
+    - episode_length

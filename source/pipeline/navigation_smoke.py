@@ -12,7 +12,7 @@ from source.manipulation.dry_run import (
     DryRunGripperController,
     DryRunManipulationPlanner,
 )
-from source.navigation import AStarNavPlanner, DwaNavExecutor
+from source.navigation import AStarNavPlanner, DwaNavExecutor, PCTNavPlanner, PCTPlannerConfig
 from source.navigation.adapters.yaw_align import TerminalPoseConfig
 from source.navigation.navlib import DWAConfig
 from source.recording import JsonlEpisodeRecorder
@@ -123,10 +123,33 @@ def create_navigation_components(
 
     nav = config.navigation
     nav_map = _project_path(episode_spec.nav_map)
-    planner = AStarNavPlanner(
+    astar_planner = AStarNavPlanner(
         nav_map,
         inflate_radius=nav.global_inflate_radius,
     )
+    if nav.global_planner == "astar":
+        planner = astar_planner
+    elif nav.global_planner == "pct":
+        planner = PCTNavPlanner(
+            PCTPlannerConfig(
+                enabled=nav.pct_enabled or nav.global_planner == "pct",
+                planner_root=nav.pct_planner_root,
+                server_script=nav.pct_server_script,
+                server_python=nav.pct_server_python,
+                tomogram_name=nav.pct_tomogram_name,
+                tomogram_path=nav.pct_tomogram_path,
+                walkable_path=nav.pct_walkable_path,
+                coord_mode=nav.pct_coord_mode,
+                pct_offset_x=nav.pct_offset_x,
+                pct_offset_y=nav.pct_offset_y,
+                pct_scale_x=nav.pct_scale_x,
+                pct_scale_y=nav.pct_scale_y,
+                fallback_to_astar=nav.pct_fallback_to_astar,
+            ),
+            fallback_planner=astar_planner if nav.pct_fallback_to_astar else None,
+        )
+    else:
+        raise ValueError(f"unsupported global planner: {nav.global_planner}")
     dwa_config = _build_dwa_config(nav)
     executor = DwaNavExecutor(
         nav_map,
@@ -166,6 +189,7 @@ def create_navigation_components(
         angular_velocity_tolerance=nav.stable_angular_velocity,
         require_yaw_alignment=nav.require_yaw_alignment,
         require_stable_base=nav.require_stable_base,
+        goal_z_tolerance=nav.goal_z_tolerance,
     )
     return planner, executor, verifier
 

@@ -1,0 +1,88 @@
+{
+  "task_id": 1002,
+  "episode_id": 1,
+  "instruction": "Template: use PCT multi-floor navigation to reach the apple, pick it, carry it to the upstairs place goal, and release it.",
+  "scene_usd": "source/scene/mutifloor_go2_x5.usd",
+  "nav_map": "source/scene/nav_maps/839920/map.json",
+  "start": {
+    "x": -2.0,
+    "y": 0.0,
+    "z": 0.35,
+    "yaw": 0.0,
+    "floor_id": "F1",
+    "slice_id": 0
+  },
+  "pick": {
+    "base_goal": {
+      "x": 1.0,
+      "y": 2.0,
+      "z": 0.35,
+      "yaw": 0.0,
+      "floor_id": "F1",
+      "slice_id": 0
+    },
+    "object_prim_path": "/World/apple",
+    "object_pose_world": {
+      "x": 1.30,
+      "y": 2.00,
+      "z": 0.81653,
+      "yaw": 0.0,
+      "roll": 0.0,
+      "pitch": 0.0
+    },
+    "grasp_mode": "auto"
+  },
+  "place": {
+    "enabled": true,
+    "base_goal": {
+      "x": 1.0,
+      "y": 2.0,
+      "z": 1.8,
+      "yaw": 0.0,
+      "floor_id": "F2",
+      "slice_id": 1
+    },
+    "place_pose_world": {
+      "x": 1.30,
+      "y": 2.00,
+      "z": 2.20,
+      "yaw": 0.0,
+      "roll": 0.0,
+      "pitch": 0.0
+    },
+    "release_height": 0.04,
+    "retreat_height": 0.12,
+    "settle_steps": 120,
+    "place_xy_tolerance": 0.10,
+    "place_z_tolerance": 0.08
+  },
+  "carry": {
+    "mode": "contact",
+    "arm_posture": "carry_high",
+    "gripper_hold_command": "close",
+    "max_slip_distance": 0.08,
+    "min_lift_height": 0.05,
+    "object_drop_height_threshold": 0.05,
+    "verify_grasp_steps": 60,
+    "verify_carry_every_steps": 10
+  },
+  "loop": {
+    "enabled": false,
+    "num_cycles": 1
+  },
+  "recording": {
+    "dataset_dir": "episodes",
+    "front_camera": true,
+    "wrist_camera": false,
+    "save_every_n_steps": 10
+  },
+  "notes": {
+    "template": true,
+    "requires_user_assets": [
+      "mutifloor USD scene",
+      "PCT tomogram pickle",
+      "PCT walkable map",
+      "Go2-X5 pct_multifloor locomotion checkpoint"
+    ]
+  }
+}

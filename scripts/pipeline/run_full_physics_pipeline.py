@@ -17,7 +17,9 @@ if str(PROJECT_ROOT) not in sys.path:
 from source.pipeline import (  # noqa: E402
     BaseGoalRandomizationSettings,
     FullPhysicsConfig,
+    LocomotionPolicySettings,
     ManipulationSettings,
+    NavigationSettings,
     RandomizationSettings,
     RecordingSettings,
     VideoRecordingSettings,
@@ -32,6 +34,19 @@ def _project_path(raw_path: str | Path) -> Path:
     if not path.is_absolute():
         path = PROJECT_ROOT / path
     return path.resolve()
+
+
+def _optional_project_path(raw_path: str | Path | None) -> Path | None:
+    return None if raw_path is None else _project_path(raw_path)
+
+
+def _locomotion_runtime_kwargs(config: FullPhysicsConfig) -> dict[str, object]:
+    kwargs: dict[str, object] = {}
+    if config.locomotion.locomotion_task:
+        kwargs["task_name"] = config.locomotion.locomotion_task
+    if config.locomotion.locomotion_checkpoint is not None:
+        kwargs["checkpoint"] = config.locomotion.locomotion_checkpoint
+    return kwargs
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -151,6 +166,45 @@ def _build_parser() -> argparse.ArgumentParser:
         "--place-plan-json",
         help="预先生成的 place cuRobo 分段计划 JSON；仅用于 manipulation apply smoke。",
     )
+    parser.add_argument(
+        "--global-planner",
+        choices=("astar", "pct"),
+        default="astar",
+        help="全局导航规划器；默认 astar，pct 使用多楼层 PCT server。",
+    )
+    parser.add_argument("--pct-planner-root", help="PCT 外部仓库根目录。")
+    parser.add_argument("--pct-server-script", help="PCT pct_server.py 路径。")
+    parser.add_argument("--pct-server-python", help="运行 PCT server 的 Python 解释器。")
+    parser.add_argument("--pct-tomogram-path", help="PCT tomogram pickle 路径。")
+    parser.add_argument("--pct-walkable-path", help="PCT walkable map .npy 路径。")
+    parser.add_argument(
+        "--pct-no-fallback",
+        action="store_true",
+        help="PCT 规划失败时不回退 A*，直接报错。",
+    )
+    parser.add_argument("--pct-offset-x", type=float, default=0.0, help="PCT 坐标 X 偏移。")
+    parser.add_argument("--pct-offset-y", type=float, default=0.0, help="PCT 坐标 Y 偏移。")
+    parser.add_argument("--pct-scale-x", type=float, default=1.0, help="PCT 坐标 X 缩放。")
+    parser.add_argument("--pct-scale-y", type=float, default=1.0, help="PCT 坐标 Y 缩放。")
+    parser.add_argument(
+        "--goal-z-tolerance",
+        type=float,
+        default=0.35,
+        help="多楼层导航目标 z 到达容差；旧 XY-only 任务不触发 z 检查。",
+    )
+    parser.add_argument("--locomotion-task", help="Isaac Lab locomotion task 名称。")
+    parser.add_argument("--locomotion-checkpoint", help="RSL-RL locomotion checkpoint 路径。")
+    parser.add_argument(
+        "--policy-profile",
+        choices=("flat", "pct_multifloor"),
+        default="flat",
+        help="底层 locomotion policy profile；pct_multifloor 要求提供 checkpoint。",
+    )
+    parser.add_argument(
+        "--require-locomotion-checkpoint",
+        action="store_true",
+        help="要求显式 locomotion checkpoint 存在。",
+    )
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument(
         "--dry-run",
@@ -265,6 +319,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if flat_episode_output and args.num_episodes != 1:
         raise SystemExit("batch 扁平输出模式只支持单 episode 子进程。")
 
+    locomotion_checkpoint = _optional_project_path(args.locomotion_checkpoint)
+    if args.policy_profile == "pct_multifloor" and (
+        locomotion_checkpoint is None or not locomotion_checkpoint.is_file()
+    ):
+        raise SystemExit(
+            "PCT multi-floor policy checkpoint missing. "
+            "Please train or pass --locomotion-checkpoint."
+        )
+
     config = FullPhysicsConfig(
         task_json=_project_path(args.task_json),
         output_dir=_project_path(args.output_dir),
@@ -281,6 +344,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         manipulation_smoke=manipulation_smoke,
         manipulation_apply_smoke=manipulation_apply_smoke,
         full_physics=full_physics,
+        navigation=NavigationSettings(
+            global_planner=str(args.global_planner),
+            pct_enabled=str(args.global_planner) == "pct",
+            pct_planner_root=_optional_project_path(args.pct_planner_root),
+            pct_server_script=_optional_project_path(args.pct_server_script),
+            pct_server_python=_optional_project_path(args.pct_server_python),
+            pct_tomogram_path=_optional_project_path(args.pct_tomogram_path),
+            pct_walkable_path=_optional_project_path(args.pct_walkable_path),
+            pct_fallback_to_astar=not bool(args.pct_no_fallback),
+            pct_offset_x=float(args.pct_offset_x),
+            pct_offset_y=float(args.pct_offset_y),
+            pct_scale_x=float(args.pct_scale_x),
+            pct_scale_y=float(args.pct_scale_y),
+            goal_z_tolerance=float(args.goal_z_tolerance),
+        ),
+        locomotion=LocomotionPolicySettings(
+            locomotion_task=args.locomotion_task,
+            locomotion_checkpoint=locomotion_checkpoint,
+            locomotion_checkpoint_required=bool(args.require_locomotion_checkpoint),
+            policy_profile=str(args.policy_profile),
+        ),
         manipulation=ManipulationSettings(),
         randomization=RandomizationSettings(
             enabled=args.randomize_task,
@@ -489,6 +573,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         simulation_app=app_launcher.app,
                         project_root=PROJECT_ROOT,
                         config=IsaacLabNavigationRuntimeConfig(
+                            **_locomotion_runtime_kwargs(config),
                             enable_front_camera=(
                                 (
                                     config.recording.enabled
@@ -564,6 +649,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         simulation_app=app_launcher.app,
                         project_root=PROJECT_ROOT,
                         config=IsaacLabNavigationRuntimeConfig(
+                            **_locomotion_runtime_kwargs(config),
                             show_randomization_debug=(
                                 config.randomization.show_debug_region
                             ),

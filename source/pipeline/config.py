@@ -58,6 +58,21 @@ class StateLimits:
 class NavigationSettings:
     """第三阶段短路线导航 smoke 的固定参数。"""
 
+    global_planner: str = "astar"
+    pct_enabled: bool = False
+    pct_planner_root: Path | None = None
+    pct_server_script: Path | None = None
+    pct_server_python: Path | None = None
+    pct_tomogram_path: Path | None = None
+    pct_walkable_path: Path | None = None
+    pct_tomogram_name: str = "mutifloor"
+    pct_fallback_to_astar: bool = True
+    pct_coord_mode: str = "sim_to_pct_180deg"
+    pct_offset_x: float = 0.0
+    pct_offset_y: float = 0.0
+    pct_scale_x: float = 1.0
+    pct_scale_y: float = 1.0
+    goal_z_tolerance: float = 0.35
     # 对齐稳定 random nav-pick-place baseline；0.25 m 已会占用当前 place goal。
     global_inflate_radius: float = 0.20
     local_clearance_radius: float = 0.20
@@ -85,6 +100,17 @@ class NavigationSettings:
     require_stable_base: bool = False
     stall_window_steps: int = 240
     stall_min_progress: float = 0.05
+
+
+@dataclass(frozen=True)
+class LocomotionPolicySettings:
+    """底层 locomotion policy 选择；全局 planner 与 policy 保持解耦。"""
+
+    locomotion_policy_backend: str = "rsl_rl"
+    locomotion_task: str | None = None
+    locomotion_checkpoint: Path | None = None
+    locomotion_checkpoint_required: bool = False
+    policy_profile: str = "flat"
 
 
 @dataclass(frozen=True)
@@ -223,6 +249,7 @@ class FullPhysicsConfig:
     pick_plan_json: Path | None = None
     place_plan_json: Path | None = None
     navigation: NavigationSettings = field(default_factory=NavigationSettings)
+    locomotion: LocomotionPolicySettings = field(default_factory=LocomotionPolicySettings)
     manipulation: ManipulationSettings = field(default_factory=ManipulationSettings)
     randomization: RandomizationSettings = field(default_factory=RandomizationSettings)
     recording: RecordingSettings = field(default_factory=RecordingSettings)
@@ -236,6 +263,12 @@ class FullPhysicsConfig:
             raise ValueError("episode tick limit must be positive")
         if self.navigation.max_linear_velocity <= 0.0:
             raise ValueError("max_linear_velocity must be positive")
+        if self.navigation.global_planner not in {"astar", "pct"}:
+            raise ValueError("global_planner must be one of: astar, pct")
+        if self.navigation.pct_scale_x == 0.0 or self.navigation.pct_scale_y == 0.0:
+            raise ValueError("PCT coordinate scales must be non-zero")
+        if self.navigation.goal_z_tolerance < 0.0:
+            raise ValueError("goal_z_tolerance must be non-negative")
         if self.navigation.dwa_replan_interval_steps < 1:
             raise ValueError("dwa_replan_interval_steps must be at least 1")
         if self.navigation.max_angular_velocity <= 0.0:
@@ -248,6 +281,20 @@ class FullPhysicsConfig:
             raise ValueError("max_linear_accel must be positive")
         if self.manipulation.plan_start_state_warning_threshold < 0.0:
             raise ValueError("plan_start_state_warning_threshold must be non-negative")
+        if self.locomotion.locomotion_policy_backend != "rsl_rl":
+            raise ValueError("only locomotion_policy_backend='rsl_rl' is currently supported")
+        if self.locomotion.policy_profile not in {"flat", "pct_multifloor"}:
+            raise ValueError("policy_profile must be one of: flat, pct_multifloor")
+        checkpoint = self.locomotion.locomotion_checkpoint
+        checkpoint_missing = checkpoint is None or not Path(checkpoint).expanduser().is_file()
+        if self.locomotion.policy_profile == "pct_multifloor":
+            if checkpoint_missing:
+                raise ValueError(
+                    "PCT multi-floor policy checkpoint missing. "
+                    "Please train or pass --locomotion-checkpoint."
+                )
+        elif self.locomotion.locomotion_checkpoint_required and checkpoint_missing:
+            raise ValueError("locomotion policy checkpoint missing")
         if not isinstance(self.manipulation.replan_pick_from_current_state, bool):
             raise ValueError("replan_pick_from_current_state must be a bool")
         if self.manipulation.arm_motion_time_scale <= 0.0:

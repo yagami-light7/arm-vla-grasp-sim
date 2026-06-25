@@ -45,6 +45,7 @@ class FullPhysicsPipeline:
         self.episode_spec = episode_spec
         self.episode_seed = episode_seed
         self.simulation = simulation
+        self.nav_planner = nav_planner
         self.recorder = recorder
         self.machine = FullPhysicsStateMachine(
             config=config,
@@ -149,6 +150,9 @@ class FullPhysicsPipeline:
             raise
         finally:
             _close_video("closed_without_summary")
+            close_nav_planner = getattr(self.nav_planner, "close", None)
+            if callable(close_nav_planner):
+                close_nav_planner()
             if not self.config.keep_window_open:
                 self.simulation.close()
 
@@ -292,6 +296,7 @@ class FullPhysicsPipeline:
         navigation_acceptance = None
         if navigation_smoke or navigation_carry_smoke or full_physics:
             navigation_acceptance = {
+                "global_planner": self.config.navigation.global_planner,
                 "mode": (
                     "xy_yaw_stable"
                     if self.config.navigation.require_yaw_alignment
@@ -299,6 +304,7 @@ class FullPhysicsPipeline:
                     else "xy_only"
                 ),
                 "position_tolerance": self.config.navigation.final_position_tolerance,
+                "goal_z_tolerance": self.config.navigation.goal_z_tolerance,
                 "yaw_alignment_required": self.config.navigation.require_yaw_alignment,
                 "base_stability_required": self.config.navigation.require_stable_base,
                 "yaw_tolerance": self.config.navigation.final_yaw_tolerance,

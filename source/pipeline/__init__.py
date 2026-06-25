@@ -3,6 +3,7 @@
 from .config import (
     BaseGoalRandomizationSettings,
     FullPhysicsConfig,
+    LocomotionPolicySettings,
     ManipulationSettings,
     NavigationSettings,
     RandomizationSettings,
@@ -19,6 +20,7 @@ __all__ = [
     "FullPhysicsConfig",
     "FullPhysicsPipeline",
     "FullPhysicsStateMachine",
+    "LocomotionPolicySettings",
     "ManipulationSettings",
     "NavigationSettings",
     "RandomizationSettings",
