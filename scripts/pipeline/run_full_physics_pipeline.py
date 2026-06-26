@@ -159,6 +159,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="overview 线性 RGB 转 sRGB 的 gamma，默认 2.2；设为 1.0 可关闭 gamma 提亮。",
     )
     parser.add_argument(
+        "--export-video-camera-trajectory",
+        action="store_true",
+        help="录制 overview 视频时同步导出相机轨迹 JSONL，供离线 3DGS 背景渲染使用。",
+    )
+    parser.add_argument(
+        "--video-camera-trajectory-out",
+        help="overview 相机轨迹 JSONL 输出路径；默认跟随 overview mp4 文件名。",
+    )
+    parser.add_argument(
         "--pick-plan-json",
         help="预先生成的 pick cuRobo 分段计划 JSON；仅用于 manipulation apply smoke。",
     )
@@ -172,8 +181,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default="astar",
         help="全局导航规划器；默认 astar，pct 使用多楼层 PCT server。",
     )
-    parser.add_argument("--pct-planner-root", help="PCT 外部仓库根目录。")
-    parser.add_argument("--pct-server-script", help="PCT pct_server.py 路径。")
+    parser.add_argument("--pct-planner-root", help="兼容旧外部入口的 PCT 根目录；默认不依赖 external/PCT。")
+    parser.add_argument("--pct-server-script", help="PCT server 脚本路径；PCT 模式默认使用本仓库本地版本。")
     parser.add_argument("--pct-server-python", help="运行 PCT server 的 Python 解释器。")
     parser.add_argument("--pct-tomogram-path", help="PCT tomogram pickle 路径。")
     parser.add_argument("--pct-walkable-path", help="PCT walkable map .npy 路径。")
@@ -306,6 +315,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--keep-window-open 只能与 --no-headless 一起使用。")
     if args.record_video and dry_run:
         raise SystemExit("--record-video 需要真实 Isaac stage / camera images，不能与 --dry-run 一起使用。")
+    if args.export_video_camera_trajectory and not args.record_video:
+        raise SystemExit("--export-video-camera-trajectory 需要同时启用 --record-video。")
+    if args.export_video_camera_trajectory and str(args.video_mode).lower() not in {"overview", "all"}:
+        raise SystemExit("--export-video-camera-trajectory 只支持 --video-mode overview 或 all。")
     if args.record_video and args.video_out and Path(args.video_out).suffix.lower() == ".mp4" and args.num_episodes != 1:
         raise SystemExit("--video-out 指向单个 .mp4 文件时只支持 --num-episodes 1；多 episode 请传输出目录。")
     if (
@@ -389,6 +402,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             overview_initial_hold_frames=int(args.overview_initial_hold_frames),
             overview_exposure=float(args.overview_exposure),
             overview_gamma=float(args.overview_gamma),
+            export_camera_trajectory=bool(args.export_video_camera_trajectory),
+            camera_trajectory_path=(
+                _project_path(args.video_camera_trajectory_out)
+                if args.video_camera_trajectory_out
+                else None
+            ),
         ),
     )
     _validate_external_plan_paths(config)

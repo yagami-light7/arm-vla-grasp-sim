@@ -33,16 +33,16 @@ def test_prepare_episode_spec_preserves_multifloor_goal_fields() -> None:
         ),
     )
 
-    assert episode.start.z == 0.35
+    assert episode.start.z == 0.36742
     assert episode.start.floor_id == "F1"
-    assert episode.start.slice_id == 0
-    assert episode.pick_goal.z == 0.35
+    assert episode.start.slice_id is None
+    assert episode.pick_goal.z == 0.56178
     assert episode.pick_goal.floor_id == "F1"
-    assert episode.pick_goal.slice_id == 0
+    assert episode.pick_goal.slice_id is None
     assert episode.place_goal is not None
-    assert episode.place_goal.z == 1.8
+    assert episode.place_goal.z == 3.82064
     assert episode.place_goal.floor_id == "F2"
-    assert episode.place_goal.slice_id == 1
+    assert episode.place_goal.slice_id is None
 
 
 def test_navigation_verifier_checks_z_only_when_goal_has_z() -> None:

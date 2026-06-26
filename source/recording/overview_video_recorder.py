@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import inspect
+import json
 import math
 import re
 from dataclasses import dataclass
@@ -348,6 +349,9 @@ class OverviewVideoRecorder:
         self._rep_render_product_path: str | None = None
         self._render_camera_paths: dict[str, str] = {}
         self._last_warning: str | None = None
+        self._camera_trajectory_path = self._resolve_camera_trajectory_path()
+        self._camera_trajectory_frame_count = 0
+        self._camera_trajectory_error: str | None = None
 
     @property
     def _overview_frame_count(self) -> int:
@@ -374,6 +378,9 @@ class OverviewVideoRecorder:
         )
         if "overview" in self.modes:
             self._discover_cameras_from_current_stage()
+        if self._camera_trajectory_enabled():
+            self._camera_trajectory_path.parent.mkdir(parents=True, exist_ok=True)
+            self._camera_trajectory_path.write_text("", encoding="utf-8")
 
     def add_frame(
         self,
@@ -428,7 +435,13 @@ class OverviewVideoRecorder:
         if frame is None:
             self._mark_dropped("overview")
             return
-        self._write_video_frame(frame, stream="overview")
+        written_frame_index = self._write_video_frame(frame, stream="overview")
+        self._write_camera_trajectory_frame(
+            state=state,
+            timestamp=timestamp,
+            step_index=step_index,
+            frame_index=written_frame_index,
+        )
         self._last_capture_timestamps["overview"] = float(timestamp)
 
     def _add_observation_frame(
@@ -636,6 +649,13 @@ class OverviewVideoRecorder:
             "capture_error": self._capture_error,
             "writer_backends": dict(self._writer_backends),
         }
+        if self._camera_trajectory_enabled():
+            summary["camera_trajectory"] = {
+                "enabled": True,
+                "path": str(self._camera_trajectory_path),
+                "frame_count": int(self._camera_trajectory_frame_count),
+                "error": self._camera_trajectory_error,
+            }
         print(
             f"{self.log_prefix} closed status={status} success={success} "
             f"frames={summary['frame_count']} dropped={self._dropped_frame_count} "
@@ -659,6 +679,16 @@ class OverviewVideoRecorder:
             stream: output_path / f"episode_{self.episode_id:06d}_{stream}.mp4"
             for stream in self.modes
         }
+
+    def _resolve_camera_trajectory_path(self) -> Path:
+        raw_path = getattr(self.settings, "camera_trajectory_path", None)
+        if raw_path is not None:
+            return Path(raw_path).expanduser().resolve()
+        overview_path = self.output_paths.get("overview", self.output_path)
+        return overview_path.with_suffix(".camera_trajectory.jsonl")
+
+    def _camera_trajectory_enabled(self) -> bool:
+        return bool(getattr(self.settings, "export_camera_trajectory", False)) and "overview" in self.modes
 
     def _discover_cameras_from_current_stage(self) -> None:
         try:
@@ -1216,9 +1246,174 @@ class OverviewVideoRecorder:
         raw = raw.reshape((height, width, channels))
         return _image_to_rgb_uint8(raw)
 
-    def _write_video_frame(self, image: np.ndarray, *, stream: str = "overview") -> None:
+    def _write_camera_trajectory_frame(
+        self,
+        *,
+        state: str,
+        timestamp: float,
+        step_index: int,
+        frame_index: int,
+    ) -> None:
+        """写出与 overview 视频帧对齐的相机位姿。"""
+
+        if not self._camera_trajectory_enabled():
+            return
+        payload = self._camera_trajectory_payload(
+            state=state,
+            timestamp=timestamp,
+            step_index=step_index,
+            frame_index=frame_index,
+        )
+        try:
+            with self._camera_trajectory_path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+                stream.write("\n")
+        except Exception as exc:
+            self._camera_trajectory_error = f"{type(exc).__name__}: {exc}"
+            self._warn_once(f"camera trajectory write failed: {self._camera_trajectory_error}")
+            return
+        self._camera_trajectory_frame_count += 1
+
+    def _camera_trajectory_payload(
+        self,
+        *,
+        state: str,
+        timestamp: float,
+        step_index: int,
+        frame_index: int,
+    ) -> dict[str, Any]:
+        """从当前 USD camera 读取 3DGS 离线渲染需要的相机参数。"""
+
+        camera_path = self._current_camera_path
+        render_camera_path = self._renderable_camera_path(camera_path) if camera_path else None
+        payload: dict[str, Any] = {
+            "schema": "arm_vla_pct.overview_camera_trajectory.v1",
+            "frame_index": int(frame_index),
+            "step_index": int(step_index),
+            "timestamp": float(timestamp),
+            "pipeline_state": str(state),
+            "camera_prim_path": camera_path,
+            "render_camera_prim_path": render_camera_path,
+            "video": {
+                "width": int(getattr(self.settings, "width", 1280)),
+                "height": int(getattr(self.settings, "height", 720)),
+                "fps": float(getattr(self.settings, "fps", 25.0)),
+            },
+        }
+        if not render_camera_path:
+            payload["camera"] = {
+                "available": False,
+                "reason": "no_active_overview_camera",
+            }
+            return payload
+        camera_payload = self._read_usd_camera_payload(render_camera_path)
+        payload["camera"] = camera_payload
+        return payload
+
+    def _read_usd_camera_payload(self, camera_path: str) -> dict[str, Any]:
+        """读取 USD camera 的世界位姿、视场角和裁剪面。"""
+
+        try:
+            import omni.usd
+            from pxr import Gf, Usd, UsdGeom
+        except ImportError as exc:
+            return {
+                "available": False,
+                "reason": "usd_camera_dependencies_unavailable",
+                "error": str(exc),
+            }
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            return {
+                "available": False,
+                "reason": "stage_unavailable",
+            }
+        prim = stage.GetPrimAtPath(camera_path)
+        if not prim.IsValid() or not prim.IsA(UsdGeom.Camera):
+            return {
+                "available": False,
+                "reason": "camera_prim_unavailable",
+                "camera_prim_path": camera_path,
+                "prim_valid": bool(prim.IsValid()),
+            }
+        try:
+            camera = UsdGeom.Camera(prim)
+            matrix = UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(prim)
+            eye_vec = matrix.ExtractTranslation()
+            forward_vec = matrix.TransformDir(Gf.Vec3d(0.0, 0.0, -1.0))
+            if forward_vec.GetLength() <= 1.0e-9:
+                forward_vec = Gf.Vec3d(1.0, 0.0, 0.0)
+            forward_vec.Normalize()
+            up_vec = matrix.TransformDir(Gf.Vec3d(0.0, 1.0, 0.0))
+            if up_vec.GetLength() <= 1.0e-9:
+                up_vec = Gf.Vec3d(0.0, 0.0, 1.0)
+            up_vec.Normalize()
+            focus_distance = self._camera_float_attr(camera.GetFocusDistanceAttr(), default=3.0)
+            if not math.isfinite(focus_distance) or focus_distance <= 0.1:
+                focus_distance = 3.0
+            target_vec = eye_vec + forward_vec * focus_distance
+            vertical_fov_deg = self._camera_vertical_fov_deg(camera)
+            near_plane, far_plane = self._camera_clipping_range(camera)
+            return {
+                "available": True,
+                "camera_prim_path": camera_path,
+                "eye": [float(eye_vec[0]), float(eye_vec[1]), float(eye_vec[2])],
+                "target": [
+                    float(target_vec[0]),
+                    float(target_vec[1]),
+                    float(target_vec[2]),
+                ],
+                "up": [float(up_vec[0]), float(up_vec[1]), float(up_vec[2])],
+                "forward": [
+                    float(forward_vec[0]),
+                    float(forward_vec[1]),
+                    float(forward_vec[2]),
+                ],
+                "vertical_fov_deg": float(vertical_fov_deg),
+                "near_plane": float(near_plane),
+                "far_plane": float(far_plane),
+                "focus_distance": float(focus_distance),
+            }
+        except Exception as exc:  # pragma: no cover - depends on live USD runtime.
+            return {
+                "available": False,
+                "reason": "camera_payload_failed",
+                "camera_prim_path": camera_path,
+                "error": str(exc),
+            }
+
+    def _camera_float_attr(self, attr: Any, *, default: float) -> float:
+        value = attr.Get() if attr is not None else None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _camera_vertical_fov_deg(self, camera: Any) -> float:
+        focal_length = self._camera_float_attr(camera.GetFocalLengthAttr(), default=24.0)
+        vertical_aperture = self._camera_float_attr(camera.GetVerticalApertureAttr(), default=20.955)
+        if focal_length <= 0.0 or vertical_aperture <= 0.0:
+            return 58.0
+        return math.degrees(2.0 * math.atan(vertical_aperture / (2.0 * focal_length)))
+
+    def _camera_clipping_range(self, camera: Any) -> tuple[float, float]:
+        clipping = camera.GetClippingRangeAttr().Get()
+        try:
+            near_plane = float(clipping[0])
+            far_plane = float(clipping[1])
+        except Exception:
+            near_plane = 0.01
+            far_plane = 100000.0
+        if not math.isfinite(near_plane) or near_plane <= 0.0:
+            near_plane = 0.01
+        if not math.isfinite(far_plane) or far_plane <= near_plane:
+            far_plane = 100000.0
+        return near_plane, far_plane
+
+    def _write_video_frame(self, image: np.ndarray, *, stream: str = "overview") -> int:
         if stream not in self.output_paths:
             raise ValueError(f"unknown video stream: {stream}")
+        frame_index = int(self._stream_frame_counts.get(stream, 0))
         frame = _image_to_rgb_uint8(image)
         writer = self._writers.get(stream)
         if writer is None:
@@ -1246,6 +1441,7 @@ class OverviewVideoRecorder:
             frame = cv2.resize(frame, writer_size, interpolation=cv2.INTER_AREA)
         writer.write(frame)
         self._stream_frame_counts[stream] = self._stream_frame_counts.get(stream, 0) + 1
+        return frame_index
 
     def _warn_once(self, message: str) -> None:
         if message == self._last_warning:

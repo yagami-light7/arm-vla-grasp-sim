@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Scaffold for Go2-X5 PCT multi-floor locomotion policy training.
+"""Go2-X5 PCT 多楼层 locomotion policy 训练脚手架。
 
-This script intentionally does not train a checkpoint by itself. It is the
-stable repository entrypoint for wiring the future Isaac Lab/RSL-RL task,
-config, and output locations without committing generated checkpoints.
+本脚本当前不直接训练 checkpoint，只固定后续 Isaac Lab/RSL-RL
+任务、配置和输出目录的入口，避免把生成的大型 checkpoint 提交进仓库。
 """
 
 from __future__ import annotations
@@ -21,27 +20,27 @@ DEFAULT_CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints/go2_x5/pct_multifloor"
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Prepare the Isaac Lab/RSL-RL PCT multi-floor training run.",
+        description="准备 Isaac Lab/RSL-RL PCT 多楼层训练运行参数。",
     )
     parser.add_argument(
         "--config",
         default=str(DEFAULT_CONFIG),
-        help="Training design/config YAML path.",
+        help="训练设计和配置 YAML 路径。",
     )
     parser.add_argument(
         "--task",
         default="RobotLab-Isaac-Velocity-PCT-Multifloor-Go2-X5-v0",
-        help="Future Isaac Lab task id for PCT multi-floor locomotion.",
+        help="后续注册的 PCT 多楼层 Isaac Lab task id。",
     )
     parser.add_argument(
         "--checkpoint-dir",
         default=str(DEFAULT_CHECKPOINT_DIR),
-        help="Directory where RSL-RL should write model_*.pt checkpoints.",
+        help="RSL-RL 写入 model_*.pt checkpoint 的目录。",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print the planned training invocation without launching Isaac Lab.",
+        help="只打印训练入口信息，不启动 Isaac Lab。",
     )
     return parser
 
@@ -51,7 +50,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     config_path = Path(args.config).expanduser().resolve()
     checkpoint_dir = Path(args.checkpoint_dir).expanduser().resolve()
     if not config_path.is_file():
-        raise SystemExit(f"training config does not exist: {config_path}")
+        raise SystemExit(f"训练配置不存在：{config_path}")
 
     payload = {
         "status": "scaffold",
@@ -60,15 +59,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         "checkpoint_dir": str(checkpoint_dir),
         "expected_checkpoint_pattern": str(checkpoint_dir / "model_*.pt"),
         "next_step": (
-            "Register the PCT multi-floor Isaac Lab task, then invoke the "
-            "project's Isaac Lab RSL-RL training command with this task id."
+            "先注册 PCT 多楼层 Isaac Lab task，再用该 task id 调用项目的 "
+            "Isaac Lab RSL-RL 训练命令。"
         ),
     }
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     if not args.dry_run:
         raise SystemExit(
-            "PCT multi-floor training environment is not registered yet; "
-            "use --dry-run for planning or implement the Isaac Lab task first."
+            "PCT 多楼层训练环境尚未注册；请使用 --dry-run 查看计划，"
+            "或先实现 Isaac Lab task。"
         )
     return 0
 

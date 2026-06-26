@@ -1,4 +1,4 @@
-"""PCT multi-floor global planner adapter."""
+"""PCT 多楼层全局规划器适配器。"""
 
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ def sim_to_pct_xyz(
     pct_scale_x: float = 1.0,
     pct_scale_y: float = 1.0,
 ) -> tuple[float, float, float]:
-    """Convert Isaac Sim world xyz into the PCT planner frame."""
+    """将 Isaac Sim 世界坐标 xyz 转换到 PCT 规划坐标系。"""
 
     _validate_coord_config(
         coord_mode=coord_mode,
@@ -104,7 +104,7 @@ def pct_to_sim_xyz(
     pct_scale_x: float = 1.0,
     pct_scale_y: float = 1.0,
 ) -> tuple[float, float, float]:
-    """Convert PCT planner xyz back into Isaac Sim world coordinates."""
+    """将 PCT 规划坐标 xyz 转回 Isaac Sim 世界坐标系。"""
 
     _validate_coord_config(
         coord_mode=coord_mode,
@@ -126,7 +126,7 @@ def pct_to_sim_xyz(
 
 
 class PCTPlannerClient:
-    """Subprocess client for PCT's stdin/stdout JSON planning protocol."""
+    """通过子进程封装 PCT stdin/stdout JSON 规划协议。"""
 
     def __init__(self, config: PCTPlannerConfig):
         self.config = config
@@ -230,7 +230,7 @@ class PCTPlannerClient:
         if root is None:
             raise ValueError(
                 "PCT server script is not configured; pass pct_server_script "
-                "or set PCT_PLANNER_ROOT"
+                "or use the pipeline factory default scripts/navigation/pct_grid_server.py"
             )
         return Path(root).expanduser() / "scripts/navigation/pct_server.py"
 
@@ -325,7 +325,7 @@ class PCTPlannerClient:
 
 
 class PCTNavPlanner:
-    """Navigation planner that delegates global planning to a PCT server."""
+    """将 PCT server 适配为当前 pipeline 使用的全局导航规划器。"""
 
     def __init__(
         self,

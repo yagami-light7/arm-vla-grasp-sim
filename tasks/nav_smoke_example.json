@@ -2,8 +2,8 @@
   "task_id": 1,
   "episode_id": 1,
   "instruction": "Navigation locomotion smoke test only.",
-  "scene_usd": "source/scene/839920_go2_x5.usd",
-  "nav_map": "source/scene/nav_maps/839920/map.json",
+  "scene_usd": "source/scene/839920/839920_go2_x5.usd",
+  "nav_map": "source/scene/839920/nav_map/map.json",
   "start": {
     "x": -2.4,
     "y": 0.1,

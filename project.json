@@ -1,0 +1,1470 @@
+{
+  "project": "arm_vla_pct",
+  "branch": "pct",
+  "goal": "将 flat A* 全局导航替换为 PCT 多楼层规划器，并接入新的 RL locomotion checkpoint 配置。",
+  "current_phase": "phase_12_multifloor_nurec_final_visual",
+  "last_updated": "2026-06-26 21:30:11 CST",
+  "status": {
+    "astar_default_preserved": true,
+    "pct_adapter_added": true,
+    "pct_pipeline_switch_added": true,
+    "pct_plan_probe_script_added": true,
+    "pct_external_codebase_cloned": true,
+    "pct_external_mutifloor_assets_available": false,
+    "pct_external_planner_backend_available": false,
+    "pct_runtime_assets_available": false,
+    "pct_real_server_plan_verified": false,
+    "pct_cross_floor_navigation_verified": false,
+    "rl_checkpoint_config_added": true,
+    "multifloor_scene_config_added": true,
+    "yinluyuan_usd_build_script_added": true,
+    "yinluyuan_usd_stage_available": true,
+    "yinluyuan_visual_proxy_available": true,
+    "yinluyuan_visual_points_available": true,
+    "yinluyuan_gsplat_renderer_added": true,
+    "yinluyuan_gsplat_preview_available": true,
+    "yinluyuan_camera_trajectory_export_added": true,
+    "yinluyuan_gsplat_trajectory_render_added": true,
+    "isaacsim_particlefield_schema_checked": true,
+    "isaacsim_particlefield_schema_available": false,
+    "isaacsim_particlefield_extension_probe_done": true,
+    "isaacsim_particlefield_extension_available": false,
+    "isaacsim_particlefield_install_attempted": false,
+    "isaacsim_particlefield_safe_to_patch_current_env": false,
+    "isaacsim_usd_version": "0.24.5",
+    "yinluyuan_native_particlefield_ready": false,
+    "yinluyuan_stage_uses_visual_reference": true,
+    "yinluyuan_collision_visual_hidden": true,
+    "yinluyuan_points_preview_confirmed": true,
+    "video_preview_visual_ready": true,
+    "final_video_visual_ready": false,
+    "tests_passing": true,
+    "sage_multifloor_asset_pipeline_added": true,
+    "sage_multifloor_ply_renamed": true,
+    "sage_multifloor_usdz_available": true,
+    "sage_multifloor_collision_usd_available": true,
+    "sage_multifloor_usda_available": true,
+    "sage_multifloor_usd_composition_validated": true,
+    "sage_multifloor_no_symlinks_in_final_tree": true,
+    "scene_assets_reorganized": true,
+    "single_floor_scene_layout_repaired": true,
+    "single_floor_stage_references_relative": true,
+    "multifloor_task_object_reference_added": true,
+    "multifloor_collision_only_diagnostic_added": true,
+    "multifloor_default_usda_collision_proxy": false,
+    "multifloor_nurec_usda_preserved": false,
+    "multifloor_nurec_viewport_render_fails_on_current_isaacsim": false,
+    "multifloor_default_usda_gui_render_verified": true,
+    "multifloor_default_visual_is_collision_proxy": false,
+    "multifloor_final_visual_layer_ready": true,
+    "multifloor_final_visual_gui_verified": false,
+    "multifloor_single_high_quality_usda": true,
+    "multifloor_visual_collision_transform_aligned": true
+  },
+  "local_assets": {
+    "rl_policy_source_dir": "Rough/",
+    "rl_policy_runtime_dir": "checkpoints/go2_x5/pct_multifloor/",
+    "rl_policy_checkpoint": "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
+    "rl_policy_checkpoint_source": "Rough/model_26000.pt",
+    "multifloor_scene_source_dir": "Yinluyuan/",
+    "multifloor_scene_runtime_dir": "source/scene/multifloor/",
+    "multifloor_scene_files": [
+      "source/scene/multifloor/ply/3dgs_collision.ply",
+      "source/scene/multifloor/ply/3dgs_visual.ply"
+    ],
+    "scene_manifest": "source/scene/multifloor/yinluyuan/scene_manifest.json",
+    "usd_build_script": "scripts/scene/build_yinluyuan_usd.py",
+    "collision_usd": "source/scene/multifloor/yinluyuan/yinluyuan_collision.usd",
+    "usd_stage": "source/scene/multifloor/yinluyuan/yinluyuan_go2_x5.usd",
+    "usd_build_report": "source/scene/multifloor/yinluyuan/yinluyuan_usd_build_report.json",
+    "visual_points_usd": "source/scene/multifloor/yinluyuan/yinluyuan_visual_points.usda",
+    "visual_points_report": "source/scene/multifloor/yinluyuan/yinluyuan_visual_points_report.json",
+    "gsplat_render_script": "scripts/scene/render_yinluyuan_3dgs.py",
+    "pct_plan_probe_script": "scripts/navigation/probe_pct_plan.py",
+    "pct_external_codebase_dir": "external/PCT",
+    "pct_external_codebase_remote": "https://github.com/BoZhiStudying233/PCT.git",
+    "pct_external_codebase_commit": "b15b68c",
+    "gsplat_preview_image": "outputs/yinluyuan_3dgs/preview.png",
+    "gsplat_close_preview_image": "outputs/yinluyuan_3dgs/preview_close_8m.png",
+    "gsplat_preview_report": "outputs/yinluyuan_3dgs/preview_report.json",
+    "gsplat_close_preview_report": "outputs/yinluyuan_3dgs/preview_close_8m_report.json",
+    "overview_camera_trajectory": "outputs/yinluyuan_3dgs/overview_camera_trajectory.jsonl",
+    "gsplat_background_frame_dir": "outputs/yinluyuan_3dgs/background_frames",
+    "gsplat_test_trajectory_report": "outputs/yinluyuan_3dgs/test_trajectory_report.json",
+    "usd_stage_available": true,
+    "visual_proxy_available": true,
+    "visual_proxy_current": false,
+    "current_visual_mode": "nurec_clean_17m",
+    "collision_visual_hidden": true,
+    "video_preview_visual_ready": true,
+    "final_video_visual_ready": false,
+    "visual_proxy_prim": "/World/gauss",
+    "inspection_camera": "/World/inspection_camera",
+    "inspection_light": "/World/inspection_light",
+    "visual_usd_available": true,
+    "gsplat_preview_available": true,
+    "overview_camera_trajectory_export_supported": true,
+    "gsplat_trajectory_render_supported": true,
+    "pct_tomogram_available": false,
+    "pct_walkable_available": false,
+    "commit_policy": "本地资产只用于运行，不提交到 git",
+    "notes": [
+      "Rough/ 保留原始本地 RL policy checkpoint 和导出 policy 文件。",
+      "checkpoints/go2_x5/pct_multifloor/ 通过软链接整理新 policy checkpoint 和导出 policy。",
+      "Yinluyuan/ 保留原始本地多楼层导航场景资产。",
+      "source/scene/multifloor/yinluyuan/ 通过软链接整理 PLY 场景资产。",
+      "yinluyuan_collision.usd、yinluyuan_go2_x5.usd 和 yinluyuan_visual_points.usda 已本地生成，但按 .gitignore 不提交。",
+      "/World/gauss 当前引用 UsdGeom.Points 点云视觉层，可用于预览检查，不再是 collision mesh 复制体。",
+      "yinluyuan_visual_points.usda 是 3DGS PLY 的点云近似，不是最终原生 3DGS splat renderer；正式录制仍应替换为真 3DGS 渲染或高质量 visual USD。",
+      "scripts/scene/render_yinluyuan_3dgs.py 已能用 gsplat 离线渲染真实 Gaussian splat PNG；当前输出属于本地 ignored 文件。",
+      "overview recorder 可导出相机轨迹 JSONL，render_yinluyuan_3dgs.py 可按该轨迹批量渲染 3DGS 背景帧。",
+      "OpenUSD 官方 3DGS 转换脚本位于 extras/imaging/examples/hdParticleField/py3dgsPlyToUsd.py，但当前 Isaac Sim 5.1.0.0 的 pxr.UsdVol 未暴露 ParticleField3DGaussianSplat。",
+      "当前 Isaac Sim 5.1.0.0 绑定 USD 0.24.5；本地 UsdVol schema、libusd_usdVol.so、libusd_usdVolImaging.so 和 _usdVol.so 均未包含 ParticleField/3DGaussian/GaussianSplat 相关类型或符号。",
+      "OpenUSD hdParticleField 示例依赖 usdVol 中的 ParticleField schema，不能作为独立 Python 包安全补进当前 Isaac Sim 5.1 环境；本次没有执行 pull_extension、pip install、conda install 或替换任何 IsaacSim/OpenUSD 文件。",
+      "PCT adapter 已经接入 pipeline；但当前本地仍缺少 pct_server.py、mutifloor.pickle 和 mutifloor_ply_walkable.npy，因此尚未完成真实 Yinluyuan 跨楼层规划验证。",
+      "external/PCT 已从 BoZhiStudying233/PCT.git clone 到当前 worktree 的 ignored 目录；公开仓库 README 提到 mutifloor/ 场景资产，但当前提交树未包含 mutifloor/、3dgs_collision_cropped.ply、3dgs_cropped.ply、mutifloor_cropped.usda 或 mutifloor_collision_cropped.usd。",
+      "external/PCT/scripts/navigation/pct_server.py 已存在，但包含 /home/y/... 硬编码路径，并依赖当前 clone 中未出现的 planner_wrapper backend。",
+      "final_video_visual_ready 仍为 false，因为尚未完成 Isaac Sim 机器人前景与 3DGS 背景的 alpha/depth 合成。",
+      "source/scene/multifloor/ply/3dgs_collision.ply 是包含 face 的 collision mesh PLY。",
+      "source/scene/multifloor/ply/3dgs_visual.ply 是包含 f_dc/opacity/scale/rot 的 3DGS Gaussian PLY。",
+      "source/scene/multifloor/usda/multifloor.usda 同时组合 NuRec visual Volume 和 collision mesh payload。",
+      "当前机器的 USD resolver 不能直接打开 multifloor.usdz[gauss.usda]，已按 fallback 解包并引用 multifloor_unpack/gauss.usda。",
+      ".gitignore 已忽略 *.usdz 和 *.nurec，避免误提交 NuRec 大资产。",
+      "source/scene 已整理为 839920/、multifloor/、objects/ 三类资产目录，根目录仅保留场景工具 Python 模块。",
+      "839920_go2_x5.usd 已修复为当前仓库相对引用，不再依赖 /mnt/sage_data 或 /home/light/workspace/arm_vla/source/scene。",
+      "source/scene/multifloor/usda/multifloor.usda 已包含 /World/apple，避免 multifloor pick task 在对象查找阶段失败。",
+      "source/scene/multifloor/usda/multifloor_collision_only.usda 用于区分 collision/stage 问题和 NuRec /World/gauss RTX 渲染问题。",
+      "source/scene/multifloor/usda/multifloor.usda 现在是 Isaac Sim 默认安全入口，/World/gauss 使用 collision mesh 作为可见代理，不包含 OmniNuRecFieldAsset。",
+      "source/scene/multifloor/usda/multifloor_nurec.usda 保留完整 NuRec Volume，用于后续诊断或环境升级验证；用户已报告当前 Isaac Sim 打开 NuRec stage 会触发 HydraEngine compute graph error。",
+      "默认主场景的视觉代理不是最终视频质量；真实 3DGS 视觉仍需 NuRec 环境修复或继续使用 gsplat 离线背景渲染/合成路线。",
+      "用户已确认 source/scene/multifloor/usda/multifloor.usda 在 Isaac Sim 中可以渲染；当前视觉层仍与 collision-only 接近，这是因为默认入口已切换为 collision mesh proxy。",
+      "source/scene/multifloor/usda/ 现在只保留 multifloor.usda；旧的 multifloor_nurec、collision_only、100k、2M、12M 诊断 USDA 已删除。",
+      "最终 source/scene/multifloor/usdz/multifloor.usdz 由 16760135 个 clean Gaussian 导出，保留 opacity>=0.2 且 max scale<=0.5m，包体约 1.98GB。",
+      "/World/gauss 已修正为 rotateXYZ=(0,0,180)，与 /World/scene_collision 的 Z 轴 180 度旋转对齐，避免 visual 与 collision 相对旋转。",
+      "tools/scene/validate_multifloor_usd_assets.py 已检查 NuRec /World/gauss rotateXYZ，防止后续重建回退到 SAGE template 的 rotateX=-90。"
+    ],
+    "multifloor_ply_dir": "source/scene/multifloor/ply/",
+    "multifloor_collision_ply": "source/scene/multifloor/ply/3dgs_collision.ply",
+    "multifloor_visual_ply": "source/scene/multifloor/ply/3dgs_visual.ply",
+    "multifloor_usdz": "source/scene/multifloor/usdz/multifloor.usdz",
+    "multifloor_usdz_unpack_dir": "source/scene/multifloor/usdz/multifloor_unpack/",
+    "multifloor_collision_usd": "source/scene/multifloor/usd/multifloor_collision.usd",
+    "multifloor_usda": "source/scene/multifloor/usda/multifloor.usda",
+    "sage_asset_tools": [
+      "tools/scene/check_multifloor_ply.py",
+      "tools/scene/ply_to_usdz_no_cameras.py",
+      "tools/scene/build_multifloor_collision_usd.py",
+      "tools/scene/build_multifloor_usda.py",
+      "tools/scene/validate_multifloor_usd_assets.py",
+      "tools/scene/rebuild_multifloor_sage_assets.sh"
+    ],
+    "final_isaacsim_scene_usd": "source/scene/multifloor/usda/multifloor.usda",
+    "single_floor_scene_dir": "source/scene/839920/",
+    "single_floor_stage_usda": "source/scene/839920/839920.usda",
+    "single_floor_pipeline_stage_usd": "source/scene/839920/839920_go2_x5.usd",
+    "single_floor_usdz": "source/scene/839920/assets/839920.usdz",
+    "single_floor_collision_usd": "source/scene/839920/collision/839920_collision.usd",
+    "single_floor_nav_map": "source/scene/839920/nav_map/map.json",
+    "object_asset_dir": "source/scene/objects/",
+    "multifloor_nav_map_placeholder": "source/scene/multifloor/nav_map/README.md",
+    "multifloor_collision_only_usda": "source/scene/multifloor/usda/multifloor_collision_only.usda",
+    "multifloor_task_object_prim": "/World/apple",
+    "multifloor_safe_usda": "source/scene/multifloor/usda/multifloor.usda",
+    "multifloor_nurec_usda": "source/scene/multifloor/usda/multifloor_nurec.usda",
+    "nurec_visual_stage_available": true,
+    "nurec_viewport_render_issue_reported": true,
+    "default_multifloor_gui_render_result": "final 17M clean NuRec USDA statically validated; Isaac Sim GUI verification still pending after latest transform fix",
+    "multifloor_final_usdz_size_bytes": 1977852288,
+    "multifloor_final_gaussian_count": 16760135,
+    "multifloor_final_gauss_rotate_xyz": [
+      0,
+      0,
+      180
+    ],
+    "multifloor_final_min_opacity": 0.2,
+    "multifloor_final_max_scale_m": 0.5,
+    "multifloor_usda_files_remaining": [
+      "source/scene/multifloor/usda/multifloor.usda"
+    ]
+  },
+  "pct_codebase_notes": {
+    "coordinate_rule": "pct_x=-sim_x, pct_y=-sim_y, pct_z=sim_z",
+    "build_inputs": [
+      "3dgs_collision_cropped.ply"
+    ],
+    "build_outputs": [
+      "mutifloor.pickle",
+      "mutifloor_ply_walkable.npy"
+    ],
+    "planner_server": "pct_server.py",
+    "planner_protocol": "stdin/stdout JSON",
+    "visualization_state_file": "/tmp/pct_nav_state.json"
+  },
+  "progress_log": [
+    {
+      "time": "2026-06-25 22:32:11 CST",
+      "summary": "按照 AGENTS.md 补建 project.json，并记录当前 PCT adapter 已接入、Rough/ 为本地 RL checkpoint、Yinluyuan/ 为本地多楼层场景资产。",
+      "files_changed": [
+        ".gitignore",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "根目录缺少 AGENTS.md 要求维护的 project.json。",
+          "root_cause": "上一阶段实现 PCT adapter 时没有读取到该长期规范，未创建进度记录文件。",
+          "fix": "创建 project.json，记录当前阶段、已完成状态、本地资产位置和后续计划。",
+          "prevention": "后续每次开始工作先读取 AGENTS.md 和 project.json，结束前追加 progress_log。"
+        },
+        {
+          "problem": "Rough/ 和 Yinluyuan/ 作为本地大资产目录仍显示为未跟踪文件。",
+          "root_cause": ".gitignore 只忽略了 *.pt，未覆盖本地 checkpoint 目录、多楼层场景目录和 PCT 常见大文件格式。",
+          "fix": "在 .gitignore 中显式忽略 Rough/、Yinluyuan/、*.ply、*.pickle、*.npy、*.usd、*.usda、*.onnx、*.mp4、*.rrd 和 TensorBoard 事件文件。",
+          "prevention": "大资产只通过 CLI/config/docs 引用，不直接纳入 git。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "not_run_yet",
+          "result": "not_run",
+          "note": "本条为创建 project.json 的初始记录；相关轻量测试将在本次结束前运行并追加记录。"
+        }
+      ],
+      "next_steps": [
+        "将新增文件中的说明性文本和 docstring 调整为中文，符合 AGENTS.md 注释规范。",
+        "使用 Rough/ 和 Yinluyuan/ 的相对路径更新文档示例，但不提交资产。",
+        "重新运行 py_compile 和 tests/navigation。"
+      ]
+    },
+    {
+      "time": "2026-06-25 22:35:46 CST",
+      "summary": "根据用户确认的本地资产用途，忽略 Rough/ 和 Yinluyuan/，将新增说明文本改为中文，并确认 Yinluyuan/ 当前只有 PLY、尚无 PCT tomogram 或 walkable 输出。",
+      "files_changed": [
+        ".gitignore",
+        "configs/navigation/pct_multifloor_policy.yaml",
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "scripts/navigation/train_pct_multifloor_policy.py",
+        "source/navigation/pct_adapter.py"
+      ],
+      "problems": [
+        {
+          "problem": "AGENTS.md 要求新增代码注释、docstring 和说明性文本使用中文，但上一阶段新增的 PCT adapter、训练脚手架和文档中仍有英文说明。",
+          "root_cause": "上一阶段没有读取 AGENTS.md，采用了通用英文工程文本。",
+          "fix": "将 PCT adapter docstring、训练脚手架 docstring/CLI help、docs 文档和配置注释调整为中文。",
+          "prevention": "后续新增说明性文本前先检查 AGENTS.md 第 13 节中文规范。"
+        },
+        {
+          "problem": "Yinluyuan/ 被说明为多楼层场景，但当前目录里没有 PCT planner 运行所需的 .pickle 和 .npy。",
+          "root_cause": "当前本地目录只包含 PLY 场景输入，还没有运行外部 PCT 建图脚本。",
+          "fix": "在 project.json 和 docs 中记录 Yinluyuan/ 当前只有 PLY，需要先生成 tomogram 和 walkable map。",
+          "prevention": "真实 navigation smoke 前先检查 --pct-tomogram-path 和 --pct-walkable-path 是否指向已生成文件。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "指定轻量编译检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "11 passed。禁用插件自动加载是为了避开本机 ROS pytest 插件缺少 lark 的环境问题。"
+        },
+        {
+          "command": "python -m py_compile scripts/navigation/train_pct_multifloor_policy.py",
+          "result": "passed",
+          "note": "训练脚手架编译通过。"
+        },
+        {
+          "command": "python scripts/navigation/train_pct_multifloor_policy.py --dry-run",
+          "result": "passed",
+          "note": "训练脚手架 dry-run 可正常输出中文 next_step。"
+        },
+        {
+          "command": "Isaac Sim navigation smoke",
+          "result": "not_run",
+          "note": "未运行 Isaac Sim smoke：当前还缺少由 Yinluyuan/ PLY 生成的 PCT tomogram pickle 和 walkable npy，且未指定外部 pct_server.py 路径。"
+        }
+      ],
+      "next_steps": [
+        "使用外部 PCT codebase 基于 Yinluyuan/3dgs_collision.ply 生成 mutifloor.pickle 和 mutifloor_ply_walkable.npy。",
+        "用 Rough/model_26000.pt、生成的 tomogram/walkable 和 pct_server.py 路径运行 navigation smoke。",
+        "根据真实 PCT 输出检查坐标 offset/scale 和楼层 snap metadata。"
+      ]
+    },
+    {
+      "time": "2026-06-25 22:44:44 CST",
+      "summary": "将新 RL policy 和 Yinluyuan 多楼层场景整理到标准运行目录，更新多楼层 task 模板，并修改导航装配逻辑以支持 PCT 无 A* fallback 时暂缺 flat nav_map。",
+      "files_changed": [
+        "checkpoints/go2_x5/pct_multifloor/README.md",
+        "checkpoints/go2_x5/pct_multifloor/agent.yaml",
+        "checkpoints/go2_x5/pct_multifloor/env.yaml",
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "source/pipeline/navigation_smoke.py",
+        "source/scene/multifloor/yinluyuan/README.md",
+        "source/scene/multifloor/yinluyuan/scene_manifest.json",
+        "source/scene/nav_maps/yinluyuan/README.md",
+        "tasks/nav_pick_place_apple_multifloor_pct.json",
+        "tests/navigation/test_planner_selection.py"
+      ],
+      "problems": [
+        {
+          "problem": "多楼层 PCT task 切到 Yinluyuan 后没有真实 2D flat nav_map，而旧 create_navigation_components 会在进入 PCT 前先构造 AStarNavPlanner。",
+          "root_cause": "旧装配逻辑把 A* baseline、PCT fallback 和 DWA local map 绑定在同一个 nav_map 上，导致 PCT 无 fallback 调试也被 flat map 阻塞。",
+          "fix": "只有 global_planner=astar 或 PCT fallback 开启时才构造 AStarNavPlanner；PCT 且 nav_map 缺失时为 DWA 创建过渡开放 local map。",
+          "prevention": "后续将 DWA 过渡执行器升级为真正消费 PCT 3D path / slice 的局部控制器，避免多楼层执行继续依赖虚拟 2D map。"
+        },
+        {
+          "problem": "新 RL policy 和 Yinluyuan 场景仍停留在原始本地目录，运行命令缺少稳定相对路径。",
+          "root_cause": "此前只在 docs 中引用 Rough/ 和 Yinluyuan/，没有整理到项目已有 checkpoints/source/scene 目录结构。",
+          "fix": "在 checkpoints/go2_x5/pct_multifloor/ 和 source/scene/multifloor/yinluyuan/ 下建立标准目录；大文件使用软链接，小 YAML/manifest/README 作为可审阅文件。",
+          "prevention": "后续 CLI 和 task 均引用标准相对路径，不直接依赖临时原始目录。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py scripts/navigation/train_pct_multifloor_policy.py",
+          "result": "passed",
+          "note": "导航装配、PCT adapter、CLI 和训练脚手架编译通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "13 passed，覆盖 PCT 无 fallback 缺失 nav_map 的装配路径。"
+        },
+        {
+          "command": "python scripts/navigation/train_pct_multifloor_policy.py --dry-run",
+          "result": "passed",
+          "note": "训练脚手架仍能正常输出 pct_multifloor checkpoint 目录。"
+        },
+        {
+          "command": "Isaac Sim navigation smoke",
+          "result": "not_run",
+          "note": "未运行 Isaac Sim smoke：当前还缺少 Yinluyuan USD stage、PCT tomogram pickle、walkable npy 和外部 pct_server.py 路径。"
+        }
+      ],
+      "next_steps": [
+        "用外部 PCT codebase 从 source/scene/multifloor/yinluyuan/3dgs_collision.ply 生成 mutifloor.pickle 和 mutifloor_ply_walkable.npy。",
+        "生成或接入 source/scene/multifloor/yinluyuan/yinluyuan_go2_x5.usd。",
+        "使用 --global-planner pct --pct-no-fallback 和 checkpoints/go2_x5/pct_multifloor/model_26000.pt 运行真实 navigation smoke。"
+      ]
+    },
+    {
+      "time": "2026-06-25 23:13:20 CST",
+      "summary": "新增 Yinluyuan PLY 到 Isaac Sim USD 的转换脚本，默认将 collision PLY 转为 USD，并生成包含 /World/scene_collision 的主 stage。",
+      "files_changed": [
+        ".gitignore",
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "scripts/scene/build_yinluyuan_usd.py",
+        "source/scene/multifloor/yinluyuan/README.md",
+        "source/scene/multifloor/yinluyuan/scene_manifest.json",
+        "source/scene/nav_maps/yinluyuan/README.md"
+      ],
+      "problems": [
+        {
+          "problem": "当前 Yinluyuan 只有两个 PLY，pipeline 需要可由 Isaac Sim 打开的 USD stage。",
+          "root_cause": "此前只整理了 PLY 软链接，没有把 PLY 转换为 /World/scene_collision 约定下的 USD 场景。",
+          "fix": "新增 scripts/scene/build_yinluyuan_usd.py，使用 Isaac Sim Kit asset converter 转换 collision PLY，再写出 yinluyuan_go2_x5.usd 并补 CollisionAPI。",
+          "prevention": "后续新场景都先提供明确的 PLY->USD 构建脚本和 manifest 路径，避免 task JSON 指向不存在的 USD。"
+        },
+        {
+          "problem": "visual PLY 约 1.6GB 且 header 显示只有 Gaussian splat 顶点属性，没有 face。",
+          "root_cause": "visual PLY 是 3DGS/点云表示，不是普通三角网格碰撞场景。",
+          "fix": "脚本默认只转换带 face 的 collision PLY；visual PLY 需要用户显式传 --include-visual，后续可再接专门的 3DGS/点云可视化流程。",
+          "prevention": "场景构建流程区分 collision mesh、visual point cloud 和 PCT tomogram，不再把所有 PLY 当作同一种 runtime mesh。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python scripts/scene/build_yinluyuan_usd.py --help",
+          "result": "passed",
+          "note": "CLI help 可正常输出，不启动 Isaac Sim。"
+        },
+        {
+          "command": "python -m py_compile scripts/scene/build_yinluyuan_usd.py",
+          "result": "passed",
+          "note": "新增转换脚本语法检查通过。"
+        },
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py scripts/navigation/train_pct_multifloor_policy.py scripts/scene/build_yinluyuan_usd.py",
+          "result": "passed",
+          "note": "相关导航、CLI、训练脚手架和新增 USD 转换脚本编译检查通过。"
+        },
+        {
+          "command": "python -m json.tool project.json && python -m json.tool source/scene/multifloor/yinluyuan/scene_manifest.json",
+          "result": "passed",
+          "note": "项目进度记录和 Yinluyuan manifest 均为有效 JSON。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "13 passed，确认 PCT planner selection 等导航测试未受影响。"
+        },
+        {
+          "command": "git diff --check",
+          "result": "passed",
+          "note": "未发现空白错误。"
+        },
+        {
+          "command": "Isaac Sim PLY->USD conversion",
+          "result": "not_run",
+          "note": "本次只编写脚本，未实际启动 Isaac Sim/Kit asset converter 生成 USD；生成大型本地 USD 资产前需要用户确认运行时机。"
+        }
+      ],
+      "next_steps": [
+        "运行 scripts/scene/build_yinluyuan_usd.py --force 生成 yinluyuan_collision.usd 和 yinluyuan_go2_x5.usd。",
+        "打开生成的 yinluyuan_go2_x5.usd 检查 /World/scene_collision mesh 和 180 度坐标旋转是否符合 PCT 坐标约定。",
+        "继续使用外部 PCT codebase 从 collision PLY 生成 mutifloor.pickle 和 mutifloor_ply_walkable.npy。"
+      ]
+    },
+    {
+      "time": "2026-06-25 23:30:24 CST",
+      "summary": "修复 Yinluyuan USD 构建流程并生成可检查的主 stage：/World/scene_collision 作为碰撞网格，/World/gauss 作为临时视觉代理，同时添加检查相机和灯光。",
+      "files_changed": [
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "scripts/scene/build_yinluyuan_usd.py",
+        "source/scene/multifloor/yinluyuan/README.md",
+        "source/scene/multifloor/yinluyuan/scene_manifest.json"
+      ],
+      "problems": [
+        {
+          "problem": "用户已经运行 PLY->USD 命令后，Isaac Sim 中仍然不好检查场景，因为没有可见视觉层，且首次结果只稳定生成了 collision USD。",
+          "root_cause": "普通 conda Python 无法直接 import pxr；旧脚本在 Kit 生命周期结束后才尝试写主 stage，导致主 stage 生成不可靠。另一个输入 visual PLY 是 3DGS/点云格式，不是普通带 face 的三角网格。",
+          "fix": "将脚本改成单一 Kit 生命周期，先转换资产再写主 stage 并验证；默认把 collision USD 额外挂载到 /World/gauss 作为视觉代理，并添加 /World/inspection_camera 和 /World/inspection_light。",
+          "prevention": "后续所有 Yinluyuan stage 生成都在 Kit 关闭前完成 authoring 和 validation，并用构建报告验证 /World/scene_collision 与 /World/gauss 下至少有一个 mesh。"
+        },
+        {
+          "problem": "manifest 和文档仍显示 USD stage 未生成，容易误判当前不能打开 Isaac Sim 场景。",
+          "root_cause": "实际生成本地 .usd 后没有同步更新可提交的小型状态文件。",
+          "fix": "更新 scene_manifest.json、Yinluyuan README、PCT 文档和 project.json，记录已生成 stage、collision USD、视觉代理、检查相机和检查灯光。",
+          "prevention": "后续每次生成本地大资产后，同步更新 manifest/project 中的小型状态字段，但不提交 .usd/.ply/.pt 等大资产。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile scripts/scene/build_yinluyuan_usd.py",
+          "result": "passed",
+          "note": "USD 构建脚本语法检查通过。"
+        },
+        {
+          "command": "python scripts/scene/build_yinluyuan_usd.py --help",
+          "result": "passed",
+          "note": "CLI help 正常输出，包含视觉代理、检查灯光、检查相机和 --skip-convert 选项。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/scene/build_yinluyuan_usd.py --skip-convert --force",
+          "result": "passed",
+          "note": "生成 yinluyuan_go2_x5.usd 和 yinluyuan_usd_build_report.json；无 GPU/display 和只读 cache 警告未阻止 USD authoring。"
+        },
+        {
+          "command": "python -m json.tool project.json",
+          "result": "passed",
+          "note": "项目进度记录 JSON 有效。"
+        },
+        {
+          "command": "python -m json.tool source/scene/multifloor/yinluyuan/scene_manifest.json",
+          "result": "passed",
+          "note": "Yinluyuan manifest JSON 有效。"
+        },
+        {
+          "command": "python -m json.tool source/scene/multifloor/yinluyuan/yinluyuan_usd_build_report.json",
+          "result": "passed",
+          "note": "构建报告 JSON 有效，报告中 collision mesh=1、CollisionAPI=1、/World/gauss mesh=1。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "13 passed，确认导航/PCT adapter 测试未受场景脚本和文档更新影响。"
+        },
+        {
+          "command": "git diff --check",
+          "result": "passed",
+          "note": "未发现空白错误。"
+        }
+      ],
+      "next_steps": [
+        "在 Isaac Sim 中打开 source/scene/multifloor/yinluyuan/yinluyuan_go2_x5.usd，检查 /World/gauss、/World/inspection_camera 和 /World/scene_collision。",
+        "用外部 PCT codebase 从 source/scene/multifloor/yinluyuan/3dgs_collision.ply 生成 mutifloor.pickle 和 mutifloor_ply_walkable.npy。",
+        "拿到 tomogram/walkable 和 pct_server.py 路径后，再运行 --global-planner pct --pct-no-fallback 的 navigation smoke。"
+      ]
+    },
+    {
+      "time": "2026-06-25 23:53:52 CST",
+      "summary": "针对 Isaac Sim 中 /World/gauss 只显示稀疏蓝色碰撞代理的问题，新增 Gaussian PLY 检查和点云 visual USD 生成流程，并重建主 stage 让 /World/gauss 引用点云视觉层。",
+      "files_changed": [
+        ".gitignore",
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "scripts/scene/build_yinluyuan_usd.py",
+        "scripts/scene/build_yinluyuan_visual_points_usd.py",
+        "source/scene/__init__.py",
+        "source/scene/gaussian_splat_ply.py",
+        "source/scene/multifloor/yinluyuan/README.md",
+        "source/scene/multifloor/yinluyuan/scene_manifest.json",
+        "tasks/nav_pick_place_apple_multifloor_pct.json"
+      ],
+      "problems": [
+        {
+          "problem": "Isaac Sim 截图中 /World/gauss 仍是稀疏蓝色 collision proxy，不满足后续视频录制和图像导出的视觉层要求。",
+          "root_cause": "上一版主 stage 为了便于快速检查，把 collision USD 复制挂载到 /World/gauss；真正的 visual PLY 是 Gaussian splat PLY，没有 face，不能交给普通 mesh converter。",
+          "fix": "新增 source/scene/gaussian_splat_ply.py 和 scripts/scene/build_yinluyuan_visual_points_usd.py，将 3DGS PLY 采样为 UsdGeom.Points 预览层；同时为 build_yinluyuan_usd.py 增加 --visual-reference-usd 和 --require-real-visual，并用点云 USD 重建 yinluyuan_go2_x5.usd。",
+          "prevention": "最终录制前必须检查 scene_manifest.json 的 current_visual_mode 和 final_video_visual_ready；需要发布级质量时，用 --visual-reference-usd 挂载原生 3DGS renderer 输出或高质量 visual USD，而不是 collision proxy。"
+        },
+        {
+          "problem": "原始 Gaussian PLY 中存在极端离群坐标，直接全量写入会影响相机取景和可视化检查。",
+          "root_cause": "visual PLY 中部分点坐标远离主体建筑，点云 bounds 会被少量离群点拉大。",
+          "fix": "点云生成脚本增加 --clip-bounds、--clip-percentiles 和 --clip-estimate-stride；本次使用 --clip-percentiles 0.1 99.9，生成约 1880945 个预览点。",
+          "prevention": "后续重新生成视觉层时保留构建报告中的 clip_bounds，并根据 Isaac Sim 实际视图调节 point_width、max_points 和裁剪范围。"
+        },
+        {
+          "problem": "当前预览视觉层仍不是最终 3DGS splat 渲染，不能把它误判为最终视频质量已完成。",
+          "root_cause": "当前本地 Isaac/Omniverse 环境没有发现可直接加载该 Gaussian PLY 的原生 3DGS 渲染扩展；UsdGeom.Points 只能保存点位置和近似颜色。",
+          "fix": "文档、task note、manifest 和 project.json 明确区分 video_preview_visual_ready=true 与 final_video_visual_ready=false。",
+          "prevention": "后续录制正式视频前，先接入原生 3DGS 渲染扩展或外部高质量 visual USD，并重新运行 --require-real-visual 构建检查。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/scene/gaussian_splat_ply.py scripts/scene/build_yinluyuan_visual_points_usd.py scripts/scene/build_yinluyuan_usd.py source/interfaces/navigation.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "场景工具、PCT adapter、pipeline config 和 full-physics CLI 编译通过。"
+        },
+        {
+          "command": "python scripts/scene/build_yinluyuan_visual_points_usd.py --inspect-only --skip-report",
+          "result": "passed",
+          "note": "确认 visual PLY 为 binary_little_endian，vertex_count=24554157，has_faces=false，is_gaussian_splat_ply=true。"
+        },
+        {
+          "command": "python scripts/scene/build_yinluyuan_visual_points_usd.py --max-points 2000000 --clip-percentiles 0.1 99.9 --force",
+          "result": "passed",
+          "note": "生成本地点云 visual layer：sample_stride=13，sampled_point_count=1880945，输出 yinluyuan_visual_points.usda；该大型 .usda 被 .gitignore 忽略。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/scene/build_yinluyuan_usd.py --skip-convert --visual-reference-usd source/scene/multifloor/yinluyuan/yinluyuan_visual_points.usda --require-real-visual --force",
+          "result": "passed",
+          "note": "重建主 stage；报告显示 /World/gauss valid，points_count=1，gprim_count=1，visual_proxy_from_collision=false。无 GPU/display 和只读 cache 警告未阻止 USD authoring。"
+        },
+        {
+          "command": "python scripts/scene/build_yinluyuan_usd.py --include-visual --skip-report",
+          "result": "passed",
+          "note": "按预期提前失败并给出清晰错误：当前 visual PLY 是 Gaussian splat 点云，不是普通 mesh。"
+        },
+        {
+          "command": "python scripts/scene/build_yinluyuan_usd.py --skip-convert --require-real-visual --skip-report",
+          "result": "passed",
+          "note": "按预期提前失败并提示需要 --include-visual 或 --visual-reference-usd，避免最终视频模式静默使用 collision proxy。"
+        },
+        {
+          "command": "python -m json.tool tasks/nav_pick_place_apple_multifloor_pct.json",
+          "result": "passed",
+          "note": "多楼层 task JSON 有效，已加入视觉层说明。"
+        },
+        {
+          "command": "Isaac Sim navigation smoke / full PCT pipeline",
+          "result": "not_run",
+          "note": "未运行：当前仍缺少 Yinluyuan 的 PCT tomogram pickle、walkable npy 和真实 pct_server.py 路径。"
+        }
+      ],
+      "next_steps": [
+        "在 Isaac Sim 重新打开 source/scene/multifloor/yinluyuan/yinluyuan_go2_x5.usd，确认 /World/gauss 下显示 points 视觉层而非蓝色 collision proxy。",
+        "如果预览仍偏稀疏或太重，用 --point-width、--max-points 和 --clip-percentiles 重新生成 yinluyuan_visual_points.usda。",
+        "正式视频录制前，接入原生 3DGS 渲染扩展或外部高质量 visual USD，并通过 --visual-reference-usd 与 --require-real-visual 重建主 stage。",
+        "继续生成 PCT tomogram/walkable 后再验收 --global-planner pct pipeline。"
+      ]
+    },
+    {
+      "time": "2026-06-26 00:06:17 CST",
+      "summary": "根据组合 stage 与单独 visual USDA 的截图对比，确认白色实体来自可见 collision mesh；现已让主 stage 默认隐藏 collision 渲染，同时保留 CollisionAPI 和点云视觉层。",
+      "files_changed": [
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "scripts/scene/build_yinluyuan_usd.py",
+        "source/scene/multifloor/yinluyuan/README.md",
+        "source/scene/multifloor/yinluyuan/scene_manifest.json"
+      ],
+      "problems": [
+        {
+          "problem": "单独打开 yinluyuan_visual_points.usda 时点云颜色和结构正常，但打开组合 yinluyuan_go2_x5.usd 时场景变成不透明白色实体。",
+          "root_cause": "主 stage 同时显示 /World/scene_collision 和 /World/gauss；无材质的 collision mesh 以白色实体渲染并遮挡了点云视觉层。",
+          "fix": "build_yinluyuan_usd.py 现在默认对 /World/scene_collision 写 visibility=invisible，并新增 --collision-visual-visible 供碰撞调试；物理 CollisionAPI 不受 visibility 影响。随后重建主 stage。",
+          "prevention": "构建报告新增 collision_visual_visibility 字段，正常预览应为 invisible；文档明确组合 stage 若出现白色实体，应检查是否误传 --collision-visual-visible。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile scripts/scene/build_yinluyuan_usd.py",
+          "result": "passed",
+          "note": "USD 构建脚本编译通过。"
+        },
+        {
+          "command": "python scripts/scene/build_yinluyuan_usd.py --help | rg collision-visual-visible",
+          "result": "passed",
+          "note": "新增碰撞渲染可见性参数已出现在 CLI。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/scene/build_yinluyuan_usd.py --skip-convert --visual-reference-usd source/scene/multifloor/yinluyuan/yinluyuan_visual_points.usda --require-real-visual --force",
+          "result": "passed",
+          "note": "主 stage 重建成功；无 GPU/display 和只读 cache 警告未阻止 USD authoring。"
+        },
+        {
+          "command": "python -m json.tool source/scene/multifloor/yinluyuan/yinluyuan_usd_build_report.json",
+          "result": "passed",
+          "note": "报告显示 collision_visual_visibility=invisible、visual_proxy_from_collision=false、points_count=1、gprim_count=1。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -c 'from pxr import Usd'",
+          "result": "failed",
+          "note": "该环境在普通 Python 进程中未暴露 pxr，必须先启动 SimulationApp；实际 USD validation 已在构建脚本的 Kit 生命周期内通过。"
+        },
+        {
+          "command": "git diff --check",
+          "result": "passed",
+          "note": "未发现空白错误。"
+        },
+        {
+          "command": "Isaac Sim GUI visual confirmation",
+          "result": "not_run",
+          "note": "当前命令环境无法创建 GPU/display；需要用户在已打开的 Isaac Sim GUI 中重新加载主 stage 做最终视觉确认。"
+        }
+      ],
+      "next_steps": [
+        "关闭旧 stage 或执行 Reload，再打开 source/scene/multifloor/yinluyuan/yinluyuan_go2_x5.usd。",
+        "确认 Stage 树中 /World/scene_collision 为隐藏状态，/World/gauss 可见，画面应接近单独 visual USDA。",
+        "点云层仍是 UsdGeom.Points 预览近似；正式视频继续接入原生 3DGS renderer 或高质量 visual USD。"
+      ]
+    },
+    {
+      "time": "2026-06-26 00:21:45 CST",
+      "summary": "根据 Isaac Sim GUI 截图确认组合 stage 已正确隐藏碰撞网格并显示 Yinluyuan 点云视觉引用；当前点状外观符合 UsdGeom.Points 预览层预期，但不满足最终视频的原生 3DGS 质量。",
+      "files_changed": [
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "组合场景中的院子、建筑和植被全部呈点状，无法作为最终视频视觉层。",
+          "root_cause": "当前 visual USD 仅包含从 24554157 个 Gaussian 中采样的 1880945 个 UsdGeom.Points；标准点渲染没有使用 PLY 中的 scale、rotation 和 opacity 属性合成 Gaussian splat。",
+          "fix": "本次确认 USD 引用和碰撞可见性配置正确，并明确将当前层限定为预览；正式录制前需要接入原生 3DGS renderer 或提供高质量 visual USD。",
+          "prevention": "验收场景时同时检查 visual_mode 和 final_video_visual_ready，不能把可加载的点云预览误判为完成的渲染视觉层。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "Isaac Sim GUI screenshot inspection",
+          "result": "passed",
+          "note": "截图确认白色碰撞网格已隐藏，彩色点云视觉引用已显示，当前异常仅来自点云近似本身。"
+        },
+        {
+          "command": "Native 3DGS render validation",
+          "result": "not_run",
+          "note": "当前仓库和指定 Isaac Sim Python 环境中未发现可直接加载该 Gaussian PLY 的原生 3DGS 渲染扩展。"
+        }
+      ],
+      "next_steps": [
+        "为 Isaac Sim 接入能够读取 Gaussian PLY 的原生 3DGS renderer，并把渲染结果与 /World/scene_collision 的物理层对齐。",
+        "在原生 3DGS 接入前保留 yinluyuan_visual_points.usda，仅用于坐标、范围和相机取景检查。",
+        "完成原生视觉层后再验收 RGB 图像导出和视频录制质量。"
+      ]
+    },
+    {
+      "time": "2026-06-26 13:01:02 CST",
+      "summary": "接入基于 gsplat 的 Yinluyuan 3DGS 离线渲染路径，验证真实 Gaussian splat PLY 可以输出非点状 PNG 预览，并记录当前仍需后续完成 Isaac 前景与 3DGS 背景合成。",
+      "files_changed": [
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "scripts/scene/render_yinluyuan_3dgs.py",
+        "source/scene/__init__.py",
+        "source/scene/gaussian_splat_renderer.py",
+        "source/scene/multifloor/yinluyuan/README.md",
+        "source/scene/multifloor/yinluyuan/scene_manifest.json"
+      ],
+      "problems": [
+        {
+          "problem": "直接在 Isaac Sim 中加载的 UsdGeom.Points 视觉层仍然全部呈点状，不能满足最终视频视觉质量。",
+          "root_cause": "UsdGeom.Points 只保存采样点位置和近似颜色，没有使用 Gaussian PLY 中的 scale、rotation 和 opacity 参与 splat 合成。",
+          "fix": "新增 source/scene/gaussian_splat_renderer.py 和 scripts/scene/render_yinluyuan_3dgs.py，直接读取 3DGS PLY 并用 gsplat 渲染 PNG；默认应用 PLY/PCT 到 Isaac Sim 世界坐标的 180 度 Z 轴变换。",
+          "prevention": "后续判断视觉质量时区分 points_reference、offline_gsplat_render 和 Isaac viewport 原生渲染，不再把点云预览当作最终录制质量。"
+        },
+        {
+          "problem": "gsplat 首次 JIT 编译失败，C++ 编译阶段找不到 cuda_runtime_api.h。",
+          "root_cause": "当前 conda 环境中 CUDA headers 位于 targets/x86_64-linux/include，但 torch extension 的 C++ 编译命令只包含了环境根 include，没有自动包含该 targets 路径。",
+          "fix": "安装 CUDA nvcc/cudart-dev 后，在运行 gsplat 时设置 CPATH、CPLUS_INCLUDE_PATH、LIBRARY_PATH 和 LD_LIBRARY_PATH 指向当前 conda CUDA toolkit 路径；随后 gsplat_cuda.so 编译成功。",
+          "prevention": "文档和 README 中记录 gsplat 渲染所需环境变量；以后在新环境复现时先运行最小 gsplat 探针。"
+        },
+        {
+          "problem": "全量 24554157 个 Gaussian 不适合直接作为首个本机验收渲染。",
+          "root_cause": "RTX 4060 Laptop GPU 只有约 8GB 显存，全量载入和 rasterization 中间 buffer 存在 OOM 风险，且 Isaac Sim 同时运行会进一步占用显存。",
+          "fix": "先以 200000、2000000、4000000 和 8000000 上限逐级测试；最高一档实际加载 6113039 个裁剪后的 splat 并成功输出 1280x720 PNG。",
+          "prevention": "正式视频渲染前按显存余量逐级提高 --max-gaussians，必要时在更大显存机器或离线批处理环境中渲染全量。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/scene/gaussian_splat_renderer.py source/scene/__init__.py scripts/scene/render_yinluyuan_3dgs.py scripts/scene/build_yinluyuan_visual_points_usd.py scripts/scene/build_yinluyuan_usd.py source/interfaces/navigation.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "新增 3DGS 渲染工具、场景工具和导航相关入口编译通过。"
+        },
+        {
+          "command": "python scripts/scene/render_yinluyuan_3dgs.py --help",
+          "result": "passed",
+          "note": "新增 CLI 可正常输出中文 help。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "13 passed，确认 PCT/navigation 测试未受 scene 渲染工具影响。"
+        },
+        {
+          "command": "python -m json.tool source/scene/multifloor/yinluyuan/scene_manifest.json",
+          "result": "passed",
+          "note": "Yinluyuan scene manifest JSON 有效。"
+        },
+        {
+          "command": "CUDA_HOME=... TORCH_EXTENSIONS_DIR=/tmp/arm_vla_pct_torch_extensions ... python -c 'from gsplat.rendering import rasterization; ...'",
+          "result": "passed",
+          "note": "最小 1 个 Gaussian 的 gsplat CUDA 渲染通过，输出 torch.Size([1, 64, 64, 3])。"
+        },
+        {
+          "command": "CUDA_HOME=... python scripts/scene/render_yinluyuan_3dgs.py --max-gaussians 200000 --width 640 --height 360 --radius-clip 0.0 --output-image outputs/yinluyuan_3dgs/preview_200k.png",
+          "result": "passed",
+          "note": "快速预览 PNG 生成成功，用于确认不是黑图或空图。"
+        },
+        {
+          "command": "CUDA_HOME=... python scripts/scene/render_yinluyuan_3dgs.py --max-gaussians 8000000 --width 1280 --height 720 --camera-eye -42 -78 28 --camera-target -13 -34 7 --output-image outputs/yinluyuan_3dgs/preview_close_8m.png",
+          "result": "passed",
+          "note": "高密度近景预览生成成功；报告显示实际加载 6113039 个 splat，alpha_mean=0.26511627435684204。"
+        },
+        {
+          "command": "python -m json.tool outputs/yinluyuan_3dgs/preview_report.json && python -m json.tool outputs/yinluyuan_3dgs/preview_close_8m_report.json",
+          "result": "passed",
+          "note": "生成的本地 3DGS 渲染报告 JSON 有效；outputs/ 按 .gitignore 不提交。"
+        },
+        {
+          "command": "Isaac Sim video pipeline with 3DGS background compositing",
+          "result": "not_run",
+          "note": "未运行：本次完成离线 3DGS 渲染验证，尚未实现 Isaac 相机轨迹导出、机器人前景 alpha/depth 渲染和 3DGS 背景合成。"
+        },
+        {
+          "command": "Full 24554157 Gaussian render",
+          "result": "not_run",
+          "note": "未运行：当前 RTX 4060 Laptop GPU 为 8GB 显存，直接全量渲染存在 OOM 风险；已用最高 8000000 上限完成本机可控验收。"
+        }
+      ],
+      "next_steps": [
+        "把 Isaac Sim recorder 的 camera pose 导出为 JSON，并让 render_yinluyuan_3dgs.py 支持批量相机轨迹渲染。",
+        "实现 Isaac robot/object 前景的 RGB+alpha 或 RGB+depth 输出，再与 3DGS 背景逐帧合成。",
+        "继续生成 Yinluyuan 的 PCT tomogram/walkable，随后验收 --global-planner pct navigation smoke。"
+      ]
+    },
+    {
+      "time": "2026-06-26 13:19:53 CST",
+      "summary": "为最终视频路线补上 Isaac overview camera 轨迹导出和 3DGS 按轨迹批量渲染能力；当前 Isaac USD 仍是点云预览，正式画面应走相机轨迹驱动的离线 3DGS 背景帧，再与 Isaac 机器人前景合成。",
+      "files_changed": [
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "scripts/scene/render_yinluyuan_3dgs.py",
+        "source/pipeline/config.py",
+        "source/recording/overview_video_recorder.py",
+        "source/scene/multifloor/yinluyuan/README.md",
+        "source/scene/multifloor/yinluyuan/scene_manifest.json"
+      ],
+      "problems": [
+        {
+          "problem": "用户观察到离线 PNG 渲染开始正常，但在 Isaac Sim 中直接打开 USD 仍然和之前一样点状。",
+          "root_cause": "当前 USD stage 里的 /World/gauss 是 UsdGeom.Points 预览层，Omniverse viewport 不会自动使用 Gaussian PLY 中的 scale、rotation、opacity 做真实 splat 合成；真实 3DGS PNG 来自独立 gsplat 离线渲染器。",
+          "fix": "保留 Isaac USD 作为物理和机器人运行 stage，新增 overview recorder 相机轨迹 JSONL 导出，并让 render_yinluyuan_3dgs.py 能按同一相机轨迹批量渲染 3DGS 背景帧。",
+          "prevention": "后续验收视频时区分 physics USD、points preview、offline 3DGS background 和最终合成视频，不再以 Isaac viewport 中的点云层判断最终画质。"
+        },
+        {
+          "problem": "离线 3DGS 背景需要与 Isaac 录制相机严格同步，否则后续合成会出现视角漂移。",
+          "root_cause": "此前 render_yinluyuan_3dgs.py 只支持单个手动相机位姿，不能消费 pipeline 录制时的实时 overview camera pose。",
+          "fix": "在 OverviewVideoRecorder 写视频帧时同步导出相机 eye/target/up、FOV、near/far、视频宽高和 frame_index；3DGS renderer 新增 --camera-trajectory-jsonl、--frame-output-dir、--trajectory-resolution 等批量渲染参数。",
+          "prevention": "后续合成和评估都以 frame_index 作为同步键，避免手动复刻相机参数。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/recording/overview_video_recorder.py source/pipeline/config.py scripts/pipeline/run_full_physics_pipeline.py scripts/scene/render_yinluyuan_3dgs.py source/scene/gaussian_splat_renderer.py source/interfaces/navigation.py source/navigation/pct_adapter.py source/pipeline/navigation_smoke.py",
+          "result": "passed",
+          "note": "相机轨迹导出、CLI、3DGS 批量渲染和导航相关模块编译通过。"
+        },
+        {
+          "command": "python scripts/pipeline/run_full_physics_pipeline.py --help | rg \"export-video-camera-trajectory|video-camera-trajectory\"",
+          "result": "passed",
+          "note": "full-physics CLI 已暴露相机轨迹导出参数。"
+        },
+        {
+          "command": "python scripts/scene/render_yinluyuan_3dgs.py --help | rg \"camera-trajectory|trajectory-resolution|frame-output\"",
+          "result": "passed",
+          "note": "3DGS 渲染 CLI 已暴露轨迹批量渲染参数。"
+        },
+        {
+          "command": "CUDA_HOME=... python scripts/scene/render_yinluyuan_3dgs.py --camera-trajectory-jsonl /tmp/yinluyuan_test_camera_trajectory.jsonl --max-gaussians 100000 --frame-output-dir outputs/yinluyuan_3dgs/test_frames --report-output outputs/yinluyuan_3dgs/test_trajectory_report.json --radius-clip 0.0 --trajectory-resolution json",
+          "result": "passed",
+          "note": "用 2 帧 fake camera trajectory 成功批量渲染 3DGS PNG；实际加载 99417 个 splat，输出位于 ignored outputs/。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "13 passed，确认 PCT/navigation 测试未受相机轨迹和渲染改动影响。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_pipeline.py -q",
+          "result": "passed",
+          "note": "30 passed，确认 full-physics CLI/config 测试通过。"
+        },
+        {
+          "command": "Isaac Sim real --record-video --export-video-camera-trajectory run",
+          "result": "not_run",
+          "note": "未运行真实 Isaac Sim pipeline：本轮只完成 recorder 和离线 3DGS 批量渲染通路，真实 GUI/仿真运行需要用户本地启动完整场景。"
+        },
+        {
+          "command": "Foreground alpha/depth compositing",
+          "result": "not_run",
+          "note": "尚未实现 Isaac 机器人/物体前景 RGB+alpha 或 RGB+depth 导出，也未做逐帧合成。"
+        }
+      ],
+      "next_steps": [
+        "用真实 full-physics pipeline 运行 --record-video --video-mode overview --export-video-camera-trajectory，生成 outputs/yinluyuan_3dgs/overview_camera_trajectory.jsonl。",
+        "用生成的 JSONL 调用 render_yinluyuan_3dgs.py 批量输出 background_frames。",
+        "实现 Isaac robot/object 前景 alpha/depth 输出和逐帧 compositor，形成最终可录制视频路线。",
+        "继续补齐 Yinluyuan PCT tomogram/walkable 与 pct_server.py 路径后，再验收 --global-planner pct navigation smoke。"
+      ]
+    },
+    {
+      "time": "2026-06-26 13:50:21 CST",
+      "summary": "开始验证路线 3：原生 3DGS/ParticleField USD。已定位 OpenUSD 官方转换脚本，并确认当前 Isaac Sim 5.1.0.0 运行时缺少 ParticleField3DGaussianSplat schema，暂不能直接生成或渲染原生 3DGS USD。",
+      "files_changed": [
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "用户希望不走离线合成，而是让 Isaac Sim 直接打开包含完整视觉层的 USD。",
+          "root_cause": "完整 3DGS 视觉层不能用普通 UsdGeom.Points 表达，OpenUSD dev 中使用 UsdVol.ParticleField3DGaussianSplat；当前 Isaac Sim 5.1.0.0 的 bundled USD/UsdVol 没有暴露该 schema。",
+          "fix": "先下载 OpenUSD 官方 py3dgsPlyToUsd.py 到 /tmp 检查依赖，再用 SimulationApp 验证 pxr.UsdVol 是否含 ParticleField 相关类；检查结果均为 false，因此没有直接升级或大规模改环境。",
+          "prevention": "后续接入原生 3DGS 前先做 schema/extension 探针，再转换小样本 USD；不要把转换失败误判为 PLY 数据问题。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "curl -L -o /tmp/py3dgsPlyToUsd.py https://raw.githubusercontent.com/PixarAnimationStudios/OpenUSD/dev/extras/imaging/examples/hdParticleField/py3dgsPlyToUsd.py",
+          "result": "passed",
+          "note": "官方 OpenUSD 3DGS PLY 转 USD 脚本下载到 /tmp，未写入仓库。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python - <<'PY' ... from pxr import UsdVol ...",
+          "result": "passed",
+          "note": "普通 Python 进程无法 import pxr，符合当前 Isaac Sim pip 环境需要 SimulationApp 初始化的现状。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python - <<'PY' ... SimulationApp ... hasattr(UsdVol, 'ParticleField3DGaussianSplat') ...",
+          "result": "passed",
+          "note": "SimulationApp 可启动并 import pxr.UsdVol，但 ParticleField、ParticleField3DGaussianSplat、相关 Kernel/Position/Scale/Opacity/Orientation API 均为 false。"
+        },
+        {
+          "command": "Native ParticleField USD viewport render",
+          "result": "not_run",
+          "note": "未运行：当前运行时缺少 ParticleField schema，无法先生成有效 ParticleField3DGaussianSplat USD。"
+        }
+      ],
+      "next_steps": [
+        "先不要升级整个 Isaac Sim；优先确认是否能以 extension/schema 方式补齐 OpenUSD ParticleField 和 hdParticleField render delegate。",
+        "如果无法补齐，则再评估升级到包含 ParticleField3DGaussianSplat/RTX 3DGS 支持的 Isaac Sim/Kit 版本。",
+        "补齐 schema 后先转换 1 万个 Gaussian 的小样本 USD，并在 Isaac Sim GUI 中验证是否非点状渲染。"
+      ]
+    },
+    {
+      "time": "2026-06-26 14:06:50 CST",
+      "summary": "按用户要求尝试在不升级 Isaac Sim、不破坏当前环境的前提下补查 ParticleField/hdParticleField 扩展可行性。结论是当前 Isaac Sim 5.1.0.0 的 USD 0.24.5 运行时缺少底层 schema 和二进制符号，不能安全地只靠启用或安装一个扩展补齐原生 3DGS viewport 渲染。",
+      "files_changed": [
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "希望在当前 Isaac Sim 5.1 环境中不升级版本，直接补上 ParticleField/hdParticleField 后让 USD 包含完整 3DGS 视觉层。",
+          "root_cause": "当前 bundled OpenUSD/UsdVol 只包含 Volume、FieldBase、FieldAsset、Field3DAsset 和 OpenVDBAsset 等旧 schema；官方 hdParticleField 示例链接 usdVol 并渲染 particleField prim type，依赖新版 ParticleField3DGaussianSplat schema 和相关 C++/Python binding。",
+          "fix": "仅做非破坏性探针：检查 UsdVol schema 文件、libusd_usdVol.so、libusd_usdVolImaging.so、pxr/UsdVol/_usdVol.so、Kit 扩展列表和官方 OpenUSD hdParticleField README/CMake/schema 文档；没有安装扩展、没有替换动态库、没有修改 conda/IsaacSim 安装。",
+          "prevention": "后续不要在当前 Isaac Sim 环境内原地替换 bundled USD 库；如需验证原生 ParticleField，应使用隔离的新 Isaac/Kit/OpenUSD 环境或继续采用当前离线 gsplat 背景合成路线。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "find .../omni.usd.libs-1.0.1+69cbf6ad... -path '*usdVol*' -type f",
+          "result": "passed",
+          "note": "定位到 usdVol/UsdVolImaging 的 schema、plugInfo 和动态库文件；均位于当前 Isaac Sim 安装的 extscache 下，只读检查。"
+        },
+        {
+          "command": "rg -n \"ParticleField|3DGaussian|GaussianSplat|Field3DAsset|OpenVDBAsset|def Volume\" .../omni.usd.libs-1.0.1+69cbf6ad... -S",
+          "result": "passed",
+          "note": "schema/plugInfo 中只出现 Field3DAsset、OpenVDBAsset 等旧 UsdVol 类型，没有 ParticleField/3DGaussian/GaussianSplat。"
+        },
+        {
+          "command": "rg -a -n \"ParticleField|3DGaussian|GaussianSplat\" libusd_usdVol.so libusd_usdVolImaging.so pxr/UsdVol/_usdVol.so",
+          "result": "passed",
+          "note": "三个二进制文件均无匹配，确认缺失不是 Python binding 单点问题。"
+        },
+        {
+          "command": "cat /tmp/hdParticleField_README.md /tmp/hdParticleField_CMakeLists.txt /tmp/ParticleField3DGaussianSplat.md",
+          "result": "passed",
+          "note": "官方示例说明 hdParticleField 是渲染 particleField prim type 的 render delegate，CMake 明确链接 usdVol；ParticleField3DGaussianSplat 文档生成时间为 2026-02-19。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -c \"from isaacsim import SimulationApp; ... from pxr import Usd; Usd.GetVersion() ...\"",
+          "result": "passed",
+          "note": "当前 Isaac Sim 5.1.0.0 运行时 USD 版本为 0.24.5。"
+        },
+        {
+          "command": "cat /tmp/isaac_extension_manager_probe.txt",
+          "result": "passed",
+          "note": "本地匹配扩展只有 omni.volume 和 search/path field widget，没有 ParticleField、hdParticleField、gaussian、splat 或 nurec 相关本地扩展。"
+        },
+        {
+          "command": "pull_extension / pip install / conda install / 替换 libusd_usdVol.so",
+          "result": "not_run",
+          "note": "未运行：这些操作会修改当前环境或存在 ABI 风险，不符合用户要求的不要破坏当前环境。"
+        },
+        {
+          "command": "Native ParticleField USD viewport render",
+          "result": "not_run",
+          "note": "未运行：当前运行时缺少 schema 和渲染 delegate，强行写未知 prim type 的 USD 也不会得到原生 3DGS viewport 渲染。"
+        }
+      ],
+      "next_steps": [
+        "不要在当前 Isaac Sim 5.1 环境中原地替换 OpenUSD/UsdVol 动态库。",
+        "若坚持原生 viewport 3DGS，下一步应新建隔离 Isaac/Kit/OpenUSD 测试环境，选择包含 ParticleField3DGaussianSplat/hdParticleField 或等价 RTX 3DGS 支持的版本，再转换 1 万 Gaussian 小样本 USD 验证。",
+        "当前主线继续保留 Isaac USD 作为物理/机器人 stage，使用已验证的 gsplat 相机轨迹背景帧路线推进最终视频，并补机器人前景 alpha/depth 合成。"
+      ]
+    },
+    {
+      "time": "2026-06-26 14:27:25 CST",
+      "summary": "将工作重点从视觉层切回 PCT 导航验证。确认 PCT adapter、--global-planner pct、NavPlan.metadata[\"path_3d\"] 和多楼层 task 字段已接入 pipeline；同时新增不启动 Isaac Sim 的 PCT 规划探针脚本，用于在 pct_server.py、tomogram 和 walkable 齐全后先验证 start->pick->place 是否返回跨楼层 3D path。",
+      "files_changed": [
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "scripts/navigation/probe_pct_plan.py"
+      ],
+      "problems": [
+        {
+          "problem": "用户询问 PCT 是否已经能在地图中进行跨楼层导航。",
+          "root_cause": "代码层面 PCTNavPlanner 已接入 pipeline，但当前本地 workspace 中没有外部 PCT codebase 的 pct_server.py，也没有 Yinluyuan 对应的 mutifloor.pickle 和 mutifloor_ply_walkable.npy；因此尚未完成真实跨楼层规划和 Isaac Sim navigation smoke。",
+          "fix": "新增 scripts/navigation/probe_pct_plan.py，先离线检查 task、pct_server、tomogram、walkable 是否齐全；资产齐全后可直接调用 PCTNavPlanner 请求 start_to_pick 和 pick_to_place 两段规划，并输出 path_3d、slice/snap metadata。",
+          "prevention": "以后不要只凭 adapter 单元测试判断真实跨楼层可用；必须先通过 PCT plan probe，再进入 Isaac Sim navigation smoke。"
+        },
+        {
+          "problem": "新增探针脚本直接运行时找不到 source 包。",
+          "root_cause": "Python 以脚本文件路径启动时，sys.path[0] 是 scripts/navigation，不是仓库根目录。",
+          "fix": "在脚本开头计算 PROJECT_ROOT 并插入 sys.path，再导入 source.* 模块。",
+          "prevention": "后续仓库内直接运行的脚本都应显式处理项目根目录导入，或使用 python -m 模式并在文档中固定启动方式。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile scripts/navigation/probe_pct_plan.py",
+          "result": "passed",
+          "note": "新增 PCT 探针脚本语法检查通过。"
+        },
+        {
+          "command": "python scripts/navigation/probe_pct_plan.py --dry-run",
+          "result": "passed",
+          "note": "dry-run 成功输出当前缺口：pct_tomogram_path、pct_walkable_path 和 pct_server_script_or_pct_planner_root。"
+        },
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py scripts/navigation/probe_pct_plan.py",
+          "result": "passed",
+          "note": "PCT adapter、pipeline config、navigation smoke、full-physics CLI 和新增探针脚本编译通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "13 passed，确认现有 PCT adapter 和 planner selection 测试通过。"
+        },
+        {
+          "command": "Real PCT server plan probe",
+          "result": "not_run",
+          "note": "未运行：当前还缺少 pct_server.py、mutifloor.pickle 和 mutifloor_ply_walkable.npy。"
+        },
+        {
+          "command": "Isaac Sim --global-planner pct navigation smoke",
+          "result": "not_run",
+          "note": "未运行：真实 PCT server plan probe 尚未通过，直接启动 Isaac Sim 不能验证跨楼层导航。"
+        }
+      ],
+      "next_steps": [
+        "准备或挂载外部 PCT codebase，提供 scripts/navigation/pct_server.py 路径。",
+        "使用 Yinluyuan collision PLY 生成 source/scene/multifloor/yinluyuan/mutifloor.pickle 和 source/scene/multifloor/yinluyuan/mutifloor_ply_walkable.npy。",
+        "运行 python scripts/navigation/probe_pct_plan.py 去掉 --dry-run，确认 pick_to_place 的 path_3d、z_delta 或 slice_start/slice_end 体现跨楼层。",
+        "探针通过后再运行 full-physics navigation smoke：--global-planner pct --pct-no-fallback --policy-profile pct_multifloor。"
+      ]
+    },
+    {
+      "time": "2026-06-26 14:39:11 CST",
+      "summary": "按用户要求先拉取 BoZhiStudying233/PCT codebase。仓库已 clone 到 ignored 的 external/PCT，并确认其中包含 pct_server.py、build_tomogram.py、precompute_ply_walkable.py 和 Go2-X5 机器人 USD；但公开 clone 不包含 README 中描述的 mutifloor/ 大型场景资产，也不包含 pct_server.py 依赖的 planner_wrapper backend。",
+      "files_changed": [
+        ".gitignore",
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "scripts/navigation/probe_pct_plan.py"
+      ],
+      "problems": [
+        {
+          "problem": "用户指出应先拉取 PCT codebase 并使用其中完整场景，而不是从 PLY 转 USD。",
+          "root_cause": "此前基于用户本地 Yinluyuan PLY 先做了 USD 生成路线，没有优先检查外部 PCT repo 中是否已有 mutifloor USD 和相关资产。",
+          "fix": "将 external/ 加入 .gitignore，并 clone https://github.com/BoZhiStudying233/PCT.git 到 external/PCT；随后扫描 repo 结构和提交树，确认公开仓库中没有 mutifloor/ 大型场景资产。",
+          "prevention": "后续优先把 external/PCT 作为参考 codebase 和脚本来源；真实场景优先使用 PCT 原始 mutifloor USD，只有缺少原始 USD 时才采用 PLY->USD 兜底。"
+        },
+        {
+          "problem": "拉下来的 PCT repo 仍不能直接作为 PCT server 运行源。",
+          "root_cause": "external/PCT/scripts/navigation/pct_server.py 硬编码 /home/y/DWA/PCT_planner 和 /home/y/PCT/mutifloor 路径，且依赖当前 clone 中不存在的 planner_wrapper backend；build_tomogram.py 也依赖未包含的 tomography/scripts/tomogram.py。",
+          "fix": "增强 scripts/navigation/probe_pct_plan.py 的 dry-run 检查，默认指向 external/PCT，并报告 mutifloor/、/home/y 硬编码和 planner_wrapper backend 是否存在。",
+          "prevention": "进入真实 smoke 前必须先让 probe 报告 pct_mutifloor_dir_exists、planner_wrapper_available_under_pct_root、tomogram_exists、walkable_exists 均满足，或提供环境变量友好的 server/backend。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "git clone --depth 1 https://github.com/BoZhiStudying233/PCT.git external/PCT",
+          "result": "passed",
+          "note": "成功 clone 到 ignored external/PCT，commit b15b68c；没有 clone 或修改其他 worktree。"
+        },
+        {
+          "command": "find external/PCT -type f \\( -iname '*mutifloor*' -o -iname '*3dgs*' -o -iname '*.usd' -o -iname '*.usda' -o -iname '*.ply' -o -iname '*.pickle' -o -iname '*.npy' \\)",
+          "result": "passed",
+          "note": "只发现 Go2-X5 机器人 USD；未发现 mutifloor/ 场景 USD/PLY、tomogram pickle 或 walkable npy。"
+        },
+        {
+          "command": "git -C external/PCT ls-tree -r --name-only HEAD | rg \"mutifloor|3dgs|pickle|walkable|usd|usda|ply|npy\"",
+          "result": "passed",
+          "note": "提交树中没有 README 描述的 mutifloor 大型资产；.gitignore 中明确忽略 mutifloor/*.ply 和 mutifloor/*.usd。"
+        },
+        {
+          "command": "python -m py_compile scripts/navigation/probe_pct_plan.py",
+          "result": "passed",
+          "note": "增强后的 PCT plan probe 编译通过。"
+        },
+        {
+          "command": "python scripts/navigation/probe_pct_plan.py --dry-run",
+          "result": "passed",
+          "note": "dry-run 识别 external/PCT server 存在，但报告 mutifloor/ 缺失、pct_server.py 包含 /home/y 硬编码、planner_wrapper backend 缺失、tomogram/walkable 缺失。"
+        },
+        {
+          "command": "Real PCT server plan probe",
+          "result": "not_run",
+          "note": "未运行：公开 PCT clone 不包含 mutifloor 资产、tomogram/walkable 和 planner_wrapper backend。"
+        }
+      ],
+      "next_steps": [
+        "让用户提供 PCT README 中的 mutifloor/ 资产目录或资产下载来源，至少包含 mutifloor_cropped.usda、mutifloor_collision_cropped.usd、3dgs_collision_cropped.ply 和 3dgs_cropped.ply。",
+        "确认 planner_wrapper/tomography backend 来源；如果它是另一个本地 PCT_planner 目录，需要挂载并传入环境变量友好的 server。",
+        "资产齐全后优先使用 PCT 原始 mutifloor USD 更新 task scene_usd，并用 external/PCT 的建图脚本生成 tomogram/walkable。",
+        "再运行 probe_pct_plan.py 和 --global-planner pct navigation smoke。"
+      ]
+    },
+    {
+      "time": "2026-06-26 18:19:11 CST",
+      "summary": "按 SAGE-3D/IsaacSim 流程重建 multifloor 场景资产：将 PLY 语义重命名为 3dgs_collision.ply 和 3dgs_visual.ply，新增资产构建/验证工具，生成 NuRec USDZ、collision USD 和最终主场景 multifloor.usda，并验证 composition。",
+      "files_changed": [
+        ".gitignore",
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "tasks/nav_pick_place_apple_multifloor_pct.json",
+        "tools/scene/check_multifloor_ply.py",
+        "tools/scene/ply_to_usdz_no_cameras.py",
+        "tools/scene/build_multifloor_collision_usd.py",
+        "tools/scene/build_multifloor_usda.py",
+        "tools/scene/validate_multifloor_usd_assets.py",
+        "tools/scene/rebuild_multifloor_sage_assets.sh",
+        "source/scene/multifloor/ply/3dgs_collision.ply",
+        "source/scene/multifloor/ply/3dgs_visual.ply",
+        "source/scene/multifloor/usdz/multifloor.usdz",
+        "source/scene/multifloor/usdz/multifloor_unpack/gauss.usda",
+        "source/scene/multifloor/usd/multifloor_collision.usd",
+        "source/scene/multifloor/usda/multifloor.usda"
+      ],
+      "problems": [
+        {
+          "problem": "历史 PLY 文件名和实际内容相反，容易把 3DGS visual PLY 当成 collision PLY。",
+          "root_cause": "旧文件名 3dgs_collision_cropped.ply 曾被用于不同阶段，不能可靠表达是否有 face 或 Gaussian 属性。",
+          "fix": "按 header 内容重命名：带 face 的 mesh 为 3dgs_collision.ply，包含 f_dc/opacity/scale/rot 的 Gaussian PLY 为 3dgs_visual.ply；新增 check_multifloor_ply.py 按内容选择输入。",
+          "prevention": "后续所有构建脚本都默认读取语义文件名，并在运行前检查 header，而不是按历史文件名猜测用途。"
+        },
+        {
+          "problem": "沙箱内运行 threedgrut 时 torch.cuda.device_count() 为 0，官方 ply_to_usd 首次失败。",
+          "root_cause": "普通沙箱进程无法访问 NVIDIA CUDA 设备，但系统 nvidia-smi 能看到 RTX 4060。",
+          "fix": "用 require_escalated 重新运行同一条 threedgrut 导出命令，让导出进程访问 CUDA，成功生成 multifloor.usdz。",
+          "prevention": "需要 GPU 的 3DGS/NuRec 导出在 Codex 环境中应先检查 torch.cuda.is_available()，失败时明确记录并用提权 GPU 进程运行。"
+        },
+        {
+          "problem": "build_multifloor_usda.py fallback 解包 USDZ 时磁盘空间不足。",
+          "root_cause": "同时保留了旧 external/PCT/mutifloor 资产副本、新 source/scene/multifloor USDZ 和 partial unpack，磁盘只剩约 30MB。",
+          "fix": "删除本轮失败的 partial unpack，并清理不再作为最终入口的 ignored external/PCT/mutifloor 旧资产副本，释放约 17GB 后重新生成 USDA。",
+          "prevention": "最终资产只保留在 source/scene/multifloor；外部 PCT 目录保留代码，不再存放重复大型场景资产。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile tools/scene/check_multifloor_ply.py tools/scene/ply_to_usdz_no_cameras.py tools/scene/build_multifloor_collision_usd.py tools/scene/build_multifloor_usda.py tools/scene/validate_multifloor_usd_assets.py",
+          "result": "passed",
+          "note": "新增 scene asset 工具脚本语法检查通过。"
+        },
+        {
+          "command": "python tools/scene/check_multifloor_ply.py",
+          "result": "passed",
+          "note": "确认 3dgs_collision.ply 为 254006 vertices/337275 faces 的 collision mesh；3dgs_visual.ply 为 24554157 vertices 的 Gaussian PLY。"
+        },
+        {
+          "command": "conda run -p /data/conda_envs/sage python tools/scene/build_multifloor_collision_usd.py --force",
+          "result": "passed",
+          "note": "生成 source/scene/multifloor/usd/multifloor_collision.usd，包含 CollisionAPI/MeshCollisionAPI。"
+        },
+        {
+          "command": "conda run -p /data/conda_envs/sage python -m threedgrut.export.scripts.ply_to_usd source/scene/multifloor/ply/3dgs_visual.ply --output_file source/scene/multifloor/usdz/multifloor.usdz",
+          "result": "passed",
+          "note": "提权 GPU 运行后成功生成 NuRec USDZ，包含 default.usda、gauss.usda、multifloor.nurec。"
+        },
+        {
+          "command": "conda run -p /data/conda_envs/sage python tools/scene/build_multifloor_usda.py --force",
+          "result": "passed",
+          "note": "本机 resolver 不支持 usdz 内部引用，按 fallback 解包 multifloor_unpack 并生成主 USDA。"
+        },
+        {
+          "command": "conda run -p /data/conda_envs/sage python tools/scene/validate_multifloor_usd_assets.py",
+          "result": "passed",
+          "note": "验证 USDZ、collision USD、主 USDA 均为真实文件且非软链接；Stage.Open 成功，存在 /World、/World/gauss、/World/scene_collision、NuRec Volume 和 CollisionMesh。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "13 passed，确认 PCT/A* planner selection 与 navigation adapter 测试仍通过。"
+        },
+        {
+          "command": "Isaac Sim GUI open source/scene/multifloor/usda/multifloor.usda",
+          "result": "not_run",
+          "note": "未运行 GUI：本轮完成 USD composition 验证，真实 viewport 渲染需用户在 Isaac Sim 中打开最终 USDA。"
+        }
+      ],
+      "next_steps": [
+        "在 Isaac Sim 中打开 source/scene/multifloor/usda/multifloor.usda，确认 /World/gauss NuRec Volume 和 /World/scene_collision CollisionMesh。",
+        "用 source/scene/multifloor/ply/3dgs_collision.ply 生成 PCT tomogram 和 walkable map。",
+        "修正/替换 external/PCT/scripts/navigation/pct_server.py 的硬编码路径和 planner_wrapper 依赖，再运行 probe_pct_plan.py。"
+      ]
+    },
+    {
+      "time": "2026-06-26 20:01:43 CST",
+      "summary": "整理 source/scene 资产布局：单楼层 839920、multifloor 和 objects 分目录保存；修复 839920 stage 引用和 task/nav_map 路径；为 multifloor 主 USDA 添加 /World/apple；新增 collision-only 渲染诊断 USDA。",
+      "files_changed": [
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "scripts/navigation/probe_pct_plan.py",
+        "scripts/navigation/run_nav_only.py",
+        "scripts/scene/setup_pct_mutifloor_assets.py",
+        "scripts/scene/render_yinluyuan_3dgs.py",
+        "scripts/scene/build_yinluyuan_visual_points_usd.py",
+        "scripts/scene/build_yinluyuan_usd.py",
+        "tasks/nav_smoke_example.json",
+        "tasks/nav_pick_example.json",
+        "tasks/generated/apple_seed_0007.json",
+        "tasks/nav_pick_apple_fast.json",
+        "tasks/nav_pick_place_apple_contact.json",
+        "tasks/nav_pick_place_apple_multifloor_pct.json",
+        "tests/navigation/test_planner_selection.py",
+        "tools/scene/build_multifloor_collision_only_usda.py",
+        "tools/scene/build_multifloor_usda.py",
+        "tools/scene/repair_839920_stage_references.py",
+        "tools/scene/validate_multifloor_usd_assets.py",
+        "source/scene/839920/",
+        "source/scene/multifloor/",
+        "source/scene/objects/"
+      ],
+      "problems": [
+        {
+          "problem": "source/scene 中 839920、multifloor、apple/orange/bottle 和 nav_maps 混在同一级，且 839920_go2_x5.usd 内存在旧绝对路径和 /mnt/sage_data 引用。",
+          "root_cause": "历史资产直接从旧 worktree/SAGE 数据目录拷入，目录结构和 USD composition arcs 没有随当前 arm_vla_pct worktree 统一整理。",
+          "fix": "将 839920 场景、multifloor 场景和 objects 分目录保存；用 pxr USD API 修复 839920_go2_x5.usd 的 gauss/collision/object/robot 引用为当前仓库相对路径；同步更新 task JSON 和 nav_map 路径。",
+          "prevention": "后续场景资产进入 pipeline 前先运行 USD 引用扫描和 Stage.Open 检查，不让 task 指向旧目录或其他 worktree。"
+        },
+        {
+          "problem": "multifloor task 指向 /World/apple，但 multifloor.usda 只有 gauss/collision，真实 pick-place 会在对象 prim 查找阶段失败。",
+          "root_cause": "SAGE/NuRec 主场景生成流程只组合视觉层和碰撞层，没有把 manipulation task 所需物体资产加入 stage。",
+          "fix": "在 multifloor.usda 中引用 source/scene/objects/apple，并更新 build_multifloor_usda.py，确保后续重建不会丢失 /World/apple。",
+          "prevention": "多楼层 task 新增 object_prim_path 时，同步验证 stage 中该 prim 是否存在。"
+        },
+        {
+          "problem": "Isaac Sim 打开完整 multifloor.usda 时出现 HydraEngine compute graph error，无法仅凭 GUI 日志判断是路径问题还是 NuRec 渲染问题。",
+          "root_cause": "完整 stage composition 已能打开且包含 /World/gauss NuRec Volume；错误更可能发生在 RTX/NuRec 渲染图执行阶段，但缺少排除 collision 的最小场景。",
+          "fix": "新增 build_multifloor_collision_only_usda.py 并生成 multifloor_collision_only.usda，用于在 Isaac Sim 中隔离测试 collision/stage 是否正常。",
+          "prevention": "后续视觉层问题先用 collision-only、points/mesh-only、full NuRec 三档 stage 分层定位，不直接反复改最终资产路径。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py scripts/navigation/probe_pct_plan.py scripts/navigation/run_nav_only.py scripts/scene/setup_pct_mutifloor_assets.py scripts/scene/render_yinluyuan_3dgs.py scripts/scene/build_yinluyuan_visual_points_usd.py scripts/scene/build_yinluyuan_usd.py tools/scene/*.py",
+          "result": "passed",
+          "note": "导航、pipeline CLI、scene 脚本和新增工具脚本编译通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "13 passed。"
+        },
+        {
+          "command": "/data/conda_envs/sage/bin/python tools/scene/validate_multifloor_usd_assets.py",
+          "result": "passed",
+          "note": "验证 USDZ、collision USD、主 USDA 均存在且非软链接；/World、/World/gauss、/World/scene_collision、/World/apple 均有效。"
+        },
+        {
+          "command": "/data/conda_envs/sage/bin/python - <<PY ... Stage.Open 839920/multifloor/collision-only ... PY",
+          "result": "passed",
+          "note": "839920.usda、839920_go2_x5.usd、multifloor.usda、multifloor_collision_only.usda 均可通过 USD API 打开；机器人内部 visual prim path 仍有原有 warning，但不再引用其他 scene worktree。"
+        },
+        {
+          "command": "python tools/scene/check_multifloor_ply.py",
+          "result": "passed",
+          "note": "确认 3dgs_collision.ply 是带 face 的 collision mesh；3dgs_visual.ply 是 24554157 顶点的 Gaussian PLY。"
+        },
+        {
+          "command": "python scripts/navigation/probe_pct_plan.py --dry-run --output-json /tmp/pct_plan_probe.json",
+          "result": "passed",
+          "note": "dry-run 成功；仍报告缺少 source/scene/multifloor/mutifloor.pickle 和 mutifloor_ply_walkable.npy，且 external/PCT server 仍有 /home/y 硬编码和 planner_wrapper 缺失。"
+        },
+        {
+          "command": "Isaac Sim GUI render smoke",
+          "result": "not_run",
+          "note": "未运行 GUI：Codex 当前没有启动 Isaac Sim viewport；已生成 collision-only 诊断 USDA 供用户本机打开验证。"
+        }
+      ],
+      "next_steps": [
+        "在 Isaac Sim 中先打开 source/scene/multifloor/usda/multifloor_collision_only.usda，再打开 source/scene/multifloor/usda/multifloor.usda，对比是否只有 NuRec /World/gauss 触发 compute graph error。",
+        "使用 source/scene/multifloor/ply/3dgs_collision.ply 生成 source/scene/multifloor/mutifloor.pickle 和 source/scene/multifloor/mutifloor_ply_walkable.npy。",
+        "处理 external/PCT/scripts/navigation/pct_server.py 的 /home/y 硬编码和 planner_wrapper backend 后，运行 probe_pct_plan.py 做真实 PCT plan。"
+      ]
+    },
+    {
+      "time": "2026-06-26 20:16:58 CST",
+      "summary": "将 multifloor 默认 Isaac Sim 场景入口从 NuRec Volume 改为稳定 collision mesh 视觉代理，并把完整 NuRec 版本保存在 multifloor_nurec.usda；同步更新重建/验证脚本、文档和 task 备注。",
+      "files_changed": [
+        "tools/scene/build_multifloor_usda.py",
+        "tools/scene/rebuild_multifloor_sage_assets.sh",
+        "tools/scene/validate_multifloor_usd_assets.py",
+        "docs/pct_multifloor_navigation.md",
+        "tasks/nav_pick_place_apple_multifloor_pct.json",
+        "source/scene/multifloor/usda/multifloor.usda",
+        "source/scene/multifloor/usda/multifloor_nurec.usda",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "用户打开 source/scene/multifloor/usda/multifloor.usda 时 RTX/Hydra render graph 持续失败，但 multifloor_collision_only.usda 正常。",
+          "root_cause": "collision-only stage 能正常显示，说明 collision USD 和基础 composition 正常；完整 stage 中触发失败的是 /World/gauss 下的 NuRec Volume / OmniNuRecFieldAsset 渲染路径，当前 Isaac Sim/NuRec/RTX 环境不能稳定渲染该视觉层。",
+          "fix": "把默认 multifloor.usda 改为 collision_proxy 模式：/World/gauss 使用 collision mesh 作为可见代理，/World/scene_collision 继续作为不可见物理碰撞；完整 NuRec stage 另存为 multifloor_nurec.usda。",
+          "prevention": "重建脚本固定生成默认 collision_proxy 和独立 nurec 两个 stage；验证脚本按 visual-mode 检查默认 stage 不含 OmniNuRecFieldAsset，NuRec stage 必须包含 OmniNuRecFieldAsset。"
+        },
+        {
+          "problem": "一次额外 USD 汇总 one-liner 因 shell 字符串换行转义写法失败。",
+          "root_cause": "python -c 字符串中混入未正确转义的换行序列。",
+          "fix": "改用无换行的列表推导 one-liner 重新运行，确认默认 stage nurec_count=0、gauss_mesh_count=1，NuRec stage nurec_count=2。",
+          "prevention": "后续临时 one-liner 尽量保持单行表达，复杂检查写入正式工具脚本。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py scripts/navigation/probe_pct_plan.py scripts/navigation/run_nav_only.py tools/scene/build_multifloor_usda.py tools/scene/validate_multifloor_usd_assets.py tools/scene/build_multifloor_collision_only_usda.py",
+          "result": "passed",
+          "note": "导航、pipeline CLI、PCT probe 和 scene USDA 工具编译通过。"
+        },
+        {
+          "command": "bash -n tools/scene/rebuild_multifloor_sage_assets.sh",
+          "result": "passed",
+          "note": "一键重建 shell 脚本语法通过。"
+        },
+        {
+          "command": "/data/conda_envs/sage/bin/python tools/scene/build_multifloor_usda.py --visual-mode nurec --output-usda source/scene/multifloor/usda/multifloor_nurec.usda --force",
+          "result": "passed",
+          "note": "生成完整 NuRec 诊断 stage，并按当前 resolver fallback 解包 multifloor.usdz。"
+        },
+        {
+          "command": "/data/conda_envs/sage/bin/python tools/scene/build_multifloor_usda.py --visual-mode collision_proxy --output-usda source/scene/multifloor/usda/multifloor.usda --force",
+          "result": "passed",
+          "note": "生成默认安全主 stage，/World/gauss 和 /World/scene_collision 均 payload collision USD。"
+        },
+        {
+          "command": "/data/conda_envs/sage/bin/python tools/scene/validate_multifloor_usd_assets.py --usda source/scene/multifloor/usda/multifloor.usda --visual-mode collision_proxy",
+          "result": "passed",
+          "note": "默认 stage 有 /World/gauss/CollisionMesh，且不含 OmniNuRecFieldAsset。"
+        },
+        {
+          "command": "/data/conda_envs/sage/bin/python tools/scene/validate_multifloor_usd_assets.py --usda source/scene/multifloor/usda/multifloor_nurec.usda --visual-mode nurec",
+          "result": "passed",
+          "note": "NuRec stage 有 2 个 OmniNuRecFieldAsset。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "13 passed。"
+        },
+        {
+          "command": "python tools/scene/check_multifloor_ply.py",
+          "result": "passed",
+          "note": "确认 3dgs_collision.ply 是 collision mesh，3dgs_visual.ply 是 Gaussian visual PLY。"
+        },
+        {
+          "command": "python scripts/navigation/probe_pct_plan.py --dry-run --output-json /tmp/pct_plan_probe.json",
+          "result": "passed",
+          "note": "dry-run 仍报告缺少 mutifloor.pickle 和 mutifloor_ply_walkable.npy，真实 PCT server plan 尚未就绪。"
+        },
+        {
+          "command": "Isaac Sim GUI open source/scene/multifloor/usda/multifloor.usda",
+          "result": "not_run",
+          "note": "未运行 GUI：Codex 当前没有启动 Isaac Sim viewport；已用 USD API 验证默认 stage 不再包含 NuRec 渲染 prim。"
+        }
+      ],
+      "next_steps": [
+        "请用户在 Isaac Sim 中重新打开 source/scene/multifloor/usda/multifloor.usda，确认默认 collision-proxy stage 不再触发 render graph error。",
+        "使用 source/scene/multifloor/ply/3dgs_collision.ply 生成 source/scene/multifloor/mutifloor.pickle 和 source/scene/multifloor/mutifloor_ply_walkable.npy。",
+        "修正或替换 external/PCT/scripts/navigation/pct_server.py 的 /home/y 硬编码和 planner_wrapper 依赖，然后运行真实 probe_pct_plan.py。",
+        "真实 PCT plan 通过后再运行 --global-planner pct navigation smoke；NuRec 视觉层后续单独处理，不阻塞导航集成。"
+      ]
+    },
+    {
+      "time": "2026-06-26 20:17:36 CST",
+      "summary": "记录用户 GUI 验证结果：默认 multifloor.usda 已可渲染，但视觉层仍是 collision proxy，不是最终 NuRec/3DGS 视觉。",
+      "files_changed": [
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "默认 multifloor.usda 渲染后视觉与 collision-only 基本一致。",
+          "root_cause": "这是当前默认 collision_proxy 设计导致的预期结果：/World/gauss 被改为 collision mesh 代理，以绕开 NuRec Volume 在当前 Isaac Sim 中触发的 render graph 崩溃。",
+          "fix": "保留该默认安全入口用于导航和场景加载；完整 NuRec 视觉继续保存在 multifloor_nurec.usda，后续单独修复 NuRec/RTX 或走 gsplat 离线合成。",
+          "prevention": "文档和 task 备注中区分默认安全 stage 与完整 NuRec 诊断 stage，避免把 collision proxy 当成最终视觉质量。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "User GUI check: open source/scene/multifloor/usda/multifloor.usda in Isaac Sim",
+          "result": "passed",
+          "note": "用户确认当前默认 stage 可以渲染。"
+        },
+        {
+          "command": "Final NuRec visual quality check",
+          "result": "not_run",
+          "note": "未运行：当前默认入口故意不加载 NuRec；完整视觉仍需修复 NuRec/RTX 或使用 gsplat 离线合成。"
+        }
+      ],
+      "next_steps": [
+        "优先推进 PCT tomogram/walkable 生成和真实 PCT server plan 验证。",
+        "导航验收时继续使用 source/scene/multifloor/usda/multifloor.usda 作为稳定场景入口。",
+        "最终视频视觉层后续单独处理：要么修复 multifloor_nurec.usda 的 NuRec/RTX 渲染，要么接入 gsplat 背景帧与 Isaac 前景合成。"
+      ]
+    },
+    {
+      "time": "2026-06-26 21:30:11 CST",
+      "summary": "修复 multifloor NuRec visual 与 collision mesh 相对旋转问题；生成并收敛到唯一高质量 16.76M clean NuRec 主场景 multifloor.usda；删除旧诊断 USDA 和中间导出资产。",
+      "files_changed": [
+        "tools/scene/build_multifloor_usda.py",
+        "tools/scene/rebuild_multifloor_sage_assets.sh",
+        "tools/scene/validate_multifloor_usd_assets.py",
+        "docs/pct_multifloor_navigation.md",
+        "tasks/nav_pick_place_apple_multifloor_pct.json",
+        "source/scene/multifloor/usda/multifloor.usda",
+        "source/scene/multifloor/usdz/multifloor.usdz",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "12M NuRec visual 与 collision mesh 在 Isaac Sim 中出现相对旋转。",
+          "root_cause": "SAGE template 对 /World/gauss 写入 rotateXYZ=(-90,0,0)，但当前 threedgrut 导出的 multifloor gauss.usda 包内 transform 是单位矩阵；同时 collision payload 按 PCT 场景约定施加 Z 轴 180 度旋转，导致两层坐标约定不一致。",
+          "fix": "build_multifloor_usda.py 在 nurec 模式下强制把 /World/gauss rotateXYZ 写为 (0,0,180)，并重建最终 multifloor.usda。",
+          "prevention": "validate_multifloor_usd_assets.py 新增 NuRec gauss transform 检查，后续重建时如果 rotateXYZ 不是 (0,0,180) 会直接失败。"
+        },
+        {
+          "problem": "2M 和 12M 版本视觉层仍显稀疏，且目录中积累了多个诊断 USDA / USDZ / PLY。",
+          "root_cause": "早期采样器按原始 2455 万 Gaussian 先计算 stride，目标点数低于原始点数时最多只能约隔点采样；同时为定位渲染问题保留了 100k、2M、12M 和完整 NuRec 诊断资产。",
+          "fix": "改用全密度读取后按 collision bounds、max_scale<=0.5m、opacity>=0.2 过滤，生成 16760135 个 Gaussian 的 clean USDZ；删除旧诊断 USDA、旧 USDZ、中间采样 PLY 和旧解包目录，只保留最终 multifloor.usda。",
+          "prevention": "rebuild_multifloor_sage_assets.sh 固定走 16M+ clean 生成路线，并在结束时删除旧诊断 USDA。"
+        },
+        {
+          "problem": "普通沙箱运行 threedgrut 导出时 torch 报 No CUDA GPUs are available。",
+          "root_cause": "当前工具沙箱不可见本机 CUDA GPU，而 NuRec USDZ 导出需要 GPU 初始化 MixtureOfGaussians。",
+          "fix": "使用 require_escalated 只运行 threedgrut 导出命令，不安装依赖、不修改系统环境。",
+          "prevention": "后续 GPU 导出命令如果沙箱内 torch 看不到 CUDA，应直接说明并按最小范围提权运行。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python tools/scene/sample_gaussian_ply.py --input-ply source/scene/multifloor/ply/3dgs_visual.ply --output-ply source/scene/multifloor/ply/3dgs_visual_final_17m_clean.ply --max-points 0 --clip-reference-ply source/scene/multifloor/ply/3dgs_collision.ply --clip-margin 5 5 3 --max-scale 0.5 --min-opacity 0.2 --report-output outputs/multifloor_nurec_final_17m_clean_ply.json --force",
+          "result": "passed",
+          "note": "生成 16760135 个 clean Gaussian；导出后中间 PLY 已删除。"
+        },
+        {
+          "command": "PATH=/data/conda_envs/sage/bin:$PATH /data/conda_envs/sage/bin/python -m threedgrut.export.scripts.ply_to_usd source/scene/multifloor/ply/3dgs_visual_final_17m_clean.ply --output_file source/scene/multifloor/usdz/multifloor_final_17m_clean.usdz",
+          "result": "passed",
+          "note": "提权 GPU 运行后成功导出；最终移动为 source/scene/multifloor/usdz/multifloor.usdz，大小 1977852288 bytes。"
+        },
+        {
+          "command": "/data/conda_envs/sage/bin/python tools/scene/build_multifloor_usda.py --visual-mode nurec --usdz source/scene/multifloor/usdz/multifloor.usdz --collision-usd source/scene/multifloor/usd/multifloor_collision.usd --output-usda source/scene/multifloor/usda/multifloor.usda --force",
+          "result": "passed",
+          "note": "最终 USDA 引用 ../usdz/multifloor.usdz[gauss.usda]，/World/gauss rotateXYZ=(0,0,180)。"
+        },
+        {
+          "command": "/data/conda_envs/sage/bin/python tools/scene/validate_multifloor_usd_assets.py --usdz source/scene/multifloor/usdz/multifloor.usdz --collision-usd source/scene/multifloor/usd/multifloor_collision.usd --usda source/scene/multifloor/usda/multifloor.usda --visual-mode nurec",
+          "result": "passed",
+          "note": "Stage.Open 成功，/World/gauss NuRec field count=2，/World/scene_collision Mesh 存在，/World/apple 存在，rotateXYZ 检查通过。"
+        },
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py tools/scene/sample_gaussian_ply.py tools/scene/build_multifloor_usda.py tools/scene/validate_multifloor_usd_assets.py",
+          "result": "passed",
+          "note": "导航入口和场景工具编译通过。"
+        },
+        {
+          "command": "bash -n tools/scene/rebuild_multifloor_sage_assets.sh",
+          "result": "passed",
+          "note": "一键重建脚本语法通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "13 passed。"
+        },
+        {
+          "command": "Isaac Sim GUI open source/scene/multifloor/usda/multifloor.usda after final 17M transform fix",
+          "result": "not_run",
+          "note": "未运行 GUI：Codex 当前没有启动 Isaac Sim viewport；需要用户打开最终 USDA 检查视觉密度和 visual/collision 对齐。"
+        }
+      ],
+      "next_steps": [
+        "请在 Isaac Sim 中打开 source/scene/multifloor/usda/multifloor.usda，确认 17M clean visual 密度和 collision 对齐。",
+        "如果最终 17M 版本仍有显存压力，可调高 opacity 阈值到 0.25 生成约 1505 万 Gaussian 版本。",
+        "视觉确认后继续生成 PCT tomogram/walkable，并运行真实 PCT server plan 验证跨楼层路径。"
+      ]
+    }
+  ],
+  "open_questions": [
+    "Yinluyuan 对应的 Isaac Sim USD stage 已本地生成，/World/gauss 当前可引用点云 visual USD；真实 3DGS 离线渲染和按相机轨迹批量渲染已可用，但正式视频仍需要 Isaac 机器人前景 alpha/depth 合成。",
+    "当前 Isaac Sim 5.1.0.0 缺少 OpenUSD ParticleField3DGaussianSplat schema，且本次已确认不能安全地只补本地 extension/schema；如要原生 3DGS viewport，需要隔离新 Isaac/Kit/OpenUSD 环境验证。",
+    "真实 pct_server.py 所在 PCT codebase 路径仍需在运行 smoke 时通过 --pct-planner-root 或 --pct-server-script 指定。",
+    "仍需生成 source/scene/multifloor/mutifloor.pickle 和 source/scene/multifloor/mutifloor_ply_walkable.npy 后才能做真实 PCT server 跨楼层规划验证。",
+    "如果 Isaac Sim 打开 multifloor.usda 后 /World/gauss 存在但 HydraEngine compute graph 渲染失败，应排查 NuRec/RTX 渲染设置、扩展、驱动和 RTX 模式。",
+    "请在 Isaac Sim 中先打开 source/scene/multifloor/usda/multifloor_collision_only.usda；如果它不报错而 multifloor.usda 报错，则优先排查 NuRec/RTX 渲染层。",
+    "请用户确认当前 Isaac Sim 打开默认 collision-proxy multifloor.usda 是否已不再报 HydraEngine compute graph error。",
+    "真实 PCT tomogram/walkable 仍需生成后才能验证跨楼层导航。",
+    "请用户在 Isaac Sim 中打开最终 source/scene/multifloor/usda/multifloor.usda，确认 17M clean NuRec visual 与 collision mesh 已经对齐。"
+  ],
+  "known_limitations": [
+    "Isaac Sim multi-floor smoke 尚未在当前环境运行。",
+    "当前 PCT path 的完整 3D 信息已进入 NavPlan.metadata[\"path_3d\"]，但 DwaNavExecutor 仍只消费 XY waypoints。",
+    "Yinluyuan 当前 Isaac viewport visual layer 是 3DGS PLY 的 UsdGeom.Points 近似，可用于预览检查；真实 3DGS 目前通过离线 gsplat PNG 和相机轨迹批量渲染验证。",
+    "当前 Isaac Sim 5.1.0.0 的 pxr.UsdVol 和底层 USD 0.24.5 库不包含 ParticleField3DGaussianSplat，不能通过安全启用扩展直接打开原生 3DGS ParticleField USD。",
+    "最终视频仍需要实现机器人/物体前景输出和 3DGS 背景逐帧合成；相机轨迹同步导出已接入。",
+    "真实 pct_multifloor RL checkpoint 通过本地 Rough/ 引用，不进入 git。",
+    "source/scene/multifloor/usdz/multifloor_unpack/ 是当前机器 USD resolver fallback 的解包目录，会额外占用约 2.7GB。",
+    "真实 PCT tomogram/walkable 尚未生成，PCT navigation smoke 仍不能验收跨楼层路径。",
+    "Isaac Sim GUI 中的 HydraEngine compute graph error 尚未在 Codex 环境复现；当前静态验证只能确认 USD composition 正确，问题更可能集中在 NuRec/RTX 渲染层或显存/驱动。",
+    "移动后的 USD/USDA/PLY 大资产受 .gitignore 保护；如用户决定提交已有 baseline 资产的重命名，需要手动 git add -f 对应路径。",
+    "默认 multifloor.usda 当前是稳定 collision mesh 视觉代理，不是最终 3DGS 视频质量。",
+    "完整 NuRec 视觉 stage 已保存在 multifloor_nurec.usda，但当前 Isaac Sim/NuRec/RTX 环境打开它会触发用户报告的 compute graph error。",
+    "最终 17M clean NuRec stage 已通过 USD API 静态验证，但 Isaac Sim GUI 渲染结果仍需用户本机确认。"
+  ]
+}

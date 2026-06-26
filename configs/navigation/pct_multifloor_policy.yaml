@@ -1,4 +1,4 @@
-# Go2-X5 PCT multi-floor locomotion policy training design.
+# Go2-X5 PCT 多楼层 locomotion policy 训练设计。
 
 environment:
   framework: Isaac Lab
@@ -13,7 +13,7 @@ environment:
 policy:
   backend: rsl_rl
   profile: pct_multifloor
-  checkpoint_output: checkpoints/go2_x5/pct_multifloor/model_*.pt
+  checkpoint_output: checkpoints/go2_x5/pct_multifloor/model_26000.pt
   action_space: Go2-X5 joint targets compatible with the existing RSL-RL policy action interface
 
 commands:

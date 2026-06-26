@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from pathlib import Path
+
+import numpy as np
 
 from source.diagnostics import NavigationEpisodeVerifier
 from source.interfaces import EpisodeSpec
@@ -14,7 +17,7 @@ from source.manipulation.dry_run import (
 )
 from source.navigation import AStarNavPlanner, DwaNavExecutor, PCTNavPlanner, PCTPlannerConfig
 from source.navigation.adapters.yaw_align import TerminalPoseConfig
-from source.navigation.navlib import DWAConfig
+from source.navigation.navlib import DWAConfig, OccupancyGridMap
 from source.recording import JsonlEpisodeRecorder
 from source.simulation import IsaacLabNavigationRuntime
 
@@ -23,6 +26,9 @@ from .full_physics_pipeline import FullPhysicsPipeline
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_PCT_SERVER_SCRIPT = PROJECT_ROOT / "scripts/navigation/pct_grid_server.py"
+DEFAULT_PCT_TOMOGRAM_PATH = PROJECT_ROOT / "source/scene/multifloor/mutifloor.pickle"
+DEFAULT_PCT_WALKABLE_PATH = PROJECT_ROOT / "source/scene/multifloor/mutifloor_ply_walkable.npy"
 
 
 def _project_path(raw_path: str | Path) -> Path:
@@ -30,6 +36,12 @@ def _project_path(raw_path: str | Path) -> Path:
     if not path.is_absolute():
         path = PROJECT_ROOT / path
     return path.resolve()
+
+
+def _optional_project_path(raw_path: str | Path | None) -> Path | None:
+    if raw_path is None:
+        return None
+    return _project_path(raw_path)
 
 
 def create_navigation_smoke_pipeline(
@@ -122,23 +134,36 @@ def create_navigation_components(
     """创建可被独立 smoke 和连续联调共同复用的导航组件。"""
 
     nav = config.navigation
-    nav_map = _project_path(episode_spec.nav_map)
-    astar_planner = AStarNavPlanner(
-        nav_map,
-        inflate_radius=nav.global_inflate_radius,
-    )
+    nav_map = _project_path(episode_spec.nav_map) if episode_spec.nav_map else None
+    nav_map_exists = nav_map is not None and nav_map.is_file()
+    astar_planner = None
+    if nav.global_planner == "astar" or nav.pct_fallback_to_astar:
+        if not nav_map_exists:
+            raise ValueError(
+                "A* planner/fallback requires an existing nav_map; "
+                "provide a valid task nav_map or disable PCT fallback with --pct-no-fallback."
+            )
+        astar_planner = AStarNavPlanner(
+            nav_map,
+            inflate_radius=nav.global_inflate_radius,
+        )
     if nav.global_planner == "astar":
+        if astar_planner is None:
+            raise RuntimeError("A* planner was not initialized")
         planner = astar_planner
     elif nav.global_planner == "pct":
+        pct_server_script = _optional_project_path(nav.pct_server_script) or DEFAULT_PCT_SERVER_SCRIPT
+        pct_tomogram_path = _optional_project_path(nav.pct_tomogram_path) or DEFAULT_PCT_TOMOGRAM_PATH
+        pct_walkable_path = _optional_project_path(nav.pct_walkable_path) or DEFAULT_PCT_WALKABLE_PATH
         planner = PCTNavPlanner(
             PCTPlannerConfig(
                 enabled=nav.pct_enabled or nav.global_planner == "pct",
-                planner_root=nav.pct_planner_root,
-                server_script=nav.pct_server_script,
+                planner_root=_optional_project_path(nav.pct_planner_root),
+                server_script=pct_server_script,
                 server_python=nav.pct_server_python,
                 tomogram_name=nav.pct_tomogram_name,
-                tomogram_path=nav.pct_tomogram_path,
-                walkable_path=nav.pct_walkable_path,
+                tomogram_path=pct_tomogram_path,
+                walkable_path=pct_walkable_path,
                 coord_mode=nav.pct_coord_mode,
                 pct_offset_x=nav.pct_offset_x,
                 pct_offset_y=nav.pct_offset_y,
@@ -151,10 +176,15 @@ def create_navigation_components(
     else:
         raise ValueError(f"unsupported global planner: {nav.global_planner}")
     dwa_config = _build_dwa_config(nav)
+    executor_map_kwargs = (
+        {"grid_map": _open_local_grid_map(episode_spec)}
+        if nav.global_planner == "pct" and not nav_map_exists
+        else {"map_json": nav_map}
+    )
     executor = DwaNavExecutor(
-        nav_map,
-        nav.local_clearance_radius,
-        dwa_config,
+        local_clearance_radius=nav.local_clearance_radius,
+        dwa_config=dwa_config,
+        **executor_map_kwargs,
         terminal_pose_config=TerminalPoseConfig(
             position_tolerance=min(0.08, nav.final_position_tolerance),
             position_acceptance_tolerance=nav.final_position_tolerance,
@@ -192,6 +222,30 @@ def create_navigation_components(
         goal_z_tolerance=nav.goal_z_tolerance,
     )
     return planner, executor, verifier
+
+
+def _open_local_grid_map(episode_spec: EpisodeSpec) -> OccupancyGridMap:
+    """为尚未生成 2D local map 的 PCT 场景创建过渡开放地图。"""
+
+    goals = [episode_spec.start, episode_spec.pick_goal]
+    if episode_spec.place_goal is not None:
+        goals.append(episode_spec.place_goal)
+    xs = [float(goal.x) for goal in goals]
+    ys = [float(goal.y) for goal in goals]
+    margin_m = 10.0
+    resolution_m = 0.20
+    min_x = min(xs) - margin_m
+    max_x = max(xs) + margin_m
+    min_y = min(ys) - margin_m
+    max_y = max(ys) + margin_m
+    width = max(10, int(math.ceil((max_x - min_x) / resolution_m)))
+    height = max(10, int(math.ceil((max_y - min_y) / resolution_m)))
+    occupancy = np.zeros((height, width), dtype=bool)
+    return OccupancyGridMap(
+        occupancy,
+        resolution_m,
+        (min_x, min_y, 0.0),
+    )
 
 
 def _build_dwa_config(nav) -> DWAConfig:

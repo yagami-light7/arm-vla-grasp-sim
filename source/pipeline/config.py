@@ -218,6 +218,8 @@ class VideoRecordingSettings:
     overview_initial_hold_frames: int = 160
     overview_exposure: float = 0.0
     overview_gamma: float = 2.2
+    export_camera_trajectory: bool = False
+    camera_trajectory_path: Path | None = None
 
     @property
     def modes(self) -> tuple[str, ...]:

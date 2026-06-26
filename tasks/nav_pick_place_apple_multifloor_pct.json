@@ -2,30 +2,30 @@
   "task_id": 1002,
   "episode_id": 1,
   "instruction": "Template: use PCT multi-floor navigation to reach the apple, pick it, carry it to the upstairs place goal, and release it.",
-  "scene_usd": "source/scene/mutifloor_go2_x5.usd",
-  "nav_map": "source/scene/nav_maps/839920/map.json",
+  "scene_usd": "source/scene/multifloor/usda/multifloor.usda",
+  "nav_map": "source/scene/multifloor/nav_map/map.json",
   "start": {
-    "x": -2.0,
-    "y": 0.0,
-    "z": 0.35,
-    "yaw": 0.0,
+    "x": -4.60794,
+    "y": 0.58954,
+    "z": 0.36742,
+    "yaw": 1.5855269056817287,
     "floor_id": "F1",
-    "slice_id": 0
+    "slice_id": null
   },
   "pick": {
     "base_goal": {
-      "x": 1.0,
-      "y": 2.0,
-      "z": 0.35,
+      "x": -3.50493,
+      "y": 7.2491,
+      "z": 0.56178,
       "yaw": 0.0,
       "floor_id": "F1",
-      "slice_id": 0
+      "slice_id": null
     },
     "object_prim_path": "/World/apple",
     "object_pose_world": {
-      "x": 1.30,
-      "y": 2.00,
-      "z": 0.81653,
+      "x": -3.50493,
+      "y": 7.2491,
+      "z": 0.56178,
       "yaw": 0.0,
       "roll": 0.0,
       "pitch": 0.0
@@ -35,17 +35,17 @@
   "place": {
     "enabled": true,
     "base_goal": {
-      "x": 1.0,
-      "y": 2.0,
-      "z": 1.8,
+      "x": 0.36482,
+      "y": -0.64061,
+      "z": 3.82064,
       "yaw": 0.0,
       "floor_id": "F2",
-      "slice_id": 1
+      "slice_id": null
     },
     "place_pose_world": {
-      "x": 1.30,
-      "y": 2.00,
-      "z": 2.20,
+      "x": 0.36482,
+      "y": -0.64061,
+      "z": 3.82064,
       "yaw": 0.0,
       "roll": 0.0,
       "pitch": 0.0
@@ -79,10 +79,14 @@
   "notes": {
     "template": true,
     "requires_user_assets": [
-      "mutifloor USD scene",
+      "source/scene/multifloor/usda/multifloor.usda",
       "PCT tomogram pickle",
       "PCT walkable map",
       "Go2-X5 pct_multifloor locomotion checkpoint"
-    ]
+    ],
+    "asset_manifest": "source/scene/multifloor",
+    "local_policy_checkpoint": "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
+    "navigation_note": "当前 nav_map 是占位路径；在生成真实 2D local map 前，PCT smoke 建议传 --pct-no-fallback。start/pick/place 坐标来自 2026-06-26 用户在 Isaac Sim 中布置的 Transform。",
+    "visual_note": "source/scene/multifloor/usda/multifloor.usda 是当前唯一保留的高质量 NuRec 主场景，/World/gauss 为 clean 3DGS visual，/World/scene_collision 为隐藏 collision mesh，两者均按 Z 轴 180 度旋转对齐。"
   }
 }
