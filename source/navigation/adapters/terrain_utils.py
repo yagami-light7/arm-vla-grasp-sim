@@ -107,6 +107,7 @@ def write_visual_sublayer_wrapper(
     prim_path: str = "/World/gauss",
     *,
     excluded_prim_paths: list[str] | tuple[str, ...] = (),
+    include_visual_prim: bool = True,
 ) -> Path:
     """Write a stronger layer that sublayers the complete scene for display.
 
@@ -127,9 +128,13 @@ def write_visual_sublayer_wrapper(
     }
     visual_child = _top_level_child_name(prim_path)
     excluded_children.discard(None)
-    excluded_children.discard(visual_child)
+    if include_visual_prim:
+        excluded_children.discard(visual_child)
     digest = hashlib.sha256(
-        f"visual-sublayer:{scene_usd}:{prim_path}:{sorted(excluded_children)}".encode("utf-8")
+        (
+            f"visual-sublayer:{scene_usd}:{prim_path}:{include_visual_prim}:"
+            f"{sorted(excluded_children)}"
+        ).encode("utf-8")
     ).hexdigest()[:12]
     wrapper = Path("/tmp") / f"go2_x5_visual_sublayer_{digest}.usda"
     lines = [

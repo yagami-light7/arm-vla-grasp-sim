@@ -30,6 +30,32 @@ class PCTPlannerConfig:
     tomogram_name: str = "mutifloor"
     tomogram_path: Path | None = None
     walkable_path: Path | None = None
+    collision_ply_path: Path | None = None
+    global_vertical_obstacle_min_slices: int = 7
+    cross_floor_vertical_obstacle_min_slices: int = 9
+    cross_floor_gateway_points: tuple[tuple[float, float, float], ...] = (
+        (1.5, 5.7, 0.6),
+    )
+    cross_floor_stair_exit_points: tuple[tuple[float, float, float], ...] = (
+        (1.9, 8.0, 3.0),
+    )
+    cross_floor_stair_midpoint_points: tuple[tuple[float, float, float], ...] = (
+        (1.51822, 6.27683, 0.29486),
+        (2.94512, 9.14634, 1.64666),
+        (1.9202, 9.52807, 1.71919),
+        (2.89841, 7.79872, 2.61031),
+    )
+    cross_floor_gateway_radius_m: float = 0.6
+    robot_root_to_floor_m: float = 0.45
+    body_obstacle_min_height_m: float = 0.30
+    body_obstacle_max_height_m: float = 1.0
+    stair_min_horizontal_per_slice_m: float = 0.40
+    stair_max_horizontal_per_slice_m: float = 0.90
+    stair_vertical_radius_m: float = 0.60
+    stair_progress_tolerance: float = 0.35
+    stair_progress_cost_weight: float = 20.0
+    obstacle_clearance_radius_m: float = 0.60
+    obstacle_clearance_cost_weight: float = 2.0
     startup_timeout_s: float = 30.0
     request_timeout_s: float = 10.0
     coord_mode: str = "sim_to_pct_180deg"
@@ -239,6 +265,10 @@ class PCTPlannerClient:
         root = self.config.planner_root or _path_from_env("PCT_PLANNER_ROOT")
         tomogram_path = self.config.tomogram_path or _path_from_env("PCT_TOMOGRAM_PATH")
         walkable_path = self.config.walkable_path or _path_from_env("PCT_WALKABLE_PATH")
+        collision_ply_path = (
+            self.config.collision_ply_path
+            or _path_from_env("PCT_COLLISION_PLY_PATH")
+        )
         if root is not None:
             env["PCT_PLANNER_ROOT"] = str(Path(root).expanduser())
         env["PCT_TOMOGRAM_NAME"] = str(self.config.tomogram_name)
@@ -246,6 +276,76 @@ class PCTPlannerClient:
             env["PCT_TOMOGRAM_PATH"] = str(Path(tomogram_path).expanduser())
         if walkable_path is not None:
             env["PCT_WALKABLE_PATH"] = str(Path(walkable_path).expanduser())
+        if collision_ply_path is not None:
+            env["PCT_COLLISION_PLY_PATH"] = str(
+                Path(collision_ply_path).expanduser()
+            )
+        env["PCT_GLOBAL_VERTICAL_OBSTACLE_MIN_SLICES"] = str(
+            int(self.config.global_vertical_obstacle_min_slices)
+        )
+        env["PCT_CROSS_FLOOR_VERTICAL_OBSTACLE_MIN_SLICES"] = str(
+            int(self.config.cross_floor_vertical_obstacle_min_slices)
+        )
+        if self.config.cross_floor_gateway_points:
+            gateways_pct = [
+                list(self._sim_to_pct_gateway(gateway))
+                for gateway in self.config.cross_floor_gateway_points
+            ]
+            env["PCT_CROSS_FLOOR_GATEWAYS_PCT"] = json.dumps(
+                gateways_pct,
+                separators=(",", ":"),
+            )
+            env["PCT_CROSS_FLOOR_GATEWAY_RADIUS_M"] = str(
+                float(self.config.cross_floor_gateway_radius_m)
+            )
+        if self.config.cross_floor_stair_exit_points:
+            stair_exits_pct = [
+                list(self._sim_to_pct_gateway(stair_exit))
+                for stair_exit in self.config.cross_floor_stair_exit_points
+            ]
+            env["PCT_CROSS_FLOOR_STAIR_EXITS_PCT"] = json.dumps(
+                stair_exits_pct,
+                separators=(",", ":"),
+            )
+        if self.config.cross_floor_stair_midpoint_points:
+            stair_midpoints_pct = [
+                list(self._sim_to_pct_gateway(stair_midpoint))
+                for stair_midpoint in self.config.cross_floor_stair_midpoint_points
+            ]
+            env["PCT_CROSS_FLOOR_STAIR_MIDPOINTS_PCT"] = json.dumps(
+                stair_midpoints_pct,
+                separators=(",", ":"),
+            )
+        env["PCT_ROBOT_ROOT_TO_FLOOR_M"] = str(
+            float(self.config.robot_root_to_floor_m)
+        )
+        env["PCT_BODY_OBSTACLE_MIN_HEIGHT_M"] = str(
+            float(self.config.body_obstacle_min_height_m)
+        )
+        env["PCT_BODY_OBSTACLE_MAX_HEIGHT_M"] = str(
+            float(self.config.body_obstacle_max_height_m)
+        )
+        env["PCT_STAIR_MIN_HORIZONTAL_PER_SLICE_M"] = str(
+            float(self.config.stair_min_horizontal_per_slice_m)
+        )
+        env["PCT_STAIR_MAX_HORIZONTAL_PER_SLICE_M"] = str(
+            float(self.config.stair_max_horizontal_per_slice_m)
+        )
+        env["PCT_STAIR_VERTICAL_RADIUS_M"] = str(
+            float(self.config.stair_vertical_radius_m)
+        )
+        env["PCT_STAIR_PROGRESS_TOLERANCE"] = str(
+            float(self.config.stair_progress_tolerance)
+        )
+        env["PCT_STAIR_PROGRESS_COST_WEIGHT"] = str(
+            float(self.config.stair_progress_cost_weight)
+        )
+        env["PCT_OBSTACLE_CLEARANCE_RADIUS_M"] = str(
+            float(self.config.obstacle_clearance_radius_m)
+        )
+        env["PCT_OBSTACLE_CLEARANCE_COST_WEIGHT"] = str(
+            float(self.config.obstacle_clearance_cost_weight)
+        )
         return env
 
     def _server_cwd(self, server_script: Path) -> Path | None:
@@ -323,6 +423,19 @@ class PCTPlannerClient:
         del exc_type, exc, traceback
         self.close()
 
+    def _sim_to_pct_gateway(
+        self,
+        xyz: Sequence[float],
+    ) -> tuple[float, float, float]:
+        return sim_to_pct_xyz(
+            xyz,
+            coord_mode=self.config.coord_mode,
+            pct_offset_x=self.config.pct_offset_x,
+            pct_offset_y=self.config.pct_offset_y,
+            pct_scale_x=self.config.pct_scale_x,
+            pct_scale_y=self.config.pct_scale_y,
+        )
+
 
 class PCTNavPlanner:
     """将 PCT server 适配为当前 pipeline 使用的全局导航规划器。"""
@@ -381,6 +494,7 @@ class PCTNavPlanner:
         metadata = {
             "planner": "pct",
             "path_3d": path_3d,
+            "sim_start": start_sim,
             "slice_start": _first_present(response, "slice_start", "start_slice", "slice_id_start"),
             "slice_end": _first_present(response, "slice_end", "end_slice", "slice_id_end"),
             "snap_start_dist": _first_present(response, "snap_start_dist", "start_snap_dist"),
@@ -391,6 +505,43 @@ class PCTNavPlanner:
             "pct_start": start_pct,
             "pct_end": end_pct,
             "pct_status": response.get("status"),
+            "pct_path_mode": response.get("path_mode"),
+            "hard_obstacle_cells": response.get("hard_obstacle_cells"),
+            "hard_obstacle_mode": response.get("hard_obstacle_mode"),
+            "hard_obstacle_min_slices": response.get(
+                "hard_obstacle_min_slices"
+            ),
+            "cross_floor": response.get("cross_floor"),
+            "default_hard_obstacle_min_slices": response.get(
+                "default_hard_obstacle_min_slices"
+            ),
+            "cross_floor_hard_obstacle_min_slices": response.get(
+                "cross_floor_hard_obstacle_min_slices"
+            ),
+            "cross_floor_gateway_count": response.get("cross_floor_gateway_count"),
+            "cross_floor_stair_exit_count": response.get(
+                "cross_floor_stair_exit_count"
+            ),
+            "cross_floor_stair_midpoint_count": response.get(
+                "cross_floor_stair_midpoint_count"
+            ),
+            "cross_floor_gateway_radius_m": response.get(
+                "cross_floor_gateway_radius_m"
+            ),
+            "cross_floor_gateway_cells": response.get("cross_floor_gateway_cells"),
+            "cross_floor_stair_vertical_cells": response.get(
+                "cross_floor_stair_vertical_cells"
+            ),
+            "cross_floor_gateway_mode": response.get("cross_floor_gateway_mode"),
+            "robot_root_to_floor_m": response.get("robot_root_to_floor_m"),
+            "planning_start_z": response.get("planning_start_z"),
+            "planning_end_z": response.get("planning_end_z"),
+            "stair_vertical_radius_m": response.get("stair_vertical_radius_m"),
+            "stair_constraint_mode": response.get("stair_constraint_mode"),
+            "stair_progress_tolerance": response.get("stair_progress_tolerance"),
+            "stair_progress_cost_weight": response.get(
+                "stair_progress_cost_weight"
+            ),
         }
         return NavPlan(goal=goal, waypoints=waypoints_xy, metadata=metadata)
 

@@ -5,39 +5,40 @@ environment:
   robot: Go2-X5
   terrain: mutifloor
   terrain_requirements:
-    - stairs
-    - ramps
-    - floor transitions
-    - long multi-floor routes from PCT paths
+    - 楼梯
+    - 坡道
+    - 楼层切换
+    - 来自 PCT path 的长距离多楼层路线
 
 policy:
   backend: rsl_rl
   profile: pct_multifloor
   checkpoint_output: checkpoints/go2_x5/pct_multifloor/model_26000.pt
-  action_space: Go2-X5 joint targets compatible with the existing RSL-RL policy action interface
+  action_space: 12 维腿部 joint target；机械臂由 0 维 arm command action term 固定姿态跟随
+  default_task: RobotLab-Isaac-Velocity-Rough-Go2-X5-DogOnly-v0
 
 commands:
-  source: PCT global path
+  source: PCT 全局路径
   local_command:
-    - local goal vector
-    - desired base velocity
-    - optional slice or floor embedding
+    - 局部目标向量
+    - 期望底盘速度
+    - 可选 slice 或 floor embedding
 
 observations:
-  - base linear and angular velocity
-  - projected gravity
-  - joint positions and velocities
-  - height scan
-  - local goal vector from the PCT path
-  - optional slice or floor embedding
+  - 底盘线速度和角速度
+  - 重力投影
+  - 关节位置和速度
+  - 高度扫描
+  - 来自 PCT path 的局部目标向量
+  - 可选 slice 或 floor embedding
 
 rewards:
-  path_progress: positive reward for progress along the PCT route
-  goal_reaching: terminal reward near the local and final goal
-  upright_stability: penalty for excessive roll, pitch, or falls
-  energy: torque and action-rate penalties
-  slip_stall: penalties for foot slip and low progress under command
-  traversal: rewards for stable stairs and ramp traversal
+  path_progress: 沿 PCT 路线取得进展时给正奖励
+  goal_reaching: 接近局部目标和最终目标时给终端奖励
+  upright_stability: 对过大 roll、pitch 或摔倒给惩罚
+  energy: 关节力矩和 action-rate 惩罚
+  slip_stall: 对足端打滑和有 command 但进展过低给惩罚
+  traversal: 对稳定通过楼梯和坡道给奖励
 
 curriculum:
   - flat
@@ -47,9 +48,9 @@ curriculum:
 
 evaluation:
   metrics:
-    - single_floor_success_rate
-    - multi_floor_success_rate
-    - path_tracking_error
-    - fall_rate
-    - stuck_rate
-    - episode_length
+    - 单楼层成功率
+    - 多楼层成功率
+    - 路径跟踪误差
+    - 摔倒率
+    - 卡住率
+    - episode 长度

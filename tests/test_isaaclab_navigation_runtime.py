@@ -22,6 +22,8 @@ from source.simulation.isaaclab_runtime import (
     _dedupe_root_paths,
     _path_is_excluded_by_roots,
     _prim_keyword_match_text,
+    _retarget_height_scanners,
+    _resolve_rigid_body_prim_path,
 )
 from source.simulation.collision_patch import (
     gripper_collision_patch_report,
@@ -69,6 +71,8 @@ class FakeRuntime:
 class FakeAdapter:
     def __init__(self):
         self.arm_joint_ids = (0, 1, 2, 3, 4, 5)
+        self.arm_action_indices_for_report = [12, 13, 14, 15, 16, 17]
+        self.arm_action_term_available = True
         self.base_commands: list[tuple[float, float, float]] = []
         self.arm_targets: list[tuple[float, ...]] = []
         self.arm_override_flags: list[bool] = []
@@ -95,8 +99,8 @@ class FakeAdapter:
         self.arm_override_flags.append(bool(enabled))
         return {
             "enabled": bool(enabled),
-            "action_term_available": True,
-            "arm_action_indices": [12, 13, 14, 15, 16, 17],
+            "action_term_available": self.arm_action_term_available,
+            "arm_action_indices": list(self.arm_action_indices_for_report),
             "arm_joint_names": [
                 "arm_joint1",
                 "arm_joint2",
@@ -205,6 +209,8 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         self.assertEqual(config.apple_collision_contact_offset, 0.001)
         self.assertEqual(config.apple_collision_rest_offset, 0.0)
         self.assertTrue(config.hide_object_collision_visual)
+        self.assertEqual(config.standing_command_threshold, 0.0)
+        self.assertEqual(config.policy_action_warmup_steps, 0)
         self.assertEqual(config.object_collision_visual_root_path, "/World")
         self.assertEqual(
             config.object_collision_visual_hide_keywords,
@@ -472,8 +478,59 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
     def test_runtime_defaults_to_current_scene_camera(self) -> None:
         config = IsaacLabNavigationRuntimeConfig()
 
-        self.assertEqual(config.viewport_camera_prim_path, "/World/Camera1")
+        self.assertEqual(config.viewport_camera_prim_path, "/World/Camera0")
         self.assertTrue(config.hide_navigation_collision_visual)
+
+    def test_height_scanners_follow_runtime_navigation_terrain(self) -> None:
+        scanner = type("ScannerCfg", (), {"mesh_prim_paths": ["/World/ground"]})()
+        scanner_base = type("ScannerCfg", (), {"mesh_prim_paths": ["/World/ground"]})()
+        scene_cfg = type(
+            "SceneCfg",
+            (),
+            {
+                "height_scanner": scanner,
+                "height_scanner_base": scanner_base,
+            },
+        )()
+
+        updated = _retarget_height_scanners(scene_cfg, "/World/nav_collision")
+
+        self.assertEqual(updated, ("height_scanner", "height_scanner_base"))
+        self.assertEqual(scanner.mesh_prim_paths, ["/World/nav_collision"])
+        self.assertEqual(scanner_base.mesh_prim_paths, ["/World/nav_collision"])
+
+    def test_height_scanner_retarget_skips_disabled_sensor(self) -> None:
+        scene_cfg = type(
+            "SceneCfg",
+            (),
+            {
+                "height_scanner": None,
+                "height_scanner_base": None,
+            },
+        )()
+
+        updated = _retarget_height_scanners(scene_cfg, "/World/nav_collision")
+
+        self.assertEqual(updated, ())
+
+    def test_object_reader_resolves_inner_rigid_body_prim(self) -> None:
+        try:
+            from pxr import Usd, UsdPhysics
+        except ImportError:
+            self.skipTest("当前 Python 环境没有 OpenUSD pxr")
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.DefinePrim("/World", "Xform")
+        stage.DefinePrim("/World/apple", "Xform")
+        body = stage.DefinePrim("/World/apple/body", "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(body)
+
+        resolved = _resolve_rigid_body_prim_path(stage, "/World/apple")
+
+        self.assertEqual(resolved, "/World/apple/body")
+        self.assertFalse(
+            stage.GetPrimAtPath("/World/apple").HasAPI(UsdPhysics.RigidBodyAPI)
+        )
 
     def test_object_collision_visual_hide_runs_after_task_object_visibility(self) -> None:
         source_text = inspect.getsource(IsaacLabNavigationRuntime._load_visual_scene)
@@ -484,6 +541,10 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         )
         self.assertIn("object_collision_visual_hide_report", source_text)
         builder_source = inspect.getsource(IsaacLabNavigationRuntime._build_environment)
+        self.assertLess(
+            builder_source.index("object_visibility_after_spawn_report"),
+            builder_source.index("object_collision_visual_hide_after_spawn_report"),
+        )
         self.assertLess(
             builder_source.index("object_collision_visual_hide_after_spawn_report"),
             builder_source.index("wrapped = RslRlVecEnvWrapper"),
@@ -619,7 +680,13 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         adapter.gripper_joint_ids = ()
         adapter._base_pose_lock_xyzyaw = None
         adapter._dog_joint_lock_target = None
-        adapter._command = (0.0, 0.0, 0.0)
+        adapter.standing_command_threshold = 0.08
+        adapter.policy_action_warmup_steps = 2
+        adapter._policy_action_step = 0
+        adapter._policy_action_warmup_scale = 1.0
+        adapter._command = (0.04, 0.0, 0.02)
+        adapter._effective_command = (0.0, 0.0, 0.0)
+        adapter._command_is_standing = True
         adapter._arm_joint_target = (1.0, -1.0, 0.5, 0.0, 0.2, -0.3)
         adapter._gripper_joint_target = None
         adapter._last_actions = None
@@ -627,7 +694,15 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         actions = adapter.compute_policy_action(refresh_observations=True)
 
         # locomotion policy 仍受 clip_actions 约束；机械臂直接目标必须绕过该裁剪。
-        self.assertAlmostEqual(float(actions[0, 0]), 1.0)
+        self.assertAlmostEqual(float(actions[0, 0]), 0.5)
+        self.assertAlmostEqual(adapter._policy_action_warmup_scale, 0.5)
+        self.assertEqual(adapter._policy_action_step, 1)
+        self.assertEqual(adapter._effective_command, (0.0, 0.0, 0.0))
+        self.assertTrue(adapter._command_is_standing)
+        self.assertEqual(
+            tuple(float(value) for value in adapter.base_cmd_term.vel_command_b[0]),
+            (0.0, 0.0, 0.0),
+        )
         self.assertEqual(
             [round(float(value), 4) for value in actions[0, 12:18]],
             [10.0, -10.0, 5.0, 0.0, 2.0, -3.0],
@@ -832,6 +907,7 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
                     "arm_joint6",
                 ),
                 "arm_joint_positions": (0.0,) * 6,
+                "arm_control_mode": "policy_action_override",
                 "direct_arm_action_override": True,
                 "arm_action_indices": (12, 13, 14, 15, 16, 17),
                 "uses_direct_joint_state": False,
@@ -847,6 +923,48 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
             runtime._metadata["last_joint_action_report"]["source"],  # type: ignore[attr-defined]
             "nav_carry_home",
         )
+
+    def test_apply_accepts_dog_only_arm_target_without_policy_action_slots(self) -> None:
+        runtime, adapter, fake_runtime = _fake_runtime()
+        adapter.arm_action_indices_for_report = []
+        action = RobotAction(
+            base_velocity=(0.1, 0.0, 0.2),
+            arm_joint_positions=(0.2, -0.1, 0.3, -0.2, 0.1, 0.0),
+            gripper_command="hold",
+            source="arm_pick",
+            metadata={
+                "arm_joint_names": tuple(ARM_JOINT_NAMES),
+            },
+        )
+
+        runtime.apply(action)
+
+        self.assertEqual(adapter.arm_targets, [(0.2, -0.1, 0.3, -0.2, 0.1, 0.0)])
+        self.assertEqual(adapter.arm_override_flags, [True, False])
+        self.assertEqual(fake_runtime.action_manager.processed_actions, [adapter.policy_action])
+        self.assertEqual(
+            runtime._metadata["last_arm_action_report"],  # type: ignore[attr-defined]
+            {
+                "target_staged": True,
+                "arm_joint_names": tuple(ARM_JOINT_NAMES),
+                "arm_joint_positions": (0.2, -0.1, 0.3, -0.2, 0.1, 0.0),
+                "arm_control_mode": "independent_position_target",
+                "direct_arm_action_override": False,
+                "arm_action_indices": (),
+                "uses_direct_joint_state": False,
+                "world_step_owned_by_pipeline": True,
+            },
+        )
+        self.assertEqual(
+            runtime._metadata["last_direct_arm_action_override_disable_report"],  # type: ignore[attr-defined]
+            {
+                "enabled": False,
+                "action_term_available": True,
+                "arm_action_indices": [],
+                "arm_joint_names": list(ARM_JOINT_NAMES),
+            },
+        )
+        self.assertEqual(runtime._metadata["arm_joint_action_apply_count"], 1)  # type: ignore[attr-defined]
 
     def test_refreshes_direct_joint_targets_after_action_manager(self) -> None:
         runtime, adapter, _fake_runtime_obj = _fake_runtime()

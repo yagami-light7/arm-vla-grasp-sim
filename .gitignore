@@ -16,10 +16,13 @@ episodes/
 # !outputs/**/*.rrd
 outputs/
 tests/
+!tests/
+!tests/navigation/
+!tests/navigation/test_locomotion_policy_config.py
 json/
-Rough/
 Yinluyuan/
 external/
+checkpoints/go2_x5/pct_multifloor/training/
 *.pt
 *.onnx
 *.usd

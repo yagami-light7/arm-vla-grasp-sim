@@ -13,7 +13,7 @@ from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 import robot_lab.tasks.manager_based.locomotion.velocity.mdp as mdp
-from robot_lab.assets import GO2_X5_CFG
+from robot_lab.assets import GO2_X5_CFG, GO2_X5_PCT_DOG_ONLY_CFG
 from robot_lab.tasks.manager_based.locomotion.velocity.velocity_env_cfg import LocomotionVelocityRoughEnvCfg
 
 
@@ -946,6 +946,182 @@ class Go2X5RobustRoughEnvCfg(_Go2X5LeggedBaseEnvCfg):
             if self.observations.policy.arm_joint_command is not None:
                 self.observations.policy.arm_joint_command.params["command_name"] = "arm_joint_pos"
 
+        self.terminations.illegal_contact = None
+        self.terminations.terrain_out_of_bounds = None
+
+        self.disable_zero_weight_rewards()
+
+
+@configclass
+class Go2X5DogOnlyRoughEnvCfg(_Go2X5LeggedBaseEnvCfg):
+    """兼容 pct_multifloor/model_26000.pt 的 12 维腿部 action 多楼层导航环境。"""
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        # 只在 PCT DogOnly task 中使用训练快照对应的姿态和 actuator，隔离单楼层配置。
+        self.scene.robot = GO2_X5_PCT_DOG_ONLY_CFG.replace(
+            prim_path="{ENV_REGEX_NS}/Robot"
+        )
+        # 多楼层网格中 20 米高的射线会先命中上层楼板，需在层高以内发射。
+        self.scene.height_scanner.offset.pos = (0.0, 0.0, 1.0)
+        self.scene.height_scanner_base.offset.pos = (0.0, 0.0, 1.0)
+        self.scene.num_envs = 2048
+        self.scene.terrain.max_init_terrain_level = 1
+        self.curriculum.terrain_levels = None
+
+        # policy 只输出 12 条腿的 action；机械臂由 command term 固定姿态跟踪。
+        self.actions.joint_pos.scale = {
+            ".*_hip_joint": 0.25,
+            ".*_thigh_joint": 0.25,
+            ".*_calf_joint": 0.25,
+        }
+        self.actions.joint_pos.clip = {".*": (-100.0, 100.0)}
+        self.actions.joint_pos.joint_names = self.dog_joint_names
+        self.actions.arm_joint_pos = mdp.ArmCommandPositionActionCfg(
+            asset_name="robot",
+            joint_names=self.arm_joint_names,
+            command_name="arm_joint_pos",
+            preserve_order=True,
+        )
+
+        self.commands.base_velocity.rel_standing_envs = 0.12
+        self.commands.base_velocity.resampling_time_range = (4.0, 6.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.55, 0.55)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.25, 0.25)
+        self.commands.base_velocity.ranges.ang_vel_z = (-0.60, 0.60)
+        self.commands.arm_joint_pos.position_range = ARM_LOCKED_DEFAULT_RANGE
+        self.commands.arm_joint_pos.resampling_time_range = (8.0, 10.0)
+
+        # checkpoint 训练时保留 18 维 last_action 观测布局，腿部 action 后补 6 个 arm 零值。
+        self.observations.policy.actions = ObsTerm(
+            func=mdp.last_action_with_padding,
+            params={"total_action_dim": len(self.joint_names), "pad_value": 0.0},
+            clip=(-100.0, 100.0),
+            scale=1.0,
+        )
+        self.observations.critic.actions = ObsTerm(
+            func=mdp.last_action_with_padding,
+            params={"total_action_dim": len(self.joint_names), "pad_value": 0.0},
+            clip=(-100.0, 100.0),
+            scale=1.0,
+        )
+        self.observations.policy.gripper_command = ObsTerm(
+            func=mdp.constant_observation,
+            params={"dim": 1, "value": 0.0},
+            clip=(-1.0, 1.0),
+            scale=1.0,
+        )
+        self.observations.critic.gripper_command = ObsTerm(
+            func=mdp.constant_observation,
+            params={"dim": 1, "value": 0.0},
+            clip=(-1.0, 1.0),
+            scale=1.0,
+        )
+
+        dog_only_rough_weights = {
+            "lin_vel_z_l2": -1.8,
+            "ang_vel_xy_l2": -0.12,
+            "flat_orientation_l2": -0.60,
+            "base_height_l2": -0.26,
+            "body_lin_acc_l2": -0.020,
+            "joint_torques_l2": -1.6e-5,
+            "joint_acc_l2": -1.1e-7,
+            "joint_pos_limits": -2.0,
+            "joint_power": -1.1e-5,
+            "stand_still": -2.4,
+            "joint_pos_penalty": -0.55,
+            "action_rate_l2": -0.018,
+            "undesired_contacts": -1.1,
+            "contact_forces": -1.2e-4,
+            "track_lin_vel_xy_exp": 4.6,
+            "track_ang_vel_z_exp": 2.0,
+            "feet_air_time": 0.50,
+            "feet_air_time_variance": -0.20,
+            "feet_contact_without_cmd": 0.25,
+            "feet_slide": -0.12,
+            "feet_height_body": -0.45,
+            "feet_gait": 0.25,
+            "arm_joint_pos_tracking_l2": 0.0,
+            "arm_joint_vel_l2": 0.0,
+            "arm_joint_acc_l2": 0.0,
+            "arm_joint_torques_l2": 0.0,
+            "arm_action_rate_l2": 0.0,
+            "arm_joint_pos_limits": 0.0,
+            "arm_joint_deviation_l2": 0.0,
+            "arm_motion_tilt_penalty": 0.0,
+            "arm_action_in_unstable_base": 0.0,
+            "arm_stable_track_bonus": 0.0,
+        }
+        self.curriculum.reward_weights = None
+        for attr_name, weight in dog_only_rough_weights.items():
+            reward_term = getattr(self.rewards, attr_name, None)
+            if reward_term is not None:
+                reward_term.weight = weight
+
+        self.rewards.base_height_l2.params["target_height"] = 0.30
+        self.rewards.feet_air_time.params["threshold"] = 0.50
+        self.rewards.feet_height_body.params["target_height"] = -0.16
+        if "tanh_mult" in self.rewards.feet_height_body.params:
+            self.rewards.feet_height_body.params["tanh_mult"] = 1.5
+        self.rewards.feet_gait.params["command_threshold"] = 0.08
+        self.rewards.feet_gait.params["velocity_threshold"] = 0.20
+        self.rewards.feet_gait.params["max_err"] = 0.18
+        self.rewards.joint_pos_penalty.params["stand_still_scale"] = 3.0
+        self.rewards.joint_pos_penalty.params["velocity_threshold"] = 0.25
+        self.rewards.joint_pos_penalty.params["command_threshold"] = 0.08
+        self.rewards.upward.weight = 1.0
+
+        self.events.randomize_reset_base.params = {
+            "pose_range": {
+                "x": (-0.25, 0.25),
+                "y": (-0.25, 0.25),
+                "z": (0.0, 0.10),
+                "roll": (-0.10, 0.10),
+                "pitch": (-0.10, 0.10),
+                "yaw": (-3.14, 3.14),
+            },
+            "velocity_range": {
+                "x": (-0.20, 0.20),
+                "y": (-0.20, 0.20),
+                "z": (-0.20, 0.20),
+                "roll": (-0.20, 0.20),
+                "pitch": (-0.20, 0.20),
+                "yaw": (-0.20, 0.20),
+            },
+        }
+        self.events.randomize_rigid_body_material.params["static_friction_range"] = (0.60, 1.20)
+        self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = (0.50, 1.05)
+        self.events.randomize_rigid_body_material.params["restitution_range"] = (0.0, 0.15)
+        self.events.randomize_rigid_body_mass_base.params["mass_distribution_params"] = (0.95, 1.05)
+        self.events.randomize_rigid_body_mass_base.params["operation"] = "scale"
+        self.events.randomize_rigid_body_mass_others.params["mass_distribution_params"] = (0.97, 1.04)
+        self.events.randomize_com_positions.params["com_range"] = {
+            "x": (-0.015, 0.015),
+            "y": (-0.015, 0.015),
+            "z": (-0.015, 0.015),
+        }
+        self.events.randomize_actuator_gains.mode = "reset"
+        self.events.randomize_actuator_gains.params["stiffness_distribution_params"] = (0.85, 1.15)
+        self.events.randomize_actuator_gains.params["damping_distribution_params"] = (0.85, 1.15)
+        self.events.randomize_actuator_gains.params["distribution"] = "uniform"
+        self.events.randomize_apply_external_force_torque = None
+        self.events.randomize_push_robot = None
+
+        self.observations.policy.base_ang_vel.noise = Unoise(n_min=-0.02, n_max=0.02)
+        self.observations.policy.projected_gravity.noise = Unoise(n_min=-0.02, n_max=0.02)
+        if getattr(self.curriculum, "command_levels_lin_vel", None) is not None:
+            self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.25, 1.0)
+        if getattr(self.curriculum, "command_levels_ang_vel", None) is not None:
+            self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.25, 1.0)
+
+        self.sim2sim_action_delay_range = (1, 1)
+        self.sim2sim_action_hold_prob = 0.03
+        self.sim2sim_action_noise_std = 0.002
+        self.sim2sim_obs_delay_steps = 0
+
+        self.terminations.root_height_below_minimum = None
+        self.terminations.root_height_above_maximum = None
         self.terminations.illegal_contact = None
         self.terminations.terrain_out_of_bounds = None
 

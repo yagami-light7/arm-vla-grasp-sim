@@ -48,6 +48,7 @@ _PHASE_TOKENS = {
         "third_person",
         "thirdperson",
         "main",
+        "camera0",
         "camera1",
         "camera",
     ),
@@ -297,6 +298,31 @@ def _image_to_rgb_uint8(
         array = np.nan_to_num(array, nan=0.0, posinf=255.0, neginf=0.0)
         array = np.clip(array, 0.0, 255.0).astype(np.uint8)
     return np.ascontiguousarray(array)
+
+
+def _capture_buffer_bytes(buffer: Any, buffer_size: int) -> bytes:
+    """把 Kit viewport 回调缓冲复制为独立字节串。"""
+
+    if buffer_size <= 0:
+        raise ValueError(f"viewport capture buffer_size must be positive, got {buffer_size}")
+    try:
+        return memoryview(buffer).cast("B")[:buffer_size].tobytes()
+    except (TypeError, ValueError):
+        pass
+
+    buffer_type = type(buffer)
+    if buffer_type.__module__ == "builtins" and buffer_type.__name__ == "PyCapsule":
+        get_pointer = ctypes.pythonapi.PyCapsule_GetPointer
+        get_pointer.argtypes = [ctypes.py_object, ctypes.c_char_p]
+        get_pointer.restype = ctypes.c_void_p
+        address = get_pointer(buffer, None)
+    elif isinstance(buffer, ctypes.c_void_p):
+        address = buffer.value
+    else:
+        address = int(buffer)
+    if not address:
+        raise ValueError("viewport capture buffer pointer is null")
+    return ctypes.string_at(address, buffer_size)
 
 
 class OverviewVideoRecorder:
@@ -1195,13 +1221,19 @@ class OverviewVideoRecorder:
         captured: dict[str, Any] = {}
 
         def _callback(buffer: Any, buffer_size: int, width: int, height: int, byte_format: Any) -> None:
-            captured["frame"] = self._buffer_to_image(
-                buffer,
-                buffer_size=int(buffer_size),
-                width=int(width),
-                height=int(height),
-                byte_format=str(byte_format),
-            )
+            try:
+                captured["frame"] = self._buffer_to_image(
+                    buffer,
+                    buffer_size=int(buffer_size),
+                    width=int(width),
+                    height=int(height),
+                    byte_format=str(byte_format),
+                )
+            except Exception as exc:
+                self._capture_error = (
+                    f"viewport_buffer_conversion_failed: {type(exc).__name__}: {exc}"
+                )
+                captured["error"] = self._capture_error
 
         self._configure_capture_viewport(viewport)
         capture = capture_viewport_to_buffer(viewport, _callback)
@@ -1235,14 +1267,23 @@ class OverviewVideoRecorder:
         height: int,
         byte_format: str,
     ) -> np.ndarray:
-        try:
-            raw = np.frombuffer(buffer, dtype=np.uint8, count=buffer_size)
-        except TypeError:
-            raw = np.frombuffer(
-                ctypes.string_at(int(buffer), buffer_size),
-                dtype=np.uint8,
+        if width <= 0 or height <= 0:
+            raise ValueError(f"viewport capture dimensions must be positive, got {width}x{height}")
+        pixel_count = width * height
+        if buffer_size % pixel_count != 0:
+            raise ValueError(
+                f"viewport capture buffer size {buffer_size} does not match {width}x{height}"
             )
-        channels = max(1, buffer_size // max(1, width * height))
+        channels = buffer_size // pixel_count
+        if channels <= 0:
+            raise ValueError(
+                f"viewport capture channel count must be positive, got {channels}"
+            )
+        raw = np.frombuffer(
+            _capture_buffer_bytes(buffer, buffer_size),
+            dtype=np.uint8,
+            count=buffer_size,
+        )
         raw = raw.reshape((height, width, channels))
         return _image_to_rgb_uint8(raw)
 

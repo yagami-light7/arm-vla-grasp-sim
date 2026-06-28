@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from source.interfaces.navigation import NavGoal
 from source.interfaces.simulation import SimulationState
 from source.navigation.pct_adapter import PCTNavPlanner, PCTPlannerConfig
+from source.pipeline.config import NavigationSettings
 
 
 DEFAULT_TASK_JSON = PROJECT_ROOT / "tasks/nav_pick_place_apple_multifloor_pct.json"
@@ -42,6 +43,22 @@ def main() -> int:
         "pct_tomogram_path": str(tomogram_path),
         "pct_walkable_path": str(walkable_path),
         "coord_mode": args.pct_coord_mode,
+        "cross_floor_gateway_points": _parse_xyz_points(
+            args.pct_cross_floor_gateway,
+            default=NavigationSettings().pct_cross_floor_gateway_points,
+        ),
+        "cross_floor_stair_exit_points": _parse_xyz_points(
+            args.pct_cross_floor_stair_exit,
+            default=NavigationSettings().pct_cross_floor_stair_exit_points,
+        ),
+        "cross_floor_stair_midpoint_points": _parse_xyz_points(
+            args.pct_cross_floor_stair_midpoint,
+            default=NavigationSettings().pct_cross_floor_stair_midpoint_points,
+        ),
+        "cross_floor_gateway_radius_m": float(args.pct_cross_floor_gateway_radius),
+        "stair_vertical_radius_m": float(args.pct_stair_vertical_radius),
+        "stair_progress_tolerance": float(args.pct_stair_progress_tolerance),
+        "stair_progress_cost_weight": float(args.pct_stair_progress_cost_weight),
         "segments": [],
         "checks": {},
     }
@@ -82,6 +99,22 @@ def main() -> int:
             pct_offset_y=float(args.pct_offset_y),
             pct_scale_x=float(args.pct_scale_x),
             pct_scale_y=float(args.pct_scale_y),
+            cross_floor_gateway_points=tuple(
+                tuple(point)
+                for point in report["cross_floor_gateway_points"]
+            ),
+            cross_floor_stair_exit_points=tuple(
+                tuple(point)
+                for point in report["cross_floor_stair_exit_points"]
+            ),
+            cross_floor_stair_midpoint_points=tuple(
+                tuple(point)
+                for point in report["cross_floor_stair_midpoint_points"]
+            ),
+            cross_floor_gateway_radius_m=float(args.pct_cross_floor_gateway_radius),
+            stair_vertical_radius_m=float(args.pct_stair_vertical_radius),
+            stair_progress_tolerance=float(args.pct_stair_progress_tolerance),
+            stair_progress_cost_weight=float(args.pct_stair_progress_cost_weight),
             fallback_to_astar=False,
         )
     )
@@ -106,6 +139,38 @@ def main() -> int:
                     "snap_end_dist": plan.metadata.get("snap_end_dist"),
                     "path_3d": path_3d,
                     "waypoints_xy": plan.waypoints,
+                    "metadata": {
+                        key: plan.metadata.get(key)
+                        for key in (
+                            "planner",
+                            "pct_status",
+                            "pct_path_mode",
+                            "cross_floor",
+                            "slice_start",
+                            "slice_end",
+                            "snap_start_dist",
+                            "snap_end_dist",
+                            "hard_obstacle_cells",
+                            "hard_obstacle_mode",
+                            "hard_obstacle_min_slices",
+                            "default_hard_obstacle_min_slices",
+                            "cross_floor_hard_obstacle_min_slices",
+                            "cross_floor_gateway_count",
+                            "cross_floor_stair_exit_count",
+                            "cross_floor_stair_midpoint_count",
+                            "cross_floor_gateway_radius_m",
+                            "cross_floor_gateway_cells",
+                            "cross_floor_stair_vertical_cells",
+                            "cross_floor_gateway_mode",
+                            "robot_root_to_floor_m",
+                            "planning_start_z",
+                            "planning_end_z",
+                            "stair_vertical_radius_m",
+                            "stair_constraint_mode",
+                            "stair_progress_tolerance",
+                            "stair_progress_cost_weight",
+                        )
+                    },
                     "pct_start": plan.metadata.get("pct_start"),
                     "pct_end": plan.metadata.get("pct_end"),
                 }
@@ -143,11 +208,74 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--pct-offset-y", type=float, default=0.0)
     parser.add_argument("--pct-scale-x", type=float, default=1.0)
     parser.add_argument("--pct-scale-y", type=float, default=1.0)
+    parser.add_argument(
+        "--pct-cross-floor-gateway",
+        action="append",
+        default=None,
+        help="允许跨楼层换 slice 的楼梯/坡道中心点，Isaac Sim 坐标 x,y,z；可重复传入。",
+    )
+    parser.add_argument(
+        "--pct-cross-floor-gateway-radius",
+        type=float,
+        default=NavigationSettings().pct_cross_floor_gateway_radius_m,
+        help="跨楼层 gateway 的 XY 半径，单位米。",
+    )
+    parser.add_argument(
+        "--pct-cross-floor-stair-exit",
+        action="append",
+        default=None,
+        help="楼梯上层出口的 Isaac Sim 坐标 x,y,z；与 gateway 按顺序配对。",
+    )
+    parser.add_argument(
+        "--pct-cross-floor-stair-midpoint",
+        action="append",
+        default=None,
+        help="楼梯中间拐角/平台控制点的 Isaac Sim 坐标 x,y,z；可重复传入。",
+    )
+    parser.add_argument(
+        "--pct-stair-vertical-radius",
+        type=float,
+        default=NavigationSettings().pct_stair_vertical_radius_m,
+        help="楼梯跨 slice 换层允许的中心带半径，单位米。",
+    )
+    parser.add_argument(
+        "--pct-stair-progress-tolerance",
+        type=float,
+        default=NavigationSettings().pct_stair_progress_tolerance,
+        help="楼梯高度 slice 与入口到出口进度匹配的容差。",
+    )
+    parser.add_argument(
+        "--pct-stair-progress-cost-weight",
+        type=float,
+        default=NavigationSettings().pct_stair_progress_cost_weight,
+        help="楼梯高度 slice 与折线进度不匹配时的软代价权重。",
+    )
     parser.add_argument("--startup-timeout-s", type=float, default=30.0)
     parser.add_argument("--request-timeout-s", type=float, default=10.0)
     parser.add_argument("--output-json", default=str(DEFAULT_OUTPUT), help="探针报告输出路径。")
     parser.add_argument("--dry-run", action="store_true", help="只检查输入是否齐全，不启动 PCT server。")
     return parser.parse_args()
+
+
+def _parse_xyz_points(
+    raw_values: list[str] | None,
+    *,
+    default: tuple[tuple[float, float, float], ...],
+) -> tuple[tuple[float, float, float], ...]:
+    """解析 CLI 中重复传入的 x,y,z 点列表。"""
+
+    if raw_values is None:
+        return default
+    points: list[tuple[float, float, float]] = []
+    for raw_value in raw_values:
+        text = raw_value.strip()
+        if text.lower() in {"", "none", "off", "disable", "disabled"}:
+            return ()
+        parts = [part.strip() for part in text.split(",")]
+        if len(parts) != 3:
+            raise SystemExit(f"坐标点必须使用 x,y,z 格式: {raw_value}")
+        points.append((float(parts[0]), float(parts[1]), float(parts[2])))
+    return tuple(points)
 
 
 def _project_path(value: str | Path) -> Path:

@@ -43,6 +43,7 @@ class DWAConfig:
     path_sample_spacing: float = 0.05
     path_deviation_limit: float = 0.18
     path_distance_window: int = 80
+    use_command_velocity_window: bool = False
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,9 @@ class DWADebug:
     best_linear_velocity: float
     best_angular_velocity: float
     path_distance: float
+    window_linear_velocity: float
+    window_angular_velocity: float
+    velocity_window_source: str
 
 
 class DWAController:
@@ -76,6 +80,7 @@ class DWAController:
         self.grid_map = grid_map
         self.config = config
         self.target_index = 1
+        self._command_window_velocity: tuple[float, float] | None = None
         self.grid_map.obstacle_distance_map()
 
     def compute_command(
@@ -85,6 +90,29 @@ class DWAController:
     ) -> tuple[np.ndarray, DWADebug]:
         x, y, yaw = pose_xyyaw
         current_vx, current_wz = current_velocity
+        if self.config.use_command_velocity_window:
+            # RL policy 对微小速度命令存在响应死区；用上一条高层命令推进窗口，
+            # 避免实测速度尚未响应时每次都把加速过程重置到零附近。
+            if self._command_window_velocity is None:
+                self._command_window_velocity = (
+                    float(
+                        np.clip(
+                            current_vx,
+                            self.config.min_linear_velocity,
+                            self.config.max_linear_velocity,
+                        )
+                    ),
+                    float(
+                        np.clip(
+                            current_wz,
+                            -self.config.max_angular_velocity,
+                            self.config.max_angular_velocity,
+                        )
+                    ),
+                )
+            current_vx, current_wz = self._command_window_velocity
+        window_vx = float(current_vx)
+        window_wz = float(current_wz)
         position = np.array([x, y], dtype=np.float64)
 
         distance_to_goal = float(np.linalg.norm(self.path_world[-1] - position))
@@ -105,7 +133,13 @@ class DWAController:
                 best_linear_velocity=0.0,
                 best_angular_velocity=0.0,
                 path_distance=0.0,
+                window_linear_velocity=window_vx,
+                window_angular_velocity=window_wz,
+                velocity_window_source=(
+                    "command" if self.config.use_command_velocity_window else "measured"
+                ),
             )
+            self._command_window_velocity = (0.0, 0.0)
             return np.zeros(3, dtype=np.float32), debug
 
         near_goal_tracking = False
@@ -166,12 +200,29 @@ class DWAController:
                 best_command = np.array([linear_velocity, 0.0, angular_velocity], dtype=np.float32)
 
         if not np.isfinite(best_score):
-            angular_velocity = np.clip(1.5 * heading_error, -self.config.max_angular_velocity, self.config.max_angular_velocity)
+            dt = max(self.config.control_dt, 1.0e-3)
+            angular_lower, angular_upper = _bounded_dynamic_interval(
+                current_value=current_wz,
+                minimum_value=-self.config.max_angular_velocity,
+                maximum_value=self.config.max_angular_velocity,
+                max_acceleration=self.config.max_angular_accel,
+                dt=dt,
+            )
+            angular_velocity = np.clip(
+                1.5 * heading_error,
+                angular_lower,
+                angular_upper,
+            )
             best_command = np.array([0.0, 0.0, angular_velocity], dtype=np.float32)
             best_score = -1.0
             best_clearance = 0.0
             best_path_distance = float(np.min(self._path_distances(position[None, :])))
 
+        if self.config.use_command_velocity_window:
+            self._command_window_velocity = (
+                float(best_command[0]),
+                float(best_command[2]),
+            )
         debug = DWADebug(
             target_index=target_index,
             target_point=(float(target[0]), float(target[1])),
@@ -188,14 +239,25 @@ class DWAController:
             best_linear_velocity=float(best_command[0]),
             best_angular_velocity=float(best_command[2]),
             path_distance=best_path_distance,
+            window_linear_velocity=window_vx,
+            window_angular_velocity=window_wz,
+            velocity_window_source=(
+                "command" if self.config.use_command_velocity_window else "measured"
+            ),
         )
         return best_command, debug
 
     def _advance_target(self, position: np.ndarray):
-        path_slice_start = max(0, self.target_index - 1)
-        path_slice = self.path_world[path_slice_start:]
+        path_slice_start = self.target_index
+        search_window = max(
+            3,
+            int(math.ceil(self.config.lookahead_distance / max(self.grid_map.resolution, 1.0e-3))) + 3,
+        )
+        path_slice_end = min(len(self.path_world), path_slice_start + search_window)
+        path_slice = self.path_world[path_slice_start:path_slice_end]
         nearest_offset = int(np.argmin(np.linalg.norm(path_slice - position, axis=1)))
-        self.target_index = min(len(self.path_world) - 1, path_slice_start + nearest_offset)
+        nearest_index = min(len(self.path_world) - 1, path_slice_start + nearest_offset)
+        self.target_index = max(self.target_index, nearest_index)
 
         while self.target_index < len(self.path_world) - 1:
             target = self.path_world[self.target_index]
@@ -225,13 +287,26 @@ class DWAController:
         elif distance_to_goal <= self.config.goal_tracking_distance:
             min_active_linear_velocity = self.config.near_goal_min_active_linear_velocity
             min_active_linear_velocity = min(min_active_linear_velocity, linear_cap)
-        linear_lower = max(self.config.min_linear_velocity, current_vx - self.config.max_linear_accel * dt)
-        linear_upper = min(linear_cap, current_vx + self.config.max_linear_accel * dt)
-        angular_lower = max(-self.config.max_angular_velocity, current_wz - self.config.max_angular_accel * dt)
-        angular_upper = min(self.config.max_angular_velocity, current_wz + self.config.max_angular_accel * dt)
+        linear_lower, linear_upper = _bounded_dynamic_interval(
+            current_value=current_vx,
+            minimum_value=self.config.min_linear_velocity,
+            maximum_value=linear_cap,
+            max_acceleration=self.config.max_linear_accel,
+            dt=dt,
+        )
+        angular_lower, angular_upper = _bounded_dynamic_interval(
+            current_value=current_wz,
+            minimum_value=-self.config.max_angular_velocity,
+            maximum_value=self.config.max_angular_velocity,
+            max_acceleration=self.config.max_angular_accel,
+            dt=dt,
+        )
 
         if abs(heading_error) > self.config.rotate_in_place_angle:
-            linear_values = np.array([0.0], dtype=np.float64)
+            linear_values = np.array(
+                [np.clip(0.0, linear_lower, linear_upper)],
+                dtype=np.float64,
+            )
         else:
             linear_values = np.linspace(
                 linear_lower,
@@ -242,10 +317,19 @@ class DWAController:
             linear_values = np.concatenate(
                 [linear_values, np.array([min_active_linear_velocity], dtype=np.float64)]
             )
-            linear_values = np.clip(linear_values, self.config.min_linear_velocity, linear_cap)
+            linear_values = np.clip(linear_values, linear_lower, linear_upper)
             linear_values = np.unique(
                 np.round(
-                    np.concatenate([linear_values, np.array([0.0])]),
+                    np.concatenate(
+                        [
+                            linear_values,
+                            np.array(
+                                [
+                                    np.clip(0.0, linear_lower, linear_upper),
+                                ]
+                            ),
+                        ]
+                    ),
                     decimals=4,
                 )
             )
@@ -275,9 +359,10 @@ class DWAController:
         )
         angular_values = np.clip(
             angular_values,
-            -self.config.max_angular_velocity,
-            self.config.max_angular_velocity,
+            angular_lower,
+            angular_upper,
         )
+        angular_values = np.unique(np.round(angular_values, decimals=4))
 
         return [(float(v), float(w)) for v in linear_values for w in angular_values]
 
@@ -416,6 +501,24 @@ class DWAController:
 
 def _wrap_angle(angle: float) -> float:
     return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def _bounded_dynamic_interval(
+    *,
+    current_value: float,
+    minimum_value: float,
+    maximum_value: float,
+    max_acceleration: float,
+    dt: float,
+) -> tuple[float, float]:
+    """把动态窗口与合法命令范围求交；无交集时饱和到最近合法边界。"""
+
+    lower = max(float(minimum_value), float(current_value) - float(max_acceleration) * float(dt))
+    upper = min(float(maximum_value), float(current_value) + float(max_acceleration) * float(dt))
+    if lower <= upper:
+        return lower, upper
+    saturated = float(np.clip(current_value, minimum_value, maximum_value))
+    return saturated, saturated
 
 
 def _densify_path(path_world: np.ndarray, sample_spacing: float) -> np.ndarray:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import sys
 import tempfile
 import types
@@ -39,12 +40,16 @@ class SimulationViewportTest(unittest.TestCase):
 
         self.assertEqual(candidates[0], "/World/Camera_main")
         self.assertIn("/World/camera_main", candidates)
+        self.assertIn("/World/Camera0", candidates)
         self.assertIn("/World/Camera1", candidates)
         self.assertIn("/World/Camera_font", candidates)
+        self.assertIn("/World/camera0", candidates)
         self.assertIn("/World/camera1", candidates)
         self.assertIn("/World/nav_visual_scene/Camera_main", candidates)
+        self.assertIn("/World/gauss/Camera0", candidates)
         self.assertIn("/World/gauss/Camera1", candidates)
         self.assertIn("/World/gauss/Camera_font", candidates)
+        self.assertIn("/World/gauss/camera0", candidates)
         self.assertIn("/World/gauss/camera1", candidates)
         self.assertIn("/World/contact_visual_scene/camera1", candidates)
         self.assertEqual(len(candidates), len(set(candidates)))
@@ -56,15 +61,38 @@ class SimulationViewportTest(unittest.TestCase):
         self.assertIn("/World/contact_visual_scene/camera_main", candidates)
 
     def test_camera_numbered_names_are_preferred_for_current_scene(self) -> None:
-        candidates = candidate_stage_camera_paths("/World/Camera1")
+        candidates = candidate_stage_camera_paths("/World/Camera0")
 
-        self.assertEqual(candidates[0], "/World/Camera1")
+        self.assertEqual(candidates[0], "/World/Camera0")
+        self.assertIn("/World/Camera1", candidates)
         self.assertIn("/World/Camera2", candidates)
         self.assertIn("/World/Camera3", candidates)
+        self.assertIn("/World/camera0", candidates)
         self.assertIn("/World/camera1", candidates)
+        self.assertIn("/World/gauss/camera0", candidates)
         self.assertIn("/World/gauss/camera1", candidates)
+        self.assertIn("/World/gauss/Camera0", candidates)
         self.assertIn("/World/gauss/Camera1", candidates)
-        self.assertIn("/World/nav_visual_scene/Camera1", candidates)
+        self.assertIn("/World/nav_visual_scene/Camera0", candidates)
+
+    def test_overview_camera0_is_initial_default_for_numbered_scene_cameras(self) -> None:
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(),
+            episode_dir=".",
+            episode_id=0,
+        )
+        recorder._overview_cameras = tuple(  # noqa: SLF001 - 单元测试仅验证相机选择。
+            _CameraCandidate(
+                path=f"/World/Camera{index}",
+                name=f"Camera{index}",
+                normalized_text=f"/world/camera{index} camera{index}",
+                is_observation=False,
+                overview_score=100,
+            )
+            for index in range(4)
+        )
+
+        self.assertEqual(recorder.select_camera_for_state("RESET_EPISODE"), "/World/Camera0")
 
     def test_camera_font_name_is_supported_for_current_scene(self) -> None:
         candidates = candidate_stage_camera_paths("/World/Camera_font")
@@ -251,6 +279,68 @@ class SimulationViewportTest(unittest.TestCase):
 
         self.assertIsNone(frame)
         self.assertEqual(calls, [])
+
+    def test_viewport_capture_converts_anonymous_pycapsule_buffer(self) -> None:
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(),
+            episode_dir=".",
+            episode_id=0,
+        )
+        rgba = (ctypes.c_uint8 * 8)(10, 20, 30, 255, 40, 50, 60, 255)
+        capsule_new = ctypes.pythonapi.PyCapsule_New
+        capsule_new.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
+        capsule_new.restype = ctypes.py_object
+        capsule = capsule_new(ctypes.cast(rgba, ctypes.c_void_p), None, None)
+
+        frame = recorder._buffer_to_image(  # noqa: SLF001
+            capsule,
+            buffer_size=8,
+            width=2,
+            height=1,
+            byte_format="RGBA8_UNORM",
+        )
+
+        np.testing.assert_array_equal(
+            frame,
+            np.asarray([[[10, 20, 30], [40, 50, 60]]], dtype=np.uint8),
+        )
+
+    def test_viewport_capture_callback_contains_invalid_buffer_error(self) -> None:
+        class _FakeCapture:
+            def wait_for_result(self, _timeout: float = 0.0) -> None:
+                return None
+
+        utility_module = types.ModuleType("omni.kit.viewport.utility")
+        utility_module.get_active_viewport = lambda: object()
+
+        def _capture(_viewport: object, callback: object) -> _FakeCapture:
+            callback(object(), 8, 2, 1, "RGBA8_UNORM")
+            return _FakeCapture()
+
+        utility_module.capture_viewport_to_buffer = _capture
+        viewport_module = types.ModuleType("omni.kit.viewport")
+        kit_module = types.ModuleType("omni.kit")
+        omni_module = types.ModuleType("omni")
+        viewport_module.utility = utility_module
+        kit_module.viewport = viewport_module
+        omni_module.kit = kit_module
+        modules = {
+            "omni": omni_module,
+            "omni.kit": kit_module,
+            "omni.kit.viewport": viewport_module,
+            "omni.kit.viewport.utility": utility_module,
+        }
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(),
+            episode_dir=".",
+            episode_id=0,
+        )
+
+        with mock.patch.dict(sys.modules, modules):
+            frame = recorder._capture_viewport_buffer_frame()  # noqa: SLF001
+
+        self.assertIsNone(frame)
+        self.assertIn("viewport_buffer_conversion_failed", recorder._capture_error)  # noqa: SLF001
 
     def test_cli_accepts_overview_video_arguments(self) -> None:
         parser = _build_parser()

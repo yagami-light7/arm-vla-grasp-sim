@@ -60,6 +60,21 @@ class CollisionTerrainWrapperTest(unittest.TestCase):
             self.assertIn('over "go2_x5"', text)
             self.assertIn("active = false", text)
 
+    def test_visual_sublayer_wrapper_can_disable_heavy_visual_prim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            scene_usd = Path(tmp_dir) / "scene.usd"
+            scene_usd.touch()
+            wrapper = write_visual_sublayer_wrapper(
+                scene_usd,
+                "/World/gauss",
+                excluded_prim_paths=("/World/scene_collision",),
+                include_visual_prim=False,
+            )
+
+            text = wrapper.read_text(encoding="utf-8")
+            self.assertIn('over "gauss"', text)
+            self.assertIn("active = false", text)
+
 
 if __name__ == "__main__":
     unittest.main()

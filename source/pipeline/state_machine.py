@@ -76,6 +76,20 @@ def _max_abs(values: tuple[float, ...] | list[float]) -> float | None:
     return max(abs(float(value)) for value in values)
 
 
+def _roll_pitch_from_wxyz(
+    quaternion: tuple[float, float, float, float],
+) -> tuple[float, float]:
+    """从 wxyz 四元数计算底盘 roll 和 pitch。"""
+
+    w, x, y, z = (float(value) for value in quaternion)
+    roll = math.atan2(
+        2.0 * (w * x + y * z),
+        1.0 - 2.0 * (x * x + y * y),
+    )
+    pitch_term = max(-1.0, min(1.0, 2.0 * (w * y - z * x)))
+    return roll, math.asin(pitch_term)
+
+
 def _first_motion_target(plan: Any) -> dict[str, Any] | None:
     segments = plan.metadata.get("segments") if hasattr(plan, "metadata") else None
     if isinstance(segments, list | tuple):
@@ -749,6 +763,10 @@ class FullPhysicsStateMachine:
         self._pick_peak_object_lift_height_m: float | None = None
         self._pick_peak_object_pose: tuple[float, ...] | None = None
         self._pick_peak_step_index: int | None = None
+        self._episode_reset_applied = False
+        self._object_settle_elapsed_steps = 0
+        self._object_settle_stable_steps = 0
+        self._object_settle_completed = False
         self._pending_events = [
             self._event("state_entered", 0),
             self._event("episode_start", 0, {"seed": episode_seed}),
@@ -792,7 +810,7 @@ class FullPhysicsStateMachine:
         action = self._with_carry_gripper_hold(action, state_before)
         action = self._with_carry_arm_home_hold(action, state_before)
         action = self._with_manipulation_base_lock(action, state_before)
-        if self.state.terminal and self.config.full_physics:
+        if self.state.terminal and self._physical_pick_enabled():
             # 终止帧也必须继续施加稳定目标；状态切到 FAILED/DONE 后撤锁一帧
             # 就足以让机器狗在 GUI 保留窗口中失稳。
             action = self._with_terminal_hold(action)
@@ -856,7 +874,7 @@ class FullPhysicsStateMachine:
         events = [self._event("stage_built", observation.step_index)]
         events.extend(self._transition(PipelineState.RESET_EPISODE, observation.step_index))
         metadata = {}
-        if self.config.full_physics:
+        if self._physical_pick_enabled():
             # Stage 创建后必须先执行 episode reset，再允许首个物理步。
             # 否则动态苹果会在 reset/sleep 之前因重力和接触产生角速度。
             metadata = {
@@ -866,9 +884,42 @@ class FullPhysicsStateMachine:
         return RobotAction(source="stage_build", metadata=metadata), events
 
     def _reset_episode(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
-        self.simulation.reset(self.episode_spec, seed=self.episode_seed)
-        events = [self._event("episode_reset", observation.step_index)]
-        if self.config.full_physics:
+        events: list[PipelineEvent] = []
+        if not self._episode_reset_applied:
+            self.simulation.reset(self.episode_spec, seed=self.episode_seed)
+            self._episode_reset_applied = True
+            events.append(self._event("episode_reset", observation.step_index))
+            if self._object_settle_enabled():
+                begin_settle = getattr(self.simulation, "begin_object_settle", None)
+                if not callable(begin_settle):
+                    return RobotAction.idle(source="object_settle"), self._fail(
+                        "object_settle_unsupported",
+                        self.simulation.read(),
+                    )
+                begin_report = dict(begin_settle(self.episode_spec))
+                if begin_report.get("applied") is not True:
+                    return RobotAction.idle(source="object_settle"), self._fail(
+                        "object_settle_start_failed",
+                        self.simulation.read(),
+                        begin_report,
+                    )
+                events.append(
+                    self._event(
+                        "object_settle_started",
+                        observation.step_index,
+                        begin_report,
+                    )
+                )
+                return RobotAction(
+                    source="object_settle",
+                    metadata={"object_settle_active": True},
+                ), events
+        if self._object_settle_enabled() and not self._object_settle_completed:
+            settle_action, settle_events, settled = self._advance_object_settle(observation)
+            events.extend(settle_events)
+            if not settled:
+                return settle_action, events
+        if self._physical_pick_enabled():
             reset_state = self.simulation.read()
             pose_check = dict(reset_state.metadata.get("object_pose_debug_after_reset") or {})
             if pose_check.get("available") is not True or pose_check.get("within_tolerance") is not True:
@@ -907,9 +958,142 @@ class FullPhysicsStateMachine:
         events.extend(self._transition(PipelineState.PLAN_NAV_TO_PICK, observation.step_index))
         return RobotAction.idle(source="episode_reset"), events
 
+    def _advance_object_settle(
+        self,
+        observation: SimulationState,
+    ) -> tuple[RobotAction, list[PipelineEvent], bool]:
+        settings = self.config.manipulation
+        self._object_settle_elapsed_steps += 1
+        pose = observation.object_pose
+        velocity = observation.object_velocity
+        if pose is None or velocity is None or len(velocity) < 6:
+            events = self._fail(
+                "object_settle_state_unavailable",
+                observation,
+                {
+                    "object_pose_available": pose is not None,
+                    "object_velocity_available": velocity is not None,
+                },
+            )
+            return RobotAction.idle(source="object_settle"), events, False
+
+        linear_speed = _vector_norm(tuple(velocity[:3]))
+        angular_speed = _vector_norm(tuple(velocity[3:6]))
+        expected_position = self.episode_spec.object_initial_pose
+        displacement = (
+            _vector_norm(
+                [
+                    float(pose[index]) - float(expected_position[index])
+                    for index in range(3)
+                ]
+            )
+            if expected_position is not None
+            else 0.0
+        )
+        stable = bool(
+            linear_speed <= settings.object_settle_linear_velocity_mps
+            and angular_speed <= settings.object_settle_angular_velocity_rps
+        )
+        root_velocity = observation.robot_root_velocity
+        base_linear_speed = _vector_norm(tuple(root_velocity[:3]))
+        base_angular_speed = _vector_norm(tuple(root_velocity[3:6]))
+        base_roll, base_pitch = _roll_pitch_from_wxyz(
+            tuple(float(value) for value in observation.robot_root_pose[3:7])
+        )
+        base_stable = bool(
+            base_linear_speed <= settings.base_settle_linear_velocity_mps
+            and base_angular_speed <= settings.base_settle_angular_velocity_rps
+            and abs(base_roll) <= settings.base_settle_max_tilt_rad
+            and abs(base_pitch) <= settings.base_settle_max_tilt_rad
+        )
+        if settings.settle_base_before_navigation:
+            stable = stable and base_stable
+        self._object_settle_stable_steps = (
+            self._object_settle_stable_steps + 1 if stable else 0
+        )
+        report = {
+            "elapsed_steps": self._object_settle_elapsed_steps,
+            "stable_steps": self._object_settle_stable_steps,
+            "required_stable_steps": settings.object_settle_required_stable_steps,
+            "linear_speed_mps": linear_speed,
+            "angular_speed_rps": angular_speed,
+            "displacement_from_task_pose_m": displacement,
+            "current_pose": tuple(float(value) for value in pose),
+            "base_settle_enabled": settings.settle_base_before_navigation,
+            "base_stable": base_stable,
+            "base_linear_speed_mps": base_linear_speed,
+            "base_angular_speed_rps": base_angular_speed,
+            "base_roll_rad": base_roll,
+            "base_pitch_rad": base_pitch,
+        }
+        if displacement > settings.object_settle_max_displacement_m:
+            events = self._fail(
+                "object_settle_out_of_bounds",
+                observation,
+                report,
+            )
+            return RobotAction.idle(source="object_settle"), events, False
+        if (
+            self._object_settle_stable_steps
+            < settings.object_settle_required_stable_steps
+        ):
+            if self._object_settle_elapsed_steps >= settings.object_settle_max_steps:
+                failure_reason = (
+                    "base_settle_timeout"
+                    if settings.settle_base_before_navigation and not base_stable
+                    else "object_settle_timeout"
+                )
+                events = self._fail(
+                    failure_reason,
+                    observation,
+                    report,
+                )
+                return RobotAction.idle(source="object_settle"), events, False
+            return RobotAction(
+                source="object_settle",
+                metadata={
+                    "object_settle_active": True,
+                    "object_settle_report": report,
+                },
+            ), [], False
+
+        finalize_settle = getattr(self.simulation, "finalize_object_settle", None)
+        if not callable(finalize_settle):
+            events = self._fail(
+                "object_settle_unsupported",
+                observation,
+                report,
+            )
+            return RobotAction.idle(source="object_settle"), events, False
+        final_report = dict(finalize_settle(self.episode_spec))
+        final_report["stability"] = report
+        if final_report.get("applied") is not True:
+            events = self._fail(
+                "object_settle_finalize_failed",
+                observation,
+                final_report,
+            )
+            return RobotAction.idle(source="object_settle"), events, False
+        self._object_settle_completed = True
+        return (
+            RobotAction.idle(source="object_settle_complete"),
+            [
+                self._event(
+                    "object_initial_pose_stabilized",
+                    observation.step_index,
+                    final_report,
+                )
+            ],
+            True,
+        )
+
     def _plan_nav_to_pick(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
         events = [self._event("nav_to_pick_start", observation.step_index)]
         plan = self.nav_planner.plan(observation, self.episode_spec.pick_goal)
+        plan = replace(
+            plan,
+            metadata={**plan.metadata, "execution_phase": "nav_to_pick"},
+        )
         self.nav_executor.reset(plan)
         self.latest_planner_result = {
             "type": "navigation",
@@ -948,7 +1132,7 @@ class FullPhysicsStateMachine:
             return settle_result
 
         events = [self._event("pick_plan_start", observation.step_index)]
-        if self.config.full_physics:
+        if self._physical_pick_enabled():
             prepare_report = self.simulation.prepare_object_for_pick(self.episode_spec)
             events.append(
                 self._event(
@@ -1093,7 +1277,7 @@ class FullPhysicsStateMachine:
             )
         pick_success_event = (
             "pick_success"
-            if self.config.full_physics
+            if self._physical_pick_enabled()
             else (
                 "manipulation_apply_smoke_pick_apply_success"
                 if self.config.manipulation_apply_smoke
@@ -1102,6 +1286,10 @@ class FullPhysicsStateMachine:
         )
         events = [self._event(pick_success_event, observation.step_index, result.metadata)]
         self._capture_carry_object_tcp_offset(observation)
+        if self.config.pick_smoke:
+            events.append(self._event("pick_smoke_success", observation.step_index, result.metadata))
+            events.extend(self._transition(PipelineState.CLEANUP_EPISODE, observation.step_index))
+            return RobotAction.idle(source="verify_pick_success"), events
         if self._manipulation_only_smoke_enabled():
             if self.episode_spec.place_target_pose is None:
                 return RobotAction.idle(source="verify_pick_success"), self._fail(
@@ -1129,6 +1317,10 @@ class FullPhysicsStateMachine:
             )
         events = [self._event("nav_to_place_start", observation.step_index)]
         plan = self.nav_planner.plan(observation, self.episode_spec.place_goal)
+        plan = replace(
+            plan,
+            metadata={**plan.metadata, "execution_phase": "carry_nav_to_place"},
+        )
         self.nav_executor.reset(plan)
         self.latest_planner_result = {
             "type": "navigation",
@@ -1375,7 +1567,7 @@ class FullPhysicsStateMachine:
         if self.config.simulation_smoke and self.config.keep_window_open:
             metadata["skip_physics_step"] = True
             metadata["skip_reason"] = "simulation_smoke_gui_pose_inspection"
-        if self.config.full_physics:
+        if self._physical_pick_enabled():
             metadata.update(
                 {
                     "terminal_hold": True,
@@ -1388,7 +1580,7 @@ class FullPhysicsStateMachine:
             source="cleanup_episode",
             metadata=metadata,
         )
-        if self.config.full_physics:
+        if self._physical_pick_enabled():
             action = self._with_terminal_hold(action)
         return action, events
 
@@ -1836,7 +2028,7 @@ class FullPhysicsStateMachine:
         )
         if (
             lock_phase is None
-            and self.config.full_physics
+            and self._physical_pick_enabled()
             and action.metadata.get("terminal_hold") is True
         ):
             lock_phase = PipelineState.CLEANUP_EPISODE
@@ -2073,6 +2265,20 @@ class FullPhysicsStateMachine:
 
     def _manipulation_only_smoke_enabled(self) -> bool:
         return bool(self.config.manipulation_smoke or self.config.manipulation_apply_smoke)
+
+    def _physical_pick_enabled(self) -> bool:
+        """返回当前模式是否需要真实物理 pick 保护逻辑。"""
+
+        return bool(self.config.full_physics or self.config.pick_smoke)
+
+    def _object_settle_enabled(self) -> bool:
+        """仅在真实 pick 模式按配置启用动态物体沉降。"""
+
+        return bool(
+            self._physical_pick_enabled()
+            and self.config.manipulation.settle_object_before_navigation
+            and self.episode_spec.object_initial_pose is not None
+        )
 
     def _manipulation_smoke_event(self, suffix: str) -> str:
         prefix = (

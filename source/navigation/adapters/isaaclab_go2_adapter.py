@@ -40,10 +40,26 @@ def _quat_to_roll_pitch(quat_wxyz: Any) -> tuple[float, float]:
 class Go2LocomotionAdapter:
     """Bridge DWA body commands to an Isaac Lab command-conditioned policy."""
 
-    def __init__(self, env: Any, policy: Any, observations: Any):
+    def __init__(
+        self,
+        env: Any,
+        policy: Any,
+        observations: Any,
+        *,
+        standing_command_threshold: float = 0.0,
+        policy_action_warmup_steps: int = 0,
+    ):
+        if standing_command_threshold < 0.0:
+            raise ValueError("standing_command_threshold 不能为负数。")
+        if policy_action_warmup_steps < 0:
+            raise ValueError("policy_action_warmup_steps 不能为负数。")
         self.env = env
         self.policy = policy
         self.observations = observations
+        self.standing_command_threshold = float(standing_command_threshold)
+        self.policy_action_warmup_steps = int(policy_action_warmup_steps)
+        self._policy_action_step = 0
+        self._policy_action_warmup_scale = 1.0
         self.runtime = env.unwrapped
         self.robot = self.runtime.scene["robot"]
         self.base_cmd_term = self.runtime.command_manager._terms.get("base_velocity")
@@ -61,6 +77,8 @@ class Go2LocomotionAdapter:
         self._base_pose_lock_xyzyaw: tuple[float, float, float, float] | None = None
         self._dog_joint_lock_target = None
         self._command = (0.0, 0.0, 0.0)
+        self._effective_command = (0.0, 0.0, 0.0)
+        self._command_is_standing = True
         self._arm_joint_target = None
         self._gripper_joint_target = None
         self._last_actions = None
@@ -261,6 +279,14 @@ class Go2LocomotionAdapter:
 
         self._command = float(vx), float(vy), float(wz)
 
+    def reset_policy_warmup(self) -> None:
+        """重置每个 episode 的 locomotion action 渐入状态。"""
+
+        self._policy_action_step = 0
+        self._policy_action_warmup_scale = (
+            1.0 if self.policy_action_warmup_steps <= 0 else 0.0
+        )
+
     def set_arm_joint_target(self, target: Any | None) -> None:
         """Optionally hold arm joints while the locomotion policy steps."""
 
@@ -408,11 +434,20 @@ class Go2LocomotionAdapter:
         import torch
 
         command = torch.tensor([self._command], dtype=torch.float32, device=self.base_cmd_term.device)
-        self.base_cmd_term.vel_command_b[:] = command
+        command_magnitude = torch.max(torch.abs(command), dim=1).values
+        standing_threshold = max(self.standing_command_threshold, 1.0e-6)
+        is_standing = command_magnitude <= standing_threshold
+        effective_command = command.clone()
+        effective_command[is_standing] = 0.0
+        self.base_cmd_term.vel_command_b[:] = effective_command
+        self._effective_command = tuple(
+            _item(value) for value in effective_command[0]
+        )
+        self._command_is_standing = bool(is_standing[0].item())
         if hasattr(self.base_cmd_term, "is_heading_env"):
             self.base_cmd_term.is_heading_env[:] = False
         if hasattr(self.base_cmd_term, "is_standing_env"):
-            self.base_cmd_term.is_standing_env[:] = torch.linalg.norm(command, dim=1) < 1.0e-6
+            self.base_cmd_term.is_standing_env[:] = is_standing
         if hasattr(self.base_cmd_term, "heading_target"):
             self.base_cmd_term.heading_target[:] = 0.0
         if self.arm_term is not None:
@@ -437,6 +472,18 @@ class Go2LocomotionAdapter:
             clip_actions = getattr(self.env, "clip_actions", None)
             if clip_actions is not None:
                 actions = torch.clamp(actions, -clip_actions, clip_actions)
+            if self.policy_action_warmup_steps > 0:
+                # reset 后从默认关节姿态平滑接管，避免首帧 policy target 阶跃
+                # 在不规则碰撞网格上产生明显弹跳和侧滑。
+                self._policy_action_warmup_scale = min(
+                    1.0,
+                    float(self._policy_action_step + 1)
+                    / float(self.policy_action_warmup_steps),
+                )
+                actions = actions * self._policy_action_warmup_scale
+            else:
+                self._policy_action_warmup_scale = 1.0
+            self._policy_action_step += 1
             # 先裁剪 locomotion policy 输出，再写入 cuRobo 直接关节目标。
             # Foundation 配置中 arm action scale 只有 0.10；如果 override 后再 clip，
             # 1 rad 级别的机械臂目标会被等效压成约 0.1 rad，表现为 pick 阶段原地等待。
@@ -507,7 +554,7 @@ class Go2LocomotionAdapter:
             values["gripper"] = sum(_item(value) for value in gripper_values) / 2.0
         return values
 
-    def diagnostics(self) -> dict[str, float]:
+    def diagnostics(self) -> dict[str, Any]:
         """Return compact locomotion-policy diagnostics for smoke-test logs."""
 
         roll, pitch = _quat_to_roll_pitch(self.robot.data.root_quat_w[0])
@@ -521,11 +568,46 @@ class Go2LocomotionAdapter:
             "command_seen_vx": _item(self.base_cmd_term.vel_command_b[0][0]),
             "command_seen_vy": _item(self.base_cmd_term.vel_command_b[0][1]),
             "command_seen_wz": _item(self.base_cmd_term.vel_command_b[0][2]),
+            "standing_command_threshold": self.standing_command_threshold,
+            "command_is_standing": self._command_is_standing,
+            "policy_action_step": self._policy_action_step,
+            "policy_action_warmup_steps": self.policy_action_warmup_steps,
+            "policy_action_warmup_scale": self._policy_action_warmup_scale,
         }
         if self._last_actions is not None:
             values["action_abs_max"] = _item(self._last_actions[0].abs().max())
             if len(self.dog_joint_ids) == 12:
                 values["dog_action_abs_mean"] = _item(self._last_actions[0, :12].abs().mean())
+        try:
+            policy_obs = self.observations["policy"]
+            if hasattr(policy_obs, "reshape"):
+                flat_obs = policy_obs[0].reshape(-1)
+                segments = {
+                    "base_lin_vel": (0, 3),
+                    "base_ang_vel": (3, 6),
+                    "projected_gravity": (6, 9),
+                    "velocity_commands": (9, 12),
+                    "joint_pos": (12, 30),
+                    "joint_vel": (30, 48),
+                    "last_action": (48, 66),
+                    "height_scan": (66, 253),
+                    "arm_joint_command": (253, 259),
+                    "gripper_command": (259, 260),
+                }
+                observation_report: dict[str, Any] = {
+                    "shape": tuple(int(value) for value in policy_obs.shape),
+                    "segments": {},
+                }
+                for name, (start, end) in segments.items():
+                    segment = flat_obs[start:end]
+                    observation_report["segments"][name] = {
+                        "min": _item(segment.min()),
+                        "max": _item(segment.max()),
+                        "mean": _item(segment.mean()),
+                    }
+                values["policy_observation_report"] = observation_report
+        except (IndexError, KeyError, RuntimeError, TypeError):
+            pass
         try:
             contact_sensor = self.runtime.scene.sensors["contact_forces"]
             contact_forces = contact_sensor.data.net_forces_w[0].norm(dim=-1)

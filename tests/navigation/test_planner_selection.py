@@ -94,28 +94,28 @@ def test_pct_without_fallback_allows_missing_flat_nav_map(tmp_path: Path) -> Non
     assert executor.local_map is not None
 
 
-def test_pct_with_fallback_requires_existing_flat_nav_map(tmp_path: Path) -> None:
+def test_pct_with_fallback_and_missing_flat_nav_map_disables_fallback(tmp_path: Path) -> None:
     spec = replace(
         JsonTaskProvider().load(TASK_PATH),
         nav_map="source/scene/multifloor/nav_map/map.json",
     )
 
-    try:
-        create_navigation_components(
-            config=_config(
-                tmp_path,
-                NavigationSettings(
-                    global_planner="pct",
-                    pct_enabled=True,
-                    pct_fallback_to_astar=True,
-                ),
+    planner, executor, _verifier = create_navigation_components(
+        config=_config(
+            tmp_path,
+            NavigationSettings(
+                global_planner="pct",
+                pct_enabled=True,
+                pct_fallback_to_astar=True,
             ),
-            episode_spec=spec,
-        )
-    except ValueError as exc:
-        assert "requires an existing nav_map" in str(exc)
-    else:
-        raise AssertionError("missing nav_map should fail when PCT fallback is enabled")
+        ),
+        episode_spec=spec,
+    )
+
+    assert isinstance(planner, PCTNavPlanner)
+    assert planner.fallback_planner is None
+    assert planner.config.fallback_to_astar is False
+    assert executor.local_map is not None
 
 
 def test_pct_failure_falls_back_to_astar() -> None:

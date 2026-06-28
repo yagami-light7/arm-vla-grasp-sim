@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import math
+import json
 from typing import Any
 
 import pytest
 
 from source.interfaces import NavGoal, SimulationState
-from source.navigation.pct_adapter import PCTNavPlanner, PCTPlannerConfig
+from source.navigation.pct_adapter import PCTNavPlanner, PCTPlannerClient, PCTPlannerConfig
 
 
 class FakePCTClient:
@@ -55,6 +56,7 @@ def test_pct_nav_planner_returns_xy_waypoints_and_path_3d_metadata() -> None:
     ]
     assert plan.waypoints == ((1.0, 2.0), (-0.0, -0.0), (-2.0, -3.0))
     assert plan.metadata["planner"] == "pct"
+    assert plan.metadata["sim_start"] == pytest.approx((1.0, 2.0, 0.35))
     expected_path_3d = ((1.0, 2.0, 0.35), (-0.0, -0.0, 1.0), (-2.0, -3.0, 1.8))
     for actual, expected in zip(plan.metadata["path_3d"], expected_path_3d, strict=True):
         assert actual == pytest.approx(expected)
@@ -81,6 +83,36 @@ def test_pct_nav_planner_uses_robot_z_when_goal_z_is_missing() -> None:
     assert client.requests[0]["end"] == (-3.0, -4.0, 0.6)
     assert plan.metadata["goal_z_missing"] is True
     assert plan.metadata["goal_z_source"] == "robot_root_pose"
+
+
+def test_pct_client_exports_cross_floor_gateway_in_pct_frame() -> None:
+    client = PCTPlannerClient(
+        PCTPlannerConfig(
+            enabled=True,
+            cross_floor_gateway_points=((1.5, 5.7, 0.6),),
+            cross_floor_gateway_radius_m=1.2,
+        )
+    )
+
+    env = client._server_env()
+
+    assert json.loads(env["PCT_CROSS_FLOOR_GATEWAYS_PCT"]) == [[-1.5, -5.7, 0.6]]
+    assert json.loads(env["PCT_CROSS_FLOOR_STAIR_EXITS_PCT"]) == [
+        [-1.9, -8.0, 3.0]
+    ]
+    assert json.loads(env["PCT_CROSS_FLOOR_STAIR_MIDPOINTS_PCT"]) == [
+        [-1.51822, -6.27683, 0.29486],
+        [-2.94512, -9.14634, 1.64666],
+        [-1.9202, -9.52807, 1.71919],
+        [-2.89841, -7.79872, 2.61031],
+    ]
+    assert env["PCT_CROSS_FLOOR_GATEWAY_RADIUS_M"] == "1.2"
+    assert env["PCT_ROBOT_ROOT_TO_FLOOR_M"] == "0.45"
+    assert env["PCT_BODY_OBSTACLE_MIN_HEIGHT_M"] == "0.3"
+    assert env["PCT_BODY_OBSTACLE_MAX_HEIGHT_M"] == "1.0"
+    assert env["PCT_STAIR_VERTICAL_RADIUS_M"] == "0.6"
+    assert env["PCT_STAIR_PROGRESS_TOLERANCE"] == "0.35"
+    assert env["PCT_STAIR_PROGRESS_COST_WEIGHT"] == "20.0"
 
 
 def test_pct_nav_planner_raises_clear_error_without_fallback() -> None:

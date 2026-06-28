@@ -19,9 +19,12 @@ class IsaacLabNavigationRuntimeConfig:
     agent_entry_point: str = "rsl_rl_cfg_entry_point"
     checkpoint: Path | None = None
     device: str = "cuda:0"
+    standing_command_threshold: float = 0.0
+    policy_action_warmup_steps: int = 0
     terrain_prim_path: str = "/World/scene_collision"
     visual_prim_path: str = "/World/gauss"
-    viewport_camera_prim_path: str = "/World/Camera1"
+    enable_scene_visual: bool = True
+    viewport_camera_prim_path: str = "/World/Camera0"
     hide_navigation_collision_visual: bool = True
     # 数据相机严格对齐 DWA：Go2 头部前视、480x640 RGB、每个控制步更新。
     enable_front_camera: bool = False
@@ -286,6 +289,40 @@ def _collision_candidate_sort_key(candidate: dict[str, Any]) -> tuple[int, float
     )
 
 
+def _retarget_height_scanners(scene_cfg: Any, terrain_prim_path: str) -> tuple[str, ...]:
+    """让地形高度扫描器跟随 runtime 实际导入的碰撞地形。"""
+
+    updated: list[str] = []
+    for sensor_name in ("height_scanner", "height_scanner_base"):
+        sensor_cfg = getattr(scene_cfg, sensor_name, None)
+        if sensor_cfg is None:
+            continue
+        sensor_cfg.mesh_prim_paths = [terrain_prim_path]
+        updated.append(sensor_name)
+    return tuple(updated)
+
+
+def _resolve_rigid_body_prim_path(stage: Any, object_root_path: str) -> str:
+    """解析物体子树中的真实动态刚体，避免把外层定位 Xform 变成父刚体。"""
+
+    from pxr import Usd, UsdPhysics
+
+    root = stage.GetPrimAtPath(object_root_path)
+    if not root or not root.IsValid():
+        raise RuntimeError(f"task object prim is unavailable: {object_root_path}")
+    candidates: list[str] = []
+    for prim in Usd.PrimRange(root):
+        if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            continue
+        enabled_attr = prim.GetAttribute("physics:rigidBodyEnabled")
+        if enabled_attr and enabled_attr.IsValid() and enabled_attr.Get() is False:
+            continue
+        candidates.append(str(prim.GetPath()))
+    if not candidates:
+        raise RuntimeError(f"no enabled RigidBodyAPI exists under {object_root_path}")
+    return object_root_path if object_root_path in candidates else candidates[0]
+
+
 def _collision_cuboid_diagnostics(
     cuboids: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -326,6 +363,7 @@ class IsaacLabNavigationRuntime:
         self._runtime = None
         self._adapter = None
         self._object = None
+        self._settled_object_pose: tuple[float, ...] | None = None
         self._episode_spec: EpisodeSpec | None = None
         self._step_calls = 0
         self._closed = False
@@ -415,6 +453,10 @@ class IsaacLabNavigationRuntime:
     def reset(self, episode_spec: EpisodeSpec, *, seed: int) -> None:
         self._require_ready()
         self._episode_spec = episode_spec
+        self._settled_object_pose = None
+        reset_policy_warmup = getattr(self._adapter, "reset_policy_warmup", None)
+        if callable(reset_policy_warmup):
+            reset_policy_warmup()
         observations, _extras = self._runtime.reset(seed=seed)
         self._adapter.update_observations(self._to_tensor_dict(observations))
         self._environment_terminated = False
@@ -846,10 +888,15 @@ class IsaacLabNavigationRuntime:
                             "patch_count": 0,
                         }
                     )
-            # collision patch 可能取消实例化并重新组合苹果 prim；reset 和相机采集前再隐藏一次。
+            # collision patch 可能取消实例化并重新组合苹果 prim；相机采集前重新显示任务物体。
             import omni.usd
 
             stage_after_collision_patch = omni.usd.get_context().get_stage()
+            self._metadata["object_visibility_after_spawn_report"] = (
+                self._show_only_task_object(stage_after_collision_patch, episode_spec)
+                if stage_after_collision_patch is not None
+                else {"applied": False, "reason": "usd_stage_unavailable"}
+            )
             self._metadata["object_collision_visual_hide_after_spawn_report"] = (
                 self._hide_object_collision_visual(stage_after_collision_patch)
                 if stage_after_collision_patch is not None
@@ -877,7 +924,13 @@ class IsaacLabNavigationRuntime:
                 raise ValueError(f"unsupported runner class: {agent_cfg.class_name}")
             runner.load(checkpoint)
             policy = runner.get_inference_policy(device=wrapped.unwrapped.device)
-            adapter = Go2LocomotionAdapter(wrapped, policy, wrapped.get_observations())
+            adapter = Go2LocomotionAdapter(
+                wrapped,
+                policy,
+                wrapped.get_observations(),
+                standing_command_threshold=self._config.standing_command_threshold,
+                policy_action_warmup_steps=self._config.policy_action_warmup_steps,
+            )
             build_result.update({"env": wrapped, "runtime": wrapped.unwrapped, "adapter": adapter})
 
         original_argv = sys.argv
@@ -924,6 +977,7 @@ class IsaacLabNavigationRuntime:
             self._config.terrain_prim_path,
         )
         env_cfg.scene.num_envs = 1
+        env_cfg.scene.env_spacing = 0.0
         env_cfg.sim.device = self._config.device
         env_cfg.scene.terrain = TerrainImporterCfg(
             prim_path="/World/nav_collision",
@@ -931,11 +985,26 @@ class IsaacLabNavigationRuntime:
             usd_path=str(terrain_usd),
             debug_vis=False,
         )
+        updated_height_scanners = _retarget_height_scanners(
+            env_cfg.scene,
+            env_cfg.scene.terrain.prim_path,
+        )
+        self._metadata["height_scanner_terrain_report"] = {
+            "terrain_prim_path": env_cfg.scene.terrain.prim_path,
+            "updated_sensors": updated_height_scanners,
+        }
+        default_root_pos = tuple(float(value) for value in env_cfg.scene.robot.init_state.pos)
+        start_z = default_root_pos[2] if episode_spec.start.z is None else float(episode_spec.start.z)
+        start_offset = (
+            float(episode_spec.start.x) - default_root_pos[0],
+            float(episode_spec.start.y) - default_root_pos[1],
+            start_z - default_root_pos[2],
+        )
         env_cfg.events.randomize_reset_base.params = {
             "pose_range": {
-                "x": (episode_spec.start.x, episode_spec.start.x),
-                "y": (episode_spec.start.y, episode_spec.start.y),
-                "z": (0.0, 0.0),
+                "x": (start_offset[0], start_offset[0]),
+                "y": (start_offset[1], start_offset[1]),
+                "z": (start_offset[2], start_offset[2]),
                 "roll": (0.0, 0.0),
                 "pitch": (0.0, 0.0),
                 "yaw": (episode_spec.start.yaw, episode_spec.start.yaw),
@@ -944,6 +1013,17 @@ class IsaacLabNavigationRuntime:
                 key: (0.0, 0.0)
                 for key in ("x", "y", "z", "roll", "pitch", "yaw")
             },
+        }
+        self._metadata["episode_reset_pose_request"] = {
+            "target_world_xyz_yaw": (
+                float(episode_spec.start.x),
+                float(episode_spec.start.y),
+                start_z,
+                float(episode_spec.start.yaw),
+            ),
+            "default_root_pos": default_root_pos,
+            "pose_range_offset_xyz": start_offset,
+            "event_semantics": "default_root_state_plus_offset",
         }
         env_cfg.observations.policy.enable_corruption = False
         for event_name in (
@@ -1070,6 +1150,7 @@ class IsaacLabNavigationRuntime:
                 "/World/go2_x5",
                 "/World/mec_arm_6dof",
             ),
+            include_visual_prim=self._config.enable_scene_visual,
         )
         context = omni.usd.get_context()
         stage = context.get_stage()
@@ -1095,6 +1176,7 @@ class IsaacLabNavigationRuntime:
             "wrapper_path": str(wrapper),
             "scene_usd": str(self._resolve_path(episode_spec.scene_usd)),
             "visual_prim_path": self._config.visual_prim_path,
+            "scene_visual_enabled": self._config.enable_scene_visual,
             "excluded_prim_paths": (
                 self._config.terrain_prim_path,
                 "/World/go2_x5",
@@ -1304,16 +1386,22 @@ class IsaacLabNavigationRuntime:
             return {"available": False, "label": label, "reason": "object_initial_pose_missing"}
         if self._object is None:
             return {"available": False, "label": label, "reason": "object_reader_unavailable"}
-        x, y, z, roll, pitch, yaw = episode_spec.object_initial_pose
-        expected_position = (float(x), float(y), float(z))
-        pose_report = self._metadata.get("object_pose_setup_report") or {}
-        expected_quat = tuple(
-            float(value)
-            for value in (
-                pose_report.get("authored_world_quaternion_wxyz")
-                or _quat_wxyz_from_rpy(float(roll), float(pitch), float(yaw))
+        if self._settled_object_pose is not None:
+            expected_position = tuple(float(value) for value in self._settled_object_pose[:3])
+            expected_quat = tuple(float(value) for value in self._settled_object_pose[3:7])
+            baseline_source = "settled_physx_pose"
+        else:
+            x, y, z, roll, pitch, yaw = episode_spec.object_initial_pose
+            expected_position = (float(x), float(y), float(z))
+            pose_report = self._metadata.get("object_pose_setup_report") or {}
+            expected_quat = tuple(
+                float(value)
+                for value in (
+                    pose_report.get("authored_world_quaternion_wxyz")
+                    or _quat_wxyz_from_rpy(float(roll), float(pitch), float(yaw))
+                )
             )
-        )
+            baseline_source = "task_pose"
         try:
             actual_position_raw, actual_quat_raw = self._object.get_world_pose()
             actual_position = _as_tuple(actual_position_raw)
@@ -1340,19 +1428,32 @@ class IsaacLabNavigationRuntime:
             "orientation_error_rad": orientation_error,
             "within_tolerance": position_error <= 0.02 and orientation_error <= 0.10,
             "read_only": True,
+            "baseline_source": baseline_source,
         }
 
     def _initialize_object_reader(self, episode_spec: EpisodeSpec) -> None:
         if not episode_spec.object_prim_path:
             return
+        import omni.usd
         from isaacsim.core.prims import SingleRigidPrim
 
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            raise RuntimeError("Isaac stage is unavailable while initializing object reader")
+        rigid_body_prim_path = _resolve_rigid_body_prim_path(
+            stage,
+            episode_spec.object_prim_path,
+        )
         self._object = SingleRigidPrim(
-            prim_path=episode_spec.object_prim_path,
+            prim_path=rigid_body_prim_path,
             name="full_physics_navigation_object",
             reset_xform_properties=False,
         )
         self._object.initialize()
+        self._metadata["object_reader_report"] = {
+            "object_root_prim_path": episode_spec.object_prim_path,
+            "rigid_body_prim_path": rigid_body_prim_path,
+        }
 
     def prepare_object_for_pick(self, episode_spec: EpisodeSpec) -> dict[str, Any]:
         """对齐 baseline：规划前恢复 task 姿态并清零速度。
@@ -1367,6 +1468,87 @@ class IsaacLabNavigationRuntime:
             reason="before_current_state_pick_planning",
         )
         self._metadata["object_prepare_for_pick_report"] = report
+        return report
+
+    def begin_object_settle(self, episode_spec: EpisodeSpec) -> dict[str, Any]:
+        """唤醒任务物体，让其在导航前自然沉降到稳定接触姿态。"""
+
+        del episode_spec
+        if self._object is None:
+            return {"applied": False, "reason": "object_reader_unavailable"}
+        position, orientation = self._object.get_world_pose()
+        report = {
+            "applied": True,
+            "initial_pose": [
+                *list(_as_tuple(position)),
+                *list(_as_tuple(orientation)),
+            ],
+            "wake_report": self._set_object_sleeping(enabled=False),
+            "baseline_source": "physx_free_settle",
+        }
+        self._metadata["object_settle_begin_report"] = report
+        return report
+
+    def finalize_object_settle(self, episode_spec: EpisodeSpec) -> dict[str, Any]:
+        """记录稳定 PhysX 位姿并冻结物体，供后续导航和 pick 共用。"""
+
+        if self._object is None:
+            return {"applied": False, "reason": "object_reader_unavailable"}
+        import torch
+
+        position, orientation = self._object.get_world_pose()
+        settled_pose = (
+            *tuple(float(value) for value in _as_tuple(position)),
+            *tuple(float(value) for value in _as_tuple(orientation)),
+        )
+        rigid_view = getattr(self._object, "_rigid_prim_view", None)
+        if rigid_view is None or not hasattr(rigid_view, "set_velocities"):
+            raise RuntimeError("SingleRigidPrim 缺少 GPU 合并速度写入接口。")
+        device = getattr(self._runtime, "device", "cpu")
+        rigid_view.set_velocities(
+            torch.zeros((1, 6), dtype=torch.float32, device=device)
+        )
+        sleep_report = self._set_object_sleeping(enabled=True)
+        self._settled_object_pose = settled_pose
+
+        requested_position = tuple(
+            float(value) for value in episode_spec.object_initial_pose[:3]
+        )
+        pose_report = self._metadata.get("object_pose_setup_report") or {}
+        requested_quaternion = tuple(
+            float(value)
+            for value in (
+                pose_report.get("authored_world_quaternion_wxyz")
+                or _quat_wxyz_from_rpy(*episode_spec.object_initial_pose[3:])
+            )
+        )
+        requested_position_error = math.sqrt(
+            sum(
+                (float(actual) - expected) ** 2
+                for actual, expected in zip(settled_pose[:3], requested_position)
+            )
+        )
+        requested_orientation_error = _quat_angle_error_rad(
+            settled_pose[3:7],
+            requested_quaternion,
+        )
+        report = {
+            "applied": True,
+            "settled_pose": settled_pose,
+            "requested_position_xyz": requested_position,
+            "requested_quaternion_wxyz": requested_quaternion,
+            "requested_position_error_m": requested_position_error,
+            "requested_orientation_error_rad": requested_orientation_error,
+            "sleep_report": sleep_report,
+            "baseline_source": "settled_physx_pose",
+        }
+        self._metadata["object_settle_final_report"] = report
+        self._metadata["object_pose_debug_after_reset"] = (
+            self._object_initial_pose_diagnostic(
+                episode_spec,
+                label="after_object_physics_settle",
+            )
+        )
         return report
 
     def _reset_object_pose_and_motion(
@@ -1385,14 +1567,26 @@ class IsaacLabNavigationRuntime:
         import torch
 
         x, y, z, roll, pitch, yaw = episode_spec.object_initial_pose
-        pose_report = self._apply_object_pose(episode_spec)
-        world_quaternion = tuple(
-            float(value)
-            for value in pose_report.get(
-                "authored_world_quaternion_wxyz",
-                _quat_wxyz_from_rpy(roll, pitch, yaw),
+        if self._settled_object_pose is None:
+            pose_report = self._apply_object_pose(episode_spec)
+            target_position = (float(x), float(y), float(z))
+            world_quaternion = tuple(
+                float(value)
+                for value in pose_report.get(
+                    "authored_world_quaternion_wxyz",
+                    _quat_wxyz_from_rpy(roll, pitch, yaw),
+                )
             )
-        )
+        else:
+            target_position = tuple(float(value) for value in self._settled_object_pose[:3])
+            world_quaternion = tuple(
+                float(value) for value in self._settled_object_pose[3:7]
+            )
+            pose_report = {
+                "applied": False,
+                "reason": "reuse_settled_physx_pose",
+                "settled_pose": self._settled_object_pose,
+            }
         device = getattr(self._runtime, "device", "cpu")
         # 不能调用 SingleRigidPrim.set_world_pose：该 API 会把传入的世界四元数
         # 直接写回根 Orient，破坏任务 RPY 与 unitsResolve 的局部组合语义。
@@ -1411,7 +1605,7 @@ class IsaacLabNavigationRuntime:
             "applied": True,
             "reason": reason,
             "object_prim_path": episode_spec.object_prim_path,
-            "target_position_xyz": [float(x), float(y), float(z)],
+            "target_position_xyz": list(target_position),
             "target_root_orient_quaternion_wxyz": list(
                 _quat_wxyz_from_rpy(roll, pitch, yaw)
             ),
@@ -2235,7 +2429,7 @@ class IsaacLabNavigationRuntime:
         }
 
     def _stage_arm_target(self, action: RobotAction) -> dict[str, Any]:
-        """把 arm position target 写入 policy action 槽，不直接改写关节状态。"""
+        """把 arm position target 写入当前 task 支持的机械臂控制通道。"""
 
         if action.arm_joint_positions is None:
             return {
@@ -2263,14 +2457,23 @@ class IsaacLabNavigationRuntime:
 
         override_report = self._adapter.set_direct_arm_action_override(True)
         action_indices = tuple(int(index) for index in override_report.get("arm_action_indices") or ())
-        if (
-            not override_report.get("action_term_available")
-            or len(action_indices) != len(expected_names)
-        ):
-            raise RuntimeError(
-                "Isaac Lab policy action does not expose all arm joints for direct target override: "
-                f"{override_report}"
-            )
+        direct_override_available = (
+            bool(override_report.get("action_term_available"))
+            and len(action_indices) == len(expected_names)
+        )
+        if direct_override_available:
+            arm_control_mode = "policy_action_override"
+            direct_override_enabled = True
+        else:
+            if not hasattr(self._adapter, "apply_arm_joint_target"):
+                raise RuntimeError(
+                    "Isaac Lab arm target control is unavailable: policy action does not expose "
+                    f"all arm joints and adapter has no independent arm target path: {override_report}"
+                )
+            disable_report = self._adapter.set_direct_arm_action_override(False)
+            self._metadata["last_direct_arm_action_override_disable_report"] = disable_report
+            arm_control_mode = "independent_position_target"
+            direct_override_enabled = False
         self._adapter.set_arm_joint_target(target)
         self._pending_arm_tracking_target = {
             "source": action.source,
@@ -2283,7 +2486,8 @@ class IsaacLabNavigationRuntime:
             "target_staged": True,
             "arm_joint_names": joint_names,
             "arm_joint_positions": target,
-            "direct_arm_action_override": True,
+            "arm_control_mode": arm_control_mode,
+            "direct_arm_action_override": direct_override_enabled,
             "arm_action_indices": action_indices,
             # 这里只替换 policy action 槽，禁止通过 direct joint state 制造执行结果。
             "uses_direct_joint_state": False,

@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+PCT_MULTIFLOOR_LOCOMOTION_TASK = "RobotLab-Isaac-Velocity-Rough-Go2-X5-DogOnly-v0"
+
+
 @dataclass(frozen=True)
 class BaseGoalRandomizationSettings:
     """pick/place 导航交接位姿随机化参数。"""
@@ -44,7 +47,7 @@ class StateLimits:
     """Maximum ticks allowed in each type of pipeline phase."""
 
     build_stage: int = 5
-    reset_episode: int = 20
+    reset_episode: int = 300
     planning: int = 180
     navigation: int = 5000
     manipulation: int = 3000
@@ -65,6 +68,7 @@ class NavigationSettings:
     pct_server_python: Path | None = None
     pct_tomogram_path: Path | None = None
     pct_walkable_path: Path | None = None
+    pct_collision_ply_path: Path | None = None
     pct_tomogram_name: str = "mutifloor"
     pct_fallback_to_astar: bool = True
     pct_coord_mode: str = "sim_to_pct_180deg"
@@ -72,6 +76,41 @@ class NavigationSettings:
     pct_offset_y: float = 0.0
     pct_scale_x: float = 1.0
     pct_scale_y: float = 1.0
+    pct_vertical_obstacle_min_slices: int = 0
+    pct_vertical_obstacle_dilation_radius_cells: int = 0
+    pct_global_vertical_obstacle_min_slices: int = 7
+    pct_cross_floor_vertical_obstacle_min_slices: int = 9
+    pct_cross_floor_gateway_points: tuple[tuple[float, float, float], ...] = (
+        (1.5, 5.7, 0.6),
+    )
+    pct_cross_floor_stair_exit_points: tuple[tuple[float, float, float], ...] = (
+        (1.9, 8.0, 3.0),
+    )
+    pct_cross_floor_stair_midpoint_points: tuple[tuple[float, float, float], ...] = (
+        (1.51822, 6.27683, 0.29486),
+        (2.94512, 9.14634, 1.64666),
+        (1.9202, 9.52807, 1.71919),
+        (2.89841, 7.79872, 2.61031),
+    )
+    pct_cross_floor_gateway_radius_m: float = 0.6
+    pct_robot_root_to_floor_m: float = 0.45
+    pct_body_obstacle_min_height_m: float = 0.30
+    pct_body_obstacle_max_height_m: float = 1.0
+    pct_stair_min_horizontal_per_slice_m: float = 0.40
+    pct_stair_max_horizontal_per_slice_m: float = 0.90
+    pct_stair_vertical_radius_m: float = 0.60
+    pct_stair_progress_tolerance: float = 0.35
+    pct_stair_progress_cost_weight: float = 20.0
+    pct_obstacle_clearance_radius_m: float = 0.60
+    pct_obstacle_clearance_cost_weight: float = 2.0
+    pct_multifloor_vertical_obstacle_min_slices: int = 5
+    pct_multifloor_obstacle_inflate_radius: float = 0.12
+    pct_multifloor_route_corridor_radius: float = 0.16
+    pct_task_object_keepout_radius: float = 0.18
+    pct_carry_max_linear_velocity: float = 0.30
+    pct_carry_max_angular_velocity: float = 0.35
+    pct_carry_max_linear_accel: float = 1.50
+    pct_carry_path_deviation_limit: float = 0.14
     goal_z_tolerance: float = 0.35
     # 对齐稳定 random nav-pick-place baseline；0.25 m 已会占用当前 place goal。
     global_inflate_radius: float = 0.20
@@ -120,6 +159,17 @@ class ManipulationSettings:
     lock_base_during_manipulation: bool = True
     lock_support_joints_during_manipulation: bool = True
     replan_pick_from_current_state: bool = True
+    # 多楼层扫描场景中的动态物体先自由沉降，再把稳定 PhysX 位姿作为抓取基准。
+    settle_object_before_navigation: bool = False
+    object_settle_max_steps: int = 240
+    object_settle_required_stable_steps: int = 20
+    object_settle_linear_velocity_mps: float = 0.03
+    object_settle_angular_velocity_rps: float = 0.20
+    object_settle_max_displacement_m: float = 0.25
+    settle_base_before_navigation: bool = False
+    base_settle_linear_velocity_mps: float = 0.08
+    base_settle_angular_velocity_rps: float = 0.30
+    base_settle_max_tilt_rad: float = 0.20
     # 相对上一版统一缩短一半执行时长，实现约 2 倍 tracking 速度；
     # 只改变物理控制目标的时间采样，不修改 cuRobo 路径几何。
     arm_motion_time_scale: float = 0.50
@@ -129,6 +179,7 @@ class ManipulationSettings:
     place_approach_motion_time_scale: float = 1.00
     place_retreat_motion_time_scale: float = 1.00
     arm_post_motion_hold_duration_s: float = 0.75
+    arm_post_motion_joint_error_tolerance: float = 0.030
     # 对齐 video baseline：松爪后先保持释放位姿，让苹果在桌面稳定，再执行退臂。
     place_release_settle_duration_s: float = 0.50
     # 对齐稳定 baseline 的 nav->pick handoff：只停驻并锁住已有姿态，不改变底盘站高。
@@ -245,6 +296,8 @@ class FullPhysicsConfig:
     simulation_smoke: bool = False
     navigation_smoke: bool = False
     navigation_carry_smoke: bool = False
+    pct_plan_preview: bool = False
+    pick_smoke: bool = False
     manipulation_smoke: bool = False
     manipulation_apply_smoke: bool = False
     full_physics: bool = False
@@ -269,6 +322,91 @@ class FullPhysicsConfig:
             raise ValueError("global_planner must be one of: astar, pct")
         if self.navigation.pct_scale_x == 0.0 or self.navigation.pct_scale_y == 0.0:
             raise ValueError("PCT coordinate scales must be non-zero")
+        if self.navigation.pct_vertical_obstacle_min_slices < 0:
+            raise ValueError("pct_vertical_obstacle_min_slices must be non-negative")
+        if self.navigation.pct_vertical_obstacle_dilation_radius_cells < 0:
+            raise ValueError("pct_vertical_obstacle_dilation_radius_cells must be non-negative")
+        if self.navigation.pct_multifloor_vertical_obstacle_min_slices < 1:
+            raise ValueError(
+                "pct_multifloor_vertical_obstacle_min_slices must be positive"
+            )
+        if self.navigation.pct_global_vertical_obstacle_min_slices < 1:
+            raise ValueError(
+                "pct_global_vertical_obstacle_min_slices must be positive"
+            )
+        if self.navigation.pct_cross_floor_vertical_obstacle_min_slices < 1:
+            raise ValueError(
+                "pct_cross_floor_vertical_obstacle_min_slices must be positive"
+            )
+        if self.navigation.pct_cross_floor_gateway_radius_m < 0.0:
+            raise ValueError("pct_cross_floor_gateway_radius_m must be non-negative")
+        for gateway in self.navigation.pct_cross_floor_gateway_points:
+            if len(gateway) != 3:
+                raise ValueError("pct_cross_floor_gateway_points entries must be xyz triples")
+        for stair_exit in self.navigation.pct_cross_floor_stair_exit_points:
+            if len(stair_exit) != 3:
+                raise ValueError(
+                    "pct_cross_floor_stair_exit_points entries must be xyz triples"
+                )
+        for stair_midpoint in self.navigation.pct_cross_floor_stair_midpoint_points:
+            if len(stair_midpoint) != 3:
+                raise ValueError(
+                    "pct_cross_floor_stair_midpoint_points entries must be xyz triples"
+                )
+        if self.navigation.pct_robot_root_to_floor_m < 0.0:
+            raise ValueError("pct_robot_root_to_floor_m must be non-negative")
+        if self.navigation.pct_body_obstacle_min_height_m < 0.0:
+            raise ValueError(
+                "pct_body_obstacle_min_height_m must be non-negative"
+            )
+        if (
+            self.navigation.pct_body_obstacle_max_height_m
+            <= self.navigation.pct_body_obstacle_min_height_m
+        ):
+            raise ValueError(
+                "pct_body_obstacle_max_height_m must exceed minimum height"
+            )
+        if self.navigation.pct_stair_min_horizontal_per_slice_m <= 0.0:
+            raise ValueError(
+                "pct_stair_min_horizontal_per_slice_m must be positive"
+            )
+        if (
+            self.navigation.pct_stair_max_horizontal_per_slice_m
+            < self.navigation.pct_stair_min_horizontal_per_slice_m
+        ):
+            raise ValueError(
+                "pct_stair_max_horizontal_per_slice_m must not be smaller than minimum"
+            )
+        if self.navigation.pct_stair_vertical_radius_m <= 0.0:
+            raise ValueError("pct_stair_vertical_radius_m must be positive")
+        if not 0.0 <= self.navigation.pct_stair_progress_tolerance <= 1.0:
+            raise ValueError("pct_stair_progress_tolerance must be between 0 and 1")
+        if self.navigation.pct_stair_progress_cost_weight < 0.0:
+            raise ValueError("pct_stair_progress_cost_weight must be non-negative")
+        if self.navigation.pct_obstacle_clearance_radius_m < 0.0:
+            raise ValueError(
+                "pct_obstacle_clearance_radius_m must be non-negative"
+            )
+        if self.navigation.pct_obstacle_clearance_cost_weight < 0.0:
+            raise ValueError(
+                "pct_obstacle_clearance_cost_weight must be non-negative"
+            )
+        if self.navigation.pct_multifloor_obstacle_inflate_radius < 0.0:
+            raise ValueError(
+                "pct_multifloor_obstacle_inflate_radius must be non-negative"
+            )
+        if self.navigation.pct_multifloor_route_corridor_radius < 0.0:
+            raise ValueError(
+                "pct_multifloor_route_corridor_radius must be non-negative"
+            )
+        if self.navigation.pct_carry_max_linear_velocity <= 0.0:
+            raise ValueError("pct_carry_max_linear_velocity must be positive")
+        if self.navigation.pct_carry_max_angular_velocity <= 0.0:
+            raise ValueError("pct_carry_max_angular_velocity must be positive")
+        if self.navigation.pct_carry_max_linear_accel <= 0.0:
+            raise ValueError("pct_carry_max_linear_accel must be positive")
+        if self.navigation.pct_carry_path_deviation_limit <= 0.0:
+            raise ValueError("pct_carry_path_deviation_limit must be positive")
         if self.navigation.goal_z_tolerance < 0.0:
             raise ValueError("goal_z_tolerance must be non-negative")
         if self.navigation.dwa_replan_interval_steps < 1:
@@ -289,16 +427,46 @@ class FullPhysicsConfig:
             raise ValueError("policy_profile must be one of: flat, pct_multifloor")
         checkpoint = self.locomotion.locomotion_checkpoint
         checkpoint_missing = checkpoint is None or not Path(checkpoint).expanduser().is_file()
-        if self.locomotion.policy_profile == "pct_multifloor":
+        if self.locomotion.policy_profile == "pct_multifloor" and not self.pct_plan_preview:
             if checkpoint_missing:
                 raise ValueError(
                     "PCT multi-floor policy checkpoint missing. "
                     "Please train or pass --locomotion-checkpoint."
                 )
+            if not self.locomotion.locomotion_task:
+                raise ValueError(
+                    "pct_multifloor policy_profile 需要显式指定兼容的 locomotion_task；"
+                    f"当前 dog-only checkpoint 应使用 {PCT_MULTIFLOOR_LOCOMOTION_TASK}。"
+                )
         elif self.locomotion.locomotion_checkpoint_required and checkpoint_missing:
             raise ValueError("locomotion policy checkpoint missing")
         if not isinstance(self.manipulation.replan_pick_from_current_state, bool):
             raise ValueError("replan_pick_from_current_state must be a bool")
+        if self.manipulation.object_settle_max_steps < 1:
+            raise ValueError("object_settle_max_steps must be positive")
+        if self.manipulation.object_settle_max_steps >= self.limits.reset_episode:
+            raise ValueError("object_settle_max_steps must be smaller than reset_episode tick limit")
+        if self.manipulation.object_settle_required_stable_steps < 1:
+            raise ValueError("object_settle_required_stable_steps must be positive")
+        if (
+            self.manipulation.object_settle_required_stable_steps
+            > self.manipulation.object_settle_max_steps
+        ):
+            raise ValueError(
+                "object_settle_required_stable_steps must not exceed object_settle_max_steps"
+            )
+        if self.manipulation.object_settle_linear_velocity_mps < 0.0:
+            raise ValueError("object_settle_linear_velocity_mps must be non-negative")
+        if self.manipulation.object_settle_angular_velocity_rps < 0.0:
+            raise ValueError("object_settle_angular_velocity_rps must be non-negative")
+        if self.manipulation.object_settle_max_displacement_m <= 0.0:
+            raise ValueError("object_settle_max_displacement_m must be positive")
+        if self.manipulation.base_settle_linear_velocity_mps < 0.0:
+            raise ValueError("base_settle_linear_velocity_mps must be non-negative")
+        if self.manipulation.base_settle_angular_velocity_rps < 0.0:
+            raise ValueError("base_settle_angular_velocity_rps must be non-negative")
+        if self.manipulation.base_settle_max_tilt_rad < 0.0:
+            raise ValueError("base_settle_max_tilt_rad must be non-negative")
         if self.manipulation.arm_motion_time_scale <= 0.0:
             raise ValueError("arm_motion_time_scale must be positive")
         if self.manipulation.pick_approach_motion_time_scale <= 0.0:
@@ -311,6 +479,8 @@ class FullPhysicsConfig:
             raise ValueError("place_retreat_motion_time_scale must be positive")
         if self.manipulation.arm_post_motion_hold_duration_s <= 0.0:
             raise ValueError("arm_post_motion_hold_duration_s must be positive")
+        if self.manipulation.arm_post_motion_joint_error_tolerance < 0.0:
+            raise ValueError("arm_post_motion_joint_error_tolerance must be non-negative")
         if self.manipulation.place_release_settle_duration_s < 0.0:
             raise ValueError("place_release_settle_duration_s must be non-negative")
         if self.manipulation.base_lock_settle_steps < 0:
@@ -458,6 +628,7 @@ class FullPhysicsConfig:
                 self.simulation_smoke,
                 self.navigation_smoke,
                 self.navigation_carry_smoke,
+                self.pick_smoke,
                 self.manipulation_smoke,
                 self.manipulation_apply_smoke,
                 self.full_physics,
@@ -465,8 +636,10 @@ class FullPhysicsConfig:
         )
         if enabled_modes > 1:
             raise ValueError("execution modes are mutually exclusive")
-        if self.full_physics and (self.pick_plan_json is not None or self.place_plan_json is not None):
-            raise ValueError("full_physics uses current-state cuRobo planning; plan JSON fallback is disabled")
+        if (self.full_physics or self.pick_smoke) and (
+            self.pick_plan_json is not None or self.place_plan_json is not None
+        ):
+            raise ValueError("full_physics/pick_smoke use current-state cuRobo planning; plan JSON fallback is disabled")
         if (self.pick_plan_json is None) != (self.place_plan_json is None):
             raise ValueError("pick_plan_json and place_plan_json must be configured together")
 

@@ -2,8 +2,8 @@
   "project": "arm_vla_pct",
   "branch": "pct",
   "goal": "将 flat A* 全局导航替换为 PCT 多楼层规划器，并接入新的 RL locomotion checkpoint 配置。",
-  "current_phase": "phase_12_multifloor_nurec_final_visual",
-  "last_updated": "2026-06-26 21:30:11 CST",
+  "current_phase": "phase_41_pct_3d_stair_surface",
+  "last_updated": "2026-06-28 21:38:25 CST",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -12,8 +12,8 @@
     "pct_external_codebase_cloned": true,
     "pct_external_mutifloor_assets_available": false,
     "pct_external_planner_backend_available": false,
-    "pct_runtime_assets_available": false,
-    "pct_real_server_plan_verified": false,
+    "pct_runtime_assets_available": true,
+    "pct_real_server_plan_verified": true,
     "pct_cross_floor_navigation_verified": false,
     "rl_checkpoint_config_added": true,
     "multifloor_scene_config_added": true,
@@ -59,14 +59,128 @@
     "multifloor_final_visual_layer_ready": true,
     "multifloor_final_visual_gui_verified": false,
     "multifloor_single_high_quality_usda": true,
-    "multifloor_visual_collision_transform_aligned": true
+    "multifloor_visual_collision_transform_aligned": true,
+    "pct_local_grid_server_added": true,
+    "pct_local_grid_server_plan_verified": true,
+    "pct_cross_floor_global_plan_verified": true,
+    "pct_global_collision_ply_hard_obstacles_added": true,
+    "pct_global_diagonal_corner_cutting_fixed": true,
+    "pct_dwa_protected_hard_obstacles_added": true,
+    "pct_safe_carry_route_offline_verified": true,
+    "pct_locomotion_dog_only_task_registered": true,
+    "pct_locomotion_cli_default_task_added": true,
+    "pct_locomotion_checkpoint_dim_mismatch_fixed": true,
+    "multifloor_reset_start_z_fixed": true,
+    "isaac_runtime_numpy_import_fixed": true,
+    "locomotion_config_test_unignored": true,
+    "rl_policy_assets_migrated": true,
+    "rough_source_removed": true,
+    "pct_height_scanner_multifloor_fixed": true,
+    "pct_policy_command_limits_added": true,
+    "pct_navigation_pick_smoke_verified": true,
+    "pct_navigation_collision_visual_mode_added": true,
+    "pct_gui_cuda700_root_cause_isolated": true,
+    "pct_navigation_collision_root_cause_isolated": true,
+    "pct_dwa_uses_pct_local_map": true,
+    "pct_local_map_matches_pct_server_semantics": true,
+    "pct_local_map_merges_neighbor_slices": true,
+    "pct_dynamic_object_keepout_added": true,
+    "multifloor_pick_base_goal_standoff_fixed": true,
+    "pct_navigation_pick_smoke_cli_added": true,
+    "pct_navigation_pick_smoke_unit_tested": true,
+    "pct_full_physics_crossfloor_place_verified": false,
+    "default_viewport_camera0": true,
+    "overview_camera0_default_added": true,
+    "full_physics_navigation_visual_mode_supported": true,
+    "overview_viewport_pycapsule_supported": true,
+    "pick_smoke_reset_video_capture_verified": true,
+    "multifloor_pick_object_prim_corrected": true,
+    "pct_object_physics_settle_added": true,
+    "pct_object_physics_settle_unit_tested": true,
+    "pct_object_physics_settle_real_verified": true,
+    "pct_object_stable_pose_written_to_task": true,
+    "pct_navigation_speed_profile_raised": true,
+    "pct_dwa_out_of_range_window_fixed": true,
+    "pct_base_settle_before_navigation_added": true,
+    "pct_dwa_command_window_ramp_added": true,
+    "pct_policy_standing_deadzone_added": true,
+    "pct_policy_action_warmup_added": true,
+    "pct_multifloor_wall_overlay_added": true,
+    "pct_multifloor_route_corridor_added": true,
+    "pct_carry_speed_limits_added": true,
+    "pct_pick_plan_real_generated": true,
+    "pct_pick_execution_real_verified": true,
+    "pipeline_runtime_exception_summary_added": true,
+    "pct_dog_only_arm_control_fixed": true,
+    "pct_navigation_clearance_profile_tuned": true,
+    "pct_local_map_wall_gap_diagnosed": true,
+    "pct_missing_nav_map_disables_astar_fallback": true,
+    "pct_dwa_vertical_obstacle_layer_added": true,
+    "pct_arm_post_motion_convergence_relaxed": true,
+    "pct_dwa_narrow_corridor_fix_added": true,
+    "pct_dwa_local_refinement_added": true,
+    "pct_dog_only_uses_urdf_asset": true,
+    "pct_start_pose_user_adjusted": true,
+    "pct_dwa_dynamic_window_fixed": true,
+    "pct_same_floor_collinear_refinement_added": true,
+    "pct_multifloor_path_order_preserved": true,
+    "pct_multifloor_route_map_added": true,
+    "pct_cross_floor_executor_offline_verified": true,
+    "pct_task_object_mesh_auto_visible": true,
+    "pct_adjacent_slice_false_multifloor_fixed": true,
+    "pct_same_floor_direct_path_added": true,
+    "pct_vertical_obstacle_default_disabled": true,
+    "pct_start_z_user_adjusted_to_0_25": true,
+    "pct_global_hard_obstacle_min_slices_default_7": true,
+    "pct_grid_server_rejects_pure_vertical_transitions": true,
+    "pct_carry_right_corridor_route_offline_verified": true,
+    "pct_cli_global_hard_obstacle_default_synced": true,
+    "pct_no_path_response_diagnostics_added": true,
+    "pct_plan_to_place_no_path_cli_default_fixed": true,
+    "pct_cross_floor_hard_obstacle_mask_added": true,
+    "pct_cross_floor_middle_door_route_offline_verified": true,
+    "pct_cross_floor_protected_map_synced": true,
+    "pct_plan_preview_cli_added": true,
+    "pct_plan_preview_gui_verified": false,
+    "pct_cross_floor_stair_gateway_config_added": true,
+    "pct_cross_floor_gateway_route_offline_verified": true,
+    "pct_cross_floor_strict_gateway_no_path_diagnosed": true,
+    "pct_cross_floor_probe_requires_stair_gateway": true,
+    "pct_global_slice_obstacle_volume_added": true,
+    "pct_cross_floor_monotonic_stair_route_added": true,
+    "pct_relaxed_cross_floor_fallback_removed": true,
+    "pct_updated_place_goal_offline_verified": true,
+    "pct_dwa_cross_floor_projection_conflict_fixed": true,
+    "pct_collision_triangle_body_volume_added": true,
+    "pct_furniture_obstacle_avoidance_added": true,
+    "pct_stair_entry_exit_corridor_added": true,
+    "pct_root_floor_slice_offset_added": true,
+    "pct_compressed_path_collision_free_verified": true,
+    "pct_stair_vertical_centerline_added": true,
+    "pct_stair_progress_slice_constraint_added": true,
+    "pct_stair_vertical_waypoints_preserved": true,
+    "pct_natural_stair_ascent_offline_verified": true,
+    "pct_multifloor_place_goal_distance_test_relaxed": true,
+    "pct_stair_polyline_midpoint_added": true,
+    "pct_stair_corner_forced_waypoint_added": true,
+    "pct_stair_corner_route_offline_verified": true,
+    "pct_unordered_stair_sampling_added": true,
+    "pct_stair_midpoints_are_not_task_waypoints": true,
+    "pct_stair_progress_soft_cost_added": true,
+    "pct_stair_progress_default_tuned": true,
+    "pct_unordered_stair_route_offline_verified": true,
+    "pct_3d_stair_surface_constraint_added": true,
+    "pct_u_stair_xy_progress_ambiguity_fixed": true,
+    "pct_stair_platform_order_auto_resolved": true,
+    "pct_stair_surface_route_offline_verified": true,
+    "multifloor_pick_goal_physical_standoff_fixed": true
   },
   "local_assets": {
-    "rl_policy_source_dir": "Rough/",
+    "rl_policy_source_dir": null,
     "rl_policy_runtime_dir": "checkpoints/go2_x5/pct_multifloor/",
     "rl_policy_checkpoint": "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
-    "rl_policy_checkpoint_source": "Rough/model_26000.pt",
-    "multifloor_scene_source_dir": "Yinluyuan/",
+    "rl_policy_checkpoint_source": "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
+    "multifloor_scene_source_dir": null,
     "multifloor_scene_runtime_dir": "source/scene/multifloor/",
     "multifloor_scene_files": [
       "source/scene/multifloor/ply/3dgs_collision.ply",
@@ -105,14 +219,12 @@
     "gsplat_preview_available": true,
     "overview_camera_trajectory_export_supported": true,
     "gsplat_trajectory_render_supported": true,
-    "pct_tomogram_available": false,
-    "pct_walkable_available": false,
+    "pct_tomogram_available": true,
+    "pct_walkable_available": true,
     "commit_policy": "本地资产只用于运行，不提交到 git",
     "notes": [
-      "Rough/ 保留原始本地 RL policy checkpoint 和导出 policy 文件。",
-      "checkpoints/go2_x5/pct_multifloor/ 通过软链接整理新 policy checkpoint 和导出 policy。",
-      "Yinluyuan/ 保留原始本地多楼层导航场景资产。",
-      "source/scene/multifloor/yinluyuan/ 通过软链接整理 PLY 场景资产。",
+      "Rough/ 中的 checkpoint、导出 policy、训练日志和配置已迁移为 checkpoints/go2_x5/pct_multifloor/ 下的实体文件，原 Rough/ 已删除。",
+      "Yinluyuan/ 中的多楼层导航场景资产已迁移到 source/scene/multifloor/，原目录已删除，最终资产树不使用软链接。",
       "yinluyuan_collision.usd、yinluyuan_go2_x5.usd 和 yinluyuan_visual_points.usda 已本地生成，但按 .gitignore 不提交。",
       "/World/gauss 当前引用 UsdGeom.Points 点云视觉层，可用于预览检查，不再是 collision mesh 复制体。",
       "yinluyuan_visual_points.usda 是 3DGS PLY 的点云近似，不是最终原生 3DGS splat renderer；正式录制仍应替换为真 3DGS 渲染或高质量 visual USD。",
@@ -141,7 +253,33 @@
       "source/scene/multifloor/usda/ 现在只保留 multifloor.usda；旧的 multifloor_nurec、collision_only、100k、2M、12M 诊断 USDA 已删除。",
       "最终 source/scene/multifloor/usdz/multifloor.usdz 由 16760135 个 clean Gaussian 导出，保留 opacity>=0.2 且 max scale<=0.5m，包体约 1.98GB。",
       "/World/gauss 已修正为 rotateXYZ=(0,0,180)，与 /World/scene_collision 的 Z 轴 180 度旋转对齐，避免 visual 与 collision 相对旋转。",
-      "tools/scene/validate_multifloor_usd_assets.py 已检查 NuRec /World/gauss rotateXYZ，防止后续重建回退到 SAGE template 的 rotateX=-90。"
+      "tools/scene/validate_multifloor_usd_assets.py 已检查 NuRec /World/gauss rotateXYZ，防止后续重建回退到 SAGE template 的 rotateX=-90。",
+      "scripts/navigation/pct_grid_server.py 是本仓库迁移版 PCT-compatible stdin/stdout JSON server，当前 pipeline 默认使用它，不直接调用 external/PCT API。",
+      "source/scene/multifloor/mutifloor.pickle 和 source/scene/multifloor/mutifloor_ply_walkable.npy 已本地生成，可供 PCTNavPlanner 默认读取。",
+      "outputs/pct_plan_probe.json 已验证 start_to_pick 为 slice 10->10，pick_to_place 为 slice 10->17，属于跨楼层全局规划；Isaac Sim 真实行走 smoke 仍未运行。",
+      "checkpoints/go2_x5/pct_multifloor/model_26000.pt 的 actor 输入为 260 维、action 输出为 12 维，不能加载到 18 维 arm-locomotion task。",
+      "pct_multifloor CLI 现在默认使用 RobotLab-Isaac-Velocity-Rough-Go2-X5-DogOnly-v0；程序化构造 FullPhysicsConfig 时也必须显式传入兼容 locomotion_task。",
+      "IsaacLabNavigationRuntime reset 起点现在按 reset_root_state_uniform 的 default_root_state_plus_offset 语义计算 x/y/z offset，避免丢失 start.z。",
+      "使用 task JSON 中手动布置的 start/pick/place 验收时需要传 --no-randomize-task --no-randomize-base-goal，避免默认随机化覆盖目标。",
+      "Codex headless simulation-smoke 已修复 source/simulation/isaac_runtime.py 缺少 numpy import 的 NameError；当前环境后续失败在 CUDA driver/GPU 不可见导致 PhysX tensor backend 无效。",
+      "PCT navigation smoke 的 DWA local map 已改为 tomogram traversability 与 walkable OR，并合并相邻 slice，避免 PCT 路径点在 DWA 中被误判为障碍。",
+      "pick.object_pose_world 会在 PCT local map 中投影为小半径 keepout，避免底盘把苹果当成可穿越空间；pick.base_goal 仍是机器人底盘站位。",
+      "pipeline 默认第三人称 viewport camera 已切换为 /World/Camera0，并在 overview recorder 中优先选择 Camera0，匹配当前 multifloor 场景的 Camera0-8 布置。",
+      "新增 --pick-smoke 模式用于真实执行 nav_to_pick 和 pick；pick 成功后直接 cleanup，不进入 nav_to_place / place，适合作为机械臂接入的下一阶段验收。",
+      "full_physics 和 pick_smoke 分支现在也会应用 --navigation-visual-mode；pct_multifloor + auto 默认使用 collision 轻量视觉，避免物理验收误加载完整 NuRec visual。",
+      "PCT DWA local map 现在会从 3dgs_collision.ply 提取跨多个 z slice 的垂直障碍层，并叠加到 walkable/tomogram local map；PCT 全局 server 仍保持原 walkable 规划语义。",
+      "pct_multifloor DogOnly policy 下机械臂 strict post-motion 收敛判定放宽到至少 1.0s / 0.060rad；flat profile 仍保持 0.75s / 0.030rad。",
+      "PCT pct_multifloor DogOnly task 现在复用 GO2_X5_CFG 的 URDF spawn，不再引用 source/robot/go2_x5/pct_multifloor/go2_x5.usd，避免 stale USD 覆盖 URDF 中的末端黑色材质。",
+      "PCT DWA 执行阶段会在本地 collision/walkable map 上对 PCT 稀疏 XY waypoint 做一次 A* 细化，并追加真实 NavGoal 作为终点，防止追 snapped PCT 终点导致 verifier 前停住。",
+      "用户指定的多楼层起点已更新为 tasks/nav_pick_place_apple_multifloor_pct.json start x=-4.2,y=0.60。",
+      "PCT 全局硬障碍默认阈值已从6个高度切片调整为7个高度切片；真实失败日志显示阈值6会把右侧更宽通道误封，迫使 carry 路径贴左侧窄墙口。",
+      "scripts/navigation/pct_grid_server.py 现在禁止跨 slice 的同 XY 纯竖直邻接，避免把楼梯/坡道压缩成 DWA 看不懂的电梯式 z 跳变。",
+      "run_full_physics_pipeline.py 的 --pct-global-vertical-obstacle-min-slices 默认值已改为读取 NavigationSettings 默认值，避免 CLI 默认值再次覆盖配置默认值。",
+      "PCT grid server 的 no_path 响应现在包含 hard_obstacle_cells 和 hard_obstacle_min_slices，便于从 summary 直接定位阈值问题。",
+      "PCT grid server 现在同层规划使用默认7-slice硬障碍，跨楼层规划使用9-slice硬障碍，避免 Yinluyuan pick_to_place 被低层噪声迫使走远离楼梯的小门。",
+      "run_full_physics_pipeline.py 新增 --pct-plan-preview，可在 Isaac GUI 中绘制 /World/PCTPlanPreview 路线而不执行 DWA/RL/机械臂。",
+      "PCT grid server 现在对跨楼层路径先强制经过 Yinluyuan 楼梯入口 gateway，默认 Isaac Sim 坐标为 (1.5, 5.7, 0.6)，避免远离楼梯的 tomogram 漏洞直接触发跨 slice 换层。",
+      "当前 tomogram 在严格 gateway 内连续换层时返回 no_path；server 会记录 cross_floor_gateway_mode=relaxed_after_strict_no_path，表示路线已先经过楼梯入口，但后续仍需用 tomogram 修补或更多楼梯 gateway 点进一步收紧。"
     ],
     "multifloor_ply_dir": "source/scene/multifloor/ply/",
     "multifloor_collision_ply": "source/scene/multifloor/ply/3dgs_collision.ply",
@@ -168,7 +306,7 @@
     "object_asset_dir": "source/scene/objects/",
     "multifloor_nav_map_placeholder": "source/scene/multifloor/nav_map/README.md",
     "multifloor_collision_only_usda": "source/scene/multifloor/usda/multifloor_collision_only.usda",
-    "multifloor_task_object_prim": "/World/apple",
+    "multifloor_task_object_prim": "/World/apple_01",
     "multifloor_safe_usda": "source/scene/multifloor/usda/multifloor.usda",
     "multifloor_nurec_usda": "source/scene/multifloor/usda/multifloor_nurec.usda",
     "nurec_visual_stage_available": true,
@@ -185,7 +323,46 @@
     "multifloor_final_max_scale_m": 0.5,
     "multifloor_usda_files_remaining": [
       "source/scene/multifloor/usda/multifloor.usda"
-    ]
+    ],
+    "pct_local_asset_builder": "scripts/navigation/build_pct_multifloor_assets.py",
+    "pct_local_server_script": "scripts/navigation/pct_grid_server.py",
+    "pct_tomogram": "source/scene/multifloor/mutifloor.pickle",
+    "pct_walkable": "source/scene/multifloor/mutifloor_ply_walkable.npy",
+    "pct_plan_probe_report": "outputs/pct_plan_probe.json",
+    "pct_plan_probe_server_script": "scripts/navigation/pct_grid_server.py",
+    "pct_plan_probe_uses_external_pct_api": false,
+    "pct_start_pose": {
+      "x": -4.2,
+      "y": 0.6,
+      "z": 0.36742,
+      "yaw": 1.5855269056817287
+    },
+    "pct_pick_pose": {
+      "x": -3.5059430599212646,
+      "y": 7.245284080505371,
+      "z": 0.5628772974014282
+    },
+    "pct_place_pose": {
+      "x": 0.36482,
+      "y": -0.64061,
+      "z": 3.82064
+    },
+    "pct_probe_start_to_pick": {
+      "waypoint_count": 7,
+      "slice_start": 10,
+      "slice_end": 10
+    },
+    "pct_probe_pick_to_place": {
+      "waypoint_count": 25,
+      "slice_start": 10,
+      "slice_end": 17
+    },
+    "pct_locomotion_default_task": "RobotLab-Isaac-Velocity-Rough-Go2-X5-DogOnly-v0",
+    "pct_locomotion_checkpoint_expected_action_dim": 12,
+    "pct_locomotion_checkpoint_expected_actor_obs_dim": 260,
+    "pct_locomotion_task_action_dim": "12 leg actions + 0-dim arm command action term",
+    "pct_locomotion_fixed_goal_smoke_flags": "--no-randomize-task --no-randomize-base-goal",
+    "pct_collision_ply": "source/scene/multifloor/ply/3dgs_collision.ply"
   },
   "pct_codebase_notes": {
     "coordinate_rule": "pct_x=-sim_x, pct_y=-sim_y, pct_z=sim_z",
@@ -198,7 +375,14 @@
     ],
     "planner_server": "pct_server.py",
     "planner_protocol": "stdin/stdout JSON",
-    "visualization_state_file": "/tmp/pct_nav_state.json"
+    "visualization_state_file": "/tmp/pct_nav_state.json",
+    "external_pct_usage": "reference_only",
+    "local_build_script": "scripts/navigation/build_pct_multifloor_assets.py",
+    "local_planner_server": "scripts/navigation/pct_grid_server.py",
+    "runtime_server_protocol": "stdin/stdout JSON",
+    "runtime_uses_external_pct_api": false,
+    "local_tomogram_path": "source/scene/multifloor/mutifloor.pickle",
+    "local_walkable_path": "source/scene/multifloor/mutifloor_ply_walkable.npy"
   },
   "progress_log": [
     {
@@ -1439,32 +1623,2145 @@
         "如果最终 17M 版本仍有显存压力，可调高 opacity 阈值到 0.25 生成约 1505 万 Gaussian 版本。",
         "视觉确认后继续生成 PCT tomogram/walkable，并运行真实 PCT server plan 验证跨楼层路径。"
       ]
+    },
+    {
+      "time": "2026-06-26 23:02:21 CST",
+      "summary": "将 PCT 运行入口收敛到本仓库本地代码，默认使用 scripts/navigation/pct_grid_server.py 和本地 tomogram/walkable；按用户给定 Isaac Sim Transform 更新多楼层 task，并验证 start->pick->place 跨楼层全局规划。",
+      "files_changed": [
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "scripts/navigation/build_pct_multifloor_assets.py",
+        "scripts/navigation/pct_grid_server.py",
+        "scripts/navigation/probe_pct_plan.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "source/navigation/pct_adapter.py",
+        "source/pipeline/navigation_smoke.py",
+        "tasks/nav_pick_place_apple_multifloor_pct.json",
+        "tests/navigation/test_multifloor_task_goal.py",
+        "tests/navigation/test_planner_selection.py"
+      ],
+      "problems": [
+        {
+          "problem": "PCT probe 和文档仍容易把 external/PCT 当作默认运行入口。",
+          "root_cause": "早期迁移阶段先 clone 了 external/PCT 并沿用了 pct_planner_root / pct_server.py 的外部仓库概念。",
+          "fix": "probe 默认 pct_planner_root 改为 null，navigation factory 在 PCT 模式默认传入本仓库 scripts/navigation/pct_grid_server.py、mutifloor.pickle 和 mutifloor_ply_walkable.npy；文档明确 external/PCT 仅作参考。",
+          "prevention": "新增 planner selection 测试断言默认 PCT server/tomogram/walkable 均来自本仓库路径。"
+        },
+        {
+          "problem": "多楼层 task 测试仍期待旧模板 z/slice 值。",
+          "root_cause": "task JSON 已按用户在 Isaac Sim 中布置的 start/pick/place Transform 更新，但测试预期没有同步。",
+          "fix": "更新 tests/navigation/test_multifloor_task_goal.py，验证新的 z 值，并允许 slice_id 为 None 由 PCT tomogram snap 推断。",
+          "prevention": "后续修改 task 真实坐标时同步运行 tests/navigation，避免模板预期滞后。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/navigation/probe_pct_plan.py --pct-server-python /data/conda_envs/sage/bin/python --startup-timeout-s 20 --request-timeout-s 60 --output-json outputs/pct_plan_probe.json",
+          "result": "passed",
+          "note": "planned=true，warnings=[]；start_to_pick slice 10->10，pick_to_place slice 10->17，pick_to_place z_delta=3.25886。"
+        },
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py scripts/navigation/build_pct_multifloor_assets.py scripts/navigation/pct_grid_server.py scripts/navigation/probe_pct_plan.py",
+          "result": "passed",
+          "note": "导航接口、PCT adapter、pipeline factory、CLI 和本地 PCT 工具编译通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "13 passed。禁用 pytest 插件自动加载是为了避开本机 ROS pytest 插件依赖问题。"
+        },
+        {
+          "command": "python -m json.tool tasks/nav_pick_place_apple_multifloor_pct.json && python -m json.tool outputs/pct_plan_probe.json",
+          "result": "passed",
+          "note": "多楼层 task 和 PCT probe 报告 JSON 格式有效。"
+        },
+        {
+          "command": "Isaac Sim navigation smoke with --global-planner pct",
+          "result": "not_run",
+          "note": "未运行 Isaac Sim smoke：当前回合只验证了本地 PCT 全局规划链路；真实行走还需要启动 Isaac Sim/Isaac Lab。"
+        }
+      ],
+      "next_steps": [
+        "使用 --global-planner pct --pct-no-fallback --policy-profile pct_multifloor 运行 navigation-smoke，验证机器人是否能沿 PCT path 执行到 pick 点。",
+        "如果 smoke 中机器人无法上楼，下一步优先检查 RL locomotion checkpoint 加载和 path-following command，而不是改 PCT 全局 planner。",
+        "后续将 DwaNavExecutor 或 RL path follower 扩展为消费 NavPlan.metadata[\"path_3d\"] 中的 z/slice 信息。"
+      ]
+    },
+    {
+      "time": "2026-06-26 23:58:12 CST",
+      "summary": "修复 pct_multifloor 运行时 Rough/model_26000.pt 与 Isaac Lab locomotion task 维度错配；新增本地 DogOnly rough task 注册、0 维机械臂 action term、补齐观测，并修复多楼层起点 z reset 以及 IsaacRuntime 缺少 numpy import 的 build 阶段错误。",
+      "files_changed": [
+        ".gitignore",
+        "configs/navigation/pct_multifloor_policy.yaml",
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "source/pipeline/__init__.py",
+        "source/pipeline/config.py",
+        "source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/quadruped/go2_x5/__init__.py",
+        "source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/quadruped/go2_x5/agents/rsl_rl_ppo_cfg.py",
+        "source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/quadruped/go2_x5/train_route_env_cfg.py",
+        "source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/mdp/__init__.py",
+        "source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/mdp/actions.py",
+        "source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/mdp/observations.py",
+        "source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/velocity_env_cfg.py",
+        "source/simulation/isaac_runtime.py",
+        "source/simulation/isaaclab_runtime.py",
+        "tests/navigation/test_locomotion_policy_config.py"
+      ],
+      "problems": [
+        {
+          "problem": "RSL-RL load checkpoint 时报 std、actor、critic size mismatch，机器人无法开始运动。",
+          "root_cause": "Rough/model_26000.pt 是 dog-only rough checkpoint：actor 输入 260 维、输出 12 维腿部 action；pipeline 在 pct_multifloor profile 下仍可能使用默认 Foundation / arm-locomotion task，当前模型会构造 18 维 action 和 259 维 actor 输入。",
+          "fix": "新增本仓库本地 Go2X5DogOnlyRoughEnvCfg 和 Go2X5DogOnlyRoughPPORunnerCfg；policy 只控制 12 个腿部关节，机械臂通过 0 维 ArmCommandPositionAction 固定姿态；last_action 观测补齐到 18 维并增加 1 维固定 gripper 占位；CLI 在 --policy-profile pct_multifloor 且未显式传 --locomotion-task 时默认使用该 DogOnly task。",
+          "prevention": "配置层新增 pct_multifloor profile 必须显式绑定兼容 locomotion_task 的检查；docs 和训练 YAML 记录当前 checkpoint 的 action/observation 维度约束。"
+        },
+        {
+          "problem": "机器人初始位置没有落在 task JSON 指定的 start.z。",
+          "root_cause": "Isaac Lab 的 reset_root_state_uniform 会把 pose_range 当作 default_root_state 的 offset；旧代码把 x/y 当绝对值写入，并把 z 固定成 0.0，导致多楼层 start.z 被丢弃。",
+          "fix": "IsaacLabNavigationRuntime._configure_env() 读取 env_cfg.scene.robot.init_state.pos，把 task start x/y/z 转成相对于 default root pos 的 offset，并记录 episode_reset_pose_request metadata。",
+          "prevention": "后续修改 reset 逻辑时必须按 default_root_state_plus_offset 语义处理，并检查 metadata 中 target_world_xyz_yaw 与 pose_range_offset_xyz。"
+        },
+        {
+          "problem": "headless simulation-smoke build 阶段出现 name 'np' is not defined。",
+          "root_cause": "source/simulation/isaac_runtime.py 中已有多处 np.zeros/np.asarray 调用，但文件顶部缺少 import numpy as np。",
+          "fix": "补充 import numpy as np。",
+          "prevention": "新增或移动 runtime 数组操作时运行 py_compile 和最小 smoke；遇到 build_stage failed 时先读 summary/events 中的真实 exception。"
+        },
+        {
+          "problem": "使用用户手动布置的三个位姿验收时，pick/place 可能被默认随机化覆盖。",
+          "root_cause": "run_full_physics_pipeline.py 默认开启 --randomize-task 和 --randomize-base-goal，这是旧 flat pipeline 的默认行为。",
+          "fix": "文档中的 PCT smoke 命令补充 --no-randomize-task --no-randomize-base-goal；dry-run 已验证这两个参数会保留 task JSON 中的 start/pick/place。",
+          "prevention": "多楼层固定场景验收命令默认使用 no-randomize 参数，后续再单独设计多楼层随机采样范围。"
+        },
+        {
+          "problem": "Codex 当前环境无法完成真实 Isaac smoke。",
+          "root_cause": "当前执行上下文中 NVIDIA driver/CUDA 不可见，Isaac/PhysX 日志显示 no CUDA-capable device、NVML_ERROR_DRIVER_NOT_LOADED，随后 PhysX tensor backend 无法读取 rigid body velocities。",
+          "fix": "本次不伪造 smoke 结果；只记录该环境限制，并保留用户本机 GUI/Isaac 环境继续验证。",
+          "prevention": "真实 navigation-smoke 需要在用户能正常打开 Isaac Sim 且 nvidia-smi 可用的环境中运行；Codex 只把无 GPU smoke 结果标记为 failed/not_run。"
+        },
+        {
+          "problem": "新增 tests/navigation/test_locomotion_policy_config.py 后 git status 不显示该文件。",
+          "root_cause": ".gitignore 中存在 tests/ 规则，历史已跟踪测试不受影响，但新增测试会被忽略。",
+          "fix": "在 .gitignore 中只放开 tests/、tests/navigation/ 和本次新增的 test_locomotion_policy_config.py。",
+          "prevention": "后续新增测试时先用 git check-ignore -v 检查是否被忽略，必要时添加窄范围 unignore 规则。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/__init__.py source/pipeline/navigation_smoke.py source/simulation/isaaclab_runtime.py scripts/pipeline/run_full_physics_pipeline.py source/robot_lab/... source/simulation/isaac_runtime.py",
+          "result": "passed",
+          "note": "导航接口、PCT adapter、pipeline config/CLI、IsaacLab runtime、Isaac runtime 和本地 robot_lab task/action/observation 文件编译通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "15 passed。新增 locomotion policy config 测试覆盖 pct_multifloor 缺少 locomotion_task 的早失败和 DogOnly task 接受路径。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python - <<PY import gymnasium; import robot_lab.tasks; gym.spec(\"RobotLab-Isaac-Velocity-Rough-Go2-X5-DogOnly-v0\") PY",
+          "result": "passed",
+          "note": "Gym registry 能找到本地 DogOnly rough task 及 RSL-RL runner config entry point。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --dry-run --global-planner pct --pct-no-fallback --policy-profile pct_multifloor --locomotion-checkpoint checkpoints/go2_x5/pct_multifloor/model_26000.pt --no-randomize-task --no-randomize-base-goal",
+          "result": "passed",
+          "note": "CLI dry-run 构造 FullPhysicsConfig 成功，保留 task JSON 中的固定多楼层 start/pick/place。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --simulation-smoke --headless --global-planner pct --pct-no-fallback --policy-profile pct_multifloor --locomotion-checkpoint checkpoints/go2_x5/pct_multifloor/model_26000.pt --no-randomize-task --no-randomize-base-goal",
+          "result": "failed",
+          "note": "第一次失败于 np 未导入，已修复；第二次失败于当前 Codex 环境无 CUDA/driver，summary error 为 Failed to get rigid body velocities from backend。未观察到原始 RSL-RL size mismatch。"
+        },
+        {
+          "command": "Isaac Sim navigation-smoke with --global-planner pct",
+          "result": "not_run",
+          "note": "未运行完整导航 smoke：当前 Codex 环境无法提供 CUDA/driver；需要用户在本机 Isaac Sim 环境继续运行。"
+        },
+        {
+          "command": "git check-ignore -v tests/navigation/test_locomotion_policy_config.py || true",
+          "result": "passed",
+          "note": "修复后该新增测试文件不再被 .gitignore 忽略。"
+        }
+      ],
+      "next_steps": [
+        "用户在可见 GPU 的 Isaac Sim 环境中重新运行 PCT navigation smoke，命令保留 --policy-profile pct_multifloor、checkpoint 和 --no-randomize-task --no-randomize-base-goal。",
+        "如果 checkpoint 仍 size mismatch，检查命令中是否显式传了旧 Foundation/ArmLocomotion --locomotion-task；当前应删除该参数或传 RobotLab-Isaac-Velocity-Rough-Go2-X5-DogOnly-v0。",
+        "如果机器人能 reset 到正确 z 但仍不动，下一步检查 path follower 生成的 base_velocity command 和 RL action 输出，而不是 PCT 全局 planner。"
+      ]
+    },
+    {
+      "time": "2026-06-27 12:28:43 CST",
+      "summary": "将 Rough 下的 RL policy 资产完整迁移为 checkpoints/go2_x5/pct_multifloor 下的实体文件并删除 Rough；修复多楼层 Isaac Lab 高度扫描目标、对象刚体读取和 PCT policy 命令范围，真实 navigation smoke 已从无法启动推进到距离 pick 目标约 0.44 m。",
+      "files_changed": [
+        ".gitignore",
+        "checkpoints/go2_x5/pct_multifloor/README.md",
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "source/navigation/adapters/isaaclab_go2_adapter.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/robot_lab/robot_lab/assets/__init__.py",
+        "source/robot_lab/robot_lab/assets/go2_x5.py",
+        "source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/quadruped/go2_x5/train_route_env_cfg.py",
+        "source/simulation/isaaclab_runtime.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_isaaclab_navigation_runtime.py"
+      ],
+      "problems": [
+        {
+          "problem": "checkpoint 和导出 policy 仍通过软链接依赖 Rough，删除 Rough 会让运行资产失效。",
+          "root_cause": "早期资产整理只创建了软链接，没有把模型、导出文件和训练记录迁移到正式目录。",
+          "fix": "把 model_26000.pt、policy.pt、policy.onnx、env.yaml、agent.yaml、训练事件和 diff 迁移为 checkpoints/go2_x5/pct_multifloor 下的实体文件，验证无符号链接后删除 Rough。",
+          "prevention": "运行资产统一以 checkpoints/go2_x5/pct_multifloor 为唯一来源；README 和 project.json 不再保留 Rough 路径。"
+        },
+        {
+          "problem": "Isaac Lab 启动时报 Prim at path '/World/ground' is not valid。",
+          "root_cause": "runtime 将多楼层碰撞网格导入 /World/nav_collision，但两个 RayCaster 仍指向训练环境的 /World/ground。",
+          "fix": "创建环境前统一把 height_scanner 和 height_scanner_base 的 mesh_prim_paths 指向 runtime terrain prim，并记录 height_scanner_terrain_report。",
+          "prevention": "所有替换 terrain prim 的 runtime 都必须同步重定向依赖地形的传感器，并使用单元测试覆盖。"
+        },
+        {
+          "problem": "修复 terrain prim 后，policy 的 187 维 height_scan 全部饱和为 -1，机器人很快失稳。",
+          "root_cause": "单层训练配置从机器人上方 20 m 向下发射射线；在多楼层单网格中会先命中上层楼板或屋顶，而不是机器人当前楼层。",
+          "fix": "仅在 Go2X5DogOnlyRoughEnvCfg 中将两个高度扫描器起点改为机器人上方 1 m；真实 smoke 中 height_scan 恢复为约 [-0.94, -0.20]。",
+          "prevention": "多楼层 RayCaster 起点必须低于相邻楼层，并在 runtime metadata 中持续记录分段 observation 范围。"
+        },
+        {
+          "problem": "高度扫描恢复后，DWA 在转弯时下发 wz=1.0，超过 checkpoint 训练命令范围并触发失稳。",
+          "root_cause": "默认 brisk DWA 上限高于 env.yaml 中 dog-only policy 的 lin_vel_x ±0.55、ang_vel_z ±0.60 训练范围。",
+          "fix": "仅对 pct_multifloor profile 将 DWA 限制为 vx<=0.55 m/s、|wz|<=0.60 rad/s，并让终点转向复用相同角速度上限。",
+          "prevention": "新增测试锁定 flat 与 pct_multifloor 的独立速度上限；更换 checkpoint 时应同时审查其 env.yaml command 分布。"
+        },
+        {
+          "problem": "第二次真实 smoke 仍在距离 pick 约 0.44 m 时终止。",
+          "root_cause": "机器人在末段同时前进和转向时姿态下降并触发环境终止；当前证据指向局部跟踪稳定性，不是 PCT 全局规划或 checkpoint 维度问题。",
+          "fix": "本次不通过关闭 termination 隐藏失稳；保留失败报告，后续应优化末段速度耦合或增加转向减速。",
+          "prevention": "验收必须同时检查目标距离、base z/姿态、termination 和 action 范围，不能只以 PCT 返回路径或进程运行时长判定成功。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/pipeline/navigation_smoke.py source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/quadruped/go2_x5/train_route_env_cfg.py source/simulation/isaaclab_runtime.py source/navigation/adapters/isaaclab_go2_adapter.py tests/navigation/test_locomotion_policy_config.py",
+          "result": "passed",
+          "note": "本次修改的导航组装、PCT task、runtime、adapter 和测试文件编译通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation tests/test_isaaclab_navigation_runtime.py -q",
+          "result": "passed",
+          "note": "50 passed，1 skipped；skip 是普通 pytest 进程未加载 pxr 的可选刚体解析测试。"
+        },
+        {
+          "command": "find checkpoints/go2_x5/pct_multifloor -type l -print && test ! -e Rough",
+          "result": "passed",
+          "note": "正式 checkpoint 目录中没有符号链接，Rough 目录已不存在。"
+        },
+        {
+          "command": "Isaac Sim navigation smoke with PCT and pct_multifloor model_26000.pt",
+          "result": "failed",
+          "note": "PCT 返回 7 个 waypoint，机器人从起点行走到距离 pick 约 0.44 m；936 个控制步后末段失稳并以 navigation_environment_terminated 结束，不能视为导航验收通过。"
+        }
+      ],
+      "next_steps": [
+        "针对 pct_multifloor profile 增加大航向误差时的线速度衰减或先转后走策略，再重复 start->pick smoke。",
+        "start->pick 稳定通过后运行 navigation-carry-smoke，验证 pick->place 的 slice 10->17 跨楼层真实执行。",
+        "修复主场景中旧 /World/go2_x5 rotor visual 的 unresolved reference 警告，但不要改动当前 Isaac Lab /World/envs/env_0/Robot 物理实例。"
+      ]
+    },
+    {
+      "time": "2026-06-27 12:49:27 CST",
+      "summary": "定位 GUI navigation smoke 的 CUDA error 700 为高质量 NuRec /World/gauss 与 PhysX/CUDA 同时运行时的 RTX render graph 互操作崩溃；新增 PCT 导航轻量 collision 视觉模式，避免物理验收加载 1676 万 Gaussian。",
+      "files_changed": [
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "source/navigation/adapters/terrain_utils.py",
+        "source/simulation/isaaclab_runtime.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_collision_terrain_wrapper.py"
+      ],
+      "problems": [
+        {
+          "problem": "GUI navigation smoke 在 reset_episode 阶段报 carb.cudainterop CUDA error 700，并且 external semaphore signal 失败。",
+          "root_cause": "Kit 日志确认命令使用 isaaclab.python.rendering.kit，build_stage 完成后同时存在 NuRec OmniNerfVolumeAPI /World/gauss、RTX render graph、PhysX 和 RSL-RL CUDA；此前不加载 GUI 高质量视觉的 headless smoke 可运行 936 步。error 700 出现在 render queue semaphore 提交，属于视觉与 CUDA 互操作崩溃，不是 checkpoint shape 或 PCT server 错误。",
+          "fix": "新增 --navigation-visual-mode auto|collision|full。auto 在 pct_multifloor navigation smoke 中停用 /World/gauss，并显示独立导入的 /World/nav_collision；flat profile 默认仍加载完整视觉。",
+          "prevention": "将物理导航验收和 17M NuRec 视频渲染分离；8 GB GPU 上仅在独立视觉检查时显式使用 full，CUDA error 700 后必须彻底退出当前 Isaac Sim 进程再重启。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/navigation/adapters/terrain_utils.py source/simulation/isaaclab_runtime.py scripts/pipeline/run_full_physics_pipeline.py tests/test_collision_terrain_wrapper.py tests/navigation/test_locomotion_policy_config.py",
+          "result": "passed",
+          "note": "视觉 wrapper、runtime、CLI 和相关测试编译通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation tests/test_collision_terrain_wrapper.py tests/test_isaaclab_navigation_runtime.py -q",
+          "result": "passed",
+          "note": "55 passed，1 skipped。新增测试确认 PCT auto 模式关闭 scene visual、显示 collision，flat auto 模式保持原行为。"
+        },
+        {
+          "command": "GUI PCT navigation smoke with --navigation-visual-mode auto",
+          "result": "not_run",
+          "note": "尝试运行时工具的 GPU/X11 执行授权因当前使用额度限制被拒绝；未绕过限制，也未伪造复测结果。"
+        }
+      ],
+      "next_steps": [
+        "用户用原 navigation-smoke 命令重跑；auto 已默认选择 collision，也可显式追加 --navigation-visual-mode collision。",
+        "确认 GUI 不再出现 CUDA error 700 后，继续处理距离 pick 约 0.44 m 的末段转向失稳。",
+        "高质量 3DGS 视频渲染继续独立验证，不与当前 navigation smoke 同进程启用。"
+      ]
+    },
+    {
+      "time": "2026-06-27 14:48:22 CST",
+      "summary": "排查并修复 PCT navigation smoke 中机器狗顶障碍和接近 pick 点摔倒的问题：统一 PCT server 与 DWA local map 的可走判定，合并相邻 slice，并给苹果添加局部 keepout。",
+      "files_changed": [
+        "source/navigation/pct_local_map.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/pipeline/config.py",
+        "tasks/nav_pick_place_apple_multifloor_pct.json",
+        "scripts/navigation/pct_grid_server.py",
+        "tests/navigation/test_pct_local_map.py",
+        "tests/navigation/test_multifloor_task_goal.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "docs/pct_multifloor_navigation.md",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "机器人遇到障碍后持续顶住并旋转/滑动逃离。",
+          "root_cause": "PCT grid server 使用 tomogram traversability OR walkable 作为可走判定，且 snap 可能吸附到相邻 slice；DWA local map 之前只读取单一 walkable slice，导致 PCT 返回的部分路径点在 DWA inflated map 中被误判为 occupied。",
+          "fix": "新增 pct_combined_walkable_slice()，按 PCT server 语义合并 traversability 与 walkable，并在 PCT local map 中默认合并目标高度前后一层 slice；取消全图 3-cell free dilation。",
+          "prevention": "所有供 DWA 使用的 PCT local map 必须复用 PCT server 的可走判定，并用单元测试覆盖 traversability-only 与相邻 slice 场景。"
+        },
+        {
+          "problem": "接近 pick 点时底盘可能把苹果当成自由空间，容易碰撞后摔倒。",
+          "root_cause": "苹果是任务动态物体，不属于 PCT 静态建图资产；同时早期 task 的 base_goal 曾直接落在苹果中心。",
+          "fix": "将 multifloor task 的 pick/place base_goal 固定为底盘站位，并在 PCT local map 中把 object_initial_pose 投影为小半径 circular keepout。",
+          "prevention": "task JSON 中 base_goal 必须表示机器人底盘站位，不得复用 object pose；PCT smoke 需要把任务物体显式加入局部避障层。"
+        },
+        {
+          "problem": "numpy 2 生成的 tomogram pickle 在 numpy 1 运行环境中读取失败，且早期 alias 可能污染后续 torch 导入。",
+          "root_cause": "pickle 内记录了 numpy._core.numeric 模块路径；numpy 1 环境没有该模块名，永久写入 sys.modules 又会影响后续依赖导入。",
+          "fix": "在 pct_grid_server.py 和 pct_local_map.py 中只在 pickle.load() 期间临时安装 numpy._core alias，并在 finally 中撤销。",
+          "prevention": "兼容 pickle 的模块别名必须限定生命周期，合并运行 navigation 与 IsaacLab 相关测试防止污染。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/navigation/pct_local_map.py source/pipeline/navigation_smoke.py source/pipeline/config.py scripts/navigation/pct_grid_server.py source/navigation/pct_adapter.py source/interfaces/navigation.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "23 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_collision_terrain_wrapper.py tests/test_full_physics_randomization.py tests/test_isaaclab_navigation_runtime.py -q",
+          "result": "passed",
+          "note": "46 passed, 1 skipped。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation tests/test_collision_terrain_wrapper.py tests/test_isaaclab_navigation_runtime.py -q",
+          "result": "passed",
+          "note": "60 passed, 1 skipped；验证 numpy pickle alias 不再污染 torch/IsaacLab 导入。"
+        },
+        {
+          "command": "python scripts/navigation/probe_pct_plan.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --pct-server-script scripts/navigation/pct_grid_server.py --pct-tomogram-path source/scene/multifloor/mutifloor.pickle --pct-walkable-path source/scene/multifloor/mutifloor_ply_walkable.npy --output-json outputs/pct_plan_probe_after_collision_fix.json",
+          "result": "passed",
+          "note": "start_to_pick 返回 4 个 waypoint；pick_to_place 返回 16 个 waypoint，slice 10->16，保持跨楼层全局规划。"
+        },
+        {
+          "command": "真实 Isaac Sim navigation smoke",
+          "result": "not_run",
+          "note": "本次 Codex 未启动 GUI/Isaac Sim 物理验收；需要用户在本地 GPU/GUI 环境复测。"
+        }
+      ],
+      "next_steps": [
+        "用户用 --navigation-visual-mode collision 复跑 navigation smoke，确认机器人不再顶障碍或在 pick 前摔倒。",
+        "如果仍碰撞，下一步从最新 events.jsonl 中检查 DWA debug 的 collision_rejections、clearance、pose_xyyaw 和 path_3d，并考虑把 collision mesh 投影为更精细的局部 2D map。",
+        "后续实现真正消费 path_3d / slice 信息的局部控制器，而不是长期依赖 XY DWA 跟踪跨楼层路径。"
+      ]
+    },
+    {
+      "time": "2026-06-27 15:33:44 CST",
+      "summary": "在 PCT navigation smoke 成功后，新增 pick-smoke 验收入口并把默认 stage camera 切到 Camera0；同时让 full-physics/pick-smoke 使用 navigation visual mode，便于先接入真实机械臂 pick，再推进跨楼层 place。",
+      "files_changed": [
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "source/pipeline/config.py",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/pipeline/state_machine.py",
+        "source/simulation/isaaclab_runtime.py",
+        "source/simulation/viewport.py",
+        "source/recording/overview_video_recorder.py",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "tests/test_simulation_viewport.py",
+        "docs/pct_multifloor_navigation.md",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "full_physics / pick_smoke 分支没有传入 navigation visual mode，可能在 PCT 多楼层物理验收时仍加载完整 NuRec visual。",
+          "root_cause": "之前只在 navigation_smoke 分支创建 IsaacLabNavigationRuntimeConfig 时传入 _navigation_visual_runtime_kwargs，完整物理分支没有复用同一配置。",
+          "fix": "在 full_physics / pick_smoke 分支同样传入 _navigation_visual_runtime_kwargs，使 pct_multifloor + auto 默认使用 collision 轻量视觉。",
+          "prevention": "以后新增真实 Isaac 执行模式时，统一复用 runtime config helper，并用 CLI/状态机测试覆盖新模式。"
+        },
+        {
+          "problem": "新增 pick-smoke 单测最初沿用了 full-physics carry 阶段的断言，要求进入 EXEC_NAV_TO_PLACE。",
+          "root_cause": "pick-smoke 的语义是 pick 成功后停止，不会进入 carry/nav-to-place，因此 carry_arm_home_target 和 return_home_reverse 分段不能按完整流程断言。",
+          "fix": "测试改为验证 pick 成功、状态流在 VERIFY_PICK_SUCCESS 后进入 CLEANUP、没有 nav_to_place/place 事件，并确认终态锁定。",
+          "prevention": "为每个 smoke 模式单独定义成功语义，不复用完整 pipeline 的阶段细节断言。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/pipeline/config.py source/pipeline/full_physics_pipeline.py source/pipeline/state_machine.py scripts/pipeline/run_full_physics_pipeline.py source/simulation/isaaclab_runtime.py source/simulation/viewport.py source/recording/overview_video_recorder.py source/navigation/pct_local_map.py",
+          "result": "passed",
+          "note": "语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_pipeline.py -q",
+          "result": "passed",
+          "note": "33 passed。覆盖 pick-smoke CLI、状态机和 summary 语义。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_simulation_viewport.py tests/test_isaaclab_navigation_runtime.py tests/navigation/test_pct_local_map.py tests/navigation/test_locomotion_policy_config.py tests/navigation/test_multifloor_task_goal.py tests/test_collision_terrain_wrapper.py -q",
+          "result": "passed",
+          "note": "61 passed, 1 skipped。覆盖 Camera0 选择、runtime 默认配置、PCT local map 和 locomotion 配置。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "23 passed。覆盖导航接口、PCT adapter、planner selection 和多楼层 task。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_cli_help_lists_supported_modes ... -q",
+          "result": "failed",
+          "note": "测试名写错导致 pytest 报 not found；随后使用真实测试名重跑通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_cli_help_is_chinese_and_full_physics_is_default tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_cli_pick_smoke_mode_is_available tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_pick_smoke_rejects_offline_plan_fallback -q",
+          "result": "passed",
+          "note": "3 passed。确认 CLI help、pick-smoke mode 和离线 plan 禁止逻辑。"
+        },
+        {
+          "command": "Isaac Sim --pick-smoke / full-physics real run",
+          "result": "not_run",
+          "note": "本次没有启动 GUI/Isaac Sim 真实验收；需要用户在本地 GPU 会话运行文档中的命令。"
+        }
+      ],
+      "next_steps": [
+        "在本地 GPU 会话运行 --pick-smoke，验证 nav_to_pick 后 Camera0 视角、机械臂 pick 和 cleanup。",
+        "pick-smoke 成功后去掉 --pick-smoke，运行完整 full-physics，验证 pick 后跨楼层 nav_to_place 和 place。",
+        "如果 full-physics 在跨楼层 place 阶段失败，优先检查 PCT path_3d、RL policy 速度命令、place base goal 与楼层 z 容差。"
+      ]
+    },
+    {
+      "time": "2026-06-27 16:32:37 CST",
+      "summary": "修复 pick-smoke 在 reset_episode 录制首帧时无法读取 Isaac Sim 5.1 viewport PyCapsule 缓冲的问题，并隔离 capture callback 异常，避免录像错误终止 pipeline。",
+      "files_changed": [
+        "source/recording/overview_video_recorder.py",
+        "tests/test_simulation_viewport.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "full-physics 在 reset_episode 阶段失败，录像回调先对 PyCapsule 执行 np.frombuffer，随后又执行 int(buffer)，两条路径都抛出 TypeError。",
+          "root_cause": "Isaac Sim 5.1 / Kit 107 的 capture_viewport_to_buffer 通过匿名 CPython PyCapsule 传递原生像素地址；旧实现只兼容 Python buffer protocol 和可直接转为整数的旧式指针，没有按当前 Kit ABI 调用 PyCapsule_GetPointer。",
+          "fix": "新增 viewport 缓冲复制函数：优先读取 Python buffer protocol，遇到匿名 PyCapsule 时调用 ctypes.pythonapi.PyCapsule_GetPointer(buffer, None)，随后在回调生命周期内复制字节；同时在 callback 内捕获转换异常，使 recorder 可以返回 None 并继续走 Replicator fallback。",
+          "prevention": "对 Kit 原生回调句柄使用其随安装扩展采用的 ABI，并用真实 PyCapsule 单元测试覆盖；所有异步/原生 capture callback 必须在回调边界隔离异常，不能让可选录像功能终止仿真状态机。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/recording/overview_video_recorder.py tests/test_simulation_viewport.py",
+          "result": "passed",
+          "note": "recorder 与新增测试语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_simulation_viewport.py -q",
+          "result": "passed",
+          "note": "14 passed；覆盖匿名 PyCapsule RGBA 转换和无效 callback 缓冲异常隔离。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_pipeline.py tests/test_isaaclab_navigation_runtime.py tests/test_simulation_viewport.py -q",
+          "result": "passed",
+          "note": "80 passed，1 skipped；skip 是普通 pytest 环境未加载 pxr 的可选测试。"
+        },
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py source/recording/overview_video_recorder.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "仓库规定的导航入口及本次 recorder 修改均通过语法检查。"
+        },
+        {
+          "command": "Isaac Sim --pick-smoke --record-video real run",
+          "result": "not_run",
+          "note": "本次未在 Codex 内启动 GUI/GPU 仿真；reset_episode 与真实 Camera0 录像仍需用户用原命令复跑。"
+        }
+      ],
+      "next_steps": [
+        "使用原 --pick-smoke --record-video 命令复跑，确认 reset_episode 不再因 PyCapsule 失败。",
+        "若能进入 plan_nav_to_pick / exec_nav_to_pick，继续验证 Camera0 录像和机械臂 pick。",
+        "pick-smoke 成功后移除 --pick-smoke，运行完整 pick、跨楼层 nav_to_place 和 place。"
+      ]
+    },
+    {
+      "time": "2026-06-27 17:13:08 CST",
+      "summary": "定位 pick-smoke 启动即失败的真实原因为多楼层 task 选错苹果 prim 且覆盖了场景 authored 姿态；改用 pick 桌面上的 apple_01，并新增 reset 后 PhysX 自由沉降、稳定 pose 记录和冻结流程。",
+      "files_changed": [
+        "source/interfaces/simulation.py",
+        "source/pipeline/config.py",
+        "source/pipeline/state_machine.py",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/simulation/in_memory.py",
+        "source/simulation/isaaclab_runtime.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tasks/nav_pick_place_apple_multifloor_pct.json",
+        "tests/navigation/test_multifloor_task_goal.py",
+        "tests/test_full_physics_pipeline.py",
+        "docs/pct_multifloor_navigation.md",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "pick-smoke 在 reset_episode 立即以 object_initial_pose_mismatch 失败；位置偏差 0.0557 m、姿态偏差 0.5409 rad。",
+          "root_cause": "最终 USDA 中 /World/apple 位于楼上 place 点，/World/apple_01 才位于一楼 pick 桌面；task 错误选择 /World/apple 并把其非零 authored Orient 覆盖为 roll/pitch/yaw=0。苹果被搬到 pick 点后仍在高速滚动，失败瞬间线速度约 0.46 m/s、角速度很大，并非稳定位姿。",
+          "fix": "task 改用 /World/apple_01，并按 USDA quat 写入真实 RPY。pct_multifloor 的 pick/full-physics reset 后显式唤醒苹果，连续 20 帧满足低速阈值后记录并冻结当前 PhysX pose；prepare_object_for_pick 复用该稳定 pose，不再写回旧 task transform。",
+          "prevention": "动态抓取物体必须先核对场景 prim 与任务语义，不能仅凭相似名称选择；扫描场景中的物体初始姿态以连续低速 PhysX 状态为准，单帧位置误差不能直接作为稳定 pose，也不能靠放宽 mismatch 容差绕过。"
+        },
+        {
+          "problem": "overview 首帧 dropped=1，日志容易被误认为 pipeline 失败原因。",
+          "root_cause": "首帧 Replicator RGB 尚为空，但 events.jsonl 中真正 failure_reason 是 object_initial_pose_mismatch；录像 recorder 关闭发生在状态机失败之后。",
+          "fix": "保留录像空帧为非致命 dropped frame，并以 events.jsonl / summary.json 的 failure_reason 作为诊断依据。",
+          "prevention": "排查状态机失败时先读取 events.jsonl 的 state_failed，再分析其余 warning；不要用最后出现的渲染 warning 推断业务失败原因。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/interfaces/simulation.py source/pipeline/config.py source/pipeline/state_machine.py source/pipeline/full_physics_pipeline.py source/simulation/in_memory.py source/simulation/isaaclab_runtime.py scripts/pipeline/run_full_physics_pipeline.py tests/test_full_physics_pipeline.py tests/navigation/test_multifloor_task_goal.py",
+          "result": "passed",
+          "note": "沉降接口、状态机、runtime、CLI、task 和测试语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_full_physics_can_settle_object_before_navigation tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_manipulation_stability_defaults_are_fixed_on tests/navigation/test_multifloor_task_goal.py -q",
+          "result": "passed",
+          "note": "5 passed；覆盖默认单楼层不启用沉降、多楼层 pick prim/RPY 和稳定后进入导航。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_pipeline.py tests/test_isaaclab_navigation_runtime.py tests/test_simulation_viewport.py tests/navigation -q",
+          "result": "passed",
+          "note": "104 passed，1 skipped；skip 是普通 pytest 环境未加载 pxr 的可选测试。"
+        },
+        {
+          "command": "真实 Isaac Sim --pick-smoke --record-video",
+          "result": "not_run",
+          "note": "GPU 上已有一个无法在当前沙箱 PID namespace 中可靠识别的 Isaac/Python 进程；为避免争用 CUDA 或干扰用户 GUI 会话，本次未启动第二个 Isaac Sim。"
+        }
+      ],
+      "next_steps": [
+        "用户复跑 pick-smoke，确认 events.jsonl 出现 object_settle_started 和 object_initial_pose_stabilized，随后进入 plan_nav_to_pick。",
+        "检查 summary.json 的 simulation.object_settle_final_report.settled_pose，并确认 requested_position_error_m 小于 0.25 m。",
+        "pick-smoke 完成机械臂抓取后，再运行完整跨楼层 nav_to_place/place。"
+      ]
+    },
+    {
+      "time": "2026-06-27 17:46:03 CST",
+      "summary": "分析最新真实 pick-smoke：苹果物理沉降和 nav_to_pick 已成功，cuRobo 已生成有效 6 关节抓取计划，但进程在 pick_execute_start 后、首个 EXEC_PICK 帧前退出；写入真实稳定苹果位姿、保守提高 PCT 导航速度，并新增逐操作运行时异常摘要。",
+      "files_changed": [
+        "source/pipeline/navigation_smoke.py",
+        "source/pipeline/full_physics_pipeline.py",
+        "tasks/nav_pick_place_apple_multifloor_pct.json",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/navigation/test_multifloor_task_goal.py",
+        "tests/test_full_physics_pipeline.py",
+        "docs/pct_multifloor_navigation.md",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "终端显示 overview-video status=failed success=True，机械臂没有开始可见运动，且 summary.json 仍是上一次运行结果。",
+          "root_cause": "success=True 只表示 MP4 writer 成功关闭，不代表 episode 成功；主循环异常处理只关闭录像并重新抛出，没有记录异常发生在 simulation.apply、step、read、video 还是 recorder，也没有刷新 summary.json。最新帧停在 plan_pick，最后事件为 pick_execute_start，因此真实抓取尚未执行完成，具体退出异常无法从旧产物恢复。",
+          "fix": "主循环现在跟踪每个关键操作；发生异常或 KeyboardInterrupt 时，把 pipeline_state、operation、异常类型、消息和 traceback 写入 events.jsonl 与新的 summary.json，并在终端打印明确失败行，同时保留原异常继续上抛。",
+          "prevention": "真实 Isaac pipeline 的任何非终态退出都必须落盘结构化失败摘要；验收以 summary.success、state_trace 和 pick_success 事件为准，不能用视频 writer 的 success 字段判断。"
+        },
+        {
+          "problem": "真实 nav_to_pick 需要约 1336 个物理步，用户观察机器狗移动偏慢。",
+          "root_cause": "PCT profile 的线速度上限为 0.35 m/s，约 626 步持续触顶；同时 1280x720 overview 和机器人相机录制令约 26.7 秒仿真时间消耗约 187 秒墙钟时间。DWA 日志没有碰撞拒绝，因此当前主要限制是速度上限和渲染吞吐。",
+          "fix": "PCT profile 将最大线速度提高到 0.45 m/s、最小活动速度提高到 0.25 m/s、最大角速度提高到 0.50 rad/s，并适度提高加速度和 speed bias；仍低于 checkpoint 训练范围的 0.55 m/s 与 0.60 rad/s，近目标速度保持 0.18 m/s。",
+          "prevention": "速度调整必须同时检查 checkpoint command range、DWA collision_rejections 和近目标稳定性；不以牺牲避障与抓取停靠精度换取墙钟速度。"
+        },
+        {
+          "problem": "task 中苹果初始姿态仍是沉降前 authored pose，每次运行都需要重新产生小幅滚动。",
+          "root_cause": "此前没有真实 object_settle_final_report；最新运行已得到连续 20 帧稳定后的 PhysX pose，请求位置误差约 4.1 mm。",
+          "fix": "将稳定世界位姿写入多楼层 task：xyz=(-3.5059431, 7.2452841, 0.5628773)，并换算为根 prim 的 RPY；运行时沉降校验仍保留。",
+          "prevention": "动态物体初始位姿以真实 PhysX 稳定结果为准，并继续用 settle 检查防止 USD、碰撞或材质变化导致回归。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_pipeline.py tests/test_isaaclab_navigation_runtime.py tests/test_simulation_viewport.py tests/navigation -q",
+          "result": "passed",
+          "note": "105 passed, 1 skipped；覆盖速度配置、稳定苹果 pose、runtime 异常摘要、完整 pipeline 和 PCT navigation。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_runtime_exception_writes_operation_and_fresh_failure_summary -q",
+          "result": "passed",
+          "note": "1 passed；确认 simulation_step 异常仍上抛，并写入新事件和 summary。"
+        },
+        {
+          "command": "真实 Isaac Sim pick-smoke",
+          "result": "failed",
+          "note": "苹果稳定和 nav_to_pick 成功，cuRobo 生成 6 关节、4 个 motion segment、188 个轨迹点；运行在 pick_execute_start 后退出，没有 pick_success 或 EXEC_PICK 帧，具体异常因旧代码未记录而无法恢复。"
+        }
+      ],
+      "next_steps": [
+        "用新异常摘要代码复跑 pick-smoke；若再次退出，直接读取 summary.json.runtime_exception.operation 和 traceback 修复首个 EXEC_PICK 阶段。",
+        "pick-smoke 必须出现 exec_pick、pick_success、cleanup_episode 和 summary.success=true 后，才进入完整 full-physics 跨楼层搬运验收。",
+        "pick 成功后运行完整模式，重点验证 PCT pick_to_place slice 10->17 路径、携物稳定性和楼上 place。"
+      ]
+    },
+    {
+      "time": "2026-06-27 18:26:00 CST",
+      "summary": "修复 pct_multifloor DogOnly 12 维策略下机械臂 pick 启动失败：当 policy action 不包含 arm_joint1~6 时，runtime 自动切到独立 arm_joint_pos / articulation position target 通道；同时根据最新 navigation 日志诊断 PCT local map 漏墙问题，并提高 PCT 专属 DWA clearance 配置。",
+      "files_changed": [
+        "source/simulation/isaaclab_runtime.py",
+        "source/pipeline/navigation_smoke.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "pick-smoke 进入 exec_pick 后报错：Isaac Lab policy action does not expose all arm joints for direct target override，arm_action_indices 为空。",
+          "root_cause": "pct_multifloor 使用的 model_26000.pt 是 DogOnly 12 维腿部策略，joint_pos action term 只包含 12 个腿部关节；旧 runtime 沿用单楼层 18 维 arm-locomotion task 假设，强制要求 policy action 中存在 arm_joint1~6 槽位。",
+          "fix": "_stage_arm_target 现在先探测 direct arm action override 能力；若缺少完整 arm action indices，就关闭 direct override，保留 policy 控腿，并通过 adapter.set_arm_joint_target + arm_joint_pos command/articulation position target 控制机械臂。单楼层 18 维策略仍走 policy_action_override。",
+          "prevention": "以后新增 locomotion task 时必须把 policy action 维度与机械臂控制通道作为能力探测，而不是硬编码 18 维联合 action；单元测试同时覆盖 18 维 override 和 12 维 DogOnly 独立 arm target。"
+        },
+        {
+          "problem": "真实 nav_to_pick 虽未失败，但画面中机器狗曾贴墙/顶墙后脱困。",
+          "root_cause": "frames.jsonl 中 DWA 始终看到 clearance>=0.447m 且 collision_rejections=0；进一步检查发现相邻 PCT slice 做 OR 合并后，碰撞发生附近在 DWA map 中距离障碍约 2.47m，而 center slice 会把该点判为占用。说明当前 PCT local map 为了兼容起点/路径 z 偏差过度放宽了墙体。",
+          "fix": "不回退到会把起点误判为障碍的单 slice；本次先在 pct_multifloor 下把 executor local_clearance_radius 至少提高到 0.30m，并把 DWA obstacle_distance_cap 提到 0.80、clearance_bias 提到 0.35，只影响 PCT 多楼层 profile。",
+          "prevention": "后续应实现 PCT walkable 与 collision mesh/高度体素障碍层融合，并为墙边路径加入局部地图回归测试；不要只依赖 slice OR 后的 walkable mask 判断机器人实体避障。"
+        },
+        {
+          "problem": "第一次运行 pytest 时加载 ROS launch_testing 插件失败，缺少 lark。",
+          "root_cause": "当前环境会自动发现系统 pytest 插件，ROS Humble 的 launch_testing 依赖不在 isaacsim51_3dgs_grasp 环境内。",
+          "fix": "按本仓库既有方式使用 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 重跑。",
+          "prevention": "本仓库测试命令默认带 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1，避免外部 ROS 插件污染结果。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_isaaclab_navigation_runtime.py::IsaacLabNavigationRuntimeActionTest::test_apply_accepts_base_arm_home_and_gripper_close_in_one_tick tests/test_isaaclab_navigation_runtime.py::IsaacLabNavigationRuntimeActionTest::test_apply_accepts_dog_only_arm_target_without_policy_action_slots -q",
+          "result": "failed",
+          "note": "pytest 自动加载 ROS launch_testing 插件，因缺少 lark 在收集前失败；随后禁用插件自动加载重跑通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_isaaclab_navigation_runtime.py::IsaacLabNavigationRuntimeActionTest::test_apply_accepts_base_arm_home_and_gripper_close_in_one_tick tests/test_isaaclab_navigation_runtime.py::IsaacLabNavigationRuntimeActionTest::test_apply_accepts_dog_only_arm_target_without_policy_action_slots -q",
+          "result": "passed",
+          "note": "2 passed；确认单楼层 direct override 与 DogOnly independent position target 两条路径。"
+        },
+        {
+          "command": "python -m py_compile source/simulation/isaaclab_runtime.py source/pipeline/navigation_smoke.py tests/test_isaaclab_navigation_runtime.py tests/navigation/test_locomotion_policy_config.py",
+          "result": "passed",
+          "note": "本次修改文件语法检查通过。"
+        },
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py source/simulation/isaaclab_runtime.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "仓库规定的导航入口和 runtime 语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_isaaclab_navigation_runtime.py tests/navigation/test_locomotion_policy_config.py tests/navigation/test_pct_local_map.py -q",
+          "result": "passed",
+          "note": "43 passed, 1 skipped；skip 是普通 Python 环境没有 OpenUSD pxr。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_pipeline.py tests/test_isaaclab_navigation_runtime.py tests/test_simulation_viewport.py tests/navigation -q",
+          "result": "passed",
+          "note": "106 passed, 1 skipped。"
+        },
+        {
+          "command": "真实 Isaac Sim --pick-smoke",
+          "result": "not_run",
+          "note": "本次 Codex 未启动 GUI/GPU 仿真；需要用户用下方命令复跑，确认 exec_pick 不再因 arm_action_indices 为空失败。"
+        }
+      ],
+      "next_steps": [
+        "用户复跑 pct_multifloor --pick-smoke，检查 summary.json/runtime_exception 是否消失，并确认 last_arm_action_report.arm_control_mode 为 independent_position_target。",
+        "若 pick-smoke 出现 pick_success，再运行完整 full-physics，验证 pick 后跨楼层 nav_to_place 和 place。",
+        "如果仍有贴墙现象，下一步实现 collision mesh/高度体素障碍层与 PCT walkable local map 融合，而不是继续只调速度。"
+      ]
+    },
+    {
+      "time": "2026-06-27 19:58:00 CST",
+      "summary": "为 run_full_physics_pipeline 增加 pre-episode 启动诊断：窗口打开后若在进入 episode 前退出，会在输出目录写 startup_status.json / startup_failure.json，记录 cuRobo server、Isaac AppLauncher、pipeline 创建和 episode 结束等阶段。",
+      "files_changed": [
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/test_full_physics_pipeline.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "用户复跑命令后 Isaac 窗口刚打开就关闭，终端只有 Kit/Vulkan/extension warning，没有 Python traceback；outputs/full_physics_pipeline/batch_summary.jsonl 被清空但 episode_000000 没有新文件。",
+          "root_cause": "当前入口脚本只在 episode 内部写 summary/events；如果退出发生在 cuRobo server、Isaac AppLauncher 或 pipeline 创建之前，旧代码不会写任何结构化失败报告，导致只剩 Isaac Kit warning，无法判断真实退出点。",
+          "fix": "新增 startup_status.json 阶段记录和 startup_failure.json 异常落盘；启动阶段捕获 BaseException 后写异常类型、消息和 traceback，再保持原异常继续上抛，不改变原退出码语义。",
+          "prevention": "真实 Isaac 调试必须让 episode 前启动阶段也具备结构化产物；以后不能仅依赖 Kit log 判断 pipeline 是否已进入状态机。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "入口脚本语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_cli_dry_run_writes_startup_status tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_full_physics_factory_uses_online_planner_without_offline_json -q",
+          "result": "passed",
+          "note": "2 passed；确认 dry-run 会生成 startup_status.json，且 full-physics factory 未回归。"
+        },
+        {
+          "command": "真实 Isaac Sim --pick-smoke",
+          "result": "not_run",
+          "note": "本次没有在 Codex 中启动 GUI/GPU 仿真；需要用户复跑后读取 startup_status.json / startup_failure.json 继续定位。"
+        }
+      ],
+      "next_steps": [
+        "用户用带 --keep-window-open 的 pick-smoke 命令复跑；若窗口仍立即关闭，读取 outputs/full_physics_pipeline/startup_failure.json。",
+        "如果 startup_status.json 最后阶段是 pipeline_created 或 episode_finished，再继续看 episode_000000/summary.json 和 events.jsonl。",
+        "pick-smoke 进入 exec_pick 后重点验证 arm_control_mode=independent_position_target 和 pick_success。"
+      ]
+    },
+    {
+      "time": "2026-06-27 20:18:00 CST",
+      "summary": "排查 GUI 窗口打开后立即关闭：startup_failure.json 显示 Isaac App 和 cuRobo server 均已启动，失败发生在 pipeline_creating，原因是 PCT 模式默认启用 A* fallback 但多楼层 task 没有 flat nav_map。本次改为 PCT 缺少 nav_map 时自动关闭 A* fallback，并清理上一轮 stale startup_failure.json。",
+      "files_changed": [
+        "source/pipeline/navigation_smoke.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/navigation/test_planner_selection.py",
+        "tests/test_full_physics_pipeline.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "用户按 pick-smoke 命令复跑后 GUI 窗口仍立即关闭，batch_summary.jsonl 为空，episode_000000 没有新产物。",
+          "root_cause": "startup_failure.json 明确显示失败阶段为 pipeline_creating；create_navigation_components 在 global_planner=pct 且 pct_fallback_to_astar=True 时仍强制构造 AStarNavPlanner，但多楼层 task 没有可用 flat nav_map，因此抛出 ValueError 并关闭 Isaac App。",
+          "fix": "PCT 模式下只有 nav_map 存在时才构造 A* fallback；如果 fallback 被请求但 nav_map 缺失，则打印 warning 并创建无 fallback 的 PCTNavPlanner。A* 模式仍保持必须提供 nav_map 的旧行为。",
+          "prevention": "多楼层任务不能假设存在 2D flat nav_map；planner factory 必须按实际 fallback 能力降级，并用单元测试覆盖缺少 nav_map 的 PCT 配置。"
+        },
+        {
+          "problem": "修复后如果下次启动成功，旧 startup_failure.json 仍可能留在输出目录误导诊断。",
+          "root_cause": "上次只在失败时写 startup_failure.json，没有在新 run 开始时清理旧失败报告。",
+          "fix": "每次 main 初始化 output_dir 后删除 stale startup_failure.json；新的启动失败仍会重新写入。",
+          "prevention": "所有按固定文件名写入的失败诊断都应在新 run 开始时清理或覆盖，避免把历史失败当成当前失败。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py tests/navigation/test_planner_selection.py tests/test_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "本次修改文件语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_cli_dry_run_writes_startup_status tests/navigation/test_planner_selection.py tests/navigation/test_pct_adapter.py tests/navigation/test_locomotion_policy_config.py -q",
+          "result": "passed",
+          "note": "14 passed；覆盖 PCT 缺 nav_map 自动关闭 fallback、PCT adapter、locomotion 配置和 startup stale failure 清理。"
+        },
+        {
+          "command": "create_navigation_components with multifloor task and pct_fallback_to_astar=True",
+          "result": "passed",
+          "note": "输出 PCTNavPlanner False True True；确认多楼层 task 无 nav_map 时可以创建 planner/executor，并自动禁用 A* fallback。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_pipeline.py tests/test_isaaclab_navigation_runtime.py tests/test_simulation_viewport.py tests/navigation -q",
+          "result": "passed",
+          "note": "107 passed, 1 skipped。"
+        },
+        {
+          "command": "git diff --check",
+          "result": "passed",
+          "note": "未发现 whitespace error。"
+        },
+        {
+          "command": "真实 Isaac Sim --pick-smoke",
+          "result": "not_run",
+          "note": "本次没有在 Codex 中启动 GUI/GPU 仿真；需要用户用修复后的命令复跑。"
+        }
+      ],
+      "next_steps": [
+        "用户复跑相同 pick-smoke 命令；这次应越过 pipeline_creating 进入 episode_000000/task.json 和 reset_episode。",
+        "若仍关闭，优先读取新的 startup_status.json / startup_failure.json；若已经进入 episode，则读取 episode_000000/summary.json 的 runtime_exception。",
+        "pick-smoke 成功后再推进完整 nav+grasp+跨楼层 place。"
+      ]
+    },
+    {
+      "time": "2026-06-27 21:05:00 CST",
+      "summary": "修复当前 pick-smoke 两个主要失败源：PCT DWA 局部地图叠加 collision PLY 垂直障碍层，减少相邻 slice OR 导致的漏墙；pct_multifloor DogOnly 策略下放宽机械臂 retreat 后 strict post-motion 收敛判定，避免抓住苹果后因 0.046rad 残余误差被误判失败。",
+      "files_changed": [
+        "source/navigation/pct_local_map.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/pipeline/factory.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/navigation/test_pct_local_map.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_full_physics_pipeline.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "GUI 中 nav 阶段仍会贴墙/顶墙一段时间才脱困。",
+          "root_cause": "当前 PCT DWA local map 为了兼容起点和目标 z 与可走 slice 的偏差，会把中心 slice 与相邻 slice 做 OR 合并；相邻高度只要有一层可走，就可能把中心层真实墙体从 DWA obstacle map 中冲掉。静态 probe 显示 center slice 会把 start/pick_goal 误判占用，不能简单关闭相邻 slice 合并。",
+          "fix": "保留 PCT walkable/tomogram 的相邻 slice 合并用于起点/目标可走性，同时从 source/scene/multifloor/ply/3dgs_collision.ply 读取 collision 顶点，统计同一 XY 跨越的 z slice 数；跨越至少 5 个 slice 的格子作为垂直墙体/柱体障碍叠加回 DWA local map，并把 pct_multifloor 的 obstacle_distance_cap/clearance_bias 提高到 1.00/0.55。",
+          "prevention": "以后 PCT local controller 不能只依赖 walkable mask；需要同时保留可走层和独立 collision/height obstacle 层，并用 start/pick/place 的静态 probe 防止目标点被障碍层误封。"
+        },
+        {
+          "problem": "pick 时已经抓住苹果，但 retreat_object 后 pipeline 在 exec_pick 失败。",
+          "root_cause": "events.jsonl 显示 gripper close 成功，失败原因是 arm_post_motion_convergence_timeout；retreat_object 最终 joint error 为 0.04634rad，但 strict post-motion 阈值硬编码为 0.030rad。pct_multifloor 使用 DogOnly 12 维腿部 policy，机械臂通过独立 position target 控制，真实 residual 比 18 维联合 action baseline 稍大。",
+          "fix": "新增 ManipulationSettings.arm_post_motion_joint_error_tolerance，并在 full-physics factory 中只对 policy_profile=pct_multifloor 放宽到至少 1.00s hold / 0.060rad tolerance；flat profile 默认保持 0.75s / 0.030rad。",
+          "prevention": "不同 locomotion/action 结构不能共用同一个硬编码机械臂收敛阈值；需要按 policy profile 或控制通道能力配置，并在 summary/events 中保留 final_error/tolerance 供真实运行调参。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/navigation/pct_local_map.py source/pipeline/config.py source/pipeline/navigation_smoke.py source/pipeline/factory.py scripts/pipeline/run_full_physics_pipeline.py tests/navigation/test_pct_local_map.py tests/navigation/test_locomotion_policy_config.py tests/test_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "本次修改文件语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation/test_pct_local_map.py tests/navigation/test_locomotion_policy_config.py tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_full_physics_factory_uses_online_planner_without_offline_json tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_pct_multifloor_factory_relaxes_arm_post_motion_convergence -q",
+          "result": "passed",
+          "note": "13 passed；覆盖 PCT 垂直障碍层、DWA profile 和 pct_multifloor 机械臂收敛阈值。"
+        },
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/navigation/pct_local_map.py source/pipeline/config.py source/pipeline/navigation_smoke.py source/pipeline/factory.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "仓库规定的导航入口和 factory 语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "25 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_pipeline.py tests/test_isaaclab_navigation_runtime.py tests/test_simulation_viewport.py -q",
+          "result": "passed",
+          "note": "85 passed, 1 skipped；skip 是当前环境缺少对应可选运行条件。"
+        },
+        {
+          "command": "真实 Isaac Sim --pick-smoke",
+          "result": "not_run",
+          "note": "本次 Codex 未启动 GUI/GPU 仿真；需要用户用下方命令复跑，确认不再贴墙且 retreat 后进入 verify_pick_success。"
+        }
+      ],
+      "next_steps": [
+        "用户复跑 pct_multifloor --pick-smoke；重点观察 nav 是否还会顶墙，以及 exec_pick 是否从 retreat_object 继续到 verify_pick_success。",
+        "如果 pick-smoke 成功，切换到完整 full-physics，验证 pick 后跨楼层 nav_to_place 和 place。",
+        "如果仍有墙边接触，下一步把 collision PLY 障碍层按局部高度窗口而不是全局垂直 slice count 生成，并输出 DWA map preview 对照 GUI。"
+      ]
+    },
+    {
+      "time": "2026-06-27 22:20:00 CST",
+      "summary": "修复 PCT 多楼层 pick_smoke 中 DWA 在窄通道墙边原地转圈的问题，并将 pct_multifloor DogOnly 机器人资产改回与单楼层 pipeline 一致的 URDF 加载路径，使 URDF 中的机械臂末端黑色材质能够生效。",
+      "files_changed": [
+        "source/navigation/navlib/dwa.py",
+        "source/navigation/executor.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/robot_lab/robot_lab/assets/go2_x5.py",
+        "tasks/nav_pick_place_apple_multifloor_pct.json",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "用户把起点移到 x=-4.2,y=0.60 后，机器狗不再卡在原墙角，但走到一段窄通道后开始原地踏步/转圈。",
+          "root_cause": "PCT server 输出的全局路径只有少量稀疏 waypoint，DWA 直接追踪时会在 0.20m 局部栅格的直角转弯处切角；此前为提高安全裕量加入的 0.30m hard inflation 又会直接封死窄通道。目标索引搜索还可能跨过局部转角，导致机器人尚未过弯就追后续远端点。",
+          "fix": "PCT pct_multifloor 模式下取消 DWA 本地地图硬膨胀，保留 collision PLY 障碍层和 clearance 打分；DWA 目标索引改为单调前进并限制最近点搜索窗口；DwaNavExecutor 仅对 metadata[planner]=pct 的路径在本地地图上做 A* 细化，并把真实 NavGoal 追加为最终 waypoint；PCT DWA 窄通道参数收紧到 lookahead=0.12m、waypoint_tolerance=0.03m、prediction_horizon=0.35s。",
+          "prevention": "PCT 全局路径不能直接当作局部控制轨迹使用；以后多楼层局部执行必须先在本地障碍地图上做可执行轨迹细化，并在 frames/status 中记录 local_refinement 结果，避免只凭全局 snapped waypoint 调 DWA。"
+        },
+        {
+          "problem": "用户已把 URDF 中机械臂末端改成黑色，但 Isaac Sim GUI 中末端仍显示白色。",
+          "root_cause": "pct_multifloor DogOnly 配置此前覆盖为 source/robot/go2_x5/pct_multifloor/go2_x5.usd，运行时没有走单楼层 pipeline 使用的 GO2_X5_CFG URDF spawn，因此 URDF 材质修改不会反映到 GUI。",
+          "fix": "GO2_X5_PCT_DOG_ONLY_CFG 改为继续基于 GO2_X5_CFG.replace，只覆盖 init_state 和 actuator，不再覆盖 spawn=UsdFileCfg；这样 pct_multifloor 与单楼层 pipeline 都从 source/robot/go2_x5/urdf/go2_x5.urdf 转换资产。",
+          "prevention": "以后修改机器人外观/关节结构时先确认 IsaacLab task 实际使用的是 URDF spawn 还是预转换 USD；若使用 USD，不能期望 URDF 修改自动生效。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "PCT start=(-4.2,0.60) 离线 DWA 闭环探针",
+          "result": "passed",
+          "note": "PCT plan 4 个 waypoint 被本地细化为 33 个 waypoint；纯 Python DWA 从新起点到 pick base goal 最小距离 0.148m，进入 0.18m 验证容差，未触发 stuck_break。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/navigation/navlib/dwa.py source/navigation/executor.py source/pipeline/navigation_smoke.py source/robot_lab/robot_lab/assets/go2_x5.py tests/test_astar_dwa_smoke.py tests/navigation/test_locomotion_policy_config.py",
+          "result": "passed",
+          "note": "本次修改的 DWA、executor、pipeline config、机器人资产配置和测试文件语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_astar_dwa_smoke.py tests/navigation/test_locomotion_policy_config.py tests/navigation/test_pct_local_map.py -q",
+          "result": "passed",
+          "note": "21 passed；覆盖 DWA 目标不回退、PCT 路径本地细化、PCT DWA 参数、URDF 资产选择和 PCT local map。"
+        },
+        {
+          "command": "真实 Isaac Sim --pick-smoke",
+          "result": "not_run",
+          "note": "本次 Codex 未启动 GUI/GPU 仿真；需要用户用下方命令复跑，确认真实 RL policy 下不再贴墙并且机械臂末端变黑。"
+        }
+      ],
+      "next_steps": [
+        "用户复跑 pct_multifloor --pick-smoke，观察 frames.jsonl 中 navigation action metadata.local_refinement.success 是否为 true。",
+        "如果 pick_smoke 通过，继续跑完整 nav+pick+nav_to_place+place，验证跨楼层搬运。",
+        "如果 GUI 中末端仍不是黑色，下一步检查 IsaacLab URDF converter 输出 USD 的材质绑定和是否存在旧 /tmp 或 stage cache。"
+      ]
+    },
+    {
+      "time": "2026-06-27 23:35:00 CST",
+      "summary": "基于用户已成功的真实 pick_smoke 日志修复 DWA 角速度抖动；为跨楼层 carry 增加 route slice 联合地图并禁止 2D A* 覆盖 PCT 三维路径；pct_multifloor GUI 自动显示当前任务苹果 Mesh。",
+      "files_changed": [
+        "source/navigation/navlib/dwa.py",
+        "source/navigation/executor.py",
+        "source/navigation/pct_local_map.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/simulation/isaaclab_runtime.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/navigation/test_pct_local_map.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "真实 pick_smoke 虽成功，但 nav_to_pick 中机器人频繁原地转向后再前进。",
+          "root_cause": "DWA 采样器把正负最大角速度无条件追加到候选集，只按全局上限裁剪，绕过当前速度和角加速度形成的动态窗口；实际日志在 target_index=31 出现 16 次正负翻转。局部 A* 又把原始栅格点逐点交给短 lookahead 跟踪，增加了不必要的小折角。",
+          "fix": "所有线速度和角速度候选严格裁剪到当前动态窗口；同层 PCT 局部 A* 改用已有的共线简化路径，保留障碍转角并删除直线冗余。离线探针中相邻角速度命令最大变化限制为 0.06 rad/s。",
+          "prevention": "动态窗口候选必须用单元测试验证上下界，不能为了覆盖零速或最大转速而绕过加速度约束；路径简化必须保留障碍转角。"
+        },
+        {
+          "problem": "原 executor 会用固定 pick 楼层地图和一次纯 2D A* 处理 F1 到 F2 的 PCT 路径。",
+          "root_cause": "局部地图只在组件创建时按 pick z 构造，且所有 planner=pct 路径都进入 2D A* refinement，导致跨楼层 path_3d 的 slice/gateway 语义可能被压平。",
+          "fix": "新增覆盖任务楼层和中间高度的 PCT route 联合地图；executor 根据 slice_start/slice_end 和 path_3d z 范围切换地图。跨楼层路径只删除连续重复 XY，严格保持 PCT waypoint 顺序，不再执行全局 2D A* 替换。跨楼层 route map 不叠加会误封楼梯的全高度 collision PLY 墙体投影。",
+          "prevention": "任何多楼层局部控制修改都必须测试 slice 变化路径不会进入同层 A*，并分别验证 start-to-pick 与 pick-to-place。"
+        },
+        {
+          "problem": "GUI 中当前任务 apple_01 的 Apple_M_Apple_0 Mesh 默认不可见。",
+          "root_cause": "runtime 把 Apple_M_Apple 关键词统一视为碰撞占位视觉并主动 MakeInvisible；当前多楼层资产没有独立 visual_video 替代层，因此真实苹果 Mesh 被隐藏。",
+          "fix": "pct_multifloor profile 自动关闭该碰撞视觉隐藏策略，并在 collision patch 重组 prim 后再次执行 only-task-object 可见性恢复。flat profile 默认行为保持不变。",
+          "prevention": "隐藏碰撞视觉前必须确认资产存在独立渲染 Mesh；collision patch/deinstance 后应重新回读任务物体 visibility。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/test_astar_dwa_smoke.py tests/navigation/test_pct_local_map.py tests/navigation/test_locomotion_policy_config.py tests/test_isaaclab_navigation_runtime.py -q",
+          "result": "passed",
+          "note": "60 passed, 1 skipped；覆盖动态窗口、同层细化、跨楼层路径保持、route slice 联合和 PCT 苹果可见性配置。"
+        },
+        {
+          "command": "本地 PCT server + 纯 Python DWA 两段闭环探针",
+          "result": "passed",
+          "note": "start->pick 在 1016 步进入 0.18m 容差；pick->place slice 10->16 在 2836 步进入 0.18m 容差；两段最大相邻角速度命令变化均为 0.06rad/s。"
+        },
+        {
+          "command": "真实 Isaac Sim full-physics carry/place",
+          "result": "not_run",
+          "note": "检测到已有外部 Isaac/Python GPU 进程；为避免 CUDA/Vulkan 并发冲突，本轮未启动第二个 Isaac 实例。用户已确认本轮输入 pick_smoke 真实成功。"
+        }
+      ],
+      "next_steps": [
+        "关闭已有 Isaac 仿真进程后，以默认 full_physics 模式运行下方命令，观察状态是否进入 plan_nav_to_place、exec_nav_to_place 和 plan_place。",
+        "重点检查 exec_nav_to_place 帧中的 local_refinement.mode=pct_multifloor_path_preserved、carry_arm_home_hold=true、carry_gripper_hold=true。",
+        "若真实 RL policy 在楼梯处失败，依据 frames.jsonl 的 base_z、target_index 和 object/TCP slip 区分 locomotion 上楼失败与抓取滑移。"
+      ]
+    },
+    {
+      "time": "2026-06-28 00:25:00 CST",
+      "summary": "修复 full_physics nav_to_pick 把相邻 slice 误判为跨楼层并追踪稀疏绕路的问题；PCT server 和 executor 对净空充足的同层目标输出两点直连路径，同时默认关闭会制造假障碍的 collision PLY 全高度投影。保留用户设置的 start z=0.25。",
+      "files_changed": [
+        "scripts/navigation/pct_grid_server.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "source/navigation/executor.py",
+        "source/navigation/pct_adapter.py",
+        "source/navigation/pct_local_map.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "tasks/nav_pick_place_apple_multifloor_pct.json",
+        "tests/navigation/test_pct_adapter.py",
+        "tests/navigation/test_pct_grid_server.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_astar_dwa_smoke.py",
+        "docs/pct_multifloor_navigation.md",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "真实 full_physics 的 nav_to_pick 明明可直走，却先沿 x 近似不变前进、再左转，并在转弯后长时间停滞，最终 nav_collision。",
+          "root_cause": "reset 后机器人 base z 约 0.237、goal z 约 0.367，被 PCT 量化到相邻 slice 9/10；executor 只要 slice 不同就误判为跨楼层，跳过同层局部细化并直接追踪 4 个稀疏 PCT 点。机器人偏离首段后仍追赶身后的 waypoint，240 步窗口进展仅 0.0498m，触发 stall。",
+          "fix": "path_3d 存在时以真实 z 跨度为准，跨度不超过 0.35m 即视为同层；只有缺少 path_3d 时才用 slice 差至少 2 作为跨楼层判据。",
+          "prevention": "楼层判断不能直接比较离散 slice 是否相等；必须允许相邻切片量化，并为 slice 9->10 且 path z 不变增加回归测试。"
+        },
+        {
+          "problem": "同层 PCT 路径仍在物理上畅通的直线上产生左转绕路。",
+          "root_cause": "PCT 相邻 slice 合并地图上 start-to-pick 直线 33 个格全部可走、最小净空 1.2m；实验性 collision PLY 垂直障碍投影却在 (-3.80,4.19) 生成唯一假障碍，迫使局部 A* 绕行。PCT exact slice 也受 base z 切片边界影响产生稀疏四点路径。",
+          "fix": "vertical obstacle 启发式默认阈值改为 0，即关闭；PCT server 对同层路径检查相邻 slice 和一格机器人宽度走廊，完全可走时返回 path_mode=same_floor_direct；executor 再检查至少 0.4m 局部净空并使用实际 sim_start 到 goal 的两点直线。",
+          "prevention": "collision PLY 启发式层只能显式开启并用于诊断，不能默认作为硬障碍；同层路径必须记录 pct_path_mode、local refinement mode 和直线最小净空。"
+        },
+        {
+          "problem": "用户把 start z 改为 0.25 后，multifloor task 回归测试仍断言旧值 0.36742。",
+          "root_cause": "测试硬编码任务示例中的历史坐标，没有随用户确认的新初始高度更新。",
+          "fix": "保留 task z=0.25，并把 prepare_episode_spec 保留字段测试的期望值更新为 0.25。",
+          "prevention": "任务示例坐标由用户调整后，应同步更新精确值回归测试；不能为了通过测试回退用户资产标定。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "真实 episode frames/events/summary 离线诊断",
+          "result": "passed",
+          "note": "确认失败为 nav_collision；错误分支为 pct_multifloor_path_preserved，slice 9->10，最终目标索引 13 持续 332 次 DWA 重算。"
+        },
+        {
+          "command": "当前 tomogram/walkable start-to-pick 直线占用探针",
+          "result": "passed",
+          "note": "关闭 vertical projection 时 33 个直线格 0 occupied、最小净空约 1.2m；开启时仅 (-3.80,4.19) 一个假障碍。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/navigation/test_pct_grid_server.py tests/navigation/test_pct_adapter.py tests/test_astar_dwa_smoke.py -q",
+          "result": "passed",
+          "note": "22 passed；覆盖同层走廊直连、障碍拒绝、多 slice 禁止直连、adapter metadata 和 executor 同层/跨楼层分支。"
+        },
+        {
+          "command": "本地 PCT server + 当前 task start z=0.25 + DWA 闭环",
+          "result": "passed",
+          "note": "PCT 输出 path_mode=same_floor_direct 和 2 个 path_3d 点；executor 输出 pct_same_floor_direct，从 (-4.2,0.6) 直连 pick，752 步进入 0.18m 容差。跨楼层 pick-to-place 仍为 astar_3d、slice 10->16、z 0.0->3.5。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "29 passed；包含 task z=0.25、PCT server、adapter、局部地图和 planner selection。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_isaaclab_navigation_runtime.py tests/test_simulation_viewport.py -q",
+          "result": "passed",
+          "note": "101 passed, 1 skipped；默认 A*、完整状态机和 Isaac runtime 回归通过。"
+        },
+        {
+          "command": "真实 Isaac Sim full_physics",
+          "result": "not_run",
+          "note": "本次修复后尚未由 Codex 启动真实 GUI/GPU 仿真；需要用户复跑确认 RL policy 的真实直线路径。"
+        }
+      ],
+      "next_steps": [
+        "用户复跑 full_physics，确认 nav_to_pick 的 planner metadata.pct_path_mode=same_floor_direct、executor local_refinement.mode=pct_same_floor_direct。",
+        "nav_to_pick 和 pick 成功后继续观察 exec_nav_to_place 的 astar_3d 跨楼层路径，不应被同层直连逻辑覆盖。",
+        "若直线仍停滞，读取最新 frames 中 measured_body_velocity 与 command_seen，排查 RL policy 跟踪而不是继续修改 PCT 路径。"
+      ]
+    },
+    {
+      "time": "2026-06-27 23:15:35 CST",
+      "summary": "排查最新 full_physics 的 exec_nav_to_pick 失败：PCT 两点直线路径已正确生效，实际失败来自 reset 后底盘仍在滑动时 DWA 构造了空动态窗口并输出越界命令。修复 DWA 动态窗口饱和逻辑，并仅为 pct_multifloor 增加导航前底盘稳定门控。",
+      "files_changed": [
+        "source/navigation/navlib/dwa.py",
+        "source/pipeline/config.py",
+        "source/pipeline/factory.py",
+        "source/pipeline/state_machine.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/test_full_physics_pipeline.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "最新 nav_to_pick 在约 200 个视频帧后以 nav_collision 失败，机器人从起点向后侧滑且角速度超限。",
+          "root_cause": "reset 后首个导航观测的实测 body velocity 为 vx=-0.146m/s、vy=-0.362m/s、wz=-0.703rad/s，已经超出 DWA 配置的 vx>=0 和 |wz|<=0.5。旧动态窗口把加速度窗口与合法范围求交后可能得到 lower>upper，随后 np.clip 在反向边界上产生 vx<0、|wz|>0.5 的非法命令。",
+          "fix": "新增统一的有界动态区间函数；正常时返回加速度窗口与命令范围的交集，无交集时把当前速度饱和到最近合法边界。正常采样和无可行轨迹的原地转向 fallback 共用该函数。",
+          "prevention": "DWA 单元测试必须覆盖正负方向的实测速度越界，并断言所有候选命令始终位于配置上下界内。"
+        },
+        {
+          "problem": "苹果已稳定后状态机立即进入导航，但机器狗仍有明显平移、旋转和倾斜。",
+          "root_cause": "原 reset settle 只检查 object_velocity，不检查 robot_root_velocity 和底盘 roll/pitch；用户把 start z 调为 0.25 后，PhysX 接触调整产生的滑动会直接传入 locomotion policy。",
+          "fix": "为 ManipulationSettings 增加可选底盘稳定阈值；pct_multifloor 的 pick/full-physics 自动启用，要求物体和底盘连续稳定后才进入 plan_nav_to_pick。flat 默认配置保持关闭。",
+          "prevention": "导航启动条件同时记录底盘线速度、角速度、roll 和 pitch；多楼层真实回归应先检查 object_initial_pose_stabilized 事件中的 stability 报告。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py -q",
+          "result": "passed",
+          "note": "55 passed；覆盖 DWA 实测速度双向越界、flat 默认不启用底盘门控、pct_multifloor 自动启用和状态机等待连续稳定。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "29 passed；PCT server、adapter、planner selection、任务字段和局部地图回归通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_isaaclab_navigation_runtime.py tests/test_simulation_viewport.py -q",
+          "result": "passed",
+          "note": "48 passed, 1 skipped；Isaac Lab runtime 与 viewport 回归通过，跳过项为环境条件测试。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/navigation/navlib/dwa.py source/pipeline/config.py source/pipeline/factory.py source/pipeline/state_machine.py scripts/pipeline/run_full_physics_pipeline.py tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "本次修改文件语法检查通过。"
+        },
+        {
+          "command": "真实 Isaac Sim full_physics",
+          "result": "not_run",
+          "note": "本轮未启动 GUI/GPU 仿真；需要用户复跑确认底盘稳定后首个导航命令不再越界并能完成 nav_to_pick。"
+        }
+      ],
+      "next_steps": [
+        "用户复跑 full_physics，检查 reset 阶段是否出现 object_initial_pose_stabilized 且 stability.base_stable=true。",
+        "检查首个 exec_nav_to_pick 帧的 commanded_body_velocity 满足 vx>=0、|wz|<=0.5，并确认 pct_path_mode=same_floor_direct。",
+        "nav_to_pick 和 pick 成功后继续验证 exec_nav_to_place 的跨楼层 carry；若仍失败，依据最新 failure_reason 和 frames.jsonl 区分 locomotion、碰撞或抓取滑移。"
+      ]
+    },
+    {
+      "time": "2026-06-28 10:24:58 CST",
+      "summary": "修复最新真实 full_physics 中 nav_to_pick 起步踉跄且原地停滞的问题：PCT 两点直线路径仍正确，DWA 改用上一条高层命令推进 PCT profile 的动态窗口，并把低于 DogOnly checkpoint 行走阈值的爬升命令作为严格站立零命令发送给策略。",
+      "files_changed": [
+        "source/navigation/navlib/dwa.py",
+        "source/navigation/adapters/isaaclab_go2_adapter.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/simulation/isaaclab_runtime.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "稳定门控后 nav_to_pick 仍只移动约 0.05m，机器人起步原地换脚、转动并最终触发 nav_collision。",
+          "root_cause": "DWA 每次重算都以 RL policy 的实测速度建立动态窗口。策略对 0.08m/s 以下命令几乎不产生前进速度，因此 DWA 的候选 vx 长期停留在 0.03-0.07m/s，无法爬升到 checkpoint 的有效步态区间；与此同时任意非零微小命令都会关闭 standing 状态，引发原地换脚。",
+          "fix": "仅在 pct_multifloor profile 启用 command velocity window：首次由实测速度初始化，之后以最近一次 DWA 命令累计加速度。运行时为 DogOnly checkpoint 设置 0.08 standing deadzone，死区内向 policy 和 command term 写入严格零命令。",
+          "prevention": "高层 RL 速度命令的平滑状态不能与机器人瞬时实测速度混为一谈；必须用真实 episode 的静止观测回放，验证命令能穿过 policy deadzone，同时保留 flat/A* 的旧 measured-window 默认。"
+        },
+        {
+          "problem": "怀疑用户设置的 start z=0.25 导致站高不足。",
+          "root_cause": "碰撞 PLY 与 Isaac 世界坐标存在 Z 不变、XY 旋转关系；直接把 root z 当作离地高度会忽略起点地面约 z=-0.124m。",
+          "fix": "读取 collision PLY 顶点核对起点地面，确认当前稳定 root z约0.241m 对应离地约0.365m，因此保留 task start z=0.25，不再错误调整站高。",
+          "prevention": "多楼层场景判断机器人站高必须使用 root_z-ground_z，不能只看世界坐标 root_z。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "最新 outputs/full_physics_pipeline/episode_000000 离线诊断",
+          "result": "passed",
+          "note": "PCT path_mode=same_floor_direct；605 个导航 tick 位移约0.053m，DWA 命令主要为0.03-0.07m/s，最终 nav_collision。reset 放行时 base_stable=true。"
+        },
+        {
+          "command": "collision PLY 起点地面高度探针",
+          "result": "passed",
+          "note": "sim(-4.2,0.6) 对应 PCT(4.2,-0.6)，附近最低楼面顶点约z=-0.124m；保留任务 root z=0.25。"
+        },
+        {
+          "command": "真实 episode 前20个观测的新 DWA 离线回放",
+          "result": "passed",
+          "note": "raw vx 从0.05逐步增加到0.45m/s；policy 实际命令为0.0、0.10、0.15直到0.45m/s，不再锁死在微小速度区。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_isaaclab_navigation_runtime.py tests/test_simulation_viewport.py -q",
+          "result": "passed",
+          "note": "134 passed, 1 skipped；覆盖 PCT command-window 累积、flat measured-window 兼容、policy standing deadzone、planner/runtime/viewport 回归。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/navigation/navlib/dwa.py source/navigation/adapters/isaaclab_go2_adapter.py source/pipeline/navigation_smoke.py source/simulation/isaaclab_runtime.py scripts/pipeline/run_full_physics_pipeline.py tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "本次修改文件语法检查通过；git diff --check 通过。"
+        },
+        {
+          "command": "真实 Isaac Sim full_physics 修复后复跑",
+          "result": "not_run",
+          "note": "本轮未启动 GUI/GPU 仿真；需要用户复跑确认实际步态能够响应0.10-0.45m/s爬升并完成 nav_to_pick。"
+        }
+      ],
+      "next_steps": [
+        "用户使用原 full_physics 命令复跑，检查首批 exec_nav_to_pick 帧中 dwa.velocity_window_source=command。",
+        "检查 runtime metadata.command_is_standing：第一条低速爬升命令应为true，随后在有效命令超过0.08后变为false。",
+        "若仍踉跄但已经产生前进位移，下一步依据新日志中的 action_abs_max、dog_action_abs_mean 和四足接触状态排查 checkpoint/URDF 动力学匹配，不再继续修改 PCT 全局路径。"
+      ]
+    },
+    {
+      "time": "2026-06-28 11:11:46 CST",
+      "summary": "基于首次真实完成 nav-to-pick 和 pick、进入 carry 的 episode，修复初始化 policy action 阶跃和跨楼层局部地图丢失墙体的问题；为 carry 增加墙体投影、障碍膨胀、PCT 路径保护走廊及独立速度上限。",
+      "files_changed": [
+        "source/navigation/adapters/isaaclab_go2_adapter.py",
+        "source/navigation/executor.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/pipeline/state_machine.py",
+        "source/simulation/isaaclab_runtime.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "docs/pct_multifloor_navigation.md",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "四足底盘 reset 初期速度突变并踉跄。",
+          "root_cause": "环境 reset 写入默认关节姿态后，首个控制步立即施加完整 policy action；不规则 collision mesh 上的关节 target 阶跃会产生明显弹跳和侧滑。此前只平滑了速度 command，没有平滑 policy joint action。",
+          "fix": "仅为 pct_multifloor runtime 增加 50 个控制步的 policy action 线性渐入，并在每个 episode reset 时重置渐入计数。flat runtime 默认 warmup=0，行为不变。",
+          "prevention": "checkpoint 接入真实不规则网格时必须分别检查 command ramp 和 joint action ramp；不能只凭 root 速度稳定判定初始化控制已经无阶跃。"
+        },
+        {
+          "problem": "carry nav 多次撞击障碍物，最后机器人摔倒并以 navigation_environment_terminated 退出。",
+          "root_cause": "跨楼层 local map 对所有 route 高度 slice 做可走并集；高层自由格会覆盖低层墙体。真实失败期间 DWA 始终报告 clearance=1.0、collision_rejections=0，即使机器人已在墙边多次碰撞。最终仍发送 vx=0.45m/s、wz=0.5rad/s，底盘倾倒后环境终止。",
+          "fix": "跨楼层 carry map 单独从 collision PLY 恢复贯穿至少5个高度切片的墙体，膨胀0.12m后沿 PCT 中心线恢复0.16m保护走廊；同层地图仍默认关闭该投影，避免 nav-to-pick 假障碍。carry 独立限速为 vx<=0.30m/s、|wz|<=0.35rad/s、线加速度<=1.5m/s²、路径偏离<=0.14m。",
+          "prevention": "跨楼层地图不能用简单 slice 并集作为障碍语义；真实回归必须检查 map_selection、collision_rejections 和 DWA clearance，不能等 PhysX 摔倒后才判断避障失败。"
+        },
+        {
+          "problem": "用户观察到最后苹果掉落。",
+          "root_cause": "日志显示苹果在整个 carry 直到终止前与 TCP 距离始终小于约1.9cm；苹果不是先脱离夹爪，而是机器人撞墙倾倒后随末端一起下降。",
+          "fix": "优先修复底盘墙体感知和 carry 速度，不错误放宽抓取或增加非物理 object-follow。",
+          "prevention": "掉落判断必须比较 object-TCP 距离和发生时间；机器人整体摔倒时 object z 降低不等于 grasp 先失效。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "最新 full_physics frames/events/summary 离线诊断",
+          "result": "passed",
+          "note": "nav-to-pick、pick 均成功；carry 1227 tick 后环境终止。object-TCP 距离全程未超过0.08m，首次明显倾斜发生在 step2534，root z<0.1发生在step2576，随后终止。"
+        },
+        {
+          "command": "真实 PCT 16点 carry 路径 + 新墙体地图静态探针",
+          "result": "passed",
+          "note": "PCT 中心线648个2cm采样点全部可走；最终摔倒位置(-2.038,4.396)保持 occupied；中心线路径点净空约0.20m或以上。"
+        },
+        {
+          "command": "真实 PCT carry 路径纯 DWA 闭环探针",
+          "result": "passed",
+          "note": "0.12m走廊会在合法转角停住；0.16m走廊在2792步进入0.18m终点容差，同时失败碰撞点仍为 occupied，因此采用0.16m。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_full_physics_navigation.py tests/test_isaaclab_navigation_runtime.py tests/test_simulation_viewport.py -q",
+          "result": "passed",
+          "note": "143 passed, 1 skipped；覆盖 action warmup 配置、carry 走廊、障碍偏离阻断、carry 限速和原 flat/A* 兼容。"
+        },
+        {
+          "command": "本次修改文件 py_compile",
+          "result": "passed",
+          "note": "DWA、executor、adapter、pipeline、runtime、CLI 和对应测试文件语法检查通过。"
+        },
+        {
+          "command": "真实 Isaac Sim full_physics 修复后复跑",
+          "result": "not_run",
+          "note": "本轮未启动 GUI/GPU 仿真；需要用户复跑验证多次墙体碰撞是否消失，并继续观察真实楼梯 traversal。"
+        }
+      ],
+      "next_steps": [
+        "用户复跑 full_physics，确认初始化 metadata.policy_action_warmup_scale 从0.02平滑升至1.0。",
+        "carry 阶段确认 map_selection.multifloor=true、route_cells_cleared>0，dwa_limits 为0.30/0.35/1.50/0.14，并出现合理 collision_rejections。",
+        "若机器人到达楼梯但上楼失败，下一步按 base_z、path_3d target 和 height scan 排查 RL stair traversal；不要再把楼梯失败归因于全局 PCT 路径。"
+      ]
+    },
+    {
+      "time": "2026-06-28 12:07:01 CST",
+      "summary": "根据最新真实 carry 失败日志修复 PCT 全局路径穿墙、DWA 路径走廊误删硬障碍和对角切角问题，并为更长的安全跨楼层路线提高 PCT profile 的阶段时限。",
+      "files_changed": [
+        "scripts/navigation/pct_grid_server.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "source/navigation/pct_adapter.py",
+        "source/navigation/pct_local_map.py",
+        "source/navigation/executor.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/pipeline/factory.py",
+        "tests/navigation/test_pct_grid_server.py",
+        "tests/navigation/test_pct_local_map.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/test_full_physics_pipeline.py",
+        "docs/pct_multifloor_navigation.md",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "pick 后 PCT carry 路径直接指向真实墙体，机器人持续前进并最终 stall。",
+          "root_cause": "PCT server 只使用宽松的 tomogram/walkable OR 语义，没有读取 collision PLY 硬墙；DWA 虽在目标点识别到障碍，但 executor 的 PCT 走廊清理又把该障碍强制改成自由格。失败目标(-2.879,5.923)在清理前 occupied、清理后 free。",
+          "fix": "PCT 全局规划新增 collision PLY 跨层硬障碍，默认阈值6；DWA 保留更敏感的阈值5，并新增与全局规划一致的 protected obstacle map，路径走廊不得清除这些硬障碍。",
+          "prevention": "全局规划和局部执行必须共享不可删除的障碍语义；任何路径走廊修复都要记录 cleared/preserved 数量，并用失败坐标做清理前后占用回归。"
+        },
+        {
+          "problem": "加入硬障碍后，部分 PCT 路径仍从障碍角点擦过。",
+          "root_cause": "本地 3D A* 允许对角邻接，但没有检查两个正交邻格，存在标准的 diagonal corner cutting。",
+          "fix": "对角扩展必须同时确认两个正交邻格可走；真实 carry 路径在最终 DWA map 中的占用采样由3个降为0个。",
+          "prevention": "栅格 A* 新增或修改邻接规则时必须包含对角切角单元测试，并对压缩后整段路径重新采样检查。"
+        },
+        {
+          "problem": "安全绕墙路线超过原 navigation=5000 tick 限制。",
+          "root_cause": "新路线 XY 长度约18.55m，理想 DWA 离线闭环需要5817 tick；原限制按短路线设置。",
+          "fix": "仅对 pct_multifloor 完整 pipeline 将 navigation 下限提高到9000、episode 下限提高到24000；flat/A* 配置不变。",
+          "prevention": "路径安全约束改变后必须重新计算路线长度和最坏执行时间，避免碰撞修复转化为超时失败。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "最新 full_physics summary 与 PCT/DWA 地图离线诊断",
+          "result": "passed",
+          "note": "确认 failure_reason=nav_collision；旧目标点在5-slice硬障碍图中 occupied，却被旧走廊清理为free。"
+        },
+        {
+          "command": "本地 PCT server 真实资产规划探针",
+          "result": "passed",
+          "note": "返回astar_3d、30个压缩点、2766个全局硬障碍格；新路径绕开本次碰撞墙。"
+        },
+        {
+          "command": "真实资产 PCT路径 + DWA最终地图静态探针",
+          "result": "passed",
+          "note": "新路径中心线占用采样为0；旧穿墙目标仍为occupied；走廊清理59格，没有删除全局硬障碍。"
+        },
+        {
+          "command": "真实资产安全路径纯DWA闭环探针",
+          "result": "passed",
+          "note": "5817 tick进入0.18m终点容差，phase=completed，success=true。"
+        },
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/navigation/pct_local_map.py source/navigation/executor.py source/pipeline/config.py source/pipeline/navigation_smoke.py source/pipeline/factory.py scripts/navigation/pct_grid_server.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "修改模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q",
+          "result": "passed",
+          "note": "263 passed, 1 skipped。"
+        },
+        {
+          "command": "真实 Isaac Sim full_physics 修复后复跑",
+          "result": "not_run",
+          "note": "本轮未启动 GUI/GPU 仿真；需要用户复跑验证绕墙路线和真实楼梯 traversal。"
+        }
+      ],
+      "next_steps": [
+        "用户复跑 full_physics，确认 planner metadata 中 hard_obstacle_min_slices=6、hard_obstacle_cells=2766。",
+        "carry 阶段确认第一段路径沿 x约-3.48向y减小方向绕墙，不再指向旧目标(-2.879,5.923)。",
+        "若到达楼梯后失败，下一步依据base_z与path_3d的slice切换检查DWA仅消费XY造成的楼梯跟踪限制。"
+      ]
+    },
+    {
+      "time": "2026-06-28 12:56:41 CST",
+      "summary": "根据最新 full_physics carry 失败日志修复 pick 后上楼路线选择：PCT 全局硬障碍默认阈值改为7，并禁止跨 slice 纯竖直邻接，使路径从右侧更宽通道离开 pick 区域且楼梯段不再出现同 XY z 跳变。",
+      "files_changed": [
+        "scripts/navigation/pct_grid_server.py",
+        "source/navigation/pct_adapter.py",
+        "source/pipeline/config.py",
+        "tests/navigation/test_pct_grid_server.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "docs/pct_multifloor_navigation.md",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "真实 full_physics 在 exec_nav_to_place 初段失败，机器人完成 pick 后在 (-3.97, 4.59) 附近走走停停转转并触发 nav_collision。",
+          "root_cause": "最新 summary 显示失败并非发生在楼梯段，而是在 pick 后第一段下行通道。PCT 全局硬障碍阈值6把右侧更宽通道误封，规划路径被迫经过 x≈-3.68 的左侧窄墙口；DWA 携物转弯时过冲到左墙，局部图仍认为中心线可走但真实底盘发生碰撞/卡住。",
+          "fix": "将 PCT 全局硬障碍默认阈值改为7，使全局路径改走 x≈-3.28 的右侧通道；保留 DWA 使用5-slice局部障碍层和0.16m中心线走廊，不扩大走廊清理半径。",
+          "prevention": "遇到 carry 撞墙时先对比真实失败坐标、PCT路径和局部占用图，不直接调速度或关闭障碍；全局阈值变更必须用真实路径、中心线占用采样和DWA闭环探针验证。"
+        },
+        {
+          "problem": "跨楼层 PCT path 后半段存在同一 XY 坐标下 z 连续跳变，DWA 只消费 XY 时会把楼梯段看成原地等待升高。",
+          "root_cause": "本地 PCT grid server 允许 dsi!=0 且 dx=dy=0 的邻接，相当于在层析图里允许电梯式纯竖直移动；压缩路径后会保留同 XY 的 z 跳变。",
+          "fix": "_neighbors() 跨 slice 时不再包含 center offset，所有换层必须伴随至少一个水平栅格位移；新增单元测试确认纯竖直邻接被拒绝。",
+          "prevention": "多楼层 planner 的邻接规则要表达机器人真实可执行的楼梯/坡道运动，禁止让全局图产生局部控制器无法执行的几何捷径。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "最新 outputs/full_physics_pipeline/episode_000000 summary/events/frames 离线诊断",
+          "result": "passed",
+          "note": "确认失败点为 exec_nav_to_place 初段 nav_collision；PCT旧路径前段为 x≈-3.48 -> x≈-3.68 左侧窄墙口，机器人最终停在 (-3.966,4.591)，距 goal 约7.18m。"
+        },
+        {
+          "command": "真实资产 PCT server 默认参数规划探针",
+          "result": "passed",
+          "note": "新默认 hard_obstacle_min_slices=7，返回 astar_3d、30个压缩点、1858个硬障碍格；路径前段改为 x≈-3.48 -> x≈-3.28 右侧通道，pure_vertical_count=0。"
+        },
+        {
+          "command": "真实资产新 PCT 路径 + 当前 DWA 局部地图静态探针",
+          "result": "passed",
+          "note": "中心线 occupied 采样为0；走廊清理66格，protected_preserved=0。"
+        },
+        {
+          "command": "真实资产新 PCT 路径纯 DWA 闭环探针",
+          "result": "passed",
+          "note": "约5138 tick 进入 place XY 0.18m 容差，最终 pose≈(0.542,-1.143)，feasible_candidates=21，collision_rejections=0。"
+        },
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/navigation/pct_local_map.py source/navigation/executor.py source/pipeline/config.py source/pipeline/navigation_smoke.py source/pipeline/factory.py scripts/navigation/pct_grid_server.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "修改模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_isaaclab_navigation_runtime.py tests/test_simulation_viewport.py -q",
+          "result": "passed",
+          "note": "140 passed, 1 skipped。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q",
+          "result": "passed",
+          "note": "264 passed, 1 skipped。"
+        },
+        {
+          "command": "真实 Isaac Sim GUI full_physics 修复后复跑",
+          "result": "not_run",
+          "note": "本轮未启动 GUI/GPU 仿真；需要用户复跑确认右侧通道路线是否消除 pick 后初段卡墙，并继续观察真实楼梯 traversal。"
+        }
+      ],
+      "next_steps": [
+        "用户复跑 full_physics，确认 planner metadata 中 hard_obstacle_min_slices=7、hard_obstacle_cells≈1858，path_3d 前段包含 (-3.2785,6.0564)->(-3.2785,0.2564)。",
+        "GUI 中观察 pick 后机器人应先向右侧通道下行，不再在 x≈-3.9,y≈4.6 左墙口原地打转。",
+        "若机器人到达楼梯口后仍失败，下一步基于新的 path_3d 的 z/slice 切换、base_z、height_scan 和 RL policy 命令排查楼梯执行，而不是继续修改 pick 区域避障。"
+      ]
+    },
+    {
+      "time": "2026-06-28 13:17:59 CST",
+      "summary": "修复用户复跑后 plan_nav_to_place 直接失败的问题：CLI 参数默认值仍为旧的 PCT 全局硬障碍阈值6，覆盖了配置类和 server 默认的7，导致禁止纯竖直换层后跨楼层规划 no_path。现已同步 CLI 默认值并补充 no_path 诊断字段。",
+      "files_changed": [
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "scripts/navigation/pct_grid_server.py",
+        "tests/test_full_physics_pipeline.py",
+        "tests/navigation/test_pct_grid_server.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "用户复跑 full_physics 后在 plan_nav_to_place 状态失败，PCT 返回 no_path。",
+          "root_cause": "上一轮把 NavigationSettings、PCTPlannerConfig 和 pct_grid_server 默认阈值改为7，但 run_full_physics_pipeline.py 的 argparse 默认值仍写死为6。main() 构建 FullPhysicsConfig 时用 args.pct_global_vertical_obstacle_min_slices 覆盖配置默认值；阈值6在禁止纯竖直换层后无法从 slice 9 规划到 slice 16，因此直接 no_path。",
+          "fix": "--pct-global-vertical-obstacle-min-slices 的 argparse default 改为 NavigationSettings().pct_global_vertical_obstacle_min_slices；新增 CLI 默认值测试，确保 parser 默认值与配置类同步。",
+          "prevention": "CLI 默认值不再手写与配置类重复的数字；涉及 planner 参数的默认值修改必须同时测试 parser parse_args 的默认值。"
+        },
+        {
+          "problem": "失败 summary 中 PCT no_path payload 没有 hard_obstacle_min_slices，定位时需要回查 CLI 和 server。",
+          "root_cause": "pct_grid_server 只在 ok 响应里返回硬障碍诊断字段，no_path 响应缺少同样信息。",
+          "fix": "no_path 响应也返回 hard_obstacle_cells 和 hard_obstacle_min_slices；新增单元测试覆盖。",
+          "prevention": "规划失败响应必须携带与成功响应同级别的关键配置诊断字段，避免真实仿真失败后缺少复现线索。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "最新 outputs/full_physics_pipeline/episode_000000 summary/events 离线诊断",
+          "result": "passed",
+          "note": "failure_reason=nav_to_place_plan_failed；PCT payload 为 no_path，slice_start=9、slice_end=16、snap_start_dist=0、snap_end_dist=0。"
+        },
+        {
+          "command": "CLI 默认值解析探针",
+          "result": "passed",
+          "note": "_build_parser().parse_args([...]).pct_global_vertical_obstacle_min_slices == 7。"
+        },
+        {
+          "command": "/data/conda_envs/sage/bin/python 启动 PCT server 默认参数规划探针",
+          "result": "passed",
+          "note": "不设置 PCT_GLOBAL_VERTICAL_OBSTACLE_MIN_SLICES 时返回 ok、hard_obstacle_min_slices=7、hard_obstacle_cells=1858、traj_len=30。"
+        },
+        {
+          "command": "python -m py_compile source/navigation/pct_adapter.py source/pipeline/config.py scripts/navigation/pct_grid_server.py scripts/pipeline/run_full_physics_pipeline.py tests/navigation/test_pct_grid_server.py tests/test_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "修改模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation/test_pct_grid_server.py tests/navigation/test_locomotion_policy_config.py tests/test_full_physics_pipeline.py -q",
+          "result": "passed",
+          "note": "51 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q",
+          "result": "passed",
+          "note": "266 passed, 1 skipped。"
+        },
+        {
+          "command": "真实 Isaac Sim GUI full_physics 修复后复跑",
+          "result": "not_run",
+          "note": "本轮没有启动 GUI/GPU 仿真；需要用户复跑确认 plan_nav_to_place 不再 no_path，并继续进入 exec_nav_to_place。"
+        }
+      ],
+      "next_steps": [
+        "用户复跑同一条 full_physics 命令，不需要额外传 --pct-global-vertical-obstacle-min-slices；summary 中应出现 hard_obstacle_min_slices=7。",
+        "若仍在 plan_nav_to_place 失败，查看新的 no_path payload 是否包含 hard_obstacle_min_slices 和 hard_obstacle_cells，并直接对照 PCT server 默认参数。",
+        "若进入 exec_nav_to_place 后失败，下一步继续根据真实轨迹排查右侧通道和楼梯段执行。"
+      ]
+    },
+    {
+      "time": "2026-06-28 14:28:58 CST",
+      "summary": "修复 PCT 跨楼层 pick_to_place 选错侧门的问题，并新增只显示 PCT 多楼层路线的 GUI preview 模式，便于不跑完整物理 pipeline 就检查路线是否经过中间大门和楼梯。",
+      "files_changed": [
+        "scripts/navigation/pct_grid_server.py",
+        "source/navigation/pct_adapter.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/pipeline/pct_plan_preview.py",
+        "scripts/navigation/probe_pct_plan.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/navigation/test_pct_grid_server.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_full_physics_pipeline.py",
+        "docs/pct_multifloor_navigation.md",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "真实 full_physics 中 pick 后 nav_to_place 选择远离楼梯的侧门/小门，机器人在墙体附近碰撞并无法稳定到达楼梯。",
+          "root_cause": "PCT server 对同层和跨楼层规划都使用同一个 7-slice 硬障碍投影；在 Yinluyuan 场景中该阈值会把通往楼梯的中间大门附近误判为不可通行，而侧门仍保持可走。跨楼层任务没有专门表达“需要去楼梯/换层”的主通道偏好，几何最短路因此选了侧门。",
+          "fix": "PCT grid server 新增 cross-floor 硬障碍 mask：slice 相差至少2时使用默认 9-slice 阈值，并在响应 metadata 中记录 cross_floor、hard_obstacle_min_slices、default_hard_obstacle_min_slices 和 cross_floor_hard_obstacle_min_slices。PCTNavPlanner/CLI/config 同步新增 pct_cross_floor_vertical_obstacle_min_slices，DWA 的跨楼层 protected obstacle map 也改为同一阈值。",
+          "prevention": "跨层规划参数不能复用同层避障阈值；每次调整 PCT 全局硬障碍阈值时必须用 probe_pct_plan.py 检查 pick_to_place 首段路线，并用 executor reset 探针确认 protected_cells_preserved 不会重新封住 PCT 认可的中间大门路线。"
+        },
+        {
+          "problem": "调试跨楼层路线必须启动完整 full_physics，耗时很长，且失败后不方便在 GUI 中直接观察 PCT 全局路径。",
+          "root_cause": "原 CLI 只有 dry-run/smoke/full-physics 等执行模式，没有只建场景、只规划、只绘制 PCT 3D path 的轻量模式。",
+          "fix": "新增 source/pipeline/pct_plan_preview.py 和 --pct-plan-preview；该模式打开 task 场景，运行 PCTNavPlanner，绘制 /World/PCTPlanPreview 下的青色 start_to_pick 与黄色 pick_to_place 曲线和 waypoint 球，并写出 pct_plan_preview.json。",
+          "prevention": "后续 PCT 路线调整先跑 probe_pct_plan.py 和 --pct-plan-preview，确认全局路线正确后再启动真实 DWA/RL/full_physics。"
+        },
+        {
+          "problem": "preview 模式不需要 locomotion policy，但 pct_multifloor profile 的 FullPhysicsConfig 校验仍要求 checkpoint 和 locomotion_task。",
+          "root_cause": "CLI 前置校验跳过 checkpoint 还不够，FullPhysicsConfig.__post_init__ 中也有同样的 pct_multifloor policy 校验。",
+          "fix": "当 pct_plan_preview=True 时跳过 pct_multifloor checkpoint/task 校验，并新增单元测试覆盖。",
+          "prevention": "新增轻量诊断模式时，需要同时审查 CLI 校验和 dataclass __post_init__ 校验，避免非执行模式被执行模式依赖阻塞。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/sage/bin/python scripts/navigation/probe_pct_plan.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --pct-server-script scripts/navigation/pct_grid_server.py --output-json /tmp/pct_probe_cross_floor_default.json",
+          "result": "passed",
+          "note": "pick_to_place metadata 显示 cross_floor=true、hard_obstacle_min_slices=9、hard_obstacle_cells=847；首段路径为 (-3.4785,6.6564)->(-3.4785,4.4564)->(-2.8785,3.8564)，已改走中间大门方向。"
+        },
+        {
+          "command": "纯 Python create_navigation_components + PCT plan + DwaNavExecutor.reset 离线检查",
+          "result": "passed",
+          "note": "executor map_selection 显示 multifloor=true、route_cells_cleared=71、protected_cells_preserved=0，说明跨层 protected map 已与 9-slice PCT 路线一致。"
+        },
+        {
+          "command": "python -m py_compile source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py source/pipeline/pct_plan_preview.py scripts/navigation/pct_grid_server.py scripts/navigation/probe_pct_plan.py scripts/pipeline/run_full_physics_pipeline.py tests/navigation/test_pct_grid_server.py tests/test_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "修改模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation/test_pct_grid_server.py tests/navigation/test_locomotion_policy_config.py tests/test_full_physics_pipeline.py -q",
+          "result": "passed",
+          "note": "53 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q",
+          "result": "passed",
+          "note": "268 passed, 1 skipped。"
+        },
+        {
+          "command": "python scripts/pipeline/run_full_physics_pipeline.py ... --pct-plan-preview",
+          "result": "not_run",
+          "note": "本轮未启动 Isaac GUI；preview 模式已通过 py_compile、CLI parser 测试和 PCT 离线规划验证，GUI 显示需要用户本机运行确认。"
+        },
+        {
+          "command": "真实 Isaac Sim full_physics 复跑",
+          "result": "not_run",
+          "note": "本轮未启动真实 DWA/RL/full_physics；需要用户先用 --pct-plan-preview 看路线，再复跑完整 pipeline。"
+        }
+      ],
+      "next_steps": [
+        "用户先运行 --pct-plan-preview，确认 /World/PCTPlanPreview/pick_to_place 黄色路线穿过中间大门并朝楼梯方向走。",
+        "确认 preview 后复跑完整 full_physics；summary 中 pick_to_place metadata 应显示 cross_floor=true、hard_obstacle_min_slices=9。",
+        "如果路线正确但机器人仍在楼梯前失败，下一步应排查 DWA XY 跟踪与 RL policy 上楼能力，而不是继续调侧门/中门全局选路。"
+      ]
+    },
+    {
+      "time": "2026-06-28 15:30:52 CST",
+      "summary": "修复 PCT 跨楼层路径远离楼梯直接换层的问题：新增楼梯 gateway 配置，跨楼层规划先强制经过 Yinluyuan 楼梯入口，再继续三维搜索；同时减少路径压缩造成的长直线穿墙观感，并补充 CLI、probe、metadata、测试和文档。",
+      "files_changed": [
+        "scripts/navigation/pct_grid_server.py",
+        "source/navigation/pct_adapter.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/pipeline/pct_plan_preview.py",
+        "scripts/navigation/probe_pct_plan.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/navigation/test_pct_grid_server.py",
+        "tests/navigation/test_pct_adapter.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_full_physics_pipeline.py",
+        "docs/pct_multifloor_navigation.md",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "用户在 preview/GUI 中看到 PCT pick_to_place 路线穿越墙体，并在远离楼梯的位置直接跨楼层。",
+          "root_cause": "pct_grid_server 的 3D A* 邻居仍允许任意相邻 slice 的斜向跨层移动；只禁止同 XY 纯竖直移动不足以表达楼梯/坡道 gateway。tomogram/walkable 在远离楼梯处存在局部跨层连通漏洞，A* 会把这些漏洞当成楼梯。",
+          "fix": "新增跨楼层 gateway 参数，默认 Yinluyuan 楼梯入口为 sim 坐标 (1.5, 5.7, 0.6)。跨楼层请求先同层规划到该 gateway，再继续三维搜索；server metadata 输出 cross_floor_gateway_count/radius/cells/mode。",
+          "prevention": "跨楼层规划不能只依赖任意 slice 邻接；每次调 PCT 地图或阈值后先运行 probe 和 --pct-plan-preview，确认 pick_to_place 黄色路线经过楼梯 gateway 后再跑 full_physics。"
+        },
+        {
+          "problem": "直接把所有跨 slice 邻接硬限制在单个 gateway 半径内会 no_path。",
+          "root_cause": "当前 Yinluyuan tomogram 在楼梯高层出口附近连通性不完整，单点圆形 gateway 无法覆盖真实楼梯/坡道的长路径和上端出口。",
+          "fix": "server 优先尝试 strict gateway 内连续换层；失败时退到 relaxed_after_strict_no_path：路线仍先经过楼梯入口，但后续继续用当前 3D A* 搜索，并把 fallback 模式写入 metadata。",
+          "prevention": "后续应通过重建/修补 tomogram 或添加楼梯上端 gateway 点，把 relaxed 模式进一步收敛为 strict；不要把 no_path 简单通过关闭障碍层掩盖。"
+        },
+        {
+          "problem": "PCT 路径压缩会保留过长直线段，preview 中容易表现为路线穿墙。",
+          "root_cause": "_compress_path 只在方向符号变化时保留点，长距离同向栅格路径会被压成单段直线。",
+          "fix": "增加 PCT_GRID_COMPRESS_MAX_SEGMENT_M，默认 0.8m 以内保留中间点，并去掉连续重复 waypoint。",
+          "prevention": "用于 DWA/GUI 的路径压缩需要同时保留拓扑和足够密度；不能只按方向符号压缩。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/sage/bin/python scripts/navigation/probe_pct_plan.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --pct-server-script scripts/navigation/pct_grid_server.py --output-json /tmp/pct_probe_gateway_final.json",
+          "result": "passed",
+          "note": "pick_to_place metadata 显示 pct_path_mode=astar_3d_via_gateway_relaxed、cross_floor_gateway_count=1、gateway_radius=1.2；路径进入 (1.5,5.7) 附近 gateway 后才出现第一次 z 变化。"
+        },
+        {
+          "command": "自动检查 /tmp/pct_probe_gateway_final.json 的 gateway_indices 与 first_z_change_index",
+          "result": "passed",
+          "note": "first_gateway_index=9，first_z_change_index=30，确认路线先经过楼梯 gateway 再跨层。"
+        },
+        {
+          "command": "纯 Python create_navigation_components + PCT plan + DwaNavExecutor.reset 离线检查",
+          "result": "passed",
+          "note": "plan metadata 为 astar_3d_via_gateway_relaxed；executor map_selection 显示 multifloor=true、route_cells_cleared=106、protected_cells_preserved=0。"
+        },
+        {
+          "command": "python -m py_compile scripts/navigation/pct_grid_server.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py source/pipeline/pct_plan_preview.py scripts/navigation/probe_pct_plan.py scripts/pipeline/run_full_physics_pipeline.py tests/navigation/test_pct_grid_server.py tests/navigation/test_pct_adapter.py tests/navigation/test_locomotion_policy_config.py tests/test_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "修改模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation/test_pct_grid_server.py tests/navigation/test_pct_adapter.py tests/navigation/test_locomotion_policy_config.py tests/test_full_physics_pipeline.py -q",
+          "result": "passed",
+          "note": "60 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q",
+          "result": "passed",
+          "note": "272 passed, 1 skipped。"
+        },
+        {
+          "command": "真实 Isaac Sim GUI --pct-plan-preview / full_physics 复跑",
+          "result": "not_run",
+          "note": "本轮未启动真实 GUI/GPU 仿真；需要用户用 preview 先确认黄色路线，再复跑 full_physics。"
+        }
+      ],
+      "next_steps": [
+        "用户运行 --pct-plan-preview，确认黄色 pick_to_place 路线先经过 (1.5,5.7) 附近楼梯入口。",
+        "如果 preview 中过楼梯入口后的上楼段仍偏离真实楼梯，提供楼梯上端/中段坐标，追加 --pct-cross-floor-gateway 或后续升级为有序 stair corridor。",
+        "preview 确认后再复跑 full_physics；若路线正确但机器人上楼失败，重点排查 RL policy 的 stairs traversal 和 DWA 对 z/slice 的利用，而不是继续修改全局选路。"
+      ]
+    },
+    {
+      "time": "2026-06-28 16:22:56 CST",
+      "summary": "修复新 place base_goal 导致的 PCT no_gateway_path，并移除仍会穿墙跨层的 relaxed fallback：全局墙体改为逐 slice 3D volume，楼梯段强制单调升层，DWA 不再用跨楼层二维投影否决已通过 3D 校验的路径。",
+      "files_changed": [
+        "source/navigation/pct_local_map.py",
+        "scripts/navigation/pct_grid_server.py",
+        "source/navigation/pct_adapter.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "scripts/navigation/probe_pct_plan.py",
+        "tests/navigation/test_pct_grid_server.py",
+        "tests/navigation/test_pct_local_map.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/navigation/test_multifloor_task_goal.py",
+        "docs/pct_multifloor_navigation.md",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "旧 pick_to_place 路线经过楼梯入口后仍进入其他房间，并在远离楼梯的位置穿墙升层。",
+          "root_cause": "单点 1.2m gateway 只覆盖楼梯下端，strict 路径无法覆盖完整楼梯；随后启用 relaxed_after_strict_no_path，重新允许任意位置跨 slice，因此旧漏洞仍然存在。",
+          "fix": "gateway 默认半径扩展到覆盖完整楼梯段的 4.0m；跨层 A* 只允许朝目标 slice 单调变化，并彻底移除 relaxed fallback。严格路线失败时返回 no_path。",
+          "prevention": "跨楼层成功条件必须同时检查 strict_monotonic、z 单调和首次升层坐标；不能以先经过入口为由允许后续无约束三维搜索。"
+        },
+        {
+          "problem": "用户把 place base_goal 改为 (0.36482,-0.3,3.62628) 后，preview 在 pipeline_created 之后写出 startup_failure.json，PCT 返回 no_gateway_path。",
+          "root_cause": "PCT 全局硬障碍原来是所有高度共同使用的二维 XY 投影。F1 或其他高度的墙体在同一 XY 上错误封住 F2 目标连通区，导致新目标在目标层不可达。",
+          "fix": "新增 pct_vertical_obstacle_volume_from_ply，只在碰撞 PLY 实际出现的 slice 标记墙体；PCT _State 同时兼容旧 2D mask 和新 3D volume，并在 metadata 中记录 hard_obstacle_mode=slice_volume。",
+          "prevention": "多楼层全局规划不得把障碍无条件投影到所有楼层；新增目标后必须分别检查目标层连通性和 obstacle mask 维度。"
+        },
+        {
+          "problem": "全局新路线可达后，DWA reset 仍报告 13 个 protected path cells。",
+          "root_cause": "DWA protected obstacle map 仍是跨所有楼层的二维投影，与全局逐 slice 3D 校验互相矛盾。",
+          "fix": "PCT factory 不再把旧二维 protected mask 传给跨楼层 executor；保留整体 5-slice DWA 障碍图和 0.16m 路线走廊，只清理已通过全局 3D 墙体校验的中心线。",
+          "prevention": "全局与局部地图采用不同维度时，不能用二维 protected mask 覆盖三维规划结论；离线验收必须检查 protected_cells_preserved=0。"
+        },
+        {
+          "problem": "完整测试仍把 place base_goal 到放置点的距离硬编码为 0.50m，新可达站位 0.34061m 导致误报。",
+          "root_cause": "测试实际意图是避免底盘目标与物体中心重合，却断言了旧任务的精确距离。",
+          "fix": "改为验证 pick/place 底盘站距位于 0.30m 到 0.80m 的合理非零范围。",
+          "prevention": "任务位姿可按真实场景可达性调整时，测试应验证安全不变量而不是绑定单个历史坐标。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/sage/bin/python scripts/navigation/probe_pct_plan.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --pct-server-script scripts/navigation/pct_grid_server.py --output-json /tmp/pct_probe_strict_volume_final.json",
+          "result": "passed",
+          "note": "新 place 目标规划成功；pct_path_mode=astar_3d_via_gateway_strict_monotonic、hard_obstacle_mode=slice_volume、gateway_mode=strict_monotonic。"
+        },
+        {
+          "command": "自动检查 /tmp/pct_probe_strict_volume_final.json 的 z 序列、首次升层点和 gateway 距离",
+          "result": "passed",
+          "note": "46 个 waypoint 的 z 单调不降；首次升层点为 (1.7215,6.8564,1.0)，路线距 gateway 最近约 0.245m。"
+        },
+        {
+          "command": "纯 Python create_navigation_components + PCT plan + DwaNavExecutor.reset 离线检查",
+          "result": "passed",
+          "note": "map_selection 显示 multifloor=true、route_cells_cleared=101、protected_cells_preserved=0；local refinement 保留 PCT 多楼层路径。"
+        },
+        {
+          "command": "python -m py_compile source/navigation/pct_local_map.py scripts/navigation/pct_grid_server.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/navigation/probe_pct_plan.py",
+          "result": "passed",
+          "note": "本轮修改模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation/test_pct_grid_server.py tests/navigation/test_pct_local_map.py tests/navigation/test_pct_adapter.py tests/navigation/test_locomotion_policy_config.py tests/test_full_physics_pipeline.py -q",
+          "result": "passed",
+          "note": "72 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q",
+          "result": "passed",
+          "note": "276 passed, 1 skipped。"
+        },
+        {
+          "command": "真实 Isaac Sim GUI --pct-plan-preview / full_physics 复跑",
+          "result": "not_run",
+          "note": "本轮没有启动真实 GUI/GPU 仿真；需要用户先确认新黄色路线与实际楼梯重合，再运行完整 carry pipeline。"
+        }
+      ],
+      "next_steps": [
+        "用户运行 --pct-plan-preview，确认黄色路线在 (1.7,6.9) 附近开始上楼，并沿楼梯到 (1.9,7.5) 附近上层出口。",
+        "preview 确认后复跑 full_physics，重点观察 exec_nav_to_place 是否能沿单调楼梯路线执行。",
+        "如果全局路线正确但实体仍在楼梯段失败，下一步只调整 RL stairs locomotion 与携物稳定性，不再恢复 relaxed PCT 搜索。"
+      ]
+    },
+    {
+      "time": "2026-06-28 17:40:36 CST",
+      "summary": "修复 F1/F2 墙体和家具穿越以及楼梯段提前升层：全局障碍改为三角网格身体碰撞体积，跨层 gateway 改为楼梯入口到出口的窄走廊，并校准机器人根节点与地面的高度偏移。",
+      "files_changed": [
+        "source/navigation/pct_local_map.py",
+        "scripts/navigation/pct_grid_server.py",
+        "source/navigation/pct_adapter.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/pipeline/pct_plan_preview.py",
+        "scripts/navigation/probe_pct_plan.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/navigation/test_pct_grid_server.py",
+        "tests/navigation/test_pct_local_map.py",
+        "tests/navigation/test_pct_adapter.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "docs/pct_multifloor_navigation.md",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "F1 路径穿墙，F2 路径穿过椅子和其他低矮家具。",
+          "root_cause": "旧障碍提取只读取 PLY 顶点，并要求同一 XY 列跨越至少 9 个 slice；三角形内部、椅腿、桌腿和短家具因此没有进入硬障碍。",
+          "fix": "读取 collision PLY 的三角面，采样顶点、边中点和三角形中心；按机器人所在楼面上方 0.30m 到 1.00m 的身体高度带生成逐 slice 障碍体积，并增加 0.60m 软净空代价。",
+          "prevention": "规划障碍必须来自 collision mesh 面而不是稀疏顶点；新增场景后用整段 0.1m 采样检查压缩路径是否碰撞。"
+        },
+        {
+          "problem": "F1 到 F2 的轨迹没有完整经过楼梯，而是在楼梯井或相邻房间内提前升高。",
+          "root_cause": "旧 gateway 是楼梯入口周围 4m 圆形区域，覆盖了非楼梯房间；跨层邻居每升高 0.5m 只要求水平移动 0.2m，也允许近似垂直爬升。",
+          "fix": "配置楼梯下端 (1.5,5.7,0.6) 与上端 (1.9,8.0,3.0)，gateway 改为半宽 0.6m 的入口到出口胶囊走廊；每升一个 slice 强制水平移动 0.40m 到 0.90m，并要求沿楼梯进度单调前进。",
+          "prevention": "跨层连接必须成对定义 stair entry/exit，并同时验证走廊约束、单调进度和每层水平行程，不能再用单点大半径区域。"
+        },
+        {
+          "problem": "到达 F2 后路径仍额外升高一个 slice，导致轨迹看起来穿过楼板。",
+          "root_cause": "任务 z 是机器人根节点高度，tomogram slice z 是地面或台阶高度；旧逻辑直接将 root z 映射到 slice，产生约 0.45m 系统偏差。",
+          "fix": "新增 robot_root_to_floor_m=0.45，start/end 和局部地图选层都先换算为 floor z，同时在 metadata 中记录 planning_start_z 和 planning_end_z。",
+          "prevention": "机器人姿态高度和地图地面高度必须明确分层建模；所有 slice 选择统一经过 root-to-floor 校准。"
+        },
+        {
+          "problem": "离散节点本身可通行，但压缩后的斜线段仍可能切过墙角。",
+          "root_cause": "跨层边只检查单侧 slice，路径压缩后也没有对整段三维连线做足够密集的碰撞复核。",
+          "fix": "跨层边同时在源 slice 和目标 slice 检查完整线段；最终路径按 0.1m 间隔重新采样验证，当前 39 个 waypoint 的路线未发现阻塞样本。",
+          "prevention": "以后修改压缩、gateway 或 slice 参数后，必须重复整段三维碰撞采样，而不能只检查 waypoint 所在栅格。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/sage/bin/python scripts/navigation/probe_pct_plan.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --pct-server-script scripts/navigation/pct_grid_server.py --output-json /tmp/pct_probe_body_corridor_final.json",
+          "result": "passed",
+          "note": "pick_to_place 使用 astar_3d_via_gateway_strict_monotonic 和 body_clearance_volume；slice 9->15，共 39 个 waypoint，楼梯入口到出口只发生一次连续跨层。"
+        },
+        {
+          "command": "对 /tmp/pct_probe_body_corridor_final.json 的压缩 3D 路径按 0.1m 采样并查询 body obstacle volume",
+          "result": "passed",
+          "note": "segment_samples_blocked=0；最小障碍净空约 0.20m，平均净空约 0.473m。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/navigation/pct_local_map.py source/pipeline/config.py source/pipeline/navigation_smoke.py source/pipeline/pct_plan_preview.py scripts/navigation/pct_grid_server.py scripts/navigation/probe_pct_plan.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "本轮修改模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation/test_pct_grid_server.py tests/navigation/test_pct_local_map.py tests/navigation/test_pct_adapter.py tests/navigation/test_locomotion_policy_config.py tests/navigation/test_planner_selection.py tests/test_full_physics_pipeline.py -q",
+          "result": "passed",
+          "note": "80 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q",
+          "result": "passed",
+          "note": "279 passed, 1 skipped。"
+        },
+        {
+          "command": "真实 Isaac Sim GUI --pct-plan-preview / full_physics 复跑",
+          "result": "not_run",
+          "note": "本轮未启动真实 GUI/GPU 仿真；需要用户先用 preview 确认黄色路线与实际门洞、楼梯和 F2 家具一致。"
+        }
+      ],
+      "next_steps": [
+        "先运行 --pct-plan-preview，确认 F1 穿过正确门洞、楼梯段从 (1.5,5.7) 连续到 (1.9,8.0)，并绕开 F2 椅子。",
+        "preview 几何路线确认后再运行 full_physics，验证 carry 状态下的楼梯 locomotion、苹果保持和 place。",
+        "若 preview 仍与真实楼梯边界存在小偏差，只调整 stair entry/exit 和 corridor half-width，不放宽跨层搜索到非楼梯区域。"
+      ]
+    },
+    {
+      "time": "2026-06-28 18:51:09 CST",
+      "summary": "修复跨楼层 PCT 上楼轨迹过快贴扶手/斜跨的问题：跨 slice 换层改为更窄楼梯中心带，slice 高度与楼梯入口到出口进度绑定，并保留所有 z 变化 waypoint 供 GUI 预览和 executor 使用。",
+      "files_changed": [
+        "scripts/navigation/pct_grid_server.py",
+        "source/navigation/pct_adapter.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/pipeline/pct_plan_preview.py",
+        "scripts/navigation/probe_pct_plan.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/navigation/test_pct_grid_server.py",
+        "tests/navigation/test_pct_adapter.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "tests/navigation/test_multifloor_task_goal.py"
+      ],
+      "problems": [
+        {
+          "problem": "F1/F2 平面路径已经基本正确，但跨楼层上楼段在 GUI 中看起来从楼梯扶手或楼梯井边缘快速斜跨到上层，没有贴着每一级台阶上升。",
+          "root_cause": "旧 stair corridor 半宽 0.60m 同时用于允许通行和允许换层；跨 slice 边只要求进度不倒退，没有要求当前高度 slice 与楼梯中心线进度匹配。路径压缩还会合并连续 z 变化节点，使预览线看起来从 z=0 直接连到更高 slice。",
+          "fix": "新增 stair_vertical_radius_m=0.30，只允许跨 slice 边发生在更窄中心带内；新增 stair_progress_tolerance=0.12，把换层目标 slice 与楼梯入口到出口的归一化进度绑定；_compress_path 保留所有 z 变化节点。",
+          "prevention": "以后调整楼梯 gateway 时，必须检查 cross_floor_stair_vertical_cells、换层点到中心线距离和每个 z slice 是否保留；不要通过放大 gateway 半径解决楼梯偏移。"
+        },
+        {
+          "problem": "最初加入楼梯同层进度完全不回退约束后，Yinluyuan pick_to_place 返回 no_gateway_path。",
+          "root_cause": "真实楼梯和 collision/walkable 栅格中存在局部障碍与离散化误差，完全禁止同层小幅回退会封死必要的局部绕行。",
+          "fix": "保留同层进度约束，但允许 stair_progress_tolerance 范围内的小幅回退；大幅倒退仍被拒绝。",
+          "prevention": "对真实扫描场景的几何约束应保留少量栅格容差；每次收紧约束后必须先跑 probe，确认不是用 no_path 换取视觉上更直的路线。"
+        },
+        {
+          "problem": "单点 gateway 的旧测试在新增 0.30m 中心带后 no_path。",
+          "root_cause": "只有 gateway、没有 stair_exit 时没有入口到出口中心线语义，不能应用窄中心带；旧语义应保持 gateway 半径就是允许换层半径。",
+          "fix": "只有配置 stair_exit 时使用 stair_vertical_radius_m；单点 gateway 保持旧 cross_floor_gateway_radius_m 语义。",
+          "prevention": "新增严格楼梯逻辑时必须保留没有 stair_exit 的兼容路径，避免影响泛化测试和其他场景。"
+        },
+        {
+          "problem": "全量测试中 test_multifloor_fixed_base_goals_are_not_object_centers 对 place base_goal 的站距下限仍绑定旧值 0.30m，当前可达 place 站位距离为 0.24061m。",
+          "root_cause": "测试意图是防止底盘目标退化成物体中心，但断言使用了历史任务坐标的固定站距范围；用户调整 place base_goal 后该硬编码下限不再成立。",
+          "fix": "保留 pick 站距 0.30-0.80m 约束，将 place 站距下限放宽到 0.20m，仍能保证不是物体中心且符合当前可达站位。",
+          "prevention": "任务站位会按真实几何可达性调整，测试应验证安全不变量而不是绑定单个历史距离。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/sage/bin/python scripts/navigation/probe_pct_plan.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --pct-server-script scripts/navigation/pct_grid_server.py --output-json /tmp/pct_probe_stair_natural_final.json",
+          "result": "passed",
+          "note": "pick_to_place 规划成功；path_mode=astar_3d_via_gateway_strict_monotonic，cross_floor_stair_vertical_cells=47，path_3d_count=41。"
+        },
+        {
+          "command": "对 /tmp/pct_probe_stair_natural_final.json 的换层边计算距楼梯入口-出口中心线距离",
+          "result": "passed",
+          "note": "6 条换层边最大中心线距离约 0.229m，低于默认 stair_vertical_radius_m=0.30m；所有 z=0.5/1.0/1.5/2.0/2.5/3.0 节点保留。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py source/pipeline/pct_plan_preview.py scripts/navigation/pct_grid_server.py scripts/navigation/probe_pct_plan.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "本轮修改模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation/test_pct_grid_server.py tests/navigation/test_pct_adapter.py tests/navigation/test_locomotion_policy_config.py -q",
+          "result": "passed",
+          "note": "29 passed。"
+        },
+        {
+          "command": "真实 Isaac Sim GUI --pct-plan-preview / full_physics 复跑",
+          "result": "not_run",
+          "note": "本轮没有在 Codex 内启动 GUI；需要用户本机用 preview 确认黄色路线贴合楼梯台阶后再运行 full_physics。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q -rs",
+          "result": "passed",
+          "note": "283 passed, 1 skipped；skip 原因是当前 Python 环境没有 OpenUSD pxr。"
+        }
+      ],
+      "next_steps": [
+        "用户运行 --pct-plan-preview，观察上楼段黄色节点是否沿真实台阶逐 slice 上升，而不是贴扶手斜跨。",
+        "如果仍偏向扶手，优先微调 --pct-cross-floor-gateway / --pct-cross-floor-stair-exit 的中心线坐标；必要时小幅降低 --pct-stair-vertical-radius。",
+        "preview 确认后再运行 full_physics，重点观察 carry 阶段 RL policy 上楼稳定性和苹果保持。"
+      ]
+    },
+    {
+      "time": "2026-06-28 19:28:52 CST",
+      "summary": "将跨楼层楼梯约束从入口到出口直线升级为入口 -> 楼梯拐角 -> 出口折线，并把用户提供的楼梯拐角作为强制中间目标，使 PCT 上楼路径先逐级到达平台拐角再继续上到 F2。",
+      "files_changed": [
+        "scripts/navigation/pct_grid_server.py",
+        "source/navigation/pct_adapter.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/pipeline/pct_plan_preview.py",
+        "scripts/navigation/probe_pct_plan.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/navigation/test_pct_grid_server.py",
+        "tests/navigation/test_pct_adapter.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "docs/pct_multifloor_navigation.md",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "用户在 GUI 中确认上楼路径仍然没有贴每一级台阶，而是从楼梯扶手处快速斜跨到上层。",
+          "root_cause": "上一轮只把入口到出口的直线 corridor 收窄，并按直线进度约束换层；但真实楼梯是带平台拐角的折线结构，入口到出口直线会穿过扶手/楼梯井区域。",
+          "fix": "新增 pct_cross_floor_stair_midpoint_points，默认使用用户提供的拐角 (1.9202, 9.52807, 1.71919)。PCT server 按入口 -> 拐角 -> 出口构造折线 corridor/progress，并把拐角转换成强制经过的中间 A* 目标。",
+          "prevention": "遇到转角楼梯时必须用多控制点折线建模，不能只靠单个 entry/exit 直线 corridor；preview 中要检查路径是否经过平台拐角。"
+        },
+        {
+          "problem": "仅靠 progress/corridor 软约束仍可能让 A* 选择靠近但不经过拐角的平台路径。",
+          "root_cause": "gateway mask 只是限制可换层区域，不保证路径经过特定楼梯平台。",
+          "fix": "_plan_via_cross_floor_gateway 现在将 stair_midpoints snap 到对应 z slice，并依次规划 gateway -> midpoint -> end_node。",
+          "prevention": "关键楼梯平台、转角、坡道折返点应建模为 hard waypoint，而不是只作为可通行区域的一部分。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/sage/bin/python scripts/navigation/probe_pct_plan.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --pct-server-script scripts/navigation/pct_grid_server.py --output-json /tmp/pct_probe_stair_midpoint.json",
+          "result": "passed",
+          "note": "pick_to_place 规划成功；metadata cross_floor_stair_midpoint_count=1，path_3d_count=44，路线最近拐角点为 (1.9215, 9.4564, 1.5)。"
+        },
+        {
+          "command": "对 /tmp/pct_probe_stair_midpoint.json 计算路径到用户提供拐角的最近距离",
+          "result": "passed",
+          "note": "最近路径点到 (1.9202, 9.52807, 1.71919) 的 XY 距离约 0.072m，z 受 0.5m PCT slice 量化影响相差约 0.219m。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py source/pipeline/pct_plan_preview.py scripts/navigation/pct_grid_server.py scripts/navigation/probe_pct_plan.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "本轮修改模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation/test_pct_grid_server.py tests/navigation/test_pct_adapter.py tests/navigation/test_locomotion_policy_config.py -q",
+          "result": "passed",
+          "note": "30 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q -rs",
+          "result": "passed",
+          "note": "284 passed, 1 skipped；skip 原因是当前 Python 环境没有 OpenUSD pxr。"
+        },
+        {
+          "command": "真实 Isaac Sim GUI --pct-plan-preview / full_physics 复跑",
+          "result": "not_run",
+          "note": "本轮未在 Codex 内启动 GUI；需要用户本机用 preview 确认黄色路线是否沿真实楼梯逐级经过平台拐角。"
+        }
+      ],
+      "next_steps": [
+        "用户运行 --pct-plan-preview，确认黄色路线经过 (1.9202, 9.52807) 附近平台拐角。",
+        "如果拐角 XY 正确但高度仍不贴台阶，下一步需要把更多台阶中心点作为 --pct-cross-floor-stair-midpoint 传入，或提高 PCT tomogram z 分辨率。",
+        "preview 确认后复跑 full_physics，验证 carry 阶段的真实上楼和苹果保持。"
+      ]
+    },
+    {
+      "time": "2026-06-28 20:30:57 CST",
+      "summary": "修复 PCT 跨楼层楼梯采样点被误当作有序 waypoint 的问题：楼梯采样点现在按上楼/下楼方向自动排序，仅作为地图级 corridor/progress 约束和软代价，不作为 task waypoint；同时把 Yinluyuan 默认楼梯进度容差调到离线可达的 0.35，并加入 stair_progress_cost_weight。",
+      "files_changed": [
+        "scripts/navigation/pct_grid_server.py",
+        "source/navigation/pct_adapter.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/pipeline/pct_plan_preview.py",
+        "scripts/navigation/probe_pct_plan.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/navigation/test_pct_grid_server.py",
+        "tests/navigation/test_pct_adapter.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "docs/pct_multifloor_navigation.md",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "用户补充的三个楼梯点顺序是随机的；上一轮逻辑按传入顺序构造楼梯折线，容易把无序采样点误解释为真实行走顺序，导致 PCT 仍可能从楼梯扶手/楼梯井附近斜跨上升。",
+          "root_cause": "PCT grid server 缺少对 stair_midpoints 的语义区分：这些点应该是地图级楼梯表面采样/标定点，而不是 task waypoint，也不是天然有序的折线控制点。",
+          "fix": "新增 _ordered_stair_midpoints，按 gateway 到 stair_exit 的 z 方向自动排序无序楼梯采样点；_stair_target_nodes_for_gateway 不再强制依次经过 midpoint，只把 end_node 作为跨楼层搜索目标。midpoint 只参与 gateway corridor、vertical mask、progress map 和软代价。",
+          "prevention": "以后新增楼梯采样点时可以无序传入；测试覆盖无序输入自动排序，并在 docs 中明确 stair midpoint 不是任务 waypoint。"
+        },
+        {
+          "problem": "默认 stair_progress_tolerance=0.12 在当前 Yinluyuan tomogram / body obstacle volume 上会让 pick_to_place 直接 no_path。",
+          "root_cause": "真实扫描楼梯的可走格、root-to-floor 高度和 0.5m slice 量化不是理想线性坡道；硬约束过窄会封死局部绕行。",
+          "fix": "将默认 stair_progress_tolerance 调整为 0.35，并新增 stair_progress_cost_weight=20.0，用软代价优先选择高度 slice 与楼梯折线进度匹配的路径，而不是继续放宽到任意换层。",
+          "prevention": "楼梯高度约束采用“可达硬窗口 + 进度软代价”的组合；不要再通过把 midpoint 当强制 waypoint 或无限放大 gateway 半径来修路径。"
+        },
+        {
+          "problem": "新同层进度窗口让旧单元测试中的 forward 点超出当前 slice 的期望进度窗口。",
+          "root_cause": "旧测试只验证“方向前进”，没有考虑新增的 slice-progress band 约束。",
+          "fix": "调整测试点，让 forward 表示同一 slice 内合理前进，backward 表示明显倒退，保留原测试意图。",
+          "prevention": "PCT 楼梯测试同时覆盖方向单调性和 slice 高度进度窗口，避免测试语义落后于算法约束。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/sage/bin/python scripts/navigation/probe_pct_plan.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --pct-server-script scripts/navigation/pct_grid_server.py --output-json /tmp/pct_probe_unordered_stair_default.json",
+          "result": "passed",
+          "note": "start_to_pick 与 pick_to_place 均规划成功；pick_to_place metadata 显示 cross_floor=true、cross_floor_stair_midpoint_count=4、stair_progress_tolerance=0.35、stair_progress_cost_weight=20.0。"
+        },
+        {
+          "command": "对 /tmp/pct_probe_unordered_stair_default.json 计算路径到四个实测楼梯采样点的最近距离",
+          "result": "passed",
+          "note": "最近 XY 距离分别约 0.300m、0.930m、0.472m、0.381m；说明当前路径受 PCT 可走格/corridor 约束，点只作为标定采样而非强制 waypoint。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py source/pipeline/pct_plan_preview.py scripts/navigation/pct_grid_server.py scripts/navigation/probe_pct_plan.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "本轮修改模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation/test_pct_grid_server.py tests/navigation/test_pct_adapter.py tests/navigation/test_locomotion_policy_config.py -q",
+          "result": "passed",
+          "note": "32 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q -rs",
+          "result": "passed",
+          "note": "53 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q -rs",
+          "result": "passed",
+          "note": "286 passed, 1 skipped；skip 原因是当前 Python 环境没有 OpenUSD pxr。"
+        },
+        {
+          "command": "真实 Isaac Sim GUI --pct-plan-preview / full_physics 复跑",
+          "result": "not_run",
+          "note": "本轮未在 Codex 内启动 GUI；需要用户用 preview 观察默认路线是否不再从扶手处竖直跨上去。"
+        }
+      ],
+      "next_steps": [
+        "请先运行 --pct-plan-preview，确认黄色跨楼层路径是否沿楼梯表面上升；若仍偏扶手，下一步应从 tomogram/walkable 自动提取楼梯连通面或提高 z slice 分辨率，而不是继续把用户采样点作为任务 waypoint。",
+        "preview 若可接受，再运行 full_physics 验证 carry 阶段 RL policy 上楼、苹果保持和 place。",
+        "如果 preview 仍显示某个楼梯采样点附近应可走但 PCT 避开，需要导出对应 slice 的 walkable/body obstacle 可视化，检查 tomogram 是否把真实楼梯面误判为障碍。"
+      ]
+    },
+    {
+      "time": "2026-06-28 21:38:25 CST",
+      "summary": "将 PCT 跨楼层约束从有歧义的二维 XY progress 升级为逐 slice 三维楼梯支撑面，自动解析 U 形楼梯平台采样顺序并用中心线软代价远离扶手；同时依据最新 PhysX 失败记录修正多楼层 task 的 pick 底盘可达站位。",
+      "files_changed": [
+        "scripts/navigation/pct_grid_server.py",
+        "scripts/navigation/probe_pct_plan.py",
+        "source/navigation/pct_adapter.py",
+        "source/pipeline/config.py",
+        "tasks/nav_pick_place_apple_multifloor_pct.json",
+        "tests/navigation/test_pct_grid_server.py",
+        "tests/navigation/test_pct_adapter.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "docs/pct_multifloor_navigation.md",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "跨楼层预览仍从楼梯扶手附近快速上升。",
+          "root_cause": "Yinluyuan 楼梯为 U 形，下段与上段在 XY 投影中重叠；旧 progress[x,y] 只能保存一个进度，把 z=1.0 的下段节点错误标记为接近出口。换层边还只依赖二维 corridor，无法区分同一 XY 上的不同高度表面。",
+          "fix": "新增逐 slice 的 stair surface distance/mask，以 (slice,x,y) 约束同层楼梯节点和换层边；存在 surface_3d 时禁用有歧义的二维 progress 硬判定，并用距三维中心面的平方软代价选择台阶中心。",
+          "prevention": "自重叠楼梯、坡道和立交结构必须使用三维拓扑约束；metadata 明确输出 stair_constraint_mode，测试覆盖三维 mask 和相邻 slice 支撑切换。"
+        },
+        {
+          "problem": "用户提供的楼梯采样顺序随机，两个平台点高度只差 0.073m，单纯按 z 排序会把平台方向排反。",
+          "root_cause": "0.5m tomogram slice 下，同一平台的扫描高度存在小幅误差，不能把微小 z 差当作真实上下顺序。",
+          "fix": "将高度差不超过 0.25m 的采样聚为同层平台，并在每个小簇内选择连接前后楼梯段总 XY 距离最短的排列。",
+          "prevention": "无序地图采样先做高度聚类，再解析平台内拓扑；不得依赖 JSON 输入顺序。"
+        },
+        {
+          "problem": "三维支撑面初版在真实探针中 no_path。",
+          "root_cause": "初版遗漏三维 mask 的 slice 变量解包；修正后又发现旧换层边要求沿线每个 XY 在上下两个 slice 同时 walkable，这与台阶支撑从下层切换到上层的物理结构矛盾。",
+          "fix": "修正三维 mask 索引并新增回归测试；换层斜边改为沿线每个位置至少由当前或目标 slice 之一提供支撑，端点仍各自必须可走且整条边必须位于三维楼梯表面走廊。",
+          "prevention": "二维 mask 升级三维时必须增加真实 graph probe；台阶连续性验证采用支撑并集，不能要求相邻高度层几何完全重合。"
+        },
+        {
+          "problem": "最新 full_physics 在 exec_nav_to_pick 失败并报告 nav_collision。",
+          "root_cause": "summary 显示 PCT 同层直线路径成功、DWA 21 个候选全部可行且 collision_rejections=0；机器人停在 y=6.4985，距原 base_goal 0.2507m，连续 240 步只移动 0.0487m，说明原 y=6.7491 站位落入桌边物理不可达区。",
+          "fix": "只把多楼层示例 task 的 pick base_goal 调整为 (-3.50493, 6.50)，不放宽全局 final_position_tolerance，也不改变 A* 单楼层默认行为。",
+          "prevention": "底盘站位必须以真实 PhysX 可达位置标定；遇到近目标 stall 先检查 DWA collision_rejections、实际停驻 pose 和目标距离，不用放宽全局容差掩盖 task 坐标错误。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/sage/bin/python scripts/navigation/probe_pct_plan.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --pct-server-script scripts/navigation/pct_grid_server.py --output-json /tmp/pct_probe_stair_surface_default.json",
+          "result": "passed",
+          "note": "start_to_pick 与 pick_to_place 均规划成功；pick_to_place path_3d_count=45、slice 9->15、stair_constraint_mode=surface_3d。楼梯路径按下段、平台、上段形成 U 形，平台拐角最近 XY 距离约 0.272m。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py scripts/navigation/pct_grid_server.py scripts/navigation/probe_pct_plan.py",
+          "result": "passed",
+          "note": "本轮相关模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q -rs",
+          "result": "passed",
+          "note": "56 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q -rs",
+          "result": "passed",
+          "note": "289 passed, 1 skipped；唯一 skip 是当前 Python 环境缺少 OpenUSD pxr。"
+        },
+        {
+          "command": "真实 Isaac Sim GUI --pct-plan-preview / full_physics",
+          "result": "not_run",
+          "note": "本轮未并行启动 GUI/Vulkan/CUDA 仿真；需要用户先 preview 确认 U 形楼梯路线，再运行 full_physics 验证新 pick 站位和真实携物上楼。"
+        }
+      ],
+      "next_steps": [
+        "运行 --pct-plan-preview，确认黄色路径沿楼梯下段到 (1.92,9.26,z=1.5) 附近平台，再转向上段，不再穿扶手。",
+        "运行 full_physics，确认 nav_to_pick 在 y=6.50 附近完成并进入 exec_pick。",
+        "若真实机器人能到平台但上楼失稳，下一步应调 RL carry locomotion 和局部 3D path follower，不再修改 PCT 全局楼梯拓扑。"
+      ]
     }
   ],
   "open_questions": [
     "Yinluyuan 对应的 Isaac Sim USD stage 已本地生成，/World/gauss 当前可引用点云 visual USD；真实 3DGS 离线渲染和按相机轨迹批量渲染已可用，但正式视频仍需要 Isaac 机器人前景 alpha/depth 合成。",
     "当前 Isaac Sim 5.1.0.0 缺少 OpenUSD ParticleField3DGaussianSplat schema，且本次已确认不能安全地只补本地 extension/schema；如要原生 3DGS viewport，需要隔离新 Isaac/Kit/OpenUSD 环境验证。",
-    "真实 pct_server.py 所在 PCT codebase 路径仍需在运行 smoke 时通过 --pct-planner-root 或 --pct-server-script 指定。",
-    "仍需生成 source/scene/multifloor/mutifloor.pickle 和 source/scene/multifloor/mutifloor_ply_walkable.npy 后才能做真实 PCT server 跨楼层规划验证。",
     "如果 Isaac Sim 打开 multifloor.usda 后 /World/gauss 存在但 HydraEngine compute graph 渲染失败，应排查 NuRec/RTX 渲染设置、扩展、驱动和 RTX 模式。",
     "请在 Isaac Sim 中先打开 source/scene/multifloor/usda/multifloor_collision_only.usda；如果它不报错而 multifloor.usda 报错，则优先排查 NuRec/RTX 渲染层。",
     "请用户确认当前 Isaac Sim 打开默认 collision-proxy multifloor.usda 是否已不再报 HydraEngine compute graph error。",
-    "真实 PCT tomogram/walkable 仍需生成后才能验证跨楼层导航。",
-    "请用户在 Isaac Sim 中打开最终 source/scene/multifloor/usda/multifloor.usda，确认 17M clean NuRec visual 与 collision mesh 已经对齐。"
+    "请用户在 Isaac Sim 中打开最终 source/scene/multifloor/usda/multifloor.usda，确认 17M clean NuRec visual 与 collision mesh 已经对齐。",
+    "PCT start->pick、apple_01 真实沉降和真实 pick_smoke 已由用户验证；当前待验证真实 RL carry 上楼和 place。",
+    "请用户用 --pct-plan-preview 验证 stair_constraint_mode=surface_3d 后，黄色路径是否按下段 -> 平台 -> 上段通过 U 形楼梯。"
   ],
   "known_limitations": [
-    "Isaac Sim multi-floor smoke 尚未在当前环境运行。",
+    "Isaac Sim start->pick 与真实机械臂 pick 已由用户确认成功；跨楼层 carry/place 尚未完成真实 Isaac 验收。",
     "当前 PCT path 的完整 3D 信息已进入 NavPlan.metadata[\"path_3d\"]，但 DwaNavExecutor 仍只消费 XY waypoints。",
     "Yinluyuan 当前 Isaac viewport visual layer 是 3DGS PLY 的 UsdGeom.Points 近似，可用于预览检查；真实 3DGS 目前通过离线 gsplat PNG 和相机轨迹批量渲染验证。",
     "当前 Isaac Sim 5.1.0.0 的 pxr.UsdVol 和底层 USD 0.24.5 库不包含 ParticleField3DGaussianSplat，不能通过安全启用扩展直接打开原生 3DGS ParticleField USD。",
     "最终视频仍需要实现机器人/物体前景输出和 3DGS 背景逐帧合成；相机轨迹同步导出已接入。",
-    "真实 pct_multifloor RL checkpoint 通过本地 Rough/ 引用，不进入 git。",
+    "真实 pct_multifloor RL checkpoint 已作为 checkpoints/go2_x5/pct_multifloor/ 下的本地实体文件使用，不进入 git；Rough/ 已删除。",
     "source/scene/multifloor/usdz/multifloor_unpack/ 是当前机器 USD resolver fallback 的解包目录，会额外占用约 2.7GB。",
-    "真实 PCT tomogram/walkable 尚未生成，PCT navigation smoke 仍不能验收跨楼层路径。",
-    "Isaac Sim GUI 中的 HydraEngine compute graph error 尚未在 Codex 环境复现；当前静态验证只能确认 USD composition 正确，问题更可能集中在 NuRec/RTX 渲染层或显存/驱动。",
+    "GUI PCT navigation smoke 已复现日志级 CUDA error 700：NuRec /World/gauss 与 PhysX/CUDA 同进程运行时 RTX external semaphore 失败；当前通过 navigation collision 模式规避，尚未完成获授权的 GUI 复测。",
     "移动后的 USD/USDA/PLY 大资产受 .gitignore 保护；如用户决定提交已有 baseline 资产的重命名，需要手动 git add -f 对应路径。",
-    "默认 multifloor.usda 当前是稳定 collision mesh 视觉代理，不是最终 3DGS 视频质量。",
-    "完整 NuRec 视觉 stage 已保存在 multifloor_nurec.usda，但当前 Isaac Sim/NuRec/RTX 环境打开它会触发用户报告的 compute graph error。",
-    "最终 17M clean NuRec stage 已通过 USD API 静态验证，但 Isaac Sim GUI 渲染结果仍需用户本机确认。"
+    "multifloor.usda 是最终高质量 NuRec 场景；PCT navigation smoke 的 auto 模式会停用 /World/gauss 并显示 collision mesh，以隔离导航验收和视频渲染。",
+    "最终 17M clean NuRec stage 已通过 USD API 静态验证，但 Isaac Sim GUI 渲染结果仍需用户本机确认。",
+    "PCT 本地 server 已验证跨楼层全局路径；真实 smoke 目前只接近同层 pick 点，尚未验证 RL policy 实际上楼。",
+    "当前 pipeline 中 DwaNavExecutor 仍只消费 XY waypoints，完整 3D path 先保存在 NavPlan.metadata[\"path_3d\"]。",
+    "external/PCT 仅作为参考 codebase；运行时默认使用本仓库 scripts/navigation/pct_grid_server.py。",
+    "当前 headless Isaac 环境可访问 GPU 并执行 locomotion；本轮没有与现有 Isaac/Python GPU 进程并行启动第二个仿真。",
+    "当前 pct_multifloor checkpoint 是 12 维 dog-only policy；机械臂 locomotion 联动仍需未来训练兼容多楼层抓取搬运的 checkpoint。",
+    "本次未在 Codex 内启动真实 Isaac Sim navigation smoke；需要用户在本地 GUI/GPU 环境用修复后的命令复测。",
+    "当前 PCT 接入仍是全局 3D path + DWA XY 跟踪，完整利用 z/slice 的局部控制器仍需后续实现。",
+    "viewport PyCapsule 取帧已通过单元测试，真实 pick-smoke 的 Camera0 录像和 reset_episode 尚未在本次 Codex 会话中复跑。",
+    "apple_01 已在真实场景 24 个物理步后稳定，稳定 pose 已写入 task；运行时 settle 检查仍保留。",
+    "最新 pick-smoke 已出现 pick_success 并由用户确认成功；尚未进入完整 full_physics 的跨楼层 carry/place。",
+    "DogOnly pct_multifloor checkpoint 仍是 12 维腿部策略；机械臂独立 position target 已通过真实 pick，跨楼层 carry 时的联合稳定性仍待验收。",
+    "pre-episode 启动诊断已接入；真实窗口立即关闭的根因需要用户复跑后依据 startup_status.json / startup_failure.json 判断。",
+    "PCT 多楼层 task 缺少 flat nav_map 时会自动禁用 A* fallback；如果 PCT server/asset 失败，将直接报 PCT 错误而不是回退 A*。",
+    "collision PLY 垂直障碍层会制造同层假障碍，现已默认关闭；如显式开启必须先用直线占用探针验证。",
+    "PCT 全局 planner 已使用 collision PLY 三角网格生成逐 slice 机器人身体碰撞体积；DWA 仍使用二维多层合并地图并只消费 XY waypoints，真实楼梯执行仍需要 Isaac Sim 验收。",
+    "本次未在 Codex 内启动真实 Isaac Sim GUI pick-smoke；需要用户本机复跑确认 retreat 后是否进入 verify_pick_success。",
+    "本次只用纯 Python DWA 探针验证新起点到 pick base goal 的局部控制，不等价于真实 Isaac Sim/RL policy 动力学验收；仍需用户复跑 GUI pick_smoke。",
+    "跨楼层楼梯段现在保留每个 0.50m PCT slice 的 waypoint，并限制换层中心带；真实机器人是否能沿该轨迹稳定携物上楼仍需 GUI/full_physics 验收。",
+    "当前楼梯折线使用一个用户提供的平台拐角点；如果还需要逐级贴合每一级台阶，需要继续补充更多 stair midpoint 或提升 PCT slice 分辨率。",
+    "楼梯采样点现在是无序地图级标定点，不是 task waypoint；当前 PCT 仍依赖 0.5m slice tomogram，可视化路径不会逐物理台阶生成每一级小台阶节点。",
+    "PCT 楼梯已使用 surface_3d 三维约束并通过离线真实资产探针，但真实 Isaac Sim 携物上楼仍未验收；DWA 执行器当前主要消费 XY waypoint，RL policy 的台阶动力学稳定性仍是独立限制。",
+    "多楼层 pick base_goal 已按最新物理停驻位置调整到 y=6.50；该站位是否仍满足机械臂抓取可达性需要真实 full_physics 复跑确认。"
   ]
 }
