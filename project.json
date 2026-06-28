@@ -2,8 +2,8 @@
   "project": "arm_vla_pct",
   "branch": "pct",
   "goal": "将 flat A* 全局导航替换为 PCT 多楼层规划器，并接入新的 RL locomotion checkpoint 配置。",
-  "current_phase": "phase_41_pct_3d_stair_surface",
-  "last_updated": "2026-06-28 21:38:25 CST",
+  "current_phase": "phase_42_pick_handoff_workspace_fix",
+  "last_updated": "2026-06-28 22:41:36 CST",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -173,7 +173,9 @@
     "pct_u_stair_xy_progress_ambiguity_fixed": true,
     "pct_stair_platform_order_auto_resolved": true,
     "pct_stair_surface_route_offline_verified": true,
-    "multifloor_pick_goal_physical_standoff_fixed": true
+    "multifloor_pick_goal_physical_standoff_fixed": true,
+    "multifloor_pick_goal_arm_workspace_fixed": true,
+    "curobo_pick_workspace_preflight_enabled": true
   },
   "local_assets": {
     "rl_policy_source_dir": null,
@@ -3717,6 +3719,63 @@
         "运行 full_physics，确认 nav_to_pick 在 y=6.50 附近完成并进入 exec_pick。",
         "若真实机器人能到平台但上楼失稳，下一步应调 RL carry locomotion 和局部 3D path follower，不再修改 PCT 全局楼梯拓扑。"
       ]
+    },
+    {
+      "time": "2026-06-28 22:41:36 CST",
+      "summary": "修复多楼层 full_physics 的 pick 规划失败：依据当前失败快照和六个历史成功 cuRobo 快照恢复可达的 nav-to-pick 底盘站位，并把已有但未接入的抓取工作空间预检放到 planner server/one-shot 调用之前。",
+      "files_changed": [
+        "tasks/nav_pick_place_apple_multifloor_pct.json",
+        "source/manipulation/grasp_pipeline.py",
+        "tests/navigation/test_multifloor_task_goal.py",
+        "tests/test_episode_schema.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "PCT 路线可执行后，cuRobo 在 move_to_pregrasp 阶段对所有姿态和 offset 候选返回 None。",
+          "root_cause": "上一轮把 pick base_goal 从 y=6.7491 提前到 y=6.50；机器人最终停在 y=6.4458，目标 grasp 相对 arm_base_link 的水平距离达到 0.8046m。历史成功快照的底盘位于 y=6.6917~6.7764，对应 grasp 水平距离仅 0.4796~0.5685m。失败并非桌面碰撞或抓取 roll 候选问题，而是 nav-to-pick 交接超出 X5 机械臂工作空间。",
+          "fix": "把多楼层任务 pick base_goal 恢复为 (-3.50493, 6.7491)，使 nominal 底盘到苹果约 0.50m；将 cuRobo 抓取预检上限设为 grasp XY 0.68m、pregrasp 3D 0.75m，并在 GraspPipeline.plan 连接 server 前执行检查，错误信息同时输出实测值和限制值。",
+          "prevention": "固定 pick base_goal 测试现在要求物体与底盘水平距离为 0.45~0.60m；入口级测试确认超界目标在启动 cuRobo 前失败。以后调整导航 handoff 必须同时检查真实 base pose 与 target_workspace_base，不能只看 DWA 是否到达。"
+        },
+        {
+          "problem": "仓库中已有 _validate_target_workspace，但本次超界目标仍进入 planner server 和 one-shot，耗时后才返回泛化的姿态/约束不可达信息。",
+          "root_cause": "该辅助函数此前只有定义和直接单测，GraspPipeline.plan 从未调用它；原阈值 1.00m/1.20m 也远超当前 X5 的历史成功工作区。",
+          "fix": "仅对 grasp task 在统一 planning 入口读取 target_json 并执行预检；place 保持原逻辑，避免影响现有放置流程。",
+          "prevention": "对安全/可达性 guard 增加调用路径测试，而不只测试静态辅助函数。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/manipulation/grasp_pipeline.py source/manipulation/current_state_curobo.py source/pipeline/state_machine.py",
+          "result": "passed",
+          "note": "抓取 pipeline 相关模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/test_episode_schema.py tests/navigation/test_multifloor_task_goal.py tests/test_full_physics_manipulation.py",
+          "result": "passed",
+          "note": "34 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "56 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q",
+          "result": "passed",
+          "note": "292 passed, 1 skipped。"
+        },
+        {
+          "command": "真实 Isaac Sim GUI full_physics 复跑",
+          "result": "not_run",
+          "note": "本轮未在 Codex 内并行启动 GPU/GUI 仿真；需要用户复跑确认底盘在 y≈6.69 交接并生成 pick_plan.json。"
+        }
+      ],
+      "next_steps": [
+        "复跑 full_physics，检查 nav_to_pick 完成时 base y 应接近 6.69，pick_target diagnostics 的 grasp.xy_radius_m 应小于 0.68。",
+        "确认 pick 成功后继续观察 carry 上楼；跨楼层执行失败应按 3D path follower/RL policy 问题处理，不再移动 pick handoff。",
+        "若底盘仍因桌边物理碰撞无法到达 y=6.57 以上，需要增加只在 pick 前执行的短距离 base refinement 或改为侧向站位，不能再次把目标退到机械臂不可达位置。"
+      ]
     }
   ],
   "open_questions": [
@@ -3762,6 +3821,6 @@
     "当前楼梯折线使用一个用户提供的平台拐角点；如果还需要逐级贴合每一级台阶，需要继续补充更多 stair midpoint 或提升 PCT slice 分辨率。",
     "楼梯采样点现在是无序地图级标定点，不是 task waypoint；当前 PCT 仍依赖 0.5m slice tomogram，可视化路径不会逐物理台阶生成每一级小台阶节点。",
     "PCT 楼梯已使用 surface_3d 三维约束并通过离线真实资产探针，但真实 Isaac Sim 携物上楼仍未验收；DWA 执行器当前主要消费 XY waypoint，RL policy 的台阶动力学稳定性仍是独立限制。",
-    "多楼层 pick base_goal 已按最新物理停驻位置调整到 y=6.50；该站位是否仍满足机械臂抓取可达性需要真实 full_physics 复跑确认。"
+    "多楼层 pick base_goal 已根据历史成功 cuRobo 快照恢复到 y=6.7491；真实 full_physics 尚需确认底盘能稳定到达 y≈6.69 并完成 pick。"
   ]
 }

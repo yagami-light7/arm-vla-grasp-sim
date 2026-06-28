@@ -52,6 +52,69 @@ class EpisodeSchemaTest(unittest.TestCase):
                 }
             )
 
+    def test_rejects_grasp_target_just_outside_x5_workspace(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "grasp_xy_radius=0.681"):
+            from source.manipulation.grasp_pipeline import GraspPipeline
+
+            GraspPipeline._validate_target_workspace(
+                {
+                    "diagnostics": {
+                        "target_workspace_base": {
+                            "grasp": {"xy_radius_m": 0.681},
+                            "pregrasp": {"radius_3d_m": 0.60},
+                        }
+                    }
+                }
+            )
+
+    def test_accepts_grasp_target_inside_x5_workspace(self) -> None:
+        from source.manipulation.grasp_pipeline import GraspPipeline
+
+        GraspPipeline._validate_target_workspace(
+            {
+                "diagnostics": {
+                    "target_workspace_base": {
+                        "grasp": {"xy_radius_m": 0.62},
+                        "pregrasp": {"radius_3d_m": 0.70},
+                    }
+                }
+            }
+        )
+
+    def test_grasp_pipeline_checks_workspace_before_starting_curobo(self) -> None:
+        from source.manipulation.grasp_pipeline import (
+            GraspPipeline,
+            GraspPipelineConfig,
+            GraspTask,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            target_json = root / "pick_target.json"
+            target_json.write_text(
+                json.dumps(
+                    {
+                        "diagnostics": {
+                            "target_workspace_base": {
+                                "grasp": {"xy_radius_m": 0.805},
+                                "pregrasp": {"radius_3d_m": 0.783},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            task = GraspTask(
+                object_prim_path="/World/apple",
+                use_planner_server=False,
+                state_json=str(root / "pick_state.json"),
+                target_json=str(target_json),
+                plan_json=str(root / "pick_plan.json"),
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "grasp_xy_radius=0.805"):
+                GraspPipeline(GraspPipelineConfig(workspace=root)).plan(task)
+
 
 if __name__ == "__main__":
     unittest.main()

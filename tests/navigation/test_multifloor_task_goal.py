@@ -63,8 +63,8 @@ def test_multifloor_fixed_base_goals_are_not_object_centers() -> None:
         base.place_goal.y - base.place_target_pose[1],
     )
 
-    # 底盘目标允许按可达性调整，但不能退化成物体中心点。
-    assert 0.30 <= pick_distance <= 0.80
+    # 固定 pick 站位必须同时满足桌边安全距离和 X5 机械臂工作空间。
+    assert 0.45 <= pick_distance <= 0.60
     assert 0.20 <= place_distance <= 0.80
     assert base.object_prim_path == "/World/apple_01"
     assert base.object_initial_pose[:3] == pytest.approx(
