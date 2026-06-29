@@ -60,6 +60,14 @@
     "mode": "contact",
     "arm_posture": "carry_high",
     "gripper_hold_command": "close",
+    "smoke_start": {
+      "x": -3.48391,
+      "y": 6.57414,
+      "z": 0.36742,
+      "yaw": 1.67247,
+      "floor_id": "F1",
+      "slice_id": null
+    },
     "max_slip_distance": 0.08,
     "min_lift_height": 0.05,
     "object_drop_height_threshold": 0.05,

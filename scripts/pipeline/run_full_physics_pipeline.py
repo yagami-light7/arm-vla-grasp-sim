@@ -455,20 +455,43 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pct-multifloor-route-corridor-radius",
         type=float,
-        default=0.16,
+        default=NavigationSettings().pct_multifloor_route_corridor_radius,
         help="沿 PCT 三维路径投影保留的可行走走廊半径。",
     )
     parser.add_argument(
         "--pct-carry-max-linear-velocity",
         type=float,
-        default=0.30,
+        default=NavigationSettings().pct_carry_max_linear_velocity,
         help="携物跨楼层导航最大前进速度。",
     )
     parser.add_argument(
         "--pct-carry-max-angular-velocity",
         type=float,
-        default=0.35,
+        default=NavigationSettings().pct_carry_max_angular_velocity,
         help="携物跨楼层导航最大角速度。",
+    )
+    parser.add_argument(
+        "--pct-stair-float",
+        action="store_true",
+        help="携物上楼阶段冻结底盘并沿 PCT 3D 楼梯路径小步漂移。",
+    )
+    parser.add_argument(
+        "--pct-stair-float-speed",
+        type=float,
+        default=NavigationSettings().pct_stair_float_speed_mps,
+        help="PCT 楼梯漂移速度，单位 m/s。",
+    )
+    parser.add_argument(
+        "--pct-stair-float-activation-radius",
+        type=float,
+        default=NavigationSettings().pct_stair_float_activation_radius_m,
+        help="机器人接近楼梯段首点多少米内启动漂移。",
+    )
+    parser.add_argument(
+        "--pct-stair-float-completion-radius",
+        type=float,
+        default=NavigationSettings().pct_stair_float_completion_radius_m,
+        help="距离楼梯漂移段末端多少米内视为完成并恢复普通导航。",
     )
     parser.add_argument(
         "--goal-z-tolerance",
@@ -746,6 +769,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             pct_carry_max_angular_velocity=float(
                 args.pct_carry_max_angular_velocity
+            ),
+            pct_stair_float_enabled=bool(args.pct_stair_float),
+            pct_stair_float_speed_mps=float(args.pct_stair_float_speed),
+            pct_stair_float_activation_radius_m=float(
+                args.pct_stair_float_activation_radius
+            ),
+            pct_stair_float_completion_radius_m=float(
+                args.pct_stair_float_completion_radius
             ),
             goal_z_tolerance=float(args.goal_z_tolerance),
         ),

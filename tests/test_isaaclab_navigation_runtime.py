@@ -78,6 +78,7 @@ class FakeAdapter:
         self.arm_override_flags: list[bool] = []
         self.gripper_targets: list[tuple[float, ...]] = []
         self.base_pose_lock_flags: list[bool] = []
+        self.base_pose_lock_targets: list[tuple[float, float, float, float] | None] = []
         self.support_joint_lock_flags: list[bool] = []
         self.base_pose_lock_apply_count = 0
         self.support_joint_lock_apply_count = 0
@@ -111,13 +112,20 @@ class FakeAdapter:
             ],
         }
 
-    def set_base_pose_lock(self, enabled: bool = True, pose_xyyaw=None) -> dict:
+    def set_base_pose_lock(self, enabled: bool = True, pose_xyyaw=None, pose_xyzyaw=None) -> dict:
         del pose_xyyaw
         self.base_pose_lock_flags.append(bool(enabled))
+        target = (
+            None
+            if pose_xyzyaw is None
+            else tuple(float(value) for value in pose_xyzyaw)
+        )
+        self.base_pose_lock_targets.append(target)
+        pose_xyzyaw_report = list(target) if target is not None else [1.0, 2.0, 0.35, 0.5]
         return {
             "enabled": bool(enabled),
-            "pose_xyzyaw": [1.0, 2.0, 0.35, 0.5] if enabled else None,
-            "pose_xyyaw": [1.0, 2.0, 0.5] if enabled else None,
+            "pose_xyzyaw": pose_xyzyaw_report if enabled else None,
+            "pose_xyyaw": [pose_xyzyaw_report[0], pose_xyzyaw_report[1], pose_xyzyaw_report[3]] if enabled else None,
         }
 
     def apply_base_pose_lock(self) -> dict:
@@ -1082,6 +1090,64 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
             "disabled",
         )
 
+    def test_navigation_stair_float_updates_root_lock_target(self) -> None:
+        runtime, adapter, _fake_runtime_obj = _fake_runtime()
+
+        runtime.apply(
+            RobotAction(
+                base_velocity=(0.0, 0.0, 0.0),
+                source="navigation_stair_float",
+                metadata={
+                    "navigation_base_pose_lock": True,
+                    "navigation_base_pose_lock_phase": "pct_stair_float",
+                    "navigation_base_pose_lock_xyzyaw": (1.2, 6.3, 1.4, 1.57),
+                    "navigation_support_joint_lock": True,
+                    "navigation_support_joint_lock_phase": "pct_stair_float",
+                },
+            )
+        )
+
+        self.assertEqual(adapter.base_pose_lock_flags, [True])
+        self.assertEqual(adapter.base_pose_lock_targets, [(1.2, 6.3, 1.4, 1.57)])
+        self.assertEqual(adapter.support_joint_lock_flags, [True])
+        self.assertTrue(runtime._metadata["used_navigation_base_lock"])  # type: ignore[attr-defined]
+        self.assertTrue(runtime._metadata["used_navigation_support_joint_lock"])  # type: ignore[attr-defined]
+        self.assertEqual(
+            runtime._metadata["last_navigation_base_lock_report"]["source"],  # type: ignore[attr-defined]
+            "navigation",
+        )
+        self.assertEqual(
+            runtime._metadata["last_navigation_base_lock_report"]["transition"],  # type: ignore[attr-defined]
+            "enabled",
+        )
+
+        runtime.apply(
+            RobotAction(
+                base_velocity=(0.1, 0.0, 0.0),
+                source="navigation_dwa",
+                metadata={},
+            )
+        )
+
+        self.assertEqual(adapter.base_pose_lock_flags, [True, False])
+        self.assertEqual(adapter.support_joint_lock_flags, [True, False])
+        self.assertFalse(runtime._metadata["manipulation_base_lock_active"])  # type: ignore[attr-defined]
+        self.assertFalse(runtime._metadata["manipulation_support_joint_lock_active"])  # type: ignore[attr-defined]
+
+    def test_navigation_base_lock_requires_xyzyaw_target(self) -> None:
+        runtime, _adapter, _fake_runtime_obj = _fake_runtime()
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "navigation_base_pose_lock_xyzyaw",
+        ):
+            runtime.apply(
+                RobotAction(
+                    source="navigation_stair_float",
+                    metadata={"navigation_base_pose_lock": True},
+                )
+            )
+
     def test_apply_rejects_unexpected_arm_joint_order(self) -> None:
         runtime, adapter, fake_runtime = _fake_runtime()
 
@@ -1246,12 +1312,16 @@ def _fake_runtime() -> tuple[IsaacLabNavigationRuntime, FakeAdapter, FakeRuntime
         "used_direct_joint_state": False,
         "used_manipulation_base_lock": False,
         "used_manipulation_support_joint_lock": False,
+        "used_navigation_base_lock": False,
+        "used_navigation_support_joint_lock": False,
         "manipulation_base_lock_active": False,
         "manipulation_base_lock_apply_count": 0,
         "last_manipulation_base_lock_report": None,
+        "last_navigation_base_lock_report": None,
         "manipulation_support_joint_lock_active": False,
         "manipulation_support_joint_lock_apply_count": 0,
         "last_manipulation_support_joint_lock_report": None,
+        "last_navigation_support_joint_lock_report": None,
         "arm_joint_position_target_apply_count": 0,
         "last_arm_joint_position_target_report": None,
         "gripper_joint_position_target_apply_count": 0,

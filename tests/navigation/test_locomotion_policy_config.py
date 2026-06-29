@@ -95,9 +95,19 @@ def test_pct_multifloor_dwa_commands_stay_inside_checkpoint_training_range() -> 
     assert nav.pct_stair_progress_cost_weight == pytest.approx(20.0)
     assert nav.pct_multifloor_vertical_obstacle_min_slices == 5
     assert nav.pct_multifloor_obstacle_inflate_radius == pytest.approx(0.12)
-    assert nav.pct_multifloor_route_corridor_radius == pytest.approx(0.16)
-    assert nav.pct_carry_max_linear_velocity == pytest.approx(0.30)
-    assert nav.pct_carry_max_angular_velocity == pytest.approx(0.35)
+    assert nav.pct_multifloor_route_corridor_radius == pytest.approx(0.24)
+    assert nav.pct_carry_max_linear_velocity == pytest.approx(0.20)
+    assert nav.pct_carry_max_angular_velocity == pytest.approx(0.30)
+    assert nav.pct_carry_max_linear_accel == pytest.approx(1.00)
+    assert nav.pct_carry_initial_alignment_path_deviation_limit == pytest.approx(0.40)
+    assert nav.pct_carry_path_recovery_deviation_limit == pytest.approx(0.35)
+    assert nav.pct_carry_max_infeasible_recomputes == 8
+    assert nav.pct_stair_float_enabled is False
+    assert nav.pct_stair_float_speed_mps == pytest.approx(0.18)
+    assert nav.pct_stair_float_activation_radius_m == pytest.approx(0.45)
+    assert nav.pct_stair_float_completion_radius_m == pytest.approx(0.25)
+    assert nav.pct_stair_float_min_z_delta_m == pytest.approx(0.75)
+    assert nav.pct_stair_float_yaw_lookahead_m == pytest.approx(0.35)
     flat = _build_dwa_config(nav, policy_profile="flat")
     pct = _build_dwa_config(nav, policy_profile="pct_multifloor")
 

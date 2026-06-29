@@ -81,6 +81,22 @@ def _item(value: Any) -> float:
     return float(value.item() if hasattr(value, "item") else value)
 
 
+def _coerce_xyzyaw(value: Any) -> tuple[float, float, float, float] | None:
+    """把 action metadata 中的 root lock 目标解析为 xyzyaw 四元组。"""
+
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    try:
+        return (
+            float(value[0]),
+            float(value[1]),
+            float(value[2]),
+            float(value[3]),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 def _quat_to_yaw(quat_wxyz: Any) -> float:
     w, x, y, z = (_item(value) for value in quat_wxyz)
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
@@ -385,12 +401,16 @@ class IsaacLabNavigationRuntime:
             "used_visual_replay": False,
             "used_manipulation_base_lock": False,
             "used_manipulation_support_joint_lock": False,
+            "used_navigation_base_lock": False,
+            "used_navigation_support_joint_lock": False,
             "manipulation_base_lock_active": False,
             "manipulation_base_lock_apply_count": 0,
             "last_manipulation_base_lock_report": None,
+            "last_navigation_base_lock_report": None,
             "manipulation_support_joint_lock_active": False,
             "manipulation_support_joint_lock_apply_count": 0,
             "last_manipulation_support_joint_lock_report": None,
+            "last_navigation_support_joint_lock_report": None,
             "arm_joint_position_target_apply_count": 0,
             "last_arm_joint_position_target_report": None,
             "gripper_joint_position_target_apply_count": 0,
@@ -496,12 +516,16 @@ class IsaacLabNavigationRuntime:
                 "used_direct_joint_state": False,
                 "used_manipulation_base_lock": False,
                 "used_manipulation_support_joint_lock": False,
+                "used_navigation_base_lock": False,
+                "used_navigation_support_joint_lock": False,
                 "manipulation_base_lock_active": False,
                 "manipulation_base_lock_apply_count": 0,
                 "last_manipulation_base_lock_report": None,
+                "last_navigation_base_lock_report": None,
                 "manipulation_support_joint_lock_active": False,
                 "manipulation_support_joint_lock_apply_count": 0,
                 "last_manipulation_support_joint_lock_report": None,
+                "last_navigation_support_joint_lock_report": None,
                 # reset 事件写入初始位姿，不属于导航执行中的 teleport。
                 "reset_pose_source": "isaaclab_reset_event",
             }
@@ -591,25 +615,51 @@ class IsaacLabNavigationRuntime:
     def _configure_manipulation_base_lock(self, action: RobotAction) -> None:
         """按状态机请求启停 root/support lock，并记录非纯物理 provenance。"""
 
-        requested = bool(action.metadata.get("manipulation_base_lock", False))
-        phase = action.metadata.get("manipulation_base_lock_phase")
-        if requested and not self._manipulation_base_lock_active:
-            report = self._adapter.set_base_pose_lock(True)
+        manipulation_requested = bool(action.metadata.get("manipulation_base_lock", False))
+        navigation_requested = bool(action.metadata.get("navigation_base_pose_lock", False))
+        requested = manipulation_requested or navigation_requested
+        phase = (
+            action.metadata.get("navigation_base_pose_lock_phase")
+            if navigation_requested
+            else action.metadata.get("manipulation_base_lock_phase")
+        )
+        pose_xyzyaw = _coerce_xyzyaw(
+            action.metadata.get("navigation_base_pose_lock_xyzyaw")
+        )
+        if navigation_requested and pose_xyzyaw is None:
+            raise RuntimeError(
+                "navigation base pose lock requires navigation_base_pose_lock_xyzyaw"
+            )
+        should_update_pose = navigation_requested and pose_xyzyaw is not None
+        base_lock_was_active = self._manipulation_base_lock_active
+        if requested and (
+            not base_lock_was_active or should_update_pose
+        ):
+            report = self._adapter.set_base_pose_lock(True, pose_xyzyaw=pose_xyzyaw)
             if report.get("enabled") is not True:
                 raise RuntimeError(f"failed to enable manipulation base lock: {report}")
             self._manipulation_base_lock_active = True
-            self._metadata.update(
-                {
-                    "used_base_teleport": True,
-                    "used_manipulation_base_lock": True,
-                    "manipulation_base_lock_active": True,
-                    "last_manipulation_base_lock_report": {
-                        **report,
-                        "transition": "enabled",
-                        "phase": phase,
-                    },
-                }
-            )
+            base_report = {
+                **report,
+                "transition": (
+                    "updated"
+                    if base_lock_was_active and should_update_pose
+                    else "enabled"
+                ),
+                "phase": phase,
+                "source": "navigation" if navigation_requested else "manipulation",
+            }
+            metadata_update = {
+                "used_base_teleport": True,
+                "manipulation_base_lock_active": True,
+                "last_manipulation_base_lock_report": base_report,
+            }
+            if manipulation_requested:
+                metadata_update["used_manipulation_base_lock"] = True
+            if navigation_requested:
+                metadata_update["used_navigation_base_lock"] = True
+                metadata_update["last_navigation_base_lock_report"] = base_report
+            self._metadata.update(metadata_update)
         if not requested and self._manipulation_base_lock_active:
             report = self._adapter.set_base_pose_lock(False)
             self._manipulation_base_lock_active = False
@@ -621,10 +671,21 @@ class IsaacLabNavigationRuntime:
                         "transition": "disabled",
                         "phase": phase,
                     },
+                    "last_navigation_base_lock_report": {
+                        **report,
+                        "transition": "disabled",
+                        "phase": phase,
+                    },
                 }
             )
-        support_requested = bool(action.metadata.get("manipulation_support_joint_lock", False))
-        support_phase = action.metadata.get("manipulation_support_joint_lock_phase")
+        manipulation_support_requested = bool(action.metadata.get("manipulation_support_joint_lock", False))
+        navigation_support_requested = bool(action.metadata.get("navigation_support_joint_lock", False))
+        support_requested = manipulation_support_requested or navigation_support_requested
+        support_phase = (
+            action.metadata.get("navigation_support_joint_lock_phase")
+            if navigation_support_requested
+            else action.metadata.get("manipulation_support_joint_lock_phase")
+        )
         if support_requested and not self._manipulation_support_joint_lock_active:
             if not hasattr(self._adapter, "set_support_joint_lock"):
                 report = {
@@ -634,18 +695,33 @@ class IsaacLabNavigationRuntime:
             else:
                 report = self._adapter.set_support_joint_lock(True)
             self._manipulation_support_joint_lock_active = bool(report.get("enabled"))
-            self._metadata.update(
-                {
-                    "used_direct_joint_state": bool(report.get("uses_direct_joint_state", False)),
-                    "used_manipulation_support_joint_lock": bool(report.get("enabled")),
-                    "manipulation_support_joint_lock_active": bool(report.get("enabled")),
-                    "last_manipulation_support_joint_lock_report": {
-                        **report,
-                        "transition": "enabled",
-                        "phase": support_phase,
-                    },
-                }
-            )
+            support_report = {
+                **report,
+                "transition": "enabled",
+                "phase": support_phase,
+                "source": (
+                    "navigation"
+                    if navigation_support_requested
+                    else "manipulation"
+                ),
+            }
+            metadata_update = {
+                "used_direct_joint_state": bool(report.get("uses_direct_joint_state", False)),
+                "manipulation_support_joint_lock_active": bool(report.get("enabled")),
+                "last_manipulation_support_joint_lock_report": support_report,
+            }
+            if manipulation_support_requested:
+                metadata_update["used_manipulation_support_joint_lock"] = bool(
+                    report.get("enabled")
+                )
+            if navigation_support_requested:
+                metadata_update["used_navigation_support_joint_lock"] = bool(
+                    report.get("enabled")
+                )
+                metadata_update["last_navigation_support_joint_lock_report"] = (
+                    support_report
+                )
+            self._metadata.update(metadata_update)
         if not support_requested and self._manipulation_support_joint_lock_active:
             report = self._adapter.set_support_joint_lock(False)
             self._manipulation_support_joint_lock_active = False
@@ -653,6 +729,11 @@ class IsaacLabNavigationRuntime:
                 {
                     "manipulation_support_joint_lock_active": False,
                     "last_manipulation_support_joint_lock_report": {
+                        **report,
+                        "transition": "disabled",
+                        "phase": support_phase,
+                    },
+                    "last_navigation_support_joint_lock_report": {
                         **report,
                         "transition": "disabled",
                         "phase": support_phase,

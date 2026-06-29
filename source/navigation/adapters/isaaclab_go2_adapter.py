@@ -1,7 +1,6 @@
-"""Isaac Lab locomotion-policy adapter for Go2-X5 navigation.
+"""Go2-X5 导航使用的 Isaac Lab locomotion-policy adapter。
 
-Imports are intentionally lazy so pure navigation tests do not require Isaac
-Lab, Torch, or a GPU runtime.
+Isaac Lab、Torch 和 GPU runtime 均保持延迟导入，避免纯导航测试依赖仿真环境。
 """
 
 from __future__ import annotations
@@ -84,7 +83,7 @@ class Go2LocomotionAdapter:
         self._last_actions = None
 
     def _write_root_pose_xyzyaw(self, x: float, y: float, z: float, yaw: float) -> None:
-        """Write a level root pose and zero root velocity directly to simulation."""
+        """把水平 root pose 写入仿真，并清零 root 速度。"""
         import torch
 
         quat = yaw_to_quat_wxyz(yaw)
@@ -94,18 +93,36 @@ class Go2LocomotionAdapter:
         self.robot.write_root_velocity_to_sim(velocity)
 
     def reset_to_pose(self, x: float, y: float, yaw: float) -> None:
-        """Write a root pose and zero root velocity directly to simulation."""
+        """把 root pose 写入仿真，并清零 root 速度。"""
 
         current_z = _item(self.robot.data.root_pos_w[0][2])
         self._write_root_pose_xyzyaw(x, y, current_z, yaw)
 
-    def set_base_pose_lock(self, enabled: bool = True, pose_xyyaw: tuple[float, float, float] | None = None) -> dict[str, Any]:
-        """Pin the floating base to a level world x/y/z/yaw pose during manipulation."""
+    def set_base_pose_lock(
+        self,
+        enabled: bool = True,
+        pose_xyyaw: tuple[float, float, float] | None = None,
+        pose_xyzyaw: tuple[float, float, float, float] | None = None,
+    ) -> dict[str, Any]:
+        """锁定 floating base；可用于 manipulation，也可用于 PCT 楼梯漂移。"""
 
         if enabled:
-            pose = pose_xyyaw if pose_xyyaw is not None else self.get_base_pose()
-            z = _item(self.robot.data.root_pos_w[0][2])
-            self._base_pose_lock_xyzyaw = (float(pose[0]), float(pose[1]), float(z), float(pose[2]))
+            if pose_xyzyaw is not None:
+                self._base_pose_lock_xyzyaw = (
+                    float(pose_xyzyaw[0]),
+                    float(pose_xyzyaw[1]),
+                    float(pose_xyzyaw[2]),
+                    float(pose_xyzyaw[3]),
+                )
+            else:
+                pose = pose_xyyaw if pose_xyyaw is not None else self.get_base_pose()
+                z = _item(self.robot.data.root_pos_w[0][2])
+                self._base_pose_lock_xyzyaw = (
+                    float(pose[0]),
+                    float(pose[1]),
+                    float(z),
+                    float(pose[2]),
+                )
         else:
             self._base_pose_lock_xyzyaw = None
         pose_xyzyaw = list(self._base_pose_lock_xyzyaw) if self._base_pose_lock_xyzyaw is not None else None

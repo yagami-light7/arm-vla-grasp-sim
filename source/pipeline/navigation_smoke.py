@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from source.diagnostics import NavigationEpisodeVerifier
-from source.interfaces import EpisodeSpec
+from source.interfaces import EpisodeSpec, NavGoal
 from source.manipulation.dry_run import (
     DryRunArmExecutor,
     DryRunGripperController,
@@ -77,21 +77,22 @@ def create_navigation_carry_smoke_pipeline(
     episode_dir: str | Path,
     simulation: IsaacLabNavigationRuntime,
 ) -> FullPhysicsPipeline:
-    """从 pick base goal reset，验证 home arm + close gripper 的 nav_to_place。"""
+    """从抓取后稳定底盘位姿 reset，验证 home arm + close gripper 的 nav_to_place。"""
 
     if episode_spec.place_goal is None:
         raise ValueError("navigation carry smoke requires an enabled place base goal")
+    carry_start, reset_start_source = _navigation_carry_smoke_start(episode_spec)
     raw_task = {
         **episode_spec.raw_task,
         "runtime_override": {
             "mode": "navigation_carry_smoke",
-            "reset_start_source": "pick.base_goal",
+            "reset_start_source": reset_start_source,
             "object_carry_verified": False,
         },
     }
     carry_spec = replace(
         episode_spec,
-        start=episode_spec.pick_goal,
+        start=carry_start,
         raw_task=raw_task,
     )
     return _create_navigation_pipeline(
@@ -100,6 +101,42 @@ def create_navigation_carry_smoke_pipeline(
         episode_seed=episode_seed,
         episode_dir=episode_dir,
         simulation=simulation,
+    )
+
+
+def _navigation_carry_smoke_start(episode_spec: EpisodeSpec) -> tuple[NavGoal, str]:
+    """读取任务级抓取后底盘位姿，未配置时保持旧的 pick goal 行为。"""
+
+    raw_carry = episode_spec.raw_task.get("carry")
+    if not isinstance(raw_carry, dict):
+        return episode_spec.pick_goal, "pick.base_goal"
+    raw_start = raw_carry.get("smoke_start")
+    if not isinstance(raw_start, dict):
+        return episode_spec.pick_goal, "pick.base_goal"
+
+    missing = [name for name in ("x", "y", "yaw") if name not in raw_start]
+    if missing:
+        raise ValueError(
+            "carry.smoke_start requires x, y and yaw; "
+            f"missing={','.join(missing)}"
+        )
+
+    pick_goal = episode_spec.pick_goal
+    raw_slice_id = raw_start.get("slice_id", pick_goal.slice_id)
+    return (
+        NavGoal(
+            x=float(raw_start["x"]),
+            y=float(raw_start["y"]),
+            yaw=float(raw_start["yaw"]),
+            z=(
+                pick_goal.z
+                if raw_start.get("z") is None
+                else float(raw_start["z"])
+            ),
+            floor_id=raw_start.get("floor_id", pick_goal.floor_id),
+            slice_id=None if raw_slice_id is None else int(raw_slice_id),
+        ),
+        "carry.smoke_start",
     )
 
 
@@ -323,6 +360,43 @@ def create_navigation_components(
             )
             else None
         ),
+        carry_initial_alignment_path_deviation_limit=(
+            nav.pct_carry_initial_alignment_path_deviation_limit
+            if (
+                nav.global_planner == "pct"
+                and config.locomotion.policy_profile == "pct_multifloor"
+            )
+            else None
+        ),
+        carry_path_recovery_deviation_limit=(
+            nav.pct_carry_path_recovery_deviation_limit
+            if (
+                nav.global_planner == "pct"
+                and config.locomotion.policy_profile == "pct_multifloor"
+            )
+            else None
+        ),
+        carry_max_infeasible_recomputes=(
+            nav.pct_carry_max_infeasible_recomputes
+            if (
+                nav.global_planner == "pct"
+                and config.locomotion.policy_profile == "pct_multifloor"
+            )
+            else None
+        ),
+        stair_float_enabled=(
+            bool(nav.pct_stair_float_enabled)
+            if (
+                nav.global_planner == "pct"
+                and config.locomotion.policy_profile == "pct_multifloor"
+            )
+            else False
+        ),
+        stair_float_speed_mps=nav.pct_stair_float_speed_mps,
+        stair_float_activation_radius_m=nav.pct_stair_float_activation_radius_m,
+        stair_float_completion_radius_m=nav.pct_stair_float_completion_radius_m,
+        stair_float_min_z_delta_m=nav.pct_stair_float_min_z_delta_m,
+        stair_float_yaw_lookahead_m=nav.pct_stair_float_yaw_lookahead_m,
     )
     verifier = NavigationEpisodeVerifier(
         position_tolerance=nav.final_position_tolerance,

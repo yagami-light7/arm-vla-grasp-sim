@@ -10,7 +10,10 @@ from source.navigation import AStarNavPlanner, PCTNavPlanner
 from source.navigation.navlib import OccupancyGridMap
 from source.navigation.pct_adapter import PCTPlannerConfig
 from source.pipeline import FullPhysicsConfig, NavigationSettings
-from source.pipeline.navigation_smoke import create_navigation_components
+from source.pipeline.navigation_smoke import (
+    _navigation_carry_smoke_start,
+    create_navigation_components,
+)
 from source.tasks import JsonTaskProvider
 
 
@@ -116,6 +119,33 @@ def test_pct_with_fallback_and_missing_flat_nav_map_disables_fallback(tmp_path: 
     assert planner.fallback_planner is None
     assert planner.config.fallback_to_astar is False
     assert executor.local_map is not None
+
+
+def test_navigation_carry_smoke_uses_task_stable_start() -> None:
+    spec = JsonTaskProvider().load(
+        PROJECT_ROOT / "tasks/nav_pick_place_apple_multifloor_pct.json"
+    )
+
+    start, source = _navigation_carry_smoke_start(spec)
+
+    assert source == "carry.smoke_start"
+    assert start == NavGoal(
+        x=-3.48391,
+        y=6.57414,
+        z=0.36742,
+        yaw=1.67247,
+        floor_id="F1",
+        slice_id=None,
+    )
+
+
+def test_navigation_carry_smoke_without_override_uses_pick_goal() -> None:
+    spec = JsonTaskProvider().load(TASK_PATH)
+
+    start, source = _navigation_carry_smoke_start(spec)
+
+    assert source == "pick.base_goal"
+    assert start is spec.pick_goal
 
 
 def test_pct_failure_falls_back_to_astar() -> None:

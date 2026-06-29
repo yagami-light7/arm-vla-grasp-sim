@@ -44,6 +44,12 @@ class DWAConfig:
     path_deviation_limit: float = 0.18
     path_distance_window: int = 80
     use_command_velocity_window: bool = False
+    enforce_path_deviation_limit: bool = False
+    initial_alignment_path_deviation_limit: float | None = None
+    path_recovery_deviation_limit: float | None = None
+    preserve_sharp_corners: bool = False
+    corner_angle_threshold: float = 0.45
+    corner_waypoint_tolerance: float = 0.08
 
 
 @dataclass(frozen=True)
@@ -60,9 +66,13 @@ class DWADebug:
     sampled_candidates: int
     feasible_candidates: int
     collision_rejections: int
+    path_deviation_rejections: int
     best_linear_velocity: float
     best_angular_velocity: float
     path_distance: float
+    path_deviation_limit_used: float
+    initial_alignment_active: bool
+    path_recovery_active: bool
     window_linear_velocity: float
     window_angular_velocity: float
     velocity_window_source: str
@@ -81,6 +91,19 @@ class DWAController:
         self.config = config
         self.target_index = 1
         self._command_window_velocity: tuple[float, float] | None = None
+        self._corner_indices = (
+            _find_sharp_corner_indices(
+                self.path_world,
+                angle_threshold=float(config.corner_angle_threshold),
+            )
+            if config.preserve_sharp_corners
+            else ()
+        )
+        self._passed_corner_indices: set[int] = set()
+        self._initial_alignment_active = (
+            config.initial_alignment_path_deviation_limit is not None
+        )
+        self._path_recovery_active = False
         self.grid_map.obstacle_distance_map()
 
     def compute_command(
@@ -130,9 +153,13 @@ class DWAController:
                 sampled_candidates=0,
                 feasible_candidates=0,
                 collision_rejections=0,
+                path_deviation_rejections=0,
                 best_linear_velocity=0.0,
                 best_angular_velocity=0.0,
                 path_distance=0.0,
+                path_deviation_limit_used=float(self.config.path_deviation_limit),
+                initial_alignment_active=False,
+                path_recovery_active=False,
                 window_linear_velocity=window_vx,
                 window_angular_velocity=window_wz,
                 velocity_window_source=(
@@ -150,6 +177,38 @@ class DWAController:
         distance_to_target = float(np.linalg.norm(delta))
         target_heading = math.atan2(delta[1], delta[0])
         heading_error = _wrap_angle(target_heading - yaw)
+        current_path_distance = float(
+            np.min(self._path_distances(position[None, :]))
+        )
+        if (
+            self._initial_alignment_active
+            and abs(heading_error) <= self.config.rotate_in_place_angle
+            and current_path_distance <= self.config.path_deviation_limit
+        ):
+            self._initial_alignment_active = False
+        if (
+            not self._initial_alignment_active
+            and self.config.path_recovery_deviation_limit is not None
+        ):
+            if current_path_distance > self.config.path_deviation_limit:
+                self._path_recovery_active = True
+            elif (
+                self._path_recovery_active
+                and current_path_distance
+                <= 0.8 * self.config.path_deviation_limit
+            ):
+                self._path_recovery_active = False
+        path_deviation_limit = float(self.config.path_deviation_limit)
+        if self._initial_alignment_active:
+            path_deviation_limit = max(
+                path_deviation_limit,
+                float(self.config.initial_alignment_path_deviation_limit),
+            )
+        elif self._path_recovery_active:
+            path_deviation_limit = max(
+                path_deviation_limit,
+                float(self.config.path_recovery_deviation_limit),
+            )
 
         best_command = np.zeros(3, dtype=np.float32)
         best_score = -float("inf")
@@ -158,6 +217,7 @@ class DWAController:
         sampled_candidates = 0
         feasible_candidates = 0
         collision_rejections = 0
+        path_deviation_rejections = 0
 
         for linear_velocity, angular_velocity in self._sample_velocities(
             current_vx=current_vx,
@@ -192,6 +252,13 @@ class DWAController:
                 linear_velocity=linear_velocity,
                 clearance=clearance,
             )
+            if (
+                self.config.enforce_path_deviation_limit
+                and details["max_path_distance"]
+                > path_deviation_limit
+            ):
+                path_deviation_rejections += 1
+                continue
             feasible_candidates += 1
             if score > best_score:
                 best_score = score
@@ -236,9 +303,13 @@ class DWAController:
             sampled_candidates=sampled_candidates,
             feasible_candidates=feasible_candidates,
             collision_rejections=collision_rejections,
+            path_deviation_rejections=path_deviation_rejections,
             best_linear_velocity=float(best_command[0]),
             best_angular_velocity=float(best_command[2]),
             path_distance=best_path_distance,
+            path_deviation_limit_used=path_deviation_limit,
+            initial_alignment_active=self._initial_alignment_active,
+            path_recovery_active=self._path_recovery_active,
             window_linear_velocity=window_vx,
             window_angular_velocity=window_wz,
             velocity_window_source=(
@@ -248,6 +319,7 @@ class DWAController:
         return best_command, debug
 
     def _advance_target(self, position: np.ndarray):
+        next_corner = self._next_unpassed_corner()
         path_slice_start = self.target_index
         search_window = max(
             3,
@@ -257,19 +329,43 @@ class DWAController:
         path_slice = self.path_world[path_slice_start:path_slice_end]
         nearest_offset = int(np.argmin(np.linalg.norm(path_slice - position, axis=1)))
         nearest_index = min(len(self.path_world) - 1, path_slice_start + nearest_offset)
+        if next_corner is not None:
+            nearest_index = min(nearest_index, next_corner)
         self.target_index = max(self.target_index, nearest_index)
 
         while self.target_index < len(self.path_world) - 1:
             target = self.path_world[self.target_index]
-            if np.linalg.norm(target - position) > self.config.waypoint_tolerance:
+            is_corner = self.target_index == next_corner
+            tolerance = (
+                self.config.corner_waypoint_tolerance
+                if is_corner
+                else self.config.waypoint_tolerance
+            )
+            if np.linalg.norm(target - position) > tolerance:
                 break
+            passed_index = self.target_index
             self.target_index += 1
+            if is_corner:
+                self._passed_corner_indices.add(passed_index)
+                # 切换下一段后先重新计算朝向，禁止一次跳过整个拐角。
+                return
 
         while self.target_index < len(self.path_world) - 1:
+            next_corner = self._next_unpassed_corner()
+            if next_corner is not None and self.target_index >= next_corner:
+                break
             target = self.path_world[self.target_index]
             if np.linalg.norm(target - position) >= self.config.lookahead_distance:
                 break
             self.target_index += 1
+
+    def _next_unpassed_corner(self) -> int | None:
+        """返回尚未经过的下一个锐角路径点。"""
+
+        for index in self._corner_indices:
+            if index >= self.target_index and index not in self._passed_corner_indices:
+                return index
+        return None
 
     def _sample_velocities(
         self,
@@ -501,6 +597,27 @@ class DWAController:
 
 def _wrap_angle(angle: float) -> float:
     return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def _find_sharp_corner_indices(
+    path_world: np.ndarray,
+    *,
+    angle_threshold: float,
+) -> tuple[int, ...]:
+    """找出需要显式停靠并转向的锐角路径点。"""
+
+    threshold = max(0.0, float(angle_threshold))
+    corners: list[int] = []
+    for index in range(1, len(path_world) - 1):
+        incoming = path_world[index] - path_world[index - 1]
+        outgoing = path_world[index + 1] - path_world[index]
+        if np.linalg.norm(incoming) <= 1.0e-9 or np.linalg.norm(outgoing) <= 1.0e-9:
+            continue
+        incoming_yaw = math.atan2(float(incoming[1]), float(incoming[0]))
+        outgoing_yaw = math.atan2(float(outgoing[1]), float(outgoing[0]))
+        if abs(_wrap_angle(outgoing_yaw - incoming_yaw)) >= threshold:
+            corners.append(index)
+    return tuple(corners)
 
 
 def _bounded_dynamic_interval(

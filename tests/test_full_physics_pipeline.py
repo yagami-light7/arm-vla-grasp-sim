@@ -355,6 +355,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertIn("--navigation-carry-smoke", help_text)
         self.assertIn("--pct-plan-preview", help_text)
         self.assertIn("--pct-cross-floor-gateway", help_text)
+        self.assertIn("--pct-stair-float", help_text)
         self.assertIn("--pick-smoke", help_text)
         self.assertIn("--manipulation-smoke", help_text)
         self.assertIn("--manipulation-apply-smoke", help_text)
@@ -491,6 +492,51 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             args.pct_cross_floor_gateway_radius,
             NavigationSettings().pct_cross_floor_gateway_radius_m,
         )
+        self.assertEqual(
+            args.pct_multifloor_route_corridor_radius,
+            NavigationSettings().pct_multifloor_route_corridor_radius,
+        )
+        self.assertEqual(
+            args.pct_carry_max_linear_velocity,
+            NavigationSettings().pct_carry_max_linear_velocity,
+        )
+        self.assertEqual(
+            args.pct_carry_max_angular_velocity,
+            NavigationSettings().pct_carry_max_angular_velocity,
+        )
+        self.assertFalse(args.pct_stair_float)
+        self.assertEqual(
+            args.pct_stair_float_speed,
+            NavigationSettings().pct_stair_float_speed_mps,
+        )
+        self.assertEqual(
+            args.pct_stair_float_activation_radius,
+            NavigationSettings().pct_stair_float_activation_radius_m,
+        )
+        self.assertEqual(
+            args.pct_stair_float_completion_radius,
+            NavigationSettings().pct_stair_float_completion_radius_m,
+        )
+
+    def test_cli_accepts_pct_stair_float_overrides(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "--task-json",
+                "tasks/nav_pick_place_apple_multifloor_pct.json",
+                "--pct-stair-float",
+                "--pct-stair-float-speed",
+                "0.22",
+                "--pct-stair-float-activation-radius",
+                "0.55",
+                "--pct-stair-float-completion-radius",
+                "0.12",
+            ]
+        )
+
+        self.assertTrue(args.pct_stair_float)
+        self.assertEqual(args.pct_stair_float_speed, 0.22)
+        self.assertEqual(args.pct_stair_float_activation_radius, 0.55)
+        self.assertEqual(args.pct_stair_float_completion_radius, 0.12)
 
     def test_cli_dry_run_writes_startup_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

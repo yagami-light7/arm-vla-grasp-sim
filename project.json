@@ -2,8 +2,8 @@
   "project": "arm_vla_pct",
   "branch": "pct",
   "goal": "将 flat A* 全局导航替换为 PCT 多楼层规划器，并接入新的 RL locomotion checkpoint 配置。",
-  "current_phase": "phase_42_pick_handoff_workspace_fix",
-  "last_updated": "2026-06-28 22:41:36 CST",
+  "current_phase": "phase_50_pct_stair_float_carry_workaround",
+  "last_updated": "2026-06-30 01:13:33 CST",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -175,7 +175,26 @@
     "pct_stair_surface_route_offline_verified": true,
     "multifloor_pick_goal_physical_standoff_fixed": true,
     "multifloor_pick_goal_arm_workspace_fixed": true,
-    "curobo_pick_workspace_preflight_enabled": true
+    "curobo_pick_workspace_preflight_enabled": true,
+    "pct_carry_corner_preservation_added": true,
+    "pct_carry_hard_path_deviation_added": true,
+    "pct_carry_infeasible_guard_added": true,
+    "pct_carry_door_corner_offline_verified": true,
+    "pct_carry_smoke_stable_start_added": true,
+    "pct_carry_initial_alignment_recovery_added": true,
+    "pct_carry_corner_path_recovery_added": true,
+    "pct_carry_route_corridor_discretization_fixed": true,
+    "pct_cli_route_corridor_default_synced": true,
+    "pct_carry_full_route_dwa_probe_verified": true,
+    "pct_gui_route_corridor_default_drift_fixed": true,
+    "pct_carry_stair_entry_recovery_tuned": true,
+    "pct_carry_stair_entry_real_trace_replayed": true,
+    "pct_carry_stair_speed_profile_lowered": true,
+    "pct_carry_speed_cli_default_synced": true,
+    "pct_stair_float_carry_workaround_added": true,
+    "pct_stair_float_cli_added": true,
+    "pct_stair_float_unit_tested": true,
+    "pct_stair_float_real_gui_verified": false
   },
   "local_assets": {
     "rl_policy_source_dir": null,
@@ -3776,6 +3795,522 @@
         "确认 pick 成功后继续观察 carry 上楼；跨楼层执行失败应按 3D path follower/RL policy 问题处理，不再移动 pick handoff。",
         "若底盘仍因桌边物理碰撞无法到达 y=6.57 以上，需要增加只在 pick 前执行的短距离 base refinement 或改为侧向站位，不能再次把目标退到机械臂不可达位置。"
       ]
+    },
+    {
+      "time": "2026-06-29 14:32:06 CST",
+      "summary": "修复 pick 后 carry nav 在门口锐角切内角撞墙并持续后滑的问题：携物 DWA 现在保留锐角 waypoint、转向完成前不进入下一段、硬拒绝超出路径偏离上限的候选，并在连续无可行轨迹时快速终止。",
+      "files_changed": [
+        "source/navigation/navlib/dwa.py",
+        "source/navigation/executor.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "机器人完成 pick 后在进门斜拐角切向墙体，转过头后不再迈步，并被 PhysX 接触持续向后推出。",
+          "root_cause": "真实 frames.jsonl 显示 carry DWA 在门前仍以 vx=0.30m/s、wz=0.35rad/s 通过约 45 度拐角，转弯半径远大于窄门空间；path_deviation_limit=0.14m 仅参与软评分，没有拒绝越界轨迹。机器人偏离超过 0.14m 后进入墙体，随后所有候选 collision_rejections，控制器输出零线速度，后滑来自碰撞接触解算而非主动倒车。",
+          "fix": "DWA 增加锐角检测和拐角保留，carry profile 使用 0.35rad 锐角阈值、0.18m 拐点到达容差和 0.45rad 原地转向阈值；切换下一路径段时禁止一次跳过拐角。carry 的 0.14m 偏离上限改为候选硬约束，并新增 path_deviation_rejections 诊断。",
+          "prevention": "窄门和楼梯路径不能只依赖 lookahead 跟踪及软代价；所有 carry 锐角必须显式经过并在下一段前重新对齐，测试覆盖锐角不跳过和越界候选拒绝。"
+        },
+        {
+          "problem": "进入零净空区域后，旧 stall detector 因机器人仍被墙体推动产生位移而一直不判定 stall，pipeline 可持续数千步后滑。",
+          "root_cause": "旧 stall 只统计位移和前进命令比例，无法区分主动行走与 PhysX 接触导致的被动位移；DWA 无可行轨迹时仍返回旋转 fallback。",
+          "fix": "新增 pct_carry_max_infeasible_recomputes=8；连续八次 DWA 重算都没有可行候选时，以 nav_collision 或 nav_path_deviation 结束并输出零命令，单次瞬态无解会自动恢复计数。",
+          "prevention": "局部规划器健康状态必须统计连续 feasible candidate 窗口，不能只通过机器人位移判断是否卡住。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/navigation/navlib/dwa.py source/navigation/executor.py source/pipeline/config.py source/pipeline/navigation_smoke.py",
+          "result": "passed",
+          "note": "本轮导航执行器和配置语法检查通过。"
+        },
+        {
+          "command": "真实 Yinluyuan PCT 多层地图纯 Python 闭环门口回放",
+          "result": "passed",
+          "note": "从完整 carry 路径起点运行到门后，依次经过七个门前锐角；无占用碰撞，最大中心线偏离 0.109m，小于 0.14m 硬限制。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/test_astar_dwa_smoke.py tests/test_full_physics_navigation.py tests/navigation/test_locomotion_policy_config.py",
+          "result": "passed",
+          "note": "37 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "56 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q",
+          "result": "passed",
+          "note": "295 passed, 1 skipped。"
+        },
+        {
+          "command": "真实 Isaac Sim GUI full_physics 复跑",
+          "result": "not_run",
+          "note": "用户已手动结束旧运行；本轮没有再启动第二个 GUI/GPU 仿真，需要用户用新代码确认真实 RL policy 能按拐点进入门内。"
+        }
+      ],
+      "next_steps": [
+        "复跑 full_physics，重点观察第一个门前斜拐角：机器人应先接近黄色路径拐点，减速转向后再进入门内。",
+        "若仍发生偏移，检查 frames.jsonl 中 path_deviation_rejections、consecutive_infeasible_recomputes 和 failure_reason；新逻辑应在持续后滑前停止。",
+        "成功过门后继续验证楼梯入口、U 形楼梯 carry 稳定性和苹果保持。"
+      ]
+    },
+    {
+      "time": "2026-06-29 15:43:12 CST",
+      "summary": "修复 navigation_carry_smoke 启动后只原地旋转并以 nav_collision 结束：测试模式现在可从任务配置读取真实抓取后的稳定底盘位姿，不再强制从贴近桌边的 nominal pick goal 重置。",
+      "files_changed": [
+        "source/pipeline/navigation_smoke.py",
+        "tasks/nav_pick_place_apple_multifloor_pct.json",
+        "tests/navigation/test_planner_selection.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "navigation_carry_smoke 中机器人原地转向约两百步后立即结束，尚未到达门口。",
+          "root_cause": "该 smoke factory 无条件把 episode start 替换为 pick.base_goal=(-3.50493,6.7491)。最新 executor 日志显示机器人原地转向期间受 RL policy 漂移约 8cm，从可走区域进入墙体/桌边障碍格，随后连续 8 次 DWA 重算的 7 个候选均 collision_rejections，保护机制按预期以 nav_collision 结束。真实 full_physics 抓取后底盘约在 (-3.48391,6.57414)，与 smoke 重置点并不相同。",
+          "fix": "新增任务级 carry.smoke_start 解析；多楼层任务写入真实抓取后稳定底盘位姿 (-3.48391,6.57414,yaw=1.67247)。未配置该字段的旧任务继续使用 pick.base_goal，保持单楼层兼容。runtime_override 同时记录实际 reset_start_source。",
+          "prevention": "独立阶段 smoke 必须复现上一阶段真实交接状态，不能用规划目标代替物理执行后的稳定状态；新增测试同时覆盖显式 smoke_start 和旧任务 fallback。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "导航接口、PCT adapter、配置、factory 和 CLI 语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "58 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_pipeline.py -q",
+          "result": "passed",
+          "note": "40 passed。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/navigation/probe_pct_plan.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --output-json /tmp/pct_plan_probe_after_carry_start.json",
+          "result": "passed",
+          "note": "PCT 本地 server 正常返回 46 点跨楼层路径，slice 9->15，planner=astar_3d_via_gateway_strict_monotonic。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q",
+          "result": "passed",
+          "note": "297 passed, 1 skipped；唯一 skip 是当前 Python 环境缺少 OpenUSD pxr。"
+        },
+        {
+          "command": "真实 Isaac Sim GUI --navigation-carry-smoke",
+          "result": "not_run",
+          "note": "本轮未启动第二个 GUI/Vulkan 仿真；需要用户使用新任务位姿复跑，验证起步不再漂移进桌边并继续到门口。"
+        }
+      ],
+      "next_steps": [
+        "复跑 navigation_carry_smoke，确认机器人从 (-3.48391,6.57414) 附近稳定起步，而不是从 y=6.7491 原地旋转后撞入障碍。",
+        "若仍失败，优先检查最新 events.jsonl 的 failure_reason、sim_start、collision_rejections 和 target_index，禁止继续分析旧 episode 日志。",
+        "起步通过后继续观察此前修复的门口锐角、楼梯入口和携物上楼稳定性。"
+      ]
+    },
+    {
+      "time": "2026-06-29 16:22:08 CST",
+      "summary": "修复 carry smoke 使用稳定 reset 位姿后仍在第 109 步直接失败：为携物路径增加仅首次朝向对齐期间生效的路径恢复带，允许 RL 原地转向漂移后回到严格路径，门口和楼梯仍使用 0.14m 硬偏离限制。",
+      "files_changed": [
+        "source/navigation/navlib/dwa.py",
+        "source/navigation/executor.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "navigation_carry_smoke 从新稳定起点启动后，机器人原地转向约 107 步便被 pipeline 判定失败。",
+          "root_cause": "最新 episode 明确使用 carry.smoke_start，PCT 也成功生成 46 点 slice 9->15 路径；但机器人执行 vx=0,wz=-0.35 时向后漂移 0.145m，超过 carry 的 0.14m 硬路径限制。此后 7 个候选均为 path_deviation_rejections，连续 8 次无可行轨迹保护按设计报告 nav_path_deviation。失败不是 PCT no_path，也不是异常退出。",
+          "fix": "DWA 新增 initial_alignment_path_deviation_limit。carry 首次朝向对齐和回归路径期间使用 0.40m 恢复带；当朝向误差不超过 rotate_in_place_angle 且重新进入 0.14m 严格带后，恢复带永久关闭。占用栅格碰撞检查始终保持启用，后续门口锐角继续使用 0.14m 限制。诊断新增 path_deviation_limit_used 和 initial_alignment_active。",
+          "prevention": "路径硬约束必须区分正常前进和 RL 原地转向产生的未建模漂移；放宽只能采用有退出条件的一次性状态，而不能全程增大全局偏离阈值。真实 episode 状态回放应作为保护阈值修改的回归验证。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/navlib/dwa.py source/navigation/executor.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "导航相关模块语法检查通过。"
+        },
+        {
+          "command": "真实 GUI episode 的 107 帧 exec_nav_to_place 状态离线回放",
+          "result": "passed",
+          "note": "旧逻辑在该位置 7/7 候选均因路径偏离被拒；新逻辑 7/7 候选可行，initial_alignment_active=true，使用 0.40m 恢复带，failure_reason 为空且连续无解计数为 0。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "58 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q",
+          "result": "passed",
+          "note": "298 passed, 1 skipped；唯一 skip 是当前 Python 环境缺少 OpenUSD pxr。"
+        },
+        {
+          "command": "真实 Isaac Sim GUI --navigation-carry-smoke 复跑",
+          "result": "not_run",
+          "note": "本轮使用刚才的真实状态记录离线回放，没有并行启动第二个 GUI/Vulkan 仿真；仍需用户复跑观察完成掉头后的路径恢复。"
+        }
+      ],
+      "next_steps": [
+        "复跑 navigation_carry_smoke；最初仍会原地向右转，但不应在约 109 步因 nav_path_deviation 结束。",
+        "观察 initial_alignment_active 在机器人朝向路线并回到 0.14m 内后变为 false，随后门口继续执行严格路径约束。",
+        "若下一次失败发生在更晚位置，读取新 episode 的 failure_reason 和 target_index，继续处理真实门口或楼梯执行问题。"
+      ]
+    },
+    {
+      "time": "2026-06-29 16:38:42 CST",
+      "summary": "修复 carry smoke 完成初始掉头并前进约 1.25m 后，在普通转弯处因 1.8cm 阈值超调形成的路径恢复死锁；新增 0.20m 普通转弯恢复带并完成最新 697 帧真实轨迹回放。",
+      "files_changed": [
+        "source/navigation/navlib/dwa.py",
+        "source/navigation/executor.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "机器人完成初始转向并朝门口前进后，在 step 699 再次以 nav_path_deviation 结束。",
+          "root_cause": "本次并非启动失败：机器人执行 697 个导航 tick，从 (-3.484,6.575) 前进到 (-3.372,5.329)。普通右转时路径距离从 0.139m 增至 0.142m，略超 0.14m 硬阈值。旧逻辑用整条预测轨迹的最大偏离做硬拒绝，因此所有回归轨迹也从阈值外开始，21 个候选全部 path_deviation_rejections，形成无法自行回到路径的数学死锁；collision_rejections 始终为 0。",
+          "fix": "新增 path_recovery_deviation_limit=0.20m。首次对齐结束后，若真实跟踪误差略超 0.14m，则进入普通恢复状态；恢复期间仍执行占用栅格碰撞检查并限制在 0.20m 内。回到 0.112m，也就是严格阈值的 80% 后退出恢复状态，重新使用 0.14m。诊断新增 path_recovery_active。",
+          "prevention": "带真实动力学误差的硬路径约束必须带有限恢复区和退出滞回；不能只设置单阈值，否则跨出阈值后任何回归轨迹都会被自身起点拒绝。普通恢复上限必须显著小于初始原地掉头恢复范围，并保持碰撞检查。"
+        },
+        {
+          "problem": "尝试启动第二个 headless Isaac Sim 做端到端验收时在 build_stage 失败。",
+          "root_cause": "已有 GUI Isaac Sim 进程仍占用约 4.84GB 显存；第二个进程申请 640MB PhysX contact buffer 时 CUDA OOM。当前 GPU 仅剩约 2.25GB，失败发生在 episode 创建前，与导航修改无关。",
+          "fix": "不终止用户现有 GUI 进程；保留独立输出目录 outputs/carry_smoke_headless_validation/startup_failure.json 作为诊断，并改用最新真实 GUI 的 697 帧状态离线回放验证。",
+          "prevention": "8GB GPU 上不得并行启动两个 Isaac Sim/PhysX 实例；真实 headless 验收应在 GUI 完全退出后单独运行。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "最新 GUI episode 的 697 帧 exec_nav_to_place 状态离线回放",
+          "result": "passed",
+          "note": "旧失败点现在 28/28 候选可行，path_recovery_active=true，使用 0.20m 上限，输出 vx=0.30,wz=0.35，failure_reason 为空且连续无解计数为 0。"
+        },
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/navlib/dwa.py source/navigation/executor.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "导航相关模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "58 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q",
+          "result": "passed",
+          "note": "299 passed, 1 skipped；唯一 skip 是当前 Python 环境缺少 OpenUSD pxr。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py ... --navigation-carry-smoke --headless",
+          "result": "failed",
+          "note": "已有 GUI 进程占用显存，第二个 Isaac Sim 在创建 PhysX contact buffer 时 CUDA OOM；尚未进入导航 episode。"
+        }
+      ],
+      "next_steps": [
+        "在当前 GUI 退出后重新运行 navigation_carry_smoke；本次应越过旧 step 699 转弯点并继续朝门口前进。",
+        "检查新日志中 path_recovery_active 可短暂为 true，但应在回到 0.112m 内后恢复 false；超过 0.20m 或真实碰撞仍会终止。",
+        "carry smoke 通过门口后继续验证楼梯入口和 U 形楼梯执行；真实上楼失败应按 3D follower/RL policy 单独排查。"
+      ]
+    },
+    {
+      "time": "2026-06-29 17:12:22 CST",
+      "summary": "修复 navigation_carry_smoke 穿过门后在 (-1.23,4.54) 附近以 nav_collision 结束：跨楼层 DWA 默认路径清廊从 0.16m 调整为 0.24m，覆盖 0.2m 栅格离散化导致的合法路径带误杀。",
+      "files_changed": [
+        "source/pipeline/config.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_astar_dwa_smoke.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "用户复跑 navigation_carry_smoke 后，机器人已经穿过门，但随后在 exec_nav_to_place 以 nav_collision 失败。",
+          "root_cause": "最新 state_failed 显示机器人位置 (-1.2278,4.5385) 到 PCT 路径几何距离仅 0.128m，仍在 carry 0.14m 路径硬限制内；但 0.2m 分辨率局部栅格把该位置映射到 occupied cell。原先 0.16m 路径清廊只按 cell center 清除，占用格中心到路径约 0.20m，导致所有原地转向候选从第一采样点开始被 collision rejection。",
+          "fix": "将 NavigationSettings.pct_multifloor_route_corridor_radius 默认值从 0.16m 调为 0.24m。真实 GUI 1351 帧状态回放显示旧失败点由 occupied 变为 free，DWA 候选从 0/7 可行变为 7/7 可行，clearance=0.20m，failure_reason 为空。新增单元测试覆盖 0.2m 栅格离散化下合法路径带 cell 应被清廊覆盖。",
+          "prevention": "跨楼层 DWA 的路径清廊半径必须同时考虑路径偏离上限和地图分辨率，不能小于实际栅格离散化所需余量；保留 protected obstacle 机制，后续若出现真实墙体被清掉，应优先修正 PCT 全局路径或 protected mask，而不是回退到过窄清廊。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_astar_dwa_smoke.py tests/navigation/test_locomotion_policy_config.py -q",
+          "result": "passed",
+          "note": "32 passed，包含新增的路径清廊离散化回归测试。"
+        },
+        {
+          "command": "最新 GUI navigation_carry_smoke 的 1351 帧 exec_nav_to_place 状态离线回放",
+          "result": "passed",
+          "note": "默认配置 route_corridor_radius_m=0.24；旧失败点 feasible_candidates=7、collision_rejections=0、failure_reason 为空。"
+        },
+        {
+          "command": "python -m py_compile ...",
+          "result": "passed",
+          "note": "导航接口、DWA、executor、PCT adapter、pipeline factory 和 CLI 语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q && ... tests -q",
+          "result": "passed",
+          "note": "tests/navigation: 58 passed；tests: 300 passed, 1 skipped。唯一 skip 是当前 Python 环境缺少 OpenUSD pxr。"
+        }
+      ],
+      "next_steps": [
+        "请用户在单个 Isaac Sim/GUI 进程中复跑 navigation_carry_smoke，确认机器人越过当前门后旧失败点并继续朝楼梯方向行进。",
+        "如果下一次失败发生在更远位置，继续读取最新 failure_reason、target_index、collision_rejections 和路径点，避免分析旧日志。",
+        "carry smoke 稳定到楼梯口后，再切回 full_physics 验证 pick 后携物上楼和 place。"
+      ]
+    },
+    {
+      "time": "2026-06-29 17:39:43 CST",
+      "summary": "修复真实 GUI navigation_carry_smoke 仍卡在 (-1.23,4.54) 附近的问题：CLI 仍硬编码 --pct-multifloor-route-corridor-radius 默认 0.16，覆盖了 NavigationSettings 中已调好的 0.24，导致用户复跑没有使用离线验证通过的路径清廊参数。",
+      "files_changed": [
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/test_full_physics_pipeline.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "用户多次复跑 navigation_carry_smoke 后仍在同一门后位置以 nav_collision 停止，进度看起来没有推进。",
+          "root_cause": "最新 events.jsonl 的 state_failed 显示 DWA map_selection.route_corridor_radius_m 仍是 0.16，collision_rejections=7、feasible_candidates=0；而上一轮只修改了 NavigationSettings 默认值为 0.24。真实 GUI 入口的 argparse 默认值仍硬编码 0.16，并在构造 FullPhysicsConfig 时覆盖配置默认值，所以真实运行没有拿到修复。",
+          "fix": "将 scripts/pipeline/run_full_physics_pipeline.py 中 --pct-multifloor-route-corridor-radius 的默认值改为 NavigationSettings().pct_multifloor_route_corridor_radius，并在 CLI 默认值同步测试里增加该字段断言。解析验证显示 CLI 与配置现在均为 0.24；纯 Python carry 全路径 DWA 探针在该默认值下可走完整 path 到 place 附近。",
+          "prevention": "新增或调整导航配置项时，CLI 默认值必须引用 NavigationSettings，禁止再次在 argparse 中复制硬编码默认值；涉及真实 GUI 行为的修复必须检查 outputs/events.jsonl 中运行时实际参数，而不能只看配置文件。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -c \"from scripts.pipeline.run_full_physics_pipeline import _build_parser; from source.pipeline.config import NavigationSettings; ...\"",
+          "result": "passed",
+          "note": "CLI 解析出的 pct_multifloor_route_corridor_radius 为 0.24，NavigationSettings 默认值也是 0.24。"
+        },
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/navlib/dwa.py source/navigation/executor.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "导航相关模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "58 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q",
+          "result": "passed",
+          "note": "300 passed, 1 skipped；唯一 skip 是当前 Python 环境缺少 OpenUSD pxr。"
+        },
+        {
+          "command": "纯 Python carry 全路径 DWA 探针，使用最新 PCT place path 与 NavigationSettings 默认值",
+          "result": "passed",
+          "note": "在 0.24 路径清廊下闭环到达 place 附近；旧失败点不再因清廊过窄产生无可行候选。"
+        },
+        {
+          "command": "真实 Isaac Sim GUI navigation_carry_smoke 复跑",
+          "result": "not_run",
+          "note": "本轮不并行启动第二个 Isaac Sim；需要用户完全重启 pipeline 后复跑，避免继续使用旧进程或旧脚本参数。"
+        }
+      ],
+      "next_steps": [
+        "请用户关闭旧 GUI/pipeline 进程后复跑 navigation_carry_smoke，并显式传 --pct-multifloor-route-corridor-radius 0.24，避免任何旧命令缓存。",
+        "复跑后先检查 outputs/full_physics_pipeline/episode_000000/events.jsonl 的 map_selection.route_corridor_radius_m 是否为 0.24；如果仍为 0.16，说明运行的不是当前脚本。",
+        "如果机器人越过旧失败点后在楼梯入口或楼梯段失败，再基于新的 failure_reason、target_index、collision_rejections 和 robot_pose 继续定位真实上楼问题。"
+      ]
+    },
+    {
+      "time": "2026-06-29 19:58:58 CST",
+      "summary": "修复 navigation_carry_smoke 在楼梯入口转弯处上台阶失败：真实轨迹显示机器人在 (1.82,6.04) 附近被台阶接触带出 PCT 中心线约 0.29m，超过旧 0.20m 恢复带后 DWA 只给原地转向并最终 nav_path_deviation。将 pct_multifloor carry profile 调整为更保守的楼梯携物参数。",
+      "files_changed": [
+        "source/pipeline/config.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_astar_dwa_smoke.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "用户复跑后已经越过前一处门后失败点，但在上楼梯入口/转弯处碰撞并失败，pipeline 结束在 exec_nav_to_place。",
+          "root_cause": "最新 events.jsonl 显示本次 route_corridor_radius_m 已为 0.24，上一轮 CLI 默认值问题已修复；失败原因变为 nav_path_deviation。真实机器人在楼梯入口从路径中心线逐步侧滑到 path_distance≈0.297m，旧 path_recovery_deviation_limit=0.20m 触发 7/7 path_deviation_rejections，DWA 从 step 3207 开始只输出原地转向；同时原 carry 速度 vx=0.30、wz=0.35、accel=1.50 在台阶入口使机体 roll/pitch 扰动放大。",
+          "fix": "将 pct_carry_max_linear_velocity 从 0.30 降为 0.20，pct_carry_max_angular_velocity 从 0.35 降为 0.30，pct_carry_max_linear_accel 从 1.50 降为 1.00，并将 pct_carry_path_recovery_deviation_limit 从 0.20 提到 0.35。新增楼梯入口实测侧滑回归测试，覆盖 (1.817,6.036,yaw≈2.087) 状态。",
+          "prevention": "楼梯和窄门不能共用同一套平地硬跟踪参数；携物上楼应优先采用低速、宽恢复带、仍保留碰撞检查的 profile。后续每次真实失败都要先区分 collision_rejections、path_deviation_rejections 和实际运行时参数，避免误把动力学侧滑当成 PCT no_path。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "真实 GUI frames.jsonl 离线回放，使用当前默认 NavigationSettings",
+          "result": "passed",
+          "note": "旧失败帧 step=3221 现在 failure_reason 为空，feasible_candidates=7，path_deviation_limit_used=0.35，输出约 vx=0.06,wz=0.30。"
+        },
+        {
+          "command": "python -m py_compile source/pipeline/config.py source/pipeline/navigation_smoke.py source/navigation/executor.py source/navigation/navlib/dwa.py",
+          "result": "passed",
+          "note": "修改相关模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_astar_dwa_smoke.py::AStarDwaSmokeTest::test_pct_carry_stair_entry_recovery_handles_measured_lateral_drift tests/navigation/test_locomotion_policy_config.py::test_pct_multifloor_dwa_commands_stay_inside_checkpoint_training_range -q",
+          "result": "passed",
+          "note": "3 passed；包含新楼梯入口侧滑回归测试和 carry profile 配置断言。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "58 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_astar_dwa_smoke.py -q",
+          "result": "passed",
+          "note": "28 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q",
+          "result": "passed",
+          "note": "301 passed, 1 skipped；唯一 skip 是当前 Python 环境缺少 OpenUSD pxr。"
+        },
+        {
+          "command": "真实 Isaac Sim GUI navigation_carry_smoke 复跑",
+          "result": "not_run",
+          "note": "本轮没有并行启动第二个 Isaac Sim；需要用户用更新后的 carry profile 复跑真实上楼。"
+        }
+      ],
+      "next_steps": [
+        "请用户复跑 navigation_carry_smoke；重点观察楼梯入口 step≈3200 附近是否不再原地转死，并且上台阶时机体是否明显更稳。",
+        "如果下一次能越过当前楼梯入口失败点但在楼梯平台或上段失败，继续按最新 events.jsonl 的 robot_pose、path_distance、roll/pitch 和 DWA rejection 类型定位。",
+        "若仍在同一物理位置发生真实碰撞但 DWA 不报 collision，需要继续校准楼梯中心线或补充 PCT/local map 的楼梯扶手硬障碍层。"
+      ]
+    },
+    {
+      "time": "2026-06-29 20:09:19 CST",
+      "summary": "补齐 carry 上楼保守速度 profile 的 CLI 默认值同步：run_full_physics_pipeline.py 中 --pct-carry-max-linear-velocity 和 --pct-carry-max-angular-velocity 不再硬编码旧 0.30/0.35，而是读取 NavigationSettings 的 0.20/0.30。",
+      "files_changed": [
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/test_full_physics_pipeline.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "刚完成配置调参后发现真实 CLI 入口仍可能覆盖 pct_carry_max_linear_velocity 和 pct_carry_max_angular_velocity。",
+          "root_cause": "argparse 默认值仍硬编码为旧的 vx=0.30、wz=0.35；如果用户不显式传参数，FullPhysicsConfig 会被 CLI 旧默认值覆盖，与上一轮 route_corridor_radius 的问题同类。",
+          "fix": "将两个 CLI 默认值改为 NavigationSettings().pct_carry_max_linear_velocity 和 NavigationSettings().pct_carry_max_angular_velocity，并在 CLI 默认值同步测试中增加断言。",
+          "prevention": "所有导航 CLI 默认值必须引用 NavigationSettings，不能在 parser 中复制数字；新增默认值同步测试覆盖关键 PCT 参数。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -c \"from scripts.pipeline.run_full_physics_pipeline import _build_parser; ...\"",
+          "result": "passed",
+          "note": "CLI 解析出的 carry vx=0.20、wz=0.30、route corridor=0.24，与 NavigationSettings 一致。"
+        },
+        {
+          "command": "python -m py_compile source/pipeline/config.py source/pipeline/navigation_smoke.py source/navigation/executor.py source/navigation/navlib/dwa.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "相关模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_cli_pct_global_hard_obstacle_default_matches_config tests/test_astar_dwa_smoke.py::AStarDwaSmokeTest::test_pct_carry_stair_entry_recovery_handles_measured_lateral_drift tests/navigation/test_locomotion_policy_config.py::test_pct_multifloor_dwa_commands_stay_inside_checkpoint_training_range -q",
+          "result": "passed",
+          "note": "3 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "58 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q",
+          "result": "passed",
+          "note": "301 passed, 1 skipped；唯一 skip 是当前 Python 环境缺少 OpenUSD pxr。"
+        }
+      ],
+      "next_steps": [
+        "用户复跑 navigation_carry_smoke 时确认 latest_executor_status.dwa_limits.max_linear_velocity=0.20 且 max_angular_velocity=0.30。",
+        "如果 GUI 仍使用 0.30/0.35，说明运行脚本不是当前 worktree 或命令中显式覆盖了旧参数。"
+      ]
+    },
+    {
+      "time": "2026-06-30 01:13:33 CST",
+      "summary": "新增可选 PCT carry 楼梯段 stair-float workaround：DwaNavExecutor 自动从 NavPlan.metadata[\"path_3d\"] 截取跨高度楼梯段，接近楼梯时通过 RobotAction metadata 请求 IsaacLab runtime 冻结底盘和支撑关节，并沿 3D 路径小步写 root pose；到达二楼后释放 lock，恢复普通 DWA/RL nav2place 和后续 place。",
+      "files_changed": [
+        "source/navigation/executor.py",
+        "source/navigation/adapters/isaaclab_go2_adapter.py",
+        "source/simulation/isaaclab_runtime.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_full_physics_pipeline.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "携物上楼阶段真实 RL locomotion policy 训练不足，DWA 即使不碰撞也会在台阶/转角处走得慢、转向和前进耦合差，容易原地转或摔倒。",
+          "root_cause": "当前 DWA/RL 执行器仍主要消费 PCT path 的 XY 投影，且 carry profile 为保护窄门/锐角会在较大 heading error 时优先原地转向；同时底层 DogOnly checkpoint 尚未稳定学习携物上楼动力学，无法可靠沿 3D 楼梯面执行。",
+          "fix": "新增默认关闭的 pct_stair_float_enabled/--pct-stair-float。启用后只在 planner=pct、execution_phase=carry_nav_to_place 且 path_3d 存在明显 z 跨层时触发；executor 每 tick 生成 navigation_base_pose_lock_xyzyaw，runtime 写 root pose 并锁支撑关节，完成楼梯段后自动释放并继续普通 DWA。",
+          "prevention": "把 stair-float 标记为 navigation provenance，记录 used_navigation_base_lock/used_base_teleport，不把它计为 pure physics；后续真正训练好多楼层 policy 后可关闭该 flag 或替换为真正 3D local controller。"
+        },
+        {
+          "problem": "如果 action 声明 navigation root lock 但没有携带 xyzyaw 目标，runtime 可能错误锁在当前位姿，表现为机器人不动。",
+          "root_cause": "原 manipulation base lock 接口默认可捕获当前 pose；navigation stair-float 需要每 tick 明确目标 pose，不能复用“缺省当前 pose”的语义。",
+          "fix": "IsaacLabNavigationRuntime 对 navigation_base_pose_lock 增加 navigation_base_pose_lock_xyzyaw 必填校验，并增加单元测试覆盖。",
+          "prevention": "以后新增非纯物理 root pose 控制时必须有显式目标、metadata provenance 和单测，禁止静默使用当前位姿作为 fallback。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/navigation/executor.py source/navigation/adapters/isaaclab_go2_adapter.py source/simulation/isaaclab_runtime.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "导航、runtime、配置和 CLI 相关模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_astar_dwa_smoke.py::AStarDwaSmokeTest::test_pct_carry_stair_float_freezes_base_only_on_stair_segment tests/test_isaaclab_navigation_runtime.py::IsaacLabNavigationRuntimeActionTest::test_navigation_stair_float_updates_root_lock_target tests/test_isaaclab_navigation_runtime.py::IsaacLabNavigationRuntimeActionTest::test_navigation_base_lock_requires_xyzyaw_target tests/navigation/test_locomotion_policy_config.py::test_pct_multifloor_dwa_commands_stay_inside_checkpoint_training_range tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_cli_pct_global_hard_obstacle_default_matches_config tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_cli_accepts_pct_stair_float_overrides -q",
+          "result": "passed",
+          "note": "6 passed；覆盖 stair-float executor、runtime root lock、配置默认值和 CLI 参数。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_astar_dwa_smoke.py -q",
+          "result": "passed",
+          "note": "29 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "58 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_isaaclab_navigation_runtime.py -q",
+          "result": "passed",
+          "note": "36 passed, 1 skipped；skip 为当前环境缺少 OpenUSD pxr。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_pipeline.py -q",
+          "result": "passed",
+          "note": "41 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests -q",
+          "result": "passed",
+          "note": "305 passed, 1 skipped；唯一 skip 是当前 Python 环境缺少 OpenUSD pxr。"
+        },
+        {
+          "command": "真实 Isaac Sim GUI full_physics/navigation_carry_smoke 复跑",
+          "result": "not_run",
+          "note": "本轮未在 Codex 内启动真实 GUI 仿真；需要用户用 --pct-stair-float 在本机单进程复跑验证。"
+        }
+      ],
+      "next_steps": [
+        "用 --pct-stair-float 复跑 full_physics，确认 pick 后楼梯段进入 navigation_stair_float，二楼后恢复 navigation_dwa 并继续 nav2place/place。",
+        "检查 outputs/full_physics_pipeline/episode_000000/events.jsonl 或 summary 中 latest_executor_status.stair_float 是否 enabled/started/done。",
+        "如果二楼解冻后 nav2place 仍失败，再基于解冻后的 DWA failure_reason、target_index、pose 和 collision_rejections 单独调二楼平面导航。"
+      ]
     }
   ],
   "open_questions": [
@@ -3786,7 +4321,8 @@
     "请用户确认当前 Isaac Sim 打开默认 collision-proxy multifloor.usda 是否已不再报 HydraEngine compute graph error。",
     "请用户在 Isaac Sim 中打开最终 source/scene/multifloor/usda/multifloor.usda，确认 17M clean NuRec visual 与 collision mesh 已经对齐。",
     "PCT start->pick、apple_01 真实沉降和真实 pick_smoke 已由用户验证；当前待验证真实 RL carry 上楼和 place。",
-    "请用户用 --pct-plan-preview 验证 stair_constraint_mode=surface_3d 后，黄色路径是否按下段 -> 平台 -> 上段通过 U 形楼梯。"
+    "请用户用 --pct-plan-preview 验证 stair_constraint_mode=surface_3d 后，黄色路径是否按下段 -> 平台 -> 上段通过 U 形楼梯。",
+    "请用户用 --pct-stair-float 复跑 full_physics，观察楼梯段是否沿黄色 PCT 3D 路径平滑漂移到二楼，并确认二楼解冻后是否继续 nav2place/place。"
   ],
   "known_limitations": [
     "Isaac Sim start->pick 与真实机械臂 pick 已由用户确认成功；跨楼层 carry/place 尚未完成真实 Isaac 验收。",
@@ -3821,6 +4357,14 @@
     "当前楼梯折线使用一个用户提供的平台拐角点；如果还需要逐级贴合每一级台阶，需要继续补充更多 stair midpoint 或提升 PCT slice 分辨率。",
     "楼梯采样点现在是无序地图级标定点，不是 task waypoint；当前 PCT 仍依赖 0.5m slice tomogram，可视化路径不会逐物理台阶生成每一级小台阶节点。",
     "PCT 楼梯已使用 surface_3d 三维约束并通过离线真实资产探针，但真实 Isaac Sim 携物上楼仍未验收；DWA 执行器当前主要消费 XY waypoint，RL policy 的台阶动力学稳定性仍是独立限制。",
-    "多楼层 pick base_goal 已根据历史成功 cuRobo 快照恢复到 y=6.7491；真实 full_physics 尚需确认底盘能稳定到达 y≈6.69 并完成 pick。"
+    "多楼层 pick base_goal 已根据历史成功 cuRobo 快照恢复到 y=6.7491；真实 full_physics 尚需确认底盘能稳定到达 y≈6.69 并完成 pick。",
+    "carry 门口锐角已在真实 PCT 地图纯 Python 闭环回放中无碰撞通过，但 Isaac Sim 中 RL policy、机器人足端接触和携物动力学仍需 GUI 复跑验收。",
+    "navigation_carry_smoke 已增加初始朝向恢复带和普通转弯 0.20m 恢复带；最新 697 帧真实轨迹离线回放通过，但完整 GUI carry 到 place 仍需单进程复跑确认。",
+    "跨楼层 DWA 路径清廊默认值已从 0.16m 调到 0.24m，以覆盖 0.2m 栅格离散化；最新 1351 帧离线回放通过，但完整 GUI carry 到楼梯和 place 仍需用户复跑确认。",
+    "真实 GUI 上一次 navigation_carry_smoke 失败日志仍使用 route_corridor_radius_m=0.16；当前代码已同步 CLI 默认值为 0.24，但完整 GUI 携物上楼仍需用户重启进程后复跑确认。",
+    "carry 上楼 profile 已降低到 vx=0.20、wz=0.30、accel=1.00，并把楼梯入口恢复带放宽到 0.35；真实 GUI 上楼仍需用户复跑确认是否能越过当前楼梯入口失败点。",
+    "carry 速度 CLI 默认值已同步到 NavigationSettings；复跑时无需显式传速度参数也应使用 vx=0.20、wz=0.30。",
+    "PCT stair-float 是临时携物上楼 workaround：启用 --pct-stair-float 后会在 PCT carry 楼梯段冻结底盘并沿 path_3d 小步写 root pose，因此 pure_physics_success 仍应为 false，不能视为真实 locomotion policy 已学会上楼。",
+    "stair-float 默认关闭；flat/A*、nav2pick 和普通同层导航仍走原 DWA/RL 路径。真实 GUI full_physics 仍需用户复跑验证 pick -> stair-float -> F2 nav2place -> place。"
   ]
 }
