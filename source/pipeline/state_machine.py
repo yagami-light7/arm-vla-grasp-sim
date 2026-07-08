@@ -90,6 +90,16 @@ def _roll_pitch_from_wxyz(
     return roll, math.asin(pitch_term)
 
 
+def _yaw_from_wxyz(quaternion: tuple[float, float, float, float]) -> float:
+    """从 wxyz 四元数计算底盘 yaw。"""
+
+    w, x, y, z = (float(value) for value in quaternion)
+    return math.atan2(
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z),
+    )
+
+
 def _first_motion_target(plan: Any) -> dict[str, Any] | None:
     segments = plan.metadata.get("segments") if hasattr(plan, "metadata") else None
     if isinstance(segments, list | tuple):
@@ -1319,7 +1329,12 @@ class FullPhysicsStateMachine:
         plan = self.nav_planner.plan(observation, self.episode_spec.place_goal)
         plan = replace(
             plan,
-            metadata={**plan.metadata, "execution_phase": "carry_nav_to_place"},
+            metadata={
+                **plan.metadata,
+                "execution_phase": "carry_nav_to_place",
+                "require_yaw_alignment": True,
+                "yaw_tolerance": 0.18,
+            },
         )
         self.nav_executor.reset(plan)
         self.latest_planner_result = {
@@ -1374,7 +1389,7 @@ class FullPhysicsStateMachine:
                     )
                 )
                 events.extend(self._transition(PipelineState.PLAN_PLACE, observation.step_index))
-                return RobotAction.idle(source="verify_place_reachable"), events
+                return self._place_carry_handoff_action(observation), events
             events.append(
                 self._event(
                     "navigation_carry_smoke_success",
@@ -1386,6 +1401,33 @@ class FullPhysicsStateMachine:
             return RobotAction.idle(source="verify_place_reachable"), events
         events.extend(self._transition(PipelineState.PLAN_PLACE, observation.step_index))
         return RobotAction.idle(source="verify_place_reachable"), events
+
+    def _place_carry_handoff_action(self, observation: SimulationState) -> RobotAction:
+        """进入 place 规划前继续保持 carry 姿态，避免交接帧释放夹持。"""
+
+        if not self.config.navigation.pct_stair_float_enabled:
+            return RobotAction.idle(source="verify_place_reachable")
+        root_pose = tuple(float(value) for value in observation.robot_root_pose)
+        yaw = _yaw_from_wxyz(root_pose[3:7])  # type: ignore[arg-type]
+        root_xyzyaw = (
+            root_pose[0],
+            root_pose[1],
+            root_pose[2],
+            yaw,
+        )
+        metadata = {
+            "place_carry_handoff_hold": True,
+            "place_carry_handoff_reason": "preserve_tcp_object_before_place_plan",
+            "navigation_base_pose_lock": True,
+            "navigation_base_pose_lock_phase": "place_carry_handoff",
+            "navigation_base_pose_lock_xyzyaw": root_xyzyaw,
+            "navigation_support_joint_lock": True,
+            "navigation_support_joint_lock_phase": "place_carry_handoff",
+            "navigation_full_body_joint_lock": True,
+            "navigation_full_body_joint_lock_phase": "place_carry_handoff",
+            "navigation_carry_object_follow": True,
+        }
+        return RobotAction(source="place_carry_handoff", metadata=metadata)
 
     def _plan_place(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
         if self.config.full_physics:
@@ -1892,7 +1934,11 @@ class FullPhysicsStateMachine:
             self._carry_arm_home_target = None
             return
 
-        if not self.config.manipulation.return_home_after_pick:
+        return_home_inserted = bool(return_home_report.get("inserted"))
+        if (
+            not self.config.manipulation.return_home_after_pick
+            or not return_home_inserted
+        ):
             last_target = _last_motion_target(plan)
             if last_target is None:
                 self._carry_arm_home_target = None
@@ -1905,7 +1951,7 @@ class FullPhysicsStateMachine:
                 "arm_joint_names": joint_names,
                 "arm_joint_positions": carry_positions,
                 "source": "pick_final_arm_pose",
-                "return_home_inserted": False,
+                "return_home_inserted": return_home_inserted,
                 "return_home_reason": return_home_report.get("reason"),
                 # main-pick parity 默认保持 planned lift/retreat 的安全末端目标，
                 # 不追加未经 cuRobo 避障的 all-zero 直连轨迹。

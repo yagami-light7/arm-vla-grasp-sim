@@ -2,8 +2,8 @@
   "project": "arm_vla_pct",
   "branch": "pct",
   "goal": "将 flat A* 全局导航替换为 PCT 多楼层规划器，并接入新的 RL locomotion checkpoint 配置。",
-  "current_phase": "phase_50_pct_stair_float_carry_workaround",
-  "last_updated": "2026-06-30 01:13:33 CST",
+  "current_phase": "phase_56_arm_baseline_drive_restored_cuda_blocked",
+  "last_updated": "2026-07-09 01:09:25",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -38,7 +38,7 @@
     "yinluyuan_points_preview_confirmed": true,
     "video_preview_visual_ready": true,
     "final_video_visual_ready": false,
-    "tests_passing": true,
+    "tests_passing": false,
     "sage_multifloor_asset_pipeline_added": true,
     "sage_multifloor_ply_renamed": true,
     "sage_multifloor_usdz_available": true,
@@ -194,7 +194,26 @@
     "pct_stair_float_carry_workaround_added": true,
     "pct_stair_float_cli_added": true,
     "pct_stair_float_unit_tested": true,
-    "pct_stair_float_real_gui_verified": false
+    "pct_stair_float_real_gui_verified": false,
+    "pct_stair_float_stairwell_approach_added": true,
+    "pct_stair_float_root_z_offset_added": true,
+    "pct_stair_float_root_only_settle_added": true,
+    "pct_stair_float_exit_default_6m_added": true,
+    "pct_stairwell_narrow_passage_root_cause_is_dwa_execution": true,
+    "pct_stairwell_narrow_passage_pct_path_validated": true,
+    "pct_stair_float_6m_real_headless_verified": true,
+    "pct_stair_float_tcp_object_follow_added": true,
+    "pct_stair_float_apple_reaches_f2_verified": true,
+    "pct_carry_arm_false_home_target_fixed": true,
+    "pct_f2_route_corridor_default_0_32_added": true,
+    "pct_f2_dwa_post_stair_progress_verified": true,
+    "pct_multifloor_navigation_limit_12000_added": true,
+    "pct_phase53_targeted_tests_passing": true,
+    "pct_stair_float_full_body_lock_headless_verified": true,
+    "pct_stair_float_exit_default_10_5m_added": true,
+    "pct_multifloor_place_base_goal_safe_standoff_added": true,
+    "pct_dog_only_arm_baseline_drive_restored": true,
+    "pct_headless_validation_blocked_by_cuda999": true
   },
   "local_assets": {
     "rl_policy_source_dir": null,
@@ -4311,6 +4330,412 @@
         "检查 outputs/full_physics_pipeline/episode_000000/events.jsonl 或 summary 中 latest_executor_status.stair_float 是否 enabled/started/done。",
         "如果二楼解冻后 nav2place 仍失败，再基于解冻后的 DWA failure_reason、target_index、pose 和 collision_rejections 单独调二楼平面导航。"
       ]
+    },
+    {
+      "time": "2026-06-30 02:18:20",
+      "summary": "排查 full_physics 携物 nav2place 在楼梯间窄通道卡住的问题；完成一次 headless IsaacSim 验收，确认 pick 成功但 nav2place 仍在楼梯入口前 nav_collision。撤回过激的楼梯入口 XY 横向重排，改为保留 PCT 原路径，同时将 stair-float 向楼梯入口前扩展 1.8m 并在激活时保持机器人 root z 连续偏移。",
+      "files_changed": [
+        "source/navigation/executor.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_full_physics_pipeline.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "headless full_physics 仍在 exec_nav_to_place 失败，failure_reason=nav_collision。",
+          "root_cause": "日志显示 PCT 规划成功且 pick 成功；失败时 stair_float.enabled=true 但 started=false，机器人距离原 stair_float 起点仍约 1.39m。DWA 在楼梯间入口窄通道继续输出 vx=0.2，局部 route corridor 清廊导致 clearance 仍被认为可行，真实物理机器人被墙体卡住。根因在局部执行层的楼梯入口接管太晚，不是 PCT server 无路。",
+          "fix": "撤回将入口前路径强行横向重排到楼梯轴线的实验性修改；新增 stair_float_approach_distance_m，默认 1.8m，使冻结/漂移段从楼梯间入口窄通道开始，而不是等 z 开始上升才触发。",
+          "prevention": "后续调整 DWA/PCT 时必须先用 headless 或 GUI 真实日志核对 stair_float.started/done、distance_to_activation_m 和失败点坐标；如果局部地图清廊导致 false-free，应优先让特殊段提前接管，而不是修改全局路径几何。"
+        },
+        {
+          "problem": "现有 stair-float 直接使用 PCT path z，有把机器人 root 写到楼层/切片高度而非真实 root 高度的风险。",
+          "root_cause": "PCT 返回的 path_3d z 与任务中的机器人 root z 并不完全一致；例如失败日志里平面段 path z=0.0，而机器人 root z 约 0.21。",
+          "fix": "stair-float 激活时记录当前 root z 与投影 path z 的差值 root_z_offset_m，后续所有 navigation_base_pose_lock_xyzyaw 的 z 都加该偏移，保持底盘高度连续。",
+          "prevention": "所有从 PCT path_3d 直接写入 Isaac root pose 的逻辑都必须明确区分地图高度、地面高度和机器人 root 高度，并在测试中覆盖 z 连续性。"
+        },
+        {
+          "problem": "第二轮 headless IsaacSim 复验未能启动。",
+          "root_cause": "工具审批层拒绝 escalated IsaacSim 命令，返回 usage limit，并要求不能通过绕过方式继续同等动作。",
+          "fix": "未尝试绕过审批；改为完成编译和 pytest 验证，并记录下一次可直接运行的 headless 命令。",
+          "prevention": "需要用户或下一轮有可用审批额度时再启动真实 IsaacSim；不要并行启动多个 IsaacSim 实例。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --headless --global-planner pct --pct-no-fallback --pct-server-script scripts/navigation/pct_grid_server.py --pct-tomogram-path source/scene/multifloor/mutifloor.pickle --pct-walkable-path source/scene/multifloor/mutifloor_ply_walkable.npy --policy-profile pct_multifloor --locomotion-checkpoint checkpoints/go2_x5/pct_multifloor/model_26000.pt --no-randomize-task --no-randomize-base-goal --navigation-visual-mode collision --pct-stair-float",
+          "result": "failed",
+          "note": "真实 headless 验收完成一轮；pick 成功，nav2place 失败在 exec_nav_to_place，final robot pose≈(0.8625, 4.6308, 0.2088)，stair_float 未启动，distance_to_activation_m≈1.39。"
+        },
+        {
+          "command": "python -m py_compile source/navigation/executor.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "编译无输出错误。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_astar_dwa_smoke.py tests/navigation/test_locomotion_policy_config.py tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_cli_pct_global_hard_obstacle_default_matches_config tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_cli_accepts_pct_stair_float_overrides -q",
+          "result": "passed",
+          "note": "37 passed。"
+        },
+        {
+          "command": "第二轮 headless full_physics 复验",
+          "result": "not_run",
+          "note": "工具审批层因 usage limit 拒绝 escalated IsaacSim 命令，按指示未绕过执行。"
+        }
+      ],
+      "next_steps": [
+        "审批额度恢复后，重新运行同一条 headless full_physics 命令，重点确认 stair_float.started 是否为 true，机器人是否越过 (0.86,4.63) 失败点并进入楼梯段。",
+        "如果新日志显示 stair_float 已完成但二楼 nav/place 失败，下一步转向二楼 DWA route corridor 和 place 机械臂规划；如果 stair_float 仍未启动，进一步增大 pct_stair_float_approach_distance_m 或 activation radius。",
+        "完整 pipeline 跑通前不要提交 checkpoint/大型资产，继续保持 A* 默认行为不变。"
+      ]
+    },
+    {
+      "time": "2026-06-30 04:12:14",
+      "summary": "排查楼梯间窄通道斜向卡住问题，确认 PCT 全局路径有效，真实失败主要来自 DWA/locomotion 在携物 nav2place 的局部执行和楼梯释放接续；新增 root-only settle，并把 stair-float 二楼出口缓冲默认值提升到 6.0m。",
+      "files_changed": [
+        "source/navigation/executor.py",
+        "source/pipeline/config.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "机器人过楼梯间窄通道时喜欢斜着挤过去并卡住。",
+          "root_cause": "headless 日志显示 PCT path_3d 是经由楼梯的有效跨层路径；卡住发生在 DWA/RL 执行层。原 stair-float 只覆盖 z 明显变化的楼梯段，入口窄通道和释放点附近仍由 DWA 执行，容易在墙边/门边产生斜向接近和卡住。",
+          "fix": "保留入口前 1.8m 接管，并把二楼出口缓冲默认值提升到 6.0m，使携物上楼时更长一段由 PCT 3D path root-lock 执行，减少 DWA 在窄通道/楼梯口斜向挤墙。",
+          "prevention": "以后判断 PCT/DWA 问题时优先查看 latest_planner_result.path_3d、stair_float.started/done、dwa.feasible_candidates、collision_rejections 和失败坐标，不能仅凭 GUI 现象把局部执行问题归因到 PCT。"
+        },
+        {
+          "problem": "楼梯漂移释放后机器人仍会滑回楼梯或在二楼局部导航中失败。",
+          "root_cause": "原 settle 阶段同时锁 root 和支撑关节，腿部策略没有机会在固定底盘下恢复站姿；释放后底层 policy 在携物状态和非训练充分的二楼/楼梯地形上不稳定。",
+          "fix": "把 settle 改为 root-only：继续锁定 base root、清零速度，但释放 navigation_support_joint_lock，让 policy 在固定 root 下先重新摆腿。",
+          "prevention": "所有非纯物理 root-lock 接管都要区分“移动中锁腿”和“释放前恢复站姿”，并通过 metadata 标记 navigation_stair_float_root_only_settle。"
+        },
+        {
+          "problem": "显式传 --pct-stair-float-exit-distance 6.0 的一次真实 headless 对照中，summary 仍显示 exit_distance_m=3.0。",
+          "root_cause": "参数解析和构造代码静态检查未发现明显缺口；该真实 run 的 override 未进入 executor，根因尚需后续单独用更小的构造链测试复查。",
+          "fix": "先将默认 pct_stair_float_exit_distance_m 提升到 6.0m，确保用户按默认 --pct-stair-float 运行时获得更长安全释放距离。",
+          "prevention": "后续为 CLI 到 create_navigation_components 的完整构造链补测试，验证非默认 stair_float 参数确实进入 executor.status()。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/navigation/executor.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "导航执行器、配置、factory 和 CLI 入口语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_astar_dwa_smoke.py::AStarDwaSmokeTest::test_pct_carry_stair_float_freezes_base_only_on_stair_segment tests/test_astar_dwa_smoke.py::AStarDwaSmokeTest::test_pct_carry_stair_float_extends_exit_and_settles_before_release tests/test_astar_dwa_smoke.py::AStarDwaSmokeTest::test_pct_carry_stair_float_includes_flat_stairwell_approach tests/navigation/test_locomotion_policy_config.py::test_pct_multifloor_dwa_commands_stay_inside_checkpoint_training_range tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_cli_help_is_chinese_and_full_physics_is_default tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_cli_pct_global_hard_obstacle_default_matches_config tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_cli_accepts_pct_stair_float_overrides -q",
+          "result": "passed",
+          "note": "7 passed；覆盖楼梯漂移、root-only settle、配置默认值和 CLI 参数解析。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py ... --pct-stair-float --pct-stair-float-approach-distance 1.8 --pct-stair-float-exit-distance 1.2 --pct-stair-float-settle-time 0.8",
+          "result": "failed",
+          "note": "真实 headless：pick 成功，stair_float started/done=true，窄通道已通过；释放后 nav_path_deviation，失败点在 F2/楼梯释放后。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py ... --pct-stair-float",
+          "result": "failed",
+          "note": "真实 headless：默认 3.0m 出口缓冲下 stair_float end=[1.3215,5.0564,3.0]，失败后移到 F2 DWA nav_collision。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py ... --pct-stair-float --pct-stair-float-exit-distance 6.0 --pct-stair-float-settle-time 1.2",
+          "result": "failed",
+          "note": "真实 headless 终端返回失败；summary 仍显示 exit_distance_m=3.0，因此本次 6.0m override 验证无效，需要后续复查 CLI override 链路。"
+        }
+      ],
+      "next_steps": [
+        "用户用最新代码只传 --pct-stair-float 复跑 full_physics，确认 summary 中 latest_executor_status.stair_float.exit_distance_m 是否为 6.0。",
+        "如果 6.0m 默认仍失败在 F2 DWA，可新增显式 pct_carry_float_to_goal 开关，让携物 nav2place 在当前 policy 训练不足阶段沿 PCT path root-lock 到 place base 附近。",
+        "后续补一个 CLI->config->executor 的构造链测试，避免真实 run 中参数 override 与解析测试脱节。"
+      ]
+    },
+    {
+      "time": "2026-07-07 02:52:34",
+      "summary": "完成三轮真实 IsaacSim headless 迭代：6m stair-float 已沿完整 U 型 PCT 路径上楼；修复 root-lock 使苹果留在一楼、机械臂 carry 错误回零、二楼释放点栅格误杀和正常前进被 9000-tick 时限截断。第三轮机器人携苹果到达距 place base goal 0.486m，失败仅为 nav_to_place_timeout。",
+      "files_changed": [
+        "source/navigation/executor.py",
+        "source/simulation/isaaclab_runtime.py",
+        "source/pipeline/state_machine.py",
+        "source/pipeline/factory.py",
+        "source/pipeline/config.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "source/pipeline/navigation_smoke.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_full_physics_pipeline.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "stair-float 激活后苹果立即留在一楼并掉落。",
+          "root_cause": "机器人 root 通过 PhysX tensor 直接写 pose，动态苹果不会自动继承机械臂的运动学位移；首个失败帧 object-TCP 距离由约 1.3cm 突增到 41.7cm。",
+          "fix": "executor 仅在 carry stair-float/settle action 声明 navigation_carry_object_follow；IsaacLab runtime 捕获 object-to-TCP 刚体变换，每个控制步结合实时 TCP 与下一 root 目标写入苹果 PhysX pose，结束后清速度并恢复动态物理。",
+          "prevention": "任何直接 root pose 接管都必须同步审计被抓动态物体；用 frames.jsonl 检查激活前后 object-TCP 距离，不以苹果最终楼层位置替代夹持验证。"
+        },
+        {
+          "problem": "第一版同步跟随把苹果固定在 root 相对位姿，楼梯后半段仍逐步脱离 TCP。",
+          "root_cause": "carry 阶段机械臂关节仍受 position target/物理扰动，TCP 相对 root 会变化；root-relative 锁定不能表达真实夹持关系。",
+          "fix": "把参考系改为 TCP-relative；每个控制步先从实时 root/TCP 算 TCP 在 root 下的姿态，再应用下一 root 目标和抓取时 object-to-TCP 变换。第三轮激活/释放时距离均约1.3cm，释放后二楼 DWA 最大1.53cm。",
+          "prevention": "携物同步必须以夹持 frame 而不是底盘 frame 为约束；单测覆盖 root 旋转时物体随 TCP 刚体变换。"
+        },
+        {
+          "problem": "未实际插入 return-home 轨迹时，状态机仍在 carry 阶段命令机械臂全零。",
+          "root_cause": "return_home_after_pick=True 与 return_home_report.inserted=False 两个条件被混淆；已有受保护 retreat 时不会插入回零，却仍选择 home_positions。",
+          "fix": "只有 inserted=True 才保持 home；否则保持 pick 计划最后一个真实 motion target，并新增状态机单测。",
+          "prevention": "后续控制保持目标必须来自已执行轨迹终点，不能仅根据配置意图推断机器人已经到达 home。"
+        },
+        {
+          "problem": "6m 楼梯释放后 DWA 在二楼报告所有候选碰撞。",
+          "root_cause": "0.2m 栅格离散下，真实释放点距路径约0.19m，但其 cell center 落在0.24m清廊之外；同一真实地图探针显示0.24/0.28仍occupied，0.32首次free。",
+          "fix": "仅把 PCT 多楼层 route corridor 默认值调到0.32m；第三轮最终21/21候选可行、0碰撞拒绝，并前进到place附近。",
+          "prevention": "走廊半径要在真实地图和真实失败 cell 上做离散探针，选择最小可行值，不能只按连续几何距离估计。"
+        },
+        {
+          "problem": "第三轮在距 place base goal 0.486m 且仍正常前进时 nav_to_place_timeout。",
+          "root_cause": "15.04m stair-float 加F1/F2 DWA路径超过工厂原9000-tick预算；末帧21/21候选可行，stall窗口位移0.43m，属于时限不足而非卡住。",
+          "fix": "pct_multifloor full-physics navigation limit 提升到12000 ticks；从真实末帧离线闭环只需95 ticks到导航成功。",
+          "prevention": "状态超时应按路径长度和最低执行速度预留，并在判超时前记录可行候选、位移和剩余距离，区分活跃前进与真实停滞。"
+        },
+        {
+          "problem": "第四轮真实 headless 未能启动。",
+          "root_cause": "工具审批层报告GPU命令使用额度已用尽，并明确禁止间接绕过。",
+          "fix": "未绕过；完成离线终段回放、carry verifier前置审计和回归测试，保留下次额度恢复后的原命令。",
+          "prevention": "每轮真实仿真后先最大化利用结构化日志和离线回放，减少重复GPU启动次数。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "真实 headless full_physics，最新6m stair-float默认值",
+          "result": "failed",
+          "note": "第一轮：pick成功、完整上楼；苹果在stair-float激活时留在一楼，二楼释放后nav_collision。"
+        },
+        {
+          "command": "真实 headless full_physics，root-relative object follow",
+          "result": "failed",
+          "note": "第二轮：苹果到达F2，但因机械臂相对root变化而脱离TCP；释放点仍nav_collision。"
+        },
+        {
+          "command": "真实 headless full_physics，TCP-relative follow + carry目标修复 + 0.32m清廊",
+          "result": "failed",
+          "note": "第三轮：完整上楼，苹果全程保持；机器人到(0.517,0.066,z=3.354)，距place base goal 0.486m，DWA 21/21可行，唯一失败为nav_to_place_timeout。"
+        },
+        {
+          "command": "从第三轮真实末帧使用同一PCT地图/DWA配置离线闭环3000 ticks",
+          "result": "passed",
+          "note": "95 ticks进入executor success，最终距goal约0.179m，无碰撞/路径偏离失败。"
+        },
+        {
+          "command": "python -m py_compile source/pipeline/factory.py source/pipeline/state_machine.py source/simulation/isaaclab_runtime.py source/navigation/executor.py source/pipeline/config.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "语法检查无输出错误。"
+        },
+        {
+          "command": "针对TCP跟随、carry目标、route corridor、配置和factory的pytest",
+          "result": "passed",
+          "note": "最近两组分别7 passed、4 passed。"
+        },
+        {
+          "command": "第四轮12000-tick真实headless full_physics",
+          "result": "not_run",
+          "note": "工具审批层因GPU命令使用额度拒绝启动，未尝试绕过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_astar_dwa_smoke.py tests/test_isaaclab_navigation_runtime.py tests/navigation/test_locomotion_policy_config.py tests/test_full_physics_pipeline.py -q",
+          "result": "passed",
+          "note": "115 passed, 1 skipped；覆盖DWA、IsaacLab runtime、PCT配置、factory/state machine与CLI回归。"
+        }
+      ],
+      "next_steps": [
+        "GPU审批额度恢复后，用同一命令运行第四轮；预期先进入verify_place_reachable/plan_place。",
+        "若place规划或执行失败，依据current_state_curobo/place_*与events.jsonl修复，不回退已验证的PCT楼梯路径。",
+        "完整成功前继续保持pct_full_physics_crossfloor_place_verified=false，并验证最终苹果place误差、object_carry_verified和状态trace到done。"
+      ]
+    },
+    {
+      "time": "2026-07-08 16:59:15",
+      "summary": "排查上楼阶段机械臂和腿部奇异姿态，并继续推进 nav2place：真实 headless 验证显示 stair-float 期间 full-body joint lock 生效，腿部、机械臂、夹爪关节偏差均为 0，roll/pitch 约为 0，苹果-TCP 距离保持约 1cm。随后将 place base_goal 移到二楼安全站位，并把 stair-float 出口延伸从 6m 逐步调到 10.5m；8m 已越过楼梯口卡点，但 F2 末段仍因当前 dog-only policy 携物执行不动而 stall。10.5m 离线确认可直接把 root-lock 末端推到距 place base goal 约 9cm，等待下一轮 GPU 额度恢复后真实复验 place。",
+      "files_changed": [
+        "source/navigation/executor.py",
+        "source/pipeline/config.py",
+        "tasks/nav_pick_place_apple_multifloor_pct.json",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "用户观察到上楼阶段机械臂和腿部关节会出现奇异姿态。",
+          "root_cause": "原先 stair-float 只接管 root pose，腿部和机械臂仍会受到 IsaacLab policy/action target 与物理约束影响；在直接写 root 的同时不锁全身关节，会出现关节姿态与底盘漂移不一致。",
+          "fix": "IsaacLab adapter/runtime 已在 stair-float action 中启用 navigation full-body joint lock，锁住腿部、机械臂和夹爪；本轮真实 headless 统计显示 stair-float 4171 帧内 dog_dev=0、arm_dev=0、grip_dev=0、max_arm_err=0、roll/pitch 约 0。",
+          "prevention": "后续任何 root-lock/teleport/floating 控制都必须同时记录并锁定全身关节目标，并用 frames.jsonl 统计 dog/arm/gripper deviation，而不是只看 root 轨迹。"
+        },
+        {
+          "problem": "6m stair-float 释放后机器人在二楼接近 place base goal 时发生 environment terminated / 翻滚。",
+          "root_cause": "旧 place base goal y=-0.4 过于靠近二楼障碍/边界，dog-only 携物 policy 在终点附近继续挤入危险区域，DWA 仍给前进命令但底盘姿态快速恶化。",
+          "fix": "将 tasks/nav_pick_place_apple_multifloor_pct.json 的 place.base_goal 调整为 x=0.40,y=-0.10；PCT 探针确认仍为跨楼层 strict monotonic route，且机械臂到 place pose 的 XY 半径约 0.54m。",
+          "prevention": "base_goal 应表示底盘安全站位，不应直接等同苹果 place pose；今后修改 place pose 后需同时检查底盘站位到物体的 arm workspace 半径和局部碰撞风险。"
+        },
+        {
+          "problem": "8m stair-float 虽越过楼梯口卡点，但二楼末段仍 nav_collision/stall。",
+          "root_cause": "DWA 规划状态显示 21/21 候选可行、collision/path deviation rejections 均为 0，但真实 240 帧最大位移只有约 4.9cm，说明当前 pct_multifloor dog-only policy 在携物状态下仍无法执行 F2 末段小空间导航。",
+          "fix": "将 pct_stair_float_exit_distance_m 默认值调到 10.5m；离线提取 stair-float path 末端为 (0.3215,-0.1436,3.0)，距 place base goal 约 0.09m，可让导航 handoff 在安全范围内完成。",
+          "prevention": "在多楼层 policy 真正训练好携物上楼和 F2 室内窄空间前，把 root-lock 作为明确标注的临时 workaround，并在 summary 中保留 pure_physics_success=false。"
+        },
+        {
+          "problem": "最后一轮 10.5m 真实 headless 复验无法启动。",
+          "root_cause": "工具审批层返回 GPU/高风险命令使用额度已用尽，并明确禁止通过间接方式绕过。",
+          "fix": "未绕过；改为执行 JSON/py_compile/pytest/离线路径提取验证，并记录下一轮用户可直接运行的验收命令。",
+          "prevention": "长仿真迭代前先用离线 path extraction 和 frames.jsonl 定位最小修改，减少 GPU 启动次数；额度不足时只做轻量测试。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py ... --pct-stair-float （6m/min-root/full-body-lock版本）",
+          "result": "failed",
+          "note": "真实 headless：stair-float 期间全身关节锁定成功，苹果稳定到达 F2；释放后二楼终点附近 environment_terminated，最终 dist≈0.325m。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py ... --pct-stair-float （place base_goal x=0.40,y=-0.10，6m默认）",
+          "result": "failed",
+          "note": "真实 headless：8m修改前仍在二楼楼梯出口附近 stall，DWA 候选可行但实际位移不足。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py ... --pct-stair-float （8m出口延伸）",
+          "result": "failed",
+          "note": "真实 headless：已越过上一轮 F2 楼梯口卡点，stair_float.end=(1.9215,1.6564,3.0)，但 F2 末段距 goal≈0.39m 再次 stall。"
+        },
+        {
+          "command": "python -m json.tool tasks/nav_pick_place_apple_multifloor_pct.json",
+          "result": "passed",
+          "note": "任务 JSON 合法。"
+        },
+        {
+          "command": "python -m py_compile source/navigation/executor.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "语法检查无错误。"
+        },
+        {
+          "command": "离线 _extract_stair_float_path(..., exit_distance_m=10.5)",
+          "result": "passed",
+          "note": "输出末端 (0.3215,-0.1436,3.0)，距 place base goal 约 0.0898m。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_astar_dwa_smoke.py tests/test_isaaclab_navigation_runtime.py tests/navigation/test_locomotion_policy_config.py tests/test_full_physics_pipeline.py -q",
+          "result": "passed",
+          "note": "116 passed, 1 skipped。"
+        },
+        {
+          "command": "10.5m真实 headless full_physics 复验",
+          "result": "not_run",
+          "note": "工具审批层提示 GPU/高风险命令额度用尽，未绕过执行。"
+        }
+      ],
+      "next_steps": [
+        "用户在本机额度/GUI可用时用默认 --pct-stair-float 命令复跑 full_physics，检查是否进入 plan_place/exec_place。",
+        "如果 place_plan_failed，读取 outputs/full_physics_pipeline/episode_000000/current_state_curobo/place_replan_* 下的 place_plan.json/target_json 继续修复机械臂放置姿态。",
+        "如果 exec_place 失败，优先检查 object-TCP 距离、place release 后 object pose 与 place_xy_tolerance/place_z_tolerance。"
+      ]
+    },
+    {
+      "time": "2026-07-08 23:27:49",
+      "summary": "复查真实 headless 输出，区分 place 阶段 arm_joint4 滞后、pick 阶段瞬时跟踪误差和最新 pick 物体未保持问题。",
+      "files_changed": [
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "此前 place 阶段 arm_joint4 出现明显滞后，导致 exec_place 收敛失败。",
+          "root_cause": "pct_multifloor DogOnly 机器人资产原先对机械臂使用低刚度/低力矩 DCMotor，尤其腕部 joint4 在携物 place 姿态下受负载和姿态约束影响，实际角度会被拉离目标；该问题发生在保持目标姿态阶段，不是字段映射错误。",
+          "fix": "本轮已将 PCT DogOnly 机械臂 actuator 合并为高刚度 DCMotor，并在日志中确认 joint_names 到 joint_ids 的映射为 arm_joint1/2/3/4/5/6 -> 4/9/14/15/16/17。",
+          "prevention": "后续分析机械臂失败时同时查看 last_arm_tracking_report、peak_report 和具体阶段；不要只看全局峰值，因为运动过渡期误差和最终保持误差含义不同。"
+        },
+        {
+          "problem": "用户询问 pick 阶段是否也出现 joint4 类似滞后。",
+          "root_cause": "pick 阶段确实存在运动过渡期瞬时误差，但当前峰值来自 arm_joint2，约 0.899rad；pick 最终保持时最大误差约 0.0007rad，arm_joint4 约 0.00017rad，没有复现 place 阶段 joint4 持续滞后的同类问题。",
+          "fix": "从 outputs/full_physics_pipeline/episode_000000/summary.json 和 frames.jsonl 中提取 arm_tracking_peak_report 与 last_arm_tracking_report，确认 pick 最终关节已收敛。",
+          "prevention": "以后比较 pick/place 机械臂问题时按 pipeline_state 和 source 分段统计，分别报告 peak transition error 与 final hold error。"
+        },
+        {
+          "problem": "最新 headless full_physics 在 verify_pick_success 阶段失败。",
+          "root_cause": "失败原因为 object_too_far_from_tcp，最终 object-TCP 距离约 0.556m；机械臂最终 joint 跟踪误差很小，说明这轮失败更像夹爪接触/物体保持问题，而不是 arm_joint4 滞后。",
+          "fix": "本轮先记录诊断结果，未继续修改抓取接触逻辑；下一步应检查 gripper close、苹果碰撞体、抓取 attachment/contact hold 和 verify_pick_success 触发时机。",
+          "prevention": "在修改机械臂 actuator 后必须先跑 pick-only/headless 验证，确认夹爪能稳定保持物体，再继续 nav2place/place 长流程。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/robot_lab/robot_lab/assets/go2_x5.py source/navigation/executor.py source/pipeline/config.py source/pipeline/state_machine.py source/navigation/adapters/isaaclab_go2_adapter.py source/simulation/isaaclab_runtime.py",
+          "result": "passed",
+          "note": "语法检查通过。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py ... --pct-stair-float",
+          "result": "failed",
+          "note": "真实 headless：状态到 verify_pick_success 后失败，failure_reason=object_too_far_from_tcp，object_tcp_distance≈0.556m；本轮未进入 nav2place。"
+        },
+        {
+          "command": "读取 outputs/full_physics_pipeline/episode_000000/summary.json 与 frames.jsonl",
+          "result": "passed",
+          "note": "确认 pick 阶段最终 last_arm_tracking_report 最大误差约 0.0007rad，arm_joint4 约 0.00017rad；pick 过渡期峰值来自 arm_joint2。"
+        }
+      ],
+      "next_steps": [
+        "先修复最新 pick 后 object_too_far_from_tcp：检查夹爪闭合目标、苹果碰撞体/contact、gripper_hold_after_close 和 verify_pick_success 前的物体保持。",
+        "pick-only 稳定后再复跑 --pct-stair-float full_physics，继续验证 stair-float root offset 和 F2 handoff。",
+        "如果再次进入 place 并出现 arm_joint4 滞后，优先对比 place final hold 的 joint4 target/actual，而不是 pick transition peak。"
+      ]
+    },
+    {
+      "time": "2026-07-09 01:09:25",
+      "summary": "根据 baseline 复查结果，将 PCT DogOnly 机械臂 actuator 对齐到原 high-gain drive，并确认抓取执行器保持 baseline close-target / forced-close carry 语义；真实 headless 复验被当前 CUDA/Kit bad state 阻断。",
+      "files_changed": [
+        "project.json",
+        "source/robot_lab/robot_lab/assets/go2_x5.py",
+        "tests/navigation/test_locomotion_policy_config.py"
+      ],
+      "problems": [
+        {
+          "problem": "此前为了修 place 阶段 arm_joint4 滞后，机械臂 actuator 曾被调成非 baseline 的分关节低/中刚度，后续又尝试过过强 effort/velocity，导致 pick 物体保持不稳定。",
+          "root_cause": "PCT DogOnly policy 没有机械臂 action 槽位，机械臂必须依赖 actuator drive 稳住位置；如果偏离原 full_physics/baseline 的高刚度阻尼或放大限幅，就会分别引入末端滞后或接触扰动。",
+          "fix": "将 GO2_X5_PCT_DOG_ONLY_CFG 的 arm 恢复为 DCMotorCfg(joint_names_expr=[\"arm_joint[1-6]\"], effort_limit=15.0, velocity_limit=3.0, stiffness=1000.0, damping=50.0)，并保留 gripper 1000/50；同时确认 arm_executor.py 无 contact-hold 临时 diff，state_machine.py 仍使用 forced_close_target_for_carry。",
+          "prevention": "以后修改多楼层 DogOnly 机器人资产时必须先对照单楼层/full_physics baseline 的 actuator gain、effort/velocity 限幅和 carry gripper 语义，并用测试锁定这些字段。"
+        },
+        {
+          "problem": "本轮真实 headless full_physics 复验未能进入 build_stage 之后的真实仿真。",
+          "root_cause": "Isaac/Kit 启动阶段报告 CUDA error 999 / Failed to query CUDA device count，Torch 初始化 cuda:0 失败；nvidia-smi 仍显示一个 /data/.../python 进程占用约 564MiB，但当前沙箱无法确认并安全管理该宿主进程。",
+          "fix": "没有强行 kill 未确认进程；保留 startup_failure.json 诊断，并将真实复验标记为 failed due CUDA startup 而不是 pipeline 逻辑失败。",
+          "prevention": "长仿真前先确认没有遗留 Isaac/Kit/cuRobo GPU 进程；如果出现 CUDA999，需要用户手动结束确认的旧进程或重启图形/CUDA 会话后再复跑。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/manipulation/arm_executor.py source/pipeline/state_machine.py source/robot_lab/robot_lab/assets/go2_x5.py tests/test_full_physics_manipulation.py tests/test_full_physics_pipeline.py tests/navigation/test_locomotion_policy_config.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_full_physics_manipulation.py::FullPhysicsManipulationTest::test_segmented_executor_holds_gripper_closed_after_close_segment tests/test_full_physics_pipeline.py::FullPhysicsPipelineTest::test_carry_gripper_forces_close_target_like_baseline tests/navigation/test_locomotion_policy_config.py::test_pct_robot_config_isolated_from_default_single_floor_asset tests/test_isaaclab_navigation_runtime.py::IsaacLabNavigationRuntimeActionTest::test_go2_x5_arm_uses_implicit_drive_for_manipulation_tracking -q",
+          "result": "passed",
+          "note": "4 passed，覆盖 gripper close-target、carry forced-close、PCT DogOnly arm high-gain drive 和机器人资产加载约束。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py ... --pct-stair-float",
+          "result": "failed",
+          "note": "真实 headless 启动失败：Isaac/Kit CUDA error 999，Torch 无法初始化 cuda:0；未进入导航/pick/place 逻辑。"
+        }
+      ],
+      "next_steps": [
+        "用户确认并结束遗留 GPU Python/Isaac/Kit/cuRobo 进程或重启 CUDA/图形会话后，复跑同一条 --pct-stair-float full_physics 命令。",
+        "如果复跑进入 verify_pick_success 后仍 object_too_far_from_tcp，继续从 gripper close target、苹果碰撞和 pick retreat object pose 分析，而不是再随意调 actuator gain。",
+        "如果 pick 稳定并进入 nav2place，继续检查 stair-float 后 F2 handoff、place planning 和 place 执行。"
+      ]
     }
   ],
   "open_questions": [
@@ -4322,7 +4747,9 @@
     "请用户在 Isaac Sim 中打开最终 source/scene/multifloor/usda/multifloor.usda，确认 17M clean NuRec visual 与 collision mesh 已经对齐。",
     "PCT start->pick、apple_01 真实沉降和真实 pick_smoke 已由用户验证；当前待验证真实 RL carry 上楼和 place。",
     "请用户用 --pct-plan-preview 验证 stair_constraint_mode=surface_3d 后，黄色路径是否按下段 -> 平台 -> 上段通过 U 形楼梯。",
-    "请用户用 --pct-stair-float 复跑 full_physics，观察楼梯段是否沿黄色 PCT 3D 路径平滑漂移到二楼，并确认二楼解冻后是否继续 nav2place/place。"
+    "请用户用 --pct-stair-float 复跑 full_physics，观察楼梯段是否沿黄色 PCT 3D 路径平滑漂移到二楼，并确认二楼解冻后是否继续 nav2place/place。",
+    "请用户用最新默认 --pct-stair-float 复跑 full_physics，确认 stair_float.end 是否推进到 F2 更深处，并观察是否还在 release 后 nav_collision。",
+    "请用户用最新默认 --pct-stair-float 复跑 full_physics，确认 10.5m root-lock handoff 后是否进入 plan_place/exec_place。"
   ],
   "known_limitations": [
     "Isaac Sim start->pick 与真实机械臂 pick 已由用户确认成功；跨楼层 carry/place 尚未完成真实 Isaac 验收。",
@@ -4365,6 +4792,13 @@
     "carry 上楼 profile 已降低到 vx=0.20、wz=0.30、accel=1.00，并把楼梯入口恢复带放宽到 0.35；真实 GUI 上楼仍需用户复跑确认是否能越过当前楼梯入口失败点。",
     "carry 速度 CLI 默认值已同步到 NavigationSettings；复跑时无需显式传速度参数也应使用 vx=0.20、wz=0.30。",
     "PCT stair-float 是临时携物上楼 workaround：启用 --pct-stair-float 后会在 PCT carry 楼梯段冻结底盘并沿 path_3d 小步写 root pose，因此 pure_physics_success 仍应为 false，不能视为真实 locomotion policy 已学会上楼。",
-    "stair-float 默认关闭；flat/A*、nav2pick 和普通同层导航仍走原 DWA/RL 路径。真实 GUI full_physics 仍需用户复跑验证 pick -> stair-float -> F2 nav2place -> place。"
+    "stair-float 默认关闭；flat/A*、nav2pick 和普通同层导航仍走原 DWA/RL 路径。真实 GUI full_physics 仍需用户复跑验证 pick -> stair-float -> F2 nav2place -> place。",
+    "截至本次 headless 验收，完整 full_physics 仍未跑通；pick 成功，但 nav2place 在楼梯间入口前 nav_collision。",
+    "stair-float 入口前扩展修复已完成轻量测试，但尚未完成第二轮真实 IsaacSim 复验。",
+    "截至本次 headless 验收，PCT 全局路径和楼梯段 stair-float 已能越过楼梯间窄通道；失败点后移到 F2 释放后的 DWA/locomotion carry 执行。",
+    "当前 pct_multifloor DogOnly policy 仍无法可靠在携物状态下从楼梯漂移释放后继续稳定二楼 DWA；6m 出口缓冲默认值已写入，但仍需用户或下一轮复跑确认。",
+    "本轮尝试显式传 --pct-stair-float-exit-distance 6.0 的 headless run，summary 仍记录 3.0；默认值已提升到 6.0，CLI override 真实仿真链路仍需后续单独复查。",
+    "2026-07-07第三轮真实headless已验证机器人沿U型PCT stair-float上楼并把苹果稳定带到F2 place附近；尚未完成place，因为该轮在正常前进时触发旧9000-tick导航超时，12000-tick修复尚待下一次GPU额度恢复后复验。",
+    "当前 --pct-stair-float 已临时延伸到 10.5m，基本覆盖楼梯和 F2 末段到 place base goal 附近；这仍是 policy 训练不足下的 root-lock workaround，不代表真实 dog-only locomotion 已能自主完成携物上楼和 F2 窄空间导航。"
   ]
 }

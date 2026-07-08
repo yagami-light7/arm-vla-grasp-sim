@@ -105,21 +105,25 @@ class NavigationSettings:
     pct_obstacle_clearance_cost_weight: float = 2.0
     pct_multifloor_vertical_obstacle_min_slices: int = 5
     pct_multifloor_obstacle_inflate_radius: float = 0.12
-    pct_multifloor_route_corridor_radius: float = 0.24
+    pct_multifloor_route_corridor_radius: float = 0.45
     pct_task_object_keepout_radius: float = 0.18
     pct_carry_max_linear_velocity: float = 0.20
     pct_carry_max_angular_velocity: float = 0.30
     pct_carry_max_linear_accel: float = 1.00
     pct_carry_path_deviation_limit: float = 0.14
     pct_carry_initial_alignment_path_deviation_limit: float = 0.40
-    pct_carry_path_recovery_deviation_limit: float = 0.35
+    pct_carry_path_recovery_deviation_limit: float = 0.50
     pct_carry_max_infeasible_recomputes: int = 8
     pct_stair_float_enabled: bool = False
     pct_stair_float_speed_mps: float = 0.18
     pct_stair_float_activation_radius_m: float = 0.45
     pct_stair_float_completion_radius_m: float = 0.25
     pct_stair_float_min_z_delta_m: float = 0.75
+    pct_stair_float_approach_distance_m: float = 1.80
+    pct_stair_float_exit_distance_m: float = 0.75
+    pct_stair_float_settle_time_s: float = 1.20
     pct_stair_float_yaw_lookahead_m: float = 0.35
+    pct_stair_float_min_root_z_offset_m: float = 0.18
     goal_z_tolerance: float = 0.35
     # 对齐稳定 random nav-pick-place baseline；0.25 m 已会占用当前 place goal。
     global_inflate_radius: float = 0.20
@@ -376,9 +380,23 @@ class FullPhysicsConfig:
             )
         if self.navigation.pct_stair_float_min_z_delta_m <= 0.0:
             raise ValueError("pct_stair_float_min_z_delta_m must be positive")
+        if self.navigation.pct_stair_float_approach_distance_m < 0.0:
+            raise ValueError(
+                "pct_stair_float_approach_distance_m must be non-negative"
+            )
+        if self.navigation.pct_stair_float_exit_distance_m < 0.0:
+            raise ValueError(
+                "pct_stair_float_exit_distance_m must be non-negative"
+            )
+        if self.navigation.pct_stair_float_settle_time_s < 0.0:
+            raise ValueError("pct_stair_float_settle_time_s must be non-negative")
         if self.navigation.pct_stair_float_yaw_lookahead_m < 0.0:
             raise ValueError(
                 "pct_stair_float_yaw_lookahead_m must be non-negative"
+            )
+        if self.navigation.pct_stair_float_min_root_z_offset_m < 0.0:
+            raise ValueError(
+                "pct_stair_float_min_root_z_offset_m must be non-negative"
             )
         if self.navigation.pct_body_obstacle_min_height_m < 0.0:
             raise ValueError(

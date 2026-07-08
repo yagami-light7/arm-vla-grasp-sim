@@ -75,10 +75,14 @@ class Go2LocomotionAdapter:
         self.direct_arm_action_override = False
         self._base_pose_lock_xyzyaw: tuple[float, float, float, float] | None = None
         self._dog_joint_lock_target = None
+        self._navigation_joint_lock_target = None
+        self._navigation_joint_lock_joint_ids: tuple[int, ...] = ()
+        self._navigation_joint_lock_joint_names: tuple[str, ...] = ()
         self._command = (0.0, 0.0, 0.0)
         self._effective_command = (0.0, 0.0, 0.0)
         self._command_is_standing = True
         self._arm_joint_target = None
+        self._arm_joint_velocity_hold_enabled = False
         self._gripper_joint_target = None
         self._last_actions = None
 
@@ -204,6 +208,130 @@ class Go2LocomotionAdapter:
             "lock_mode": "position_velocity_target_only",
         }
 
+    def set_navigation_joint_pose_lock(
+        self,
+        enabled: bool = True,
+        *,
+        arm_joint_target: Any | None = None,
+    ) -> dict[str, Any]:
+        """楼梯漂移期间锁住腿部和机械臂姿态，避免 root 漂移时关节被拉歪。"""
+
+        if not enabled:
+            self._navigation_joint_lock_target = None
+            self._navigation_joint_lock_joint_ids = ()
+            self._navigation_joint_lock_joint_names = ()
+            return {
+                "enabled": False,
+                "joint_names": [],
+                "joint_ids": [],
+                "uses_direct_joint_state": False,
+            }
+        if len(self.dog_joint_ids) != len(DOG_JOINT_NAMES):
+            self._navigation_joint_lock_target = None
+            self._navigation_joint_lock_joint_ids = ()
+            self._navigation_joint_lock_joint_names = ()
+            return {
+                "enabled": False,
+                "reason": "dog_joint_id_count_mismatch",
+                "joint_ids": [int(index) for index in self.dog_joint_ids],
+                "uses_direct_joint_state": False,
+            }
+
+        import torch
+
+        joint_ids: list[int] = [int(index) for index in self.dog_joint_ids]
+        joint_names: list[str] = list(DOG_JOINT_NAMES)
+        target_parts = [
+            self.robot.data.joint_pos[0, self.dog_joint_ids]
+            .detach()
+            .clone()
+            .reshape(1, -1)
+        ]
+
+        if len(self.arm_joint_ids) == len(ARM_JOINT_NAMES):
+            joint_ids.extend(int(index) for index in self.arm_joint_ids)
+            joint_names.extend(ARM_JOINT_NAMES)
+            if arm_joint_target is None:
+                arm_target = (
+                    self.robot.data.joint_pos[0, self.arm_joint_ids]
+                    .detach()
+                    .clone()
+                    .reshape(1, -1)
+                )
+            else:
+                arm_target = torch.as_tensor(
+                    arm_joint_target,
+                    dtype=torch.float32,
+                    device=self.runtime.device,
+                ).reshape(1, -1)
+                if arm_target.shape[1] != len(ARM_JOINT_NAMES):
+                    return {
+                        "enabled": False,
+                        "reason": "arm_joint_target_count_mismatch",
+                        "target_count": int(arm_target.shape[1]),
+                        "joint_count": len(ARM_JOINT_NAMES),
+                        "uses_direct_joint_state": False,
+                    }
+            target_parts.append(arm_target)
+
+        if len(self.gripper_joint_ids) == len(GRIPPER_JOINT_NAMES):
+            joint_ids.extend(int(index) for index in self.gripper_joint_ids)
+            joint_names.extend(GRIPPER_JOINT_NAMES)
+            target_parts.append(
+                self.robot.data.joint_pos[0, self.gripper_joint_ids]
+                .detach()
+                .clone()
+                .reshape(1, -1)
+            )
+
+        self._navigation_joint_lock_target = torch.cat(target_parts, dim=1).detach().clone()
+        self._navigation_joint_lock_joint_ids = tuple(joint_ids)
+        self._navigation_joint_lock_joint_names = tuple(joint_names)
+        return {
+            "enabled": True,
+            "joint_names": list(self._navigation_joint_lock_joint_names),
+            "joint_ids": list(self._navigation_joint_lock_joint_ids),
+            "target_positions": [
+                float(value)
+                for value in self._navigation_joint_lock_target.reshape(-1)
+                .detach()
+                .cpu()
+                .tolist()
+            ],
+            "uses_direct_joint_state": True,
+            "lock_mode": "stair_float_full_body_pose",
+        }
+
+    def apply_navigation_joint_pose_lock(self) -> dict[str, Any]:
+        """把楼梯漂移锁定姿态写入 articulation target 和 joint state。"""
+
+        if self._navigation_joint_lock_target is None:
+            return {
+                "applied": False,
+                "reason": "navigation_joint_pose_lock_disabled",
+            }
+        import torch
+
+        target = self._navigation_joint_lock_target.to(
+            device=self.runtime.device,
+            dtype=torch.float32,
+        )
+        joint_ids = list(self._navigation_joint_lock_joint_ids)
+        velocity = torch.zeros_like(target)
+        self.robot.set_joint_position_target(target, joint_ids=joint_ids)
+        self.robot.set_joint_velocity_target(velocity, joint_ids=joint_ids)
+        self.robot.write_joint_state_to_sim(target, velocity, joint_ids=joint_ids)
+        return {
+            "applied": True,
+            "joint_names": list(self._navigation_joint_lock_joint_names),
+            "joint_ids": joint_ids,
+            "target_positions": [
+                float(value) for value in target.reshape(-1).detach().cpu().tolist()
+            ],
+            "uses_direct_joint_state": True,
+            "lock_mode": "stair_float_full_body_pose",
+        }
+
     def _apply_gripper_joint_target(self) -> None:
         if len(self.gripper_joint_ids) != 2:
             return
@@ -304,10 +432,16 @@ class Go2LocomotionAdapter:
             1.0 if self.policy_action_warmup_steps <= 0 else 0.0
         )
 
-    def set_arm_joint_target(self, target: Any | None) -> None:
-        """Optionally hold arm joints while the locomotion policy steps."""
+    def set_arm_joint_target(
+        self,
+        target: Any | None,
+        *,
+        hold_velocity: bool = False,
+    ) -> None:
+        """在 locomotion policy step 时可选保持机械臂关节目标。"""
 
         self._arm_joint_target = target
+        self._arm_joint_velocity_hold_enabled = bool(hold_velocity and target is not None)
 
     def set_gripper_joint_target(self, target: Any | None) -> None:
         """Optionally hold gripper joints while the locomotion policy steps."""
@@ -340,6 +474,11 @@ class Go2LocomotionAdapter:
                 "joint_count": len(self.arm_joint_ids),
             }
         self.robot.set_joint_position_target(target, joint_ids=self.arm_joint_ids)
+        velocity_target_written = False
+        if self._arm_joint_velocity_hold_enabled:
+            velocity = torch.zeros_like(target)
+            self.robot.set_joint_velocity_target(velocity, joint_ids=self.arm_joint_ids)
+            velocity_target_written = True
         return {
             "applied": True,
             "joint_names": list(ARM_JOINT_NAMES),
@@ -347,10 +486,13 @@ class Go2LocomotionAdapter:
             "target_positions": [
                 float(value) for value in target.reshape(-1).detach().cpu().tolist()
             ],
-            # baseline 只通过 position action 驱动机械臂；运动阶段不能把 velocity
-            # target 每拍写成 0，否则阻尼项会持续抵抗 cuRobo 轨迹跟踪。
-            "control_mode": "position_target_only",
-            "velocity_target_written": False,
+            # 运动段只写 position target；post-motion hold 才写零速度，避免到位等待时关节继续漂移。
+            "control_mode": (
+                "position_velocity_target"
+                if velocity_target_written
+                else "position_target_only"
+            ),
+            "velocity_target_written": velocity_target_written,
             "uses_direct_joint_state": False,
         }
 

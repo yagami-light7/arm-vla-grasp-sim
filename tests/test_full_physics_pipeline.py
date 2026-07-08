@@ -19,7 +19,7 @@ from source.diagnostics import (
     ManipulationApplySmokeVerifier,
     NavigationEpisodeVerifier,
 )
-from source.interfaces import EpisodeSpec, RobotAction, SimulationState, VerificationResult
+from source.interfaces import ArmPlan, EpisodeSpec, RobotAction, SimulationState, VerificationResult
 from source.manipulation import (
     BinaryGripperController,
     SegmentedArmExecutor,
@@ -43,6 +43,7 @@ from source.pipeline.factory import create_full_physics_pipeline
 from source.pipeline.manipulation_apply_smoke import create_manipulation_apply_smoke_pipeline
 from source.pipeline.manipulation_smoke import create_manipulation_smoke_pipeline
 from source.pipeline.navigation_smoke import _build_dwa_config
+from source.pipeline.state_machine import FullPhysicsStateMachine
 from source.recording import JsonlEpisodeRecorder
 from source.simulation import InMemorySimulationRuntime
 from source.tasks import JsonTaskProvider
@@ -356,6 +357,8 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertIn("--pct-plan-preview", help_text)
         self.assertIn("--pct-cross-floor-gateway", help_text)
         self.assertIn("--pct-stair-float", help_text)
+        self.assertIn("--pct-stair-float-exit-distance", help_text)
+        self.assertIn("--pct-stair-float-settle-time", help_text)
         self.assertIn("--pick-smoke", help_text)
         self.assertIn("--manipulation-smoke", help_text)
         self.assertIn("--manipulation-apply-smoke", help_text)
@@ -517,6 +520,22 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             args.pct_stair_float_completion_radius,
             NavigationSettings().pct_stair_float_completion_radius_m,
         )
+        self.assertEqual(
+            args.pct_stair_float_approach_distance,
+            NavigationSettings().pct_stair_float_approach_distance_m,
+        )
+        self.assertEqual(
+            args.pct_stair_float_exit_distance,
+            NavigationSettings().pct_stair_float_exit_distance_m,
+        )
+        self.assertEqual(
+            args.pct_stair_float_settle_time,
+            NavigationSettings().pct_stair_float_settle_time_s,
+        )
+        self.assertEqual(
+            args.pct_stair_float_min_root_z_offset,
+            NavigationSettings().pct_stair_float_min_root_z_offset_m,
+        )
 
     def test_cli_accepts_pct_stair_float_overrides(self) -> None:
         args = _build_parser().parse_args(
@@ -530,6 +549,14 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 "0.55",
                 "--pct-stair-float-completion-radius",
                 "0.12",
+                "--pct-stair-float-approach-distance",
+                "2.1",
+                "--pct-stair-float-exit-distance",
+                "1.4",
+                "--pct-stair-float-settle-time",
+                "0.6",
+                "--pct-stair-float-min-root-z-offset",
+                "0.42",
             ]
         )
 
@@ -537,6 +564,10 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertEqual(args.pct_stair_float_speed, 0.22)
         self.assertEqual(args.pct_stair_float_activation_radius, 0.55)
         self.assertEqual(args.pct_stair_float_completion_radius, 0.12)
+        self.assertEqual(args.pct_stair_float_approach_distance, 2.1)
+        self.assertEqual(args.pct_stair_float_exit_distance, 1.4)
+        self.assertEqual(args.pct_stair_float_settle_time, 0.6)
+        self.assertEqual(args.pct_stair_float_min_root_z_offset, 0.42)
 
     def test_cli_dry_run_writes_startup_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -788,7 +819,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             )
             self.assertEqual(
                 pipeline.machine.config.limits.navigation,
-                9000,
+                12000,
             )
             self.assertEqual(
                 pipeline.machine.config.limits.episode,
@@ -1115,6 +1146,83 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             self.assertIn("place_success", event_names)
             self.assertIn("pick_base_settle_start", event_names)
             self.assertIn("pick_base_settle_complete", event_names)
+
+    def test_carry_holds_last_pick_pose_when_return_home_was_not_inserted(self) -> None:
+        machine = object.__new__(FullPhysicsStateMachine)
+        machine.config = FullPhysicsConfig(
+            task_json=PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json",
+            output_dir=PROJECT_ROOT / "outputs",
+            manipulation=ManipulationSettings(return_home_after_pick=True),
+        )
+        machine._carry_arm_home_target = None
+        joint_names = tuple(f"arm_joint{index}" for index in range(1, 7))
+        final_q = (0.11, -0.22, 0.33, -0.44, 0.55, -0.66)
+        plan = ArmPlan(
+            operation="pick",
+            joint_trajectory=((0.0,) * 6, final_q),
+            metadata={
+                "joint_names": joint_names,
+                "segments": [
+                    {
+                        "name": "retreat_object",
+                        "type": "motion",
+                        "trajectory": {"q": [(0.0,) * 6, final_q]},
+                    }
+                ],
+            },
+        )
+
+        machine._configure_carry_arm_home_target(
+            plan,
+            {
+                "inserted": False,
+                "reason": "planned_retreat_or_reverse_return_present",
+                "joint_names": joint_names,
+                "home_positions": (0.0,) * 6,
+            },
+        )
+
+        self.assertEqual(
+            machine._carry_arm_home_target["source"],
+            "pick_final_arm_pose",
+        )
+        self.assertEqual(
+            machine._carry_arm_home_target["arm_joint_positions"],
+            final_q,
+        )
+        self.assertFalse(
+            machine._carry_arm_home_target["return_home_inserted"]
+        )
+
+    def test_place_carry_handoff_keeps_navigation_locks_for_pct_stair_float(self) -> None:
+        machine = object.__new__(FullPhysicsStateMachine)
+        machine.config = FullPhysicsConfig(
+            task_json=PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json",
+            output_dir=PROJECT_ROOT / "outputs",
+            navigation=NavigationSettings(pct_stair_float_enabled=True),
+        )
+        state = SimulationState(
+            step_index=9,
+            timestamp=0.45,
+            robot_root_pose=(0.24, -0.05, 3.28, 0.9238795, 0.0, 0.0, -0.3826834),
+            robot_root_velocity=(0.0,) * 6,
+        )
+
+        action = machine._place_carry_handoff_action(state)
+
+        self.assertEqual(action.source, "place_carry_handoff")
+        self.assertTrue(action.metadata["place_carry_handoff_hold"])
+        self.assertTrue(action.metadata["navigation_base_pose_lock"])
+        self.assertTrue(action.metadata["navigation_full_body_joint_lock"])
+        self.assertTrue(action.metadata["navigation_carry_object_follow"])
+        self.assertEqual(
+            action.metadata["navigation_base_pose_lock_phase"],
+            "place_carry_handoff",
+        )
+        self.assertEqual(
+            action.metadata["navigation_base_pose_lock_xyzyaw"][:3],
+            (0.24, -0.05, 3.28),
+        )
 
     def test_pick_smoke_stops_after_physical_pick_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

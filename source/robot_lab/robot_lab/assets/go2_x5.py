@@ -141,49 +141,16 @@ GO2_X5_PCT_DOG_ONLY_CFG = GO2_X5_CFG.replace(
             damping=1.0,
             friction=0.0,
         ),
-        "arm_joint12": DCMotorCfg(
-            joint_names_expr=["arm_joint1", "arm_joint2"],
-            effort_limit=20.0,
-            saturation_effort=20.0,
-            velocity_limit=3.0,
-            stiffness=100.0,
-            damping=3.0,
-            friction=0.0,
-        ),
-        "arm_joint3": DCMotorCfg(
-            joint_names_expr=["arm_joint3"],
+        # DogOnly 策略没有机械臂 action 槽位，因此 reset/nav 阶段仍需要
+        # DCMotor actuator 稳住机械臂；参数对齐 full_physics baseline 的
+        # 机械臂驱动增益，避免低刚度导致 place 末端滞后，同时不放大 effort/velocity。
+        "arm": DCMotorCfg(
+            joint_names_expr=["arm_joint[1-6]"],
             effort_limit=15.0,
             saturation_effort=15.0,
             velocity_limit=3.0,
-            stiffness=100.0,
-            damping=3.0,
-            friction=0.0,
-        ),
-        "arm_joint4": DCMotorCfg(
-            joint_names_expr=["arm_joint4"],
-            effort_limit=7.0,
-            saturation_effort=7.0,
-            velocity_limit=3.0,
-            stiffness=20.0,
-            damping=2.0,
-            friction=0.0,
-        ),
-        "arm_joint5": DCMotorCfg(
-            joint_names_expr=["arm_joint5"],
-            effort_limit=5.0,
-            saturation_effort=5.0,
-            velocity_limit=3.0,
-            stiffness=20.0,
-            damping=1.0,
-            friction=0.0,
-        ),
-        "arm_joint6": DCMotorCfg(
-            joint_names_expr=["arm_joint6"],
-            effort_limit=5.0,
-            saturation_effort=5.0,
-            velocity_limit=3.0,
-            stiffness=5.0,
-            damping=0.5,
+            stiffness=1000.0,
+            damping=50.0,
             friction=0.0,
         ),
         # 主 pipeline 后续仍要抓取，保留本地两指夹爪 actuator。

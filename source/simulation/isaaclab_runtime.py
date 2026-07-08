@@ -122,6 +122,56 @@ def _quat_angle_error_rad(left: tuple[float, ...], right: tuple[float, ...]) -> 
     return 2.0 * math.acos(dot)
 
 
+def _quat_normalize_wxyz(
+    quat: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    """归一化标量在前的四元数，拒绝无效零范数输入。"""
+
+    norm = math.sqrt(sum(float(value) ** 2 for value in quat))
+    if norm <= 1.0e-12:
+        raise ValueError("四元数范数必须大于零。")
+    return tuple(float(value) / norm for value in quat)  # type: ignore[return-value]
+
+
+def _quat_multiply_wxyz(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    """计算标量在前四元数的 Hamilton 乘积。"""
+
+    lw, lx, ly, lz = left
+    rw, rx, ry, rz = right
+    return (
+        lw * rw - lx * rx - ly * ry - lz * rz,
+        lw * rx + lx * rw + ly * rz - lz * ry,
+        lw * ry - lx * rz + ly * rw + lz * rx,
+        lw * rz + lx * ry - ly * rx + lz * rw,
+    )
+
+
+def _quat_conjugate_wxyz(
+    quat: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    """返回单位四元数的共轭。"""
+
+    return (quat[0], -quat[1], -quat[2], -quat[3])
+
+
+def _quat_rotate_vector_wxyz(
+    quat: tuple[float, float, float, float],
+    vector: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    """用标量在前四元数旋转三维向量。"""
+
+    normalized = _quat_normalize_wxyz(quat)
+    vector_quat = (0.0, float(vector[0]), float(vector[1]), float(vector[2]))
+    rotated = _quat_multiply_wxyz(
+        _quat_multiply_wxyz(normalized, vector_quat),
+        _quat_conjugate_wxyz(normalized),
+    )
+    return (rotated[1], rotated[2], rotated[3])
+
+
 def _as_tuple(values: Any) -> tuple[float, ...]:
     if values is None:
         return ()
@@ -389,6 +439,11 @@ class IsaacLabNavigationRuntime:
         self._pending_arm_tracking_target: dict[str, Any] | None = None
         self._manipulation_base_lock_active = False
         self._manipulation_support_joint_lock_active = False
+        self._navigation_joint_pose_lock_active = False
+        self._navigation_object_follow_active = False
+        self._navigation_object_relative_pose: tuple[float, ...] | None = None
+        self._navigation_object_follow_root_target: tuple[float, ...] | None = None
+        self._navigation_object_follow_target_pose: tuple[float, ...] | None = None
         self._hidden_distractor_root_paths: tuple[str, ...] = ()
         self._viewport_config_attempts = 0
         self._metadata: dict[str, Any] = {
@@ -403,6 +458,10 @@ class IsaacLabNavigationRuntime:
             "used_manipulation_support_joint_lock": False,
             "used_navigation_base_lock": False,
             "used_navigation_support_joint_lock": False,
+            "used_navigation_joint_pose_lock": False,
+            "navigation_object_follow_active": False,
+            "navigation_object_follow_apply_count": 0,
+            "last_navigation_object_follow_report": None,
             "manipulation_base_lock_active": False,
             "manipulation_base_lock_apply_count": 0,
             "last_manipulation_base_lock_report": None,
@@ -411,6 +470,9 @@ class IsaacLabNavigationRuntime:
             "manipulation_support_joint_lock_apply_count": 0,
             "last_manipulation_support_joint_lock_report": None,
             "last_navigation_support_joint_lock_report": None,
+            "navigation_joint_pose_lock_active": False,
+            "navigation_joint_pose_lock_apply_count": 0,
+            "last_navigation_joint_pose_lock_report": None,
             "arm_joint_position_target_apply_count": 0,
             "last_arm_joint_position_target_report": None,
             "gripper_joint_position_target_apply_count": 0,
@@ -488,9 +550,16 @@ class IsaacLabNavigationRuntime:
         self._adapter.set_base_pose_lock(False)
         if hasattr(self._adapter, "set_support_joint_lock"):
             self._adapter.set_support_joint_lock(False)
+        if hasattr(self._adapter, "set_navigation_joint_pose_lock"):
+            self._adapter.set_navigation_joint_pose_lock(False)
         self._pending_arm_tracking_target = None
         self._manipulation_base_lock_active = False
         self._manipulation_support_joint_lock_active = False
+        self._navigation_joint_pose_lock_active = False
+        self._navigation_object_follow_active = False
+        self._navigation_object_relative_pose = None
+        self._navigation_object_follow_root_target = None
+        self._navigation_object_follow_target_pose = None
         self._metadata.update(
             {
                 "seed": int(seed),
@@ -518,6 +587,12 @@ class IsaacLabNavigationRuntime:
                 "used_manipulation_support_joint_lock": False,
                 "used_navigation_base_lock": False,
                 "used_navigation_support_joint_lock": False,
+                "used_navigation_joint_pose_lock": False,
+                "used_object_teleport": False,
+                "used_kinematic_object_follow": False,
+                "navigation_object_follow_active": False,
+                "navigation_object_follow_apply_count": 0,
+                "last_navigation_object_follow_report": None,
                 "manipulation_base_lock_active": False,
                 "manipulation_base_lock_apply_count": 0,
                 "last_manipulation_base_lock_report": None,
@@ -526,6 +601,9 @@ class IsaacLabNavigationRuntime:
                 "manipulation_support_joint_lock_apply_count": 0,
                 "last_manipulation_support_joint_lock_report": None,
                 "last_navigation_support_joint_lock_report": None,
+                "navigation_joint_pose_lock_active": False,
+                "navigation_joint_pose_lock_apply_count": 0,
+                "last_navigation_joint_pose_lock_report": None,
                 # reset 事件写入初始位姿，不属于导航执行中的 teleport。
                 "reset_pose_source": "isaaclab_reset_event",
             }
@@ -740,6 +818,288 @@ class IsaacLabNavigationRuntime:
                     },
                 }
             )
+        self._configure_navigation_joint_pose_lock(action)
+        self._configure_navigation_object_follow(
+            action,
+            root_target_xyzyaw=pose_xyzyaw,
+            navigation_base_lock_requested=navigation_requested,
+        )
+
+    def _configure_navigation_joint_pose_lock(self, action: RobotAction) -> None:
+        """楼梯漂移期间强制保持四足和机械臂姿态，避免 root 锁定拉出奇异构型。"""
+
+        requested = bool(action.metadata.get("navigation_full_body_joint_lock", False))
+        phase = action.metadata.get("navigation_full_body_joint_lock_phase")
+        if requested and not self._navigation_joint_pose_lock_active:
+            if not hasattr(self._adapter, "set_navigation_joint_pose_lock"):
+                report = {
+                    "enabled": False,
+                    "reason": "adapter_missing_set_navigation_joint_pose_lock",
+                }
+            else:
+                report = self._adapter.set_navigation_joint_pose_lock(
+                    True,
+                    arm_joint_target=action.arm_joint_positions,
+                )
+            self._navigation_joint_pose_lock_active = bool(report.get("enabled"))
+            lock_report = {
+                **report,
+                "transition": "enabled",
+                "phase": phase,
+                "source": "navigation",
+            }
+            self._metadata.update(
+                {
+                    "used_navigation_joint_pose_lock": bool(report.get("enabled")),
+                    "used_direct_joint_state": (
+                        bool(self._metadata.get("used_direct_joint_state", False))
+                        or bool(report.get("uses_direct_joint_state", False))
+                    ),
+                    "navigation_joint_pose_lock_active": bool(report.get("enabled")),
+                    "last_navigation_joint_pose_lock_report": lock_report,
+                }
+            )
+        if not requested and self._navigation_joint_pose_lock_active:
+            report = self._adapter.set_navigation_joint_pose_lock(False)
+            self._navigation_joint_pose_lock_active = False
+            self._metadata.update(
+                {
+                    "navigation_joint_pose_lock_active": False,
+                    "last_navigation_joint_pose_lock_report": {
+                        **report,
+                        "transition": "disabled",
+                        "phase": phase,
+                        "source": "navigation",
+                    },
+                }
+            )
+
+    def _configure_navigation_object_follow(
+        self,
+        action: RobotAction,
+        *,
+        root_target_xyzyaw: tuple[float, float, float, float] | None,
+        navigation_base_lock_requested: bool,
+    ) -> None:
+        """仅在 PCT 楼梯漂移期间同步携物，避免 root 写姿态时苹果留在原地。"""
+
+        requested = bool(action.metadata.get("navigation_carry_object_follow", False))
+        if requested and (
+            not navigation_base_lock_requested or root_target_xyzyaw is None
+        ):
+            raise RuntimeError(
+                "navigation carry object follow requires an active navigation base pose lock"
+            )
+        if requested:
+            self._navigation_object_follow_root_target = tuple(
+                float(value) for value in root_target_xyzyaw
+            )
+            if not self._navigation_object_follow_active:
+                self._capture_navigation_object_follow()
+            self._update_navigation_object_follow_target()
+            return
+        if self._navigation_object_follow_active:
+            self._release_navigation_object_follow()
+
+    def _capture_navigation_object_follow(self) -> None:
+        """保存物体相对 TCP 的刚体变换，并让 PhysX 暂停自由落体。"""
+
+        if self._object is None or self._adapter is None:
+            raise RuntimeError("navigation carry object follow requires robot and object handles")
+        tcp_pose = self._read_tcp_pose()
+        if tcp_pose is None:
+            raise RuntimeError("navigation carry object follow requires live TCP pose")
+        tcp_position = tuple(float(value) for value in tcp_pose[:3])
+        tcp_quaternion = _quat_normalize_wxyz(
+            tuple(float(value) for value in tcp_pose[3:7])  # type: ignore[arg-type]
+        )
+        object_position_raw, object_quaternion_raw = self._object.get_world_pose()
+        object_position = tuple(float(value) for value in _as_tuple(object_position_raw))
+        object_quaternion = _quat_normalize_wxyz(
+            tuple(float(value) for value in _as_tuple(object_quaternion_raw))  # type: ignore[arg-type]
+        )
+        inverse_tcp = _quat_conjugate_wxyz(tcp_quaternion)
+        relative_position = _quat_rotate_vector_wxyz(
+            inverse_tcp,
+            (
+                object_position[0] - tcp_position[0],
+                object_position[1] - tcp_position[1],
+                object_position[2] - tcp_position[2],
+            ),
+        )
+        relative_quaternion = _quat_normalize_wxyz(
+            _quat_multiply_wxyz(inverse_tcp, object_quaternion)
+        )
+        self._navigation_object_relative_pose = (
+            *relative_position,
+            *relative_quaternion,
+        )
+        self._navigation_object_follow_active = True
+        sleep_report = self._set_object_sleeping(enabled=True)
+        self._metadata.update(
+            {
+                "used_object_teleport": True,
+                "used_kinematic_object_follow": True,
+                "navigation_object_follow_active": True,
+                "last_navigation_object_follow_report": {
+                    "transition": "enabled",
+                    "relative_pose_tcp": list(self._navigation_object_relative_pose),
+                    "sleep_report": sleep_report,
+                },
+            }
+        )
+
+    def _update_navigation_object_follow_target(self) -> None:
+        """用实时 TCP 姿态和下一 root 目标计算本控制步的物体世界位姿。"""
+
+        relative_pose = self._navigation_object_relative_pose
+        root_target = self._navigation_object_follow_root_target
+        if relative_pose is None or root_target is None or self._adapter is None:
+            raise RuntimeError("navigation carry object follow state is incomplete")
+        tcp_pose = self._read_tcp_pose()
+        if tcp_pose is None:
+            raise RuntimeError("navigation carry object follow requires live TCP pose")
+        robot = self._adapter.robot
+        root_position = tuple(float(value) for value in _as_tuple(robot.data.root_pos_w[0]))
+        root_quaternion = _quat_normalize_wxyz(
+            tuple(float(value) for value in _as_tuple(robot.data.root_quat_w[0]))  # type: ignore[arg-type]
+        )
+        tcp_position = tuple(float(value) for value in tcp_pose[:3])
+        tcp_quaternion = _quat_normalize_wxyz(
+            tuple(float(value) for value in tcp_pose[3:7])  # type: ignore[arg-type]
+        )
+        inverse_root = _quat_conjugate_wxyz(root_quaternion)
+        tcp_position_root = _quat_rotate_vector_wxyz(
+            inverse_root,
+            (
+                tcp_position[0] - root_position[0],
+                tcp_position[1] - root_position[1],
+                tcp_position[2] - root_position[2],
+            ),
+        )
+        tcp_quaternion_root = _quat_normalize_wxyz(
+            _quat_multiply_wxyz(inverse_root, tcp_quaternion)
+        )
+        target_root_position = (root_target[0], root_target[1], root_target[2])
+        target_root_quaternion = _quat_wxyz_from_rpy(0.0, 0.0, root_target[3])
+        rotated_tcp_position = _quat_rotate_vector_wxyz(
+            target_root_quaternion,
+            tcp_position_root,
+        )
+        target_tcp_position = (
+            target_root_position[0] + rotated_tcp_position[0],
+            target_root_position[1] + rotated_tcp_position[1],
+            target_root_position[2] + rotated_tcp_position[2],
+        )
+        target_tcp_quaternion = _quat_normalize_wxyz(
+            _quat_multiply_wxyz(
+                target_root_quaternion,
+                tcp_quaternion_root,
+            )
+        )
+        rotated_object_position = _quat_rotate_vector_wxyz(
+            target_tcp_quaternion,
+            (relative_pose[0], relative_pose[1], relative_pose[2]),
+        )
+        target_object_position = (
+            target_tcp_position[0] + rotated_object_position[0],
+            target_tcp_position[1] + rotated_object_position[1],
+            target_tcp_position[2] + rotated_object_position[2],
+        )
+        target_object_quaternion = _quat_normalize_wxyz(
+            _quat_multiply_wxyz(
+                target_tcp_quaternion,
+                tuple(relative_pose[3:7]),  # type: ignore[arg-type]
+            )
+        )
+        self._navigation_object_follow_target_pose = (
+            *target_object_position,
+            *target_object_quaternion,
+        )
+
+    def _release_navigation_object_follow(self) -> None:
+        """在楼梯漂移结束后恢复动态物理，并保留夹爪闭合产生的真实约束。"""
+
+        self._apply_active_navigation_object_follow(timing="before_release")
+        rigid_view = getattr(self._object, "_rigid_prim_view", None)
+        if rigid_view is None or not hasattr(rigid_view, "set_velocities"):
+            raise RuntimeError("navigation carry object follow requires rigid velocity API")
+        import torch
+
+        rigid_view.set_velocities(
+            torch.zeros(
+                (1, 6),
+                dtype=torch.float32,
+                device=getattr(self._runtime, "device", "cpu"),
+            )
+        )
+        wake_report = self._set_object_sleeping(enabled=False)
+        apply_count = int(self._metadata.get("navigation_object_follow_apply_count", 0))
+        self._navigation_object_follow_active = False
+        self._navigation_object_relative_pose = None
+        self._navigation_object_follow_root_target = None
+        self._navigation_object_follow_target_pose = None
+        self._metadata.update(
+            {
+                "navigation_object_follow_active": False,
+                "last_navigation_object_follow_report": {
+                    "transition": "disabled",
+                    "apply_count": apply_count,
+                    "wake_report": wake_report,
+                },
+            }
+        )
+
+    def _apply_active_navigation_object_follow(self, *, timing: str) -> None:
+        """把苹果写到当前 root 目标对应的夹持相对位姿。"""
+
+        if not self._navigation_object_follow_active:
+            return
+        target_pose = self._navigation_object_follow_target_pose
+        if target_pose is None or self._object is None:
+            raise RuntimeError("navigation carry object follow state is incomplete")
+        object_position = tuple(float(value) for value in target_pose[:3])
+        object_quaternion = tuple(float(value) for value in target_pose[3:7])
+        rigid_view = getattr(self._object, "_rigid_prim_view", None)
+        if (
+            rigid_view is None
+            or not hasattr(rigid_view, "set_world_poses")
+            or not hasattr(rigid_view, "set_velocities")
+        ):
+            raise RuntimeError("navigation carry object follow requires rigid pose APIs")
+        import torch
+
+        device = getattr(self._runtime, "device", "cpu")
+        rigid_view.set_world_poses(
+            positions=torch.tensor(
+                [object_position],
+                dtype=torch.float32,
+                device=device,
+            ),
+            orientations=torch.tensor(
+                [object_quaternion],
+                dtype=torch.float32,
+                device=device,
+            ),
+        )
+        rigid_view.set_velocities(
+            torch.zeros((1, 6), dtype=torch.float32, device=device)
+        )
+        apply_count = int(
+            self._metadata.get("navigation_object_follow_apply_count", 0)
+        ) + 1
+        self._metadata.update(
+            {
+                "navigation_object_follow_active": True,
+                "navigation_object_follow_apply_count": apply_count,
+                "last_navigation_object_follow_report": {
+                    "transition": "applied",
+                    "timing": timing,
+                    "apply_count": apply_count,
+                    "object_pose": [*object_position, *object_quaternion],
+                },
+            }
+        )
 
     def _apply_active_manipulation_base_lock(self, *, timing: str) -> None:
         if self._manipulation_base_lock_active:
@@ -758,6 +1118,7 @@ class IsaacLabNavigationRuntime:
                     },
                 }
             )
+        self._apply_active_navigation_object_follow(timing=timing)
         if self._manipulation_support_joint_lock_active:
             report = self._adapter.apply_support_joint_lock()
             if report.get("applied") is not True:
@@ -770,6 +1131,31 @@ class IsaacLabNavigationRuntime:
                     "manipulation_support_joint_lock_active": True,
                     "manipulation_support_joint_lock_apply_count": apply_count,
                     "last_manipulation_support_joint_lock_report": {
+                        **report,
+                        "timing": timing,
+                        "apply_count": apply_count,
+                    },
+                }
+            )
+        if self._navigation_joint_pose_lock_active:
+            if not hasattr(self._adapter, "apply_navigation_joint_pose_lock"):
+                raise RuntimeError("navigation joint pose lock adapter method is unavailable")
+            report = self._adapter.apply_navigation_joint_pose_lock()
+            if report.get("applied") is not True:
+                raise RuntimeError(f"navigation joint pose lock was not applied: {report}")
+            apply_count = int(
+                self._metadata.get("navigation_joint_pose_lock_apply_count", 0)
+            ) + 1
+            self._metadata.update(
+                {
+                    "used_navigation_joint_pose_lock": True,
+                    "used_direct_joint_state": (
+                        bool(self._metadata.get("used_direct_joint_state", False))
+                        or bool(report.get("uses_direct_joint_state", False))
+                    ),
+                    "navigation_joint_pose_lock_active": True,
+                    "navigation_joint_pose_lock_apply_count": apply_count,
+                    "last_navigation_joint_pose_lock_report": {
                         **report,
                         "timing": timing,
                         "apply_count": apply_count,
@@ -2555,7 +2941,11 @@ class IsaacLabNavigationRuntime:
             self._metadata["last_direct_arm_action_override_disable_report"] = disable_report
             arm_control_mode = "independent_position_target"
             direct_override_enabled = False
-        self._adapter.set_arm_joint_target(target)
+        arm_velocity_hold = bool(metadata.get("segment_type") == "post_motion_hold")
+        self._adapter.set_arm_joint_target(
+            target,
+            hold_velocity=arm_velocity_hold,
+        )
         self._pending_arm_tracking_target = {
             "source": action.source,
             "pipeline_state": metadata.get("carry_arm_home_phase"),
@@ -2570,6 +2960,7 @@ class IsaacLabNavigationRuntime:
             "arm_control_mode": arm_control_mode,
             "direct_arm_action_override": direct_override_enabled,
             "arm_action_indices": action_indices,
+            "arm_velocity_hold": arm_velocity_hold,
             # 这里只替换 policy action 槽，禁止通过 direct joint state 制造执行结果。
             "uses_direct_joint_state": False,
             "world_step_owned_by_pipeline": True,

@@ -494,6 +494,30 @@ def _build_parser() -> argparse.ArgumentParser:
         help="距离楼梯漂移段末端多少米内视为完成并恢复普通导航。",
     )
     parser.add_argument(
+        "--pct-stair-float-approach-distance",
+        type=float,
+        default=NavigationSettings().pct_stair_float_approach_distance_m,
+        help="PCT 楼梯漂移向入口前方扩展的距离，用于覆盖窄通道。",
+    )
+    parser.add_argument(
+        "--pct-stair-float-exit-distance",
+        type=float,
+        default=NavigationSettings().pct_stair_float_exit_distance_m,
+        help="PCT 楼梯漂移向二楼出口方向继续扩展的距离。",
+    )
+    parser.add_argument(
+        "--pct-stair-float-settle-time",
+        type=float,
+        default=NavigationSettings().pct_stair_float_settle_time_s,
+        help="PCT 楼梯漂移完成后保持 root 与全身关节锁的稳定时间。",
+    )
+    parser.add_argument(
+        "--pct-stair-float-min-root-z-offset",
+        type=float,
+        default=NavigationSettings().pct_stair_float_min_root_z_offset_m,
+        help="PCT 楼梯漂移期间 root 高度相对 PCT 地面路径的最小偏移。",
+    )
+    parser.add_argument(
         "--goal-z-tolerance",
         type=float,
         default=0.35,
@@ -777,6 +801,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             pct_stair_float_completion_radius_m=float(
                 args.pct_stair_float_completion_radius
+            ),
+            pct_stair_float_approach_distance_m=float(
+                args.pct_stair_float_approach_distance
+            ),
+            pct_stair_float_exit_distance_m=float(
+                args.pct_stair_float_exit_distance
+            ),
+            pct_stair_float_settle_time_s=float(
+                args.pct_stair_float_settle_time
+            ),
+            pct_stair_float_min_root_z_offset_m=float(
+                args.pct_stair_float_min_root_z_offset
             ),
             goal_z_tolerance=float(args.goal_z_tolerance),
         ),

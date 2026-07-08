@@ -47,6 +47,8 @@ class DWAConfig:
     enforce_path_deviation_limit: bool = False
     initial_alignment_path_deviation_limit: float | None = None
     path_recovery_deviation_limit: float | None = None
+    near_goal_path_deviation_limit: float | None = None
+    near_goal_path_deviation_distance: float | None = None
     preserve_sharp_corners: bool = False
     corner_angle_threshold: float = 0.45
     corner_waypoint_tolerance: float = 0.08
@@ -208,6 +210,16 @@ class DWAController:
             path_deviation_limit = max(
                 path_deviation_limit,
                 float(self.config.path_recovery_deviation_limit),
+            )
+        if (
+            self.config.near_goal_path_deviation_limit is not None
+            and self.config.near_goal_path_deviation_distance is not None
+            and distance_to_goal <= self.config.near_goal_path_deviation_distance
+        ):
+            # 近目标阶段优先让机器人收敛到真实 goal，同时仍保留碰撞检查。
+            path_deviation_limit = max(
+                path_deviation_limit,
+                float(self.config.near_goal_path_deviation_limit),
             )
 
         best_command = np.zeros(3, dtype=np.float32)

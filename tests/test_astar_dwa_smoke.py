@@ -378,6 +378,37 @@ class AStarDwaSmokeTest(unittest.TestCase):
         self.assertFalse(strict_debug.path_recovery_active)
         self.assertAlmostEqual(strict_debug.path_deviation_limit_used, 0.14)
 
+    def test_dwa_near_goal_allows_final_convergence_off_sparse_path(self) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((100, 100), dtype=bool),
+            0.05,
+            (-1.0, -1.0, 0.0),
+        )
+        controller = DWAController(
+            [(0.0, 0.0), (2.0, 0.0)],
+            grid,
+            DWAConfig(
+                control_dt=0.05,
+                lookahead_distance=0.12,
+                goal_tracking_distance=0.80,
+                path_deviation_limit=0.14,
+                enforce_path_deviation_limit=True,
+                path_recovery_deviation_limit=0.35,
+                near_goal_path_deviation_limit=0.75,
+                near_goal_path_deviation_distance=0.65,
+            ),
+        )
+
+        command, debug = controller.compute_command(
+            (1.60, 0.50, 0.0),
+            (0.0, 0.0),
+        )
+
+        self.assertTrue(debug.path_recovery_active)
+        self.assertAlmostEqual(debug.path_deviation_limit_used, 0.75)
+        self.assertGreater(debug.feasible_candidates, 0)
+        self.assertLess(debug.path_deviation_rejections, debug.sampled_candidates)
+
     def test_pct_executor_refines_sparse_path_with_local_map(self) -> None:
         occupancy = np.zeros((40, 40), dtype=bool)
         occupancy[:, 15] = True
@@ -552,12 +583,20 @@ class AStarDwaSmokeTest(unittest.TestCase):
             status["dwa_limits"]["path_recovery_deviation_limit"],
             0.35,
         )
+        self.assertAlmostEqual(
+            status["dwa_limits"]["near_goal_path_deviation_limit"],
+            0.75,
+        )
+        self.assertAlmostEqual(
+            status["dwa_limits"]["near_goal_path_deviation_distance"],
+            0.65,
+        )
         self.assertTrue(status["dwa_limits"]["preserve_sharp_corners"])
         self.assertAlmostEqual(
             status["dwa_limits"]["corner_waypoint_tolerance"],
             0.18,
         )
-        self.assertAlmostEqual(status["dwa_limits"]["rotate_in_place_angle"], 0.45)
+        self.assertAlmostEqual(status["dwa_limits"]["rotate_in_place_angle"], 1.60)
         self.assertEqual(status["dwa_limits"]["max_infeasible_recomputes"], 8)
 
     def test_pct_carry_stair_float_freezes_base_only_on_stair_segment(self) -> None:
@@ -599,6 +638,9 @@ class AStarDwaSmokeTest(unittest.TestCase):
             stair_float_activation_radius_m=0.45,
             stair_float_completion_radius_m=0.05,
             stair_float_min_z_delta_m=0.75,
+            stair_float_approach_distance_m=0.0,
+            stair_float_exit_distance_m=0.0,
+            stair_float_settle_time_s=0.0,
         )
         executor.reset(plan)
         state = SimulationState(
@@ -613,6 +655,8 @@ class AStarDwaSmokeTest(unittest.TestCase):
         self.assertEqual(first.source, "navigation_stair_float")
         self.assertTrue(first.metadata["navigation_base_pose_lock"])
         self.assertTrue(first.metadata["navigation_support_joint_lock"])
+        self.assertTrue(first.metadata["navigation_full_body_joint_lock"])
+        self.assertTrue(first.metadata["navigation_carry_object_follow"])
         first_target = first.metadata["navigation_base_pose_lock_xyzyaw"]
         self.assertGreater(first_target[2], 0.30)
 
@@ -668,6 +712,112 @@ class AStarDwaSmokeTest(unittest.TestCase):
                 "navigation_terminal_pose",
                 "navigation_completed",
             },
+        )
+
+    def test_pct_carry_stair_float_extends_exit_and_settles_before_release(self) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((100, 100), dtype=bool),
+            0.10,
+            (-1.0, -1.0, 0.0),
+        )
+        path_3d = (
+            (0.0, 0.0, 0.0),
+            (0.5, 0.0, 0.0),
+            (1.0, 0.0, 0.5),
+            (1.0, 0.5, 1.0),
+            (1.0, 1.0, 1.0),
+            (1.0, 1.5, 1.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=1.0, y=1.5, z=1.0, yaw=0.0),
+            waypoints=tuple((point[0], point[1]) for point in path_3d),
+            metadata={
+                "planner": "pct",
+                "path_3d": path_3d,
+                "slice_start": 8,
+                "slice_end": 12,
+                "execution_phase": "carry_nav_to_place",
+            },
+        )
+        executor = DwaNavExecutor(
+            grid_map=grid,
+            local_clearance_radius=0.0,
+            dwa_config=DWAConfig(control_dt=0.10),
+            stair_float_enabled=True,
+            stair_float_speed_mps=2.0,
+            stair_float_activation_radius_m=0.50,
+            stair_float_completion_radius_m=0.01,
+            stair_float_min_z_delta_m=0.75,
+            stair_float_approach_distance_m=0.0,
+            stair_float_exit_distance_m=0.75,
+            stair_float_settle_time_s=0.20,
+        )
+        executor.reset(plan)
+
+        status = executor.status()
+        self.assertEqual(status["stair_float"]["end"], [1.0, 1.5, 1.0])
+        self.assertEqual(status["stair_float"]["path_point_count"], 5)
+
+        state = SimulationState(
+            step_index=0,
+            timestamp=0.0,
+            robot_root_pose=(0.5, 0.0, 0.20, 1.0, 0.0, 0.0, 0.0),
+            robot_root_velocity=(0.0,) * 6,
+        )
+        action = executor.compute_action(state)
+        sources = [action.source]
+        for step_index in range(1, 20):
+            target = action.metadata["navigation_base_pose_lock_xyzyaw"]
+            yaw = float(target[3])
+            state = SimulationState(
+                step_index=step_index,
+                timestamp=0.10 * step_index,
+                robot_root_pose=(
+                    float(target[0]),
+                    float(target[1]),
+                    float(target[2]),
+                    math.cos(yaw / 2.0),
+                    0.0,
+                    0.0,
+                    math.sin(yaw / 2.0),
+                ),
+                robot_root_velocity=(0.0,) * 6,
+            )
+            action = executor.compute_action(state)
+            sources.append(action.source)
+            if action.source == "navigation_stair_float_completed":
+                break
+
+        self.assertEqual(action.source, "navigation_stair_float_completed")
+        self.assertTrue(action.metadata["navigation_base_pose_lock"])
+
+        target = action.metadata["navigation_base_pose_lock_xyzyaw"]
+        yaw = float(target[3])
+        settle_state = SimulationState(
+            step_index=len(sources),
+            timestamp=0.10 * len(sources),
+            robot_root_pose=(
+                float(target[0]),
+                float(target[1]),
+                float(target[2]),
+                math.cos(yaw / 2.0),
+                0.0,
+                0.0,
+                math.sin(yaw / 2.0),
+            ),
+            robot_root_velocity=(0.0,) * 6,
+        )
+        settle_action = executor.compute_action(settle_state)
+
+        self.assertEqual(settle_action.source, "navigation_stair_float_settle")
+        self.assertTrue(settle_action.metadata["navigation_base_pose_lock"])
+        self.assertTrue(settle_action.metadata["navigation_support_joint_lock"])
+        self.assertTrue(settle_action.metadata["navigation_full_body_joint_lock"])
+        self.assertFalse(
+            settle_action.metadata["navigation_stair_float_root_only_settle"]
+        )
+        self.assertTrue(
+            settle_action.metadata["navigation_carry_object_follow"]
         )
 
     def test_pct_carry_stair_entry_recovery_handles_measured_lateral_drift(self) -> None:
@@ -801,6 +951,87 @@ class AStarDwaSmokeTest(unittest.TestCase):
         self.assertAlmostEqual(
             executor.status()["map_selection"]["route_corridor_radius_m"],
             0.24,
+        )
+
+    def test_pct_carry_stair_float_includes_flat_stairwell_approach(self) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((140, 140), dtype=bool),
+            0.1,
+            (-5.0, -1.0, 0.0),
+        )
+        path_3d = (
+            (-3.4785, 6.6564, 0.0),
+            (-3.2785, 6.4564, 0.0),
+            (-3.2785, 5.6564, 0.0),
+            (-2.8785, 5.0564, 0.0),
+            (-1.6785, 4.8564, 0.0),
+            (-0.6785, 4.6564, 0.0),
+            (0.1215, 4.6564, 0.0),
+            (0.5215, 4.6564, 0.0),
+            (0.9215, 5.0564, 0.0),
+            (1.3215, 5.0564, 0.0),
+            (1.5215, 5.2564, 0.0),
+            (1.5215, 5.8564, 0.0),
+            (1.5215, 6.6564, 0.5),
+            (1.7215, 7.6564, 1.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=1.7215, y=7.6564, z=1.0, yaw=0.0),
+            waypoints=tuple((point[0], point[1]) for point in path_3d),
+            metadata={
+                "planner": "pct",
+                "path_3d": path_3d,
+                "slice_start": 8,
+                "slice_end": 15,
+                "execution_phase": "carry_nav_to_place",
+            },
+        )
+        executor = DwaNavExecutor(
+            grid_map=grid,
+            local_clearance_radius=0.0,
+            dwa_config=DWAConfig(control_dt=0.05),
+            stair_float_enabled=True,
+            stair_float_speed_mps=0.5,
+            stair_float_activation_radius_m=0.45,
+            stair_float_min_z_delta_m=0.75,
+            stair_float_approach_distance_m=1.80,
+        )
+
+        executor.reset(plan)
+        status = executor.status()
+
+        self.assertEqual(status["stair_float"]["start"][:2], [0.5215, 4.6564])
+        self.assertEqual(status["stair_float"]["path_point_count"], 7)
+
+        state = SimulationState(
+            step_index=0,
+            timestamp=0.0,
+            robot_root_pose=(
+                0.8625,
+                4.6308,
+                0.2088,
+                math.cos(0.1888 / 2.0),
+                0.0,
+                0.0,
+                math.sin(0.1888 / 2.0),
+            ),
+            robot_root_velocity=(0.0,) * 6,
+        )
+        action = executor.compute_action(state)
+        target = action.metadata["navigation_base_pose_lock_xyzyaw"]
+
+        self.assertEqual(action.source, "navigation_stair_float")
+        self.assertTrue(action.metadata["navigation_base_pose_lock"])
+        self.assertGreater(target[2], 0.15)
+        self.assertAlmostEqual(
+            executor.status()["stair_float"]["root_z_offset_m"],
+            0.2088,
+            delta=0.05,
+        )
+        self.assertAlmostEqual(
+            executor.status()["stair_float"]["measured_root_z_offset_m"],
+            0.2088,
+            delta=0.05,
         )
 
     def test_pct_carry_stops_after_repeated_collision_only_windows(self) -> None:

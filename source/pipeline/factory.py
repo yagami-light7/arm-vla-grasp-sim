@@ -42,7 +42,7 @@ def create_full_physics_pipeline(
         limits=(
             replace(
                 config.limits,
-                navigation=max(config.limits.navigation, 9000),
+                navigation=max(config.limits.navigation, 12000),
                 episode=max(config.limits.episode, 24000),
             )
             if pct_multifloor
