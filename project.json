@@ -2,8 +2,8 @@
   "project": "arm_vla_pct",
   "branch": "pct",
   "goal": "将 flat A* 全局导航替换为 PCT 多楼层规划器，并接入新的 RL locomotion checkpoint 配置。",
-  "current_phase": "phase_56_arm_baseline_drive_restored_cuda_blocked",
-  "last_updated": "2026-07-09 01:09:25",
+  "current_phase": "phase_72_scene_camera_light_default",
+  "last_updated": "2026-07-09 22:37:53",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -213,7 +213,47 @@
     "pct_stair_float_exit_default_10_5m_added": true,
     "pct_multifloor_place_base_goal_safe_standoff_added": true,
     "pct_dog_only_arm_baseline_drive_restored": true,
-    "pct_headless_validation_blocked_by_cuda999": true
+    "pct_headless_validation_blocked_by_cuda999": true,
+    "pct_dwa_large_heading_creeping_turn_added": true,
+    "pct_stair_float_exit_default_0_75m_verified_offline": true,
+    "pct_dog_only_arm_implicit_drive_restored": true,
+    "pct_dwa_preemptive_path_recovery_added": true,
+    "pct_stair_float_activation_jump_fixed": true,
+    "pct_carry_offline_replay_to_place_verified": true,
+    "pct_headless_validation_blocked_by_cuda_unknown_error": true,
+    "pct_phase58_targeted_tests_passing": true,
+    "pct_phase59_headless_attempted": true,
+    "pct_phase59_headless_reached_pipeline_created": true,
+    "pct_phase59_headless_runtime_steps": 0,
+    "pct_phase59_blocked_by_cuda999": true,
+    "pct_phase59_navigation_behavior_verified": false,
+    "pct_phase60_headless_attempted": true,
+    "pct_phase60_headless_reached_pipeline_created": true,
+    "pct_phase60_runtime_steps": 0,
+    "pct_phase60_same_as_phase59_build_stage": true,
+    "pct_phase60_blocked_by_cuda999": true,
+    "pct_phase60_navigation_behavior_verified": false,
+    "pct_phase60_pct_probe_verified": true,
+    "pct_phase60_targeted_tests_passing": true,
+    "pct_phase61_cuda_recovered": true,
+    "pct_phase61_headless_reached_reset_episode": true,
+    "pct_phase61_failed_base_settle_low_root_z": true,
+    "pct_start_z_restored_to_root_height_0_36742": true,
+    "pct_phase62_headless_entered_navigation": true,
+    "pct_phase62_nav_to_pick_failed_near_goal_stall": true,
+    "pct_phase63_nav_to_pick_handoff_verified": true,
+    "pct_phase63_pick_success_verified": true,
+    "pct_phase63_stair_float_completed": true,
+    "pct_phase63_nav_to_place_failed_after_stair_release": true,
+    "pct_current_pick_place_stable": false,
+    "pct_current_cross_floor_navigation_stable": false,
+    "pct_phase64_nav_to_pick_verified": true,
+    "pct_phase64_pick_success_verified": true,
+    "pct_phase64_stair_float_release_height_fixed": true,
+    "pct_phase64_nav_to_place_failed_after_release_environment_terminated": true,
+    "scene_camera_light_default_added": true,
+    "scene_stage_light_fallback_added": true,
+    "phase72_lighting_targeted_tests_passing": true
   },
   "local_assets": {
     "rl_policy_source_dir": null,
@@ -4735,6 +4775,411 @@
         "用户确认并结束遗留 GPU Python/Isaac/Kit/cuRobo 进程或重启 CUDA/图形会话后，复跑同一条 --pct-stair-float full_physics 命令。",
         "如果复跑进入 verify_pick_success 后仍 object_too_far_from_tcp，继续从 gripper close target、苹果碰撞和 pick retreat object pose 分析，而不是再随意调 actuator gain。",
         "如果 pick 稳定并进入 nav2place，继续检查 stair-float 后 F2 handoff、place planning 和 place 执行。"
+      ]
+    },
+    {
+      "time": "2026-07-09 01:51:40",
+      "summary": "继续尝试 headless 验收；清理疑似遗留 GPU Python 进程后 CUDA 仍处于 unknown error 状态，无法启动 Isaac Sim。基于离线日志和用户反馈，修复 DWA 大转角只能原地转的问题，新增低速边走边转候选，并验证当前 stair-float 只覆盖楼梯段与短 F2 出口缓冲。",
+      "files_changed": [
+        "project.json",
+        "source/navigation/navlib/dwa.py",
+        "tests/test_astar_dwa_smoke.py"
+      ],
+      "problems": [
+        {
+          "problem": "headless full_physics 仍无法进行真实 Isaac 验收。",
+          "root_cause": "Torch 最小 CUDA probe 报 CUDA unknown error；nvidia-smi 显示 GPU 无计算进程且显存约 33MiB，但 CUDA runtime 仍不可用。已 SIGTERM 结束唯一占用 GPU 的 /data/.../python 进程，GPU reset 又因权限不足失败，说明当前需要外部 CUDA/驱动会话恢复。",
+          "fix": "没有继续做高风险驱动操作；将本轮真实验收标记为 CUDA 阻断，并继续做可验证的离线算法修复和测试。",
+          "prevention": "每轮真实 Isaac 验收前先跑 Torch CUDA probe；若 CUDA999/unknown error 出现，应先由用户重启 Isaac/Kit/CUDA 会话或整机，再跑长仿真。"
+        },
+        {
+          "problem": "导航转角处可能出现直走、原地转、转过头、再直走的频繁切换。",
+          "root_cause": "DWA 在 abs(heading_error) > rotate_in_place_angle 时只采样 vx=0，导致大转角处没有边走边转候选，只能原地转向。",
+          "fix": "修改 DWA 速度采样：大 heading error 时保留 vx=0 候选，同时加入低速 creeping turn 候选；碰撞/路径偏差评分仍可选择原地转，安全场景则可边走边转。",
+          "prevention": "新增单测 test_dwa_large_heading_error_keeps_creeping_turn_candidates，防止后续又回退成大角度只允许原地转。"
+        },
+        {
+          "problem": "stair-float 曾有到达 F2 后仍冻结漂浮过远的风险。",
+          "root_cause": "历史配置曾将出口距离临时拉长到覆盖 F2 末段，虽然能规避 policy 弱点，但违背“上完楼梯后解冻继续导航”的目标。",
+          "fix": "当前配置确认为 approach=1.80m、exit=0.75m；离线抽取 stair-float path 起点 (0.5215,4.6564,0.0)、终点 (2.5215,6.6564,3.0)，z 单调上升、最大 z step=0.5m、没有继续漂到 place。",
+          "prevention": "后续如果再调 exit_distance，必须同时运行 stair-float path 抽取检查并报告冻结段终点。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "nvidia-smi; /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -c \"import torch; ...\"",
+          "result": "failed",
+          "note": "GPU 无计算进程但 Torch CUDA 初始化仍失败：cuda_available=False，CUDA unknown error。"
+        },
+        {
+          "command": "kill -TERM 54319",
+          "result": "passed",
+          "note": "在用户批准的提权命令中结束唯一占用 GPU 的 /data/.../python 进程；显存从约 607MiB 降到 33MiB，但 CUDA runtime 未恢复。"
+        },
+        {
+          "command": "nvidia-smi --gpu-reset -i 0",
+          "result": "failed",
+          "note": "权限不足：Unable to reset GPU ... Insufficient Permissions。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/navigation/probe_pct_plan.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json ...",
+          "result": "passed",
+          "note": "PCT 离线探针成功：pick_to_place 为 astar_3d_via_gateway_strict_monotonic，path_3d_count=46，slice 9->15。"
+        },
+        {
+          "command": "离线 _extract_stair_float_path(..., approach=1.80, exit=0.75)",
+          "result": "passed",
+          "note": "冻结段 18 个点，从 (0.5215,4.6564,0.0) 到 (2.5215,6.6564,3.0)，z 单调上升，最大 z step=0.5m。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_astar_dwa_smoke.py tests/test_isaaclab_navigation_runtime.py::... tests/navigation/test_locomotion_policy_config.py::... -q",
+          "result": "passed",
+          "note": "37 passed，覆盖 DWA、stair-float、关节锁定、携物跟随和 PCT locomotion config。"
+        }
+      ],
+      "next_steps": [
+        "恢复 CUDA 后立即复跑 full_physics headless --pct-stair-float，确认是否超过上一轮 verify_pick_success/object_too_far_from_tcp，并是否成功上楼梯。",
+        "如果 pick 再次失败，优先读取 summary/events/frames 中 object_tcp_distance、gripper target/actual 和 retreat_object 阶段苹果位姿。",
+        "如果进入 nav2place，重点检查 DWA debug 中 best_linear_velocity/best_angular_velocity 是否同时非零，以及 stair_float status 的 start/end/progress。",
+        "如果到 place，再解析 place_plan 与 arm tracking final error，继续对齐原 baseline 的机械臂规控。"
+      ]
+    },
+    {
+      "time": "2026-07-09 03:04:56",
+      "summary": "根据用户确认的 baseline，将 PCT DogOnly 机械臂 actuator 从 DCMotor 改回 baseline implicit drive，同时修复 stair-float 触发首帧横向跳变和 F2 handoff 后 DWA 贴近 path deviation 边界时选零速度的死锁。",
+      "files_changed": [
+        "project.json",
+        "source/navigation/executor.py",
+        "source/navigation/navlib/dwa.py",
+        "source/robot_lab/robot_lab/assets/go2_x5.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_astar_dwa_smoke.py"
+      ],
+      "problems": [
+        {
+          "problem": "PCT DogOnly 机械臂虽然 stiffness=1000、damping=50，但 actuator 类型仍是 DCMotorCfg，和原 baseline 的 ImplicitActuatorCfg 不一致。",
+          "root_cause": "DCMotorCfg 会额外引入电机速度/力矩曲线限幅；DogOnly policy 又不输出机械臂 action，机械臂主要依赖 pipeline 独立 position target 跟踪，类型不一致会放大 arm_joint4 等腕部滞后。",
+          "fix": "将 GO2_X5_PCT_DOG_ONLY_CFG 的 arm 改为 ImplicitActuatorCfg(joint_names_expr=[\"arm_joint[1-6]\"], effort_limit_sim=100.0, velocity_limit_sim=10.0, stiffness=1000.0, damping=50.0)，gripper 和腿部配置保持不变。",
+          "prevention": "新增测试只截取 GO2_X5_PCT_DOG_ONLY_CFG 的 arm 段，明确禁止 PCT DogOnly arm 回退到 DCMotorCfg。"
+        },
+        {
+          "problem": "stair-float 在触发半径内启动时，第一帧可能把 root pose 直接跳到 PCT 楼梯折线起点。",
+          "root_cause": "触发半径允许机器人在楼梯段起点前进入漂移，但原逻辑将进度投影到折线首段并立即输出该折线点对应 root target，导致最多约 0.45m 横向跳变。",
+          "fix": "激活 stair-float 时如果当前 root 到投影目标超过 0.05m，就把当前 pose 对应的 path point 插入为临时首点，从当前点平滑进入 PCT 楼梯折线。",
+          "prevention": "新增 test_pct_carry_stair_float_starts_from_activation_pose_without_xy_jump，锁定第一帧 root lock target 必须贴近激活位姿。"
+        },
+        {
+          "problem": "stair-float 完成释放到 F2 后，DWA 可能在 path deviation 硬边界内侧反复选择零速度，导致机器人停在同一个点。",
+          "root_cause": "当前位置仍略小于 0.14m 偏差限制，因此 recovery 尚未激活；但所有前进 rollout 会轻微越界并被硬阈值拒绝，零速度反而成为最高分候选。",
+          "fix": "DWA path recovery 在 current_path_distance 达到 90% 硬限制时提前激活，恢复到 80% 以下后退出；这样只在贴边状态放宽恢复余量，不全局放宽窄门约束。",
+          "prevention": "新增 test_dwa_path_recovery_activates_before_zero_velocity_deadlock，并用真实 task 的纯 Python 离线回放验证 stair-float 后 DWA 可继续到 place。"
+        },
+        {
+          "problem": "本轮仍无法启动真实 Isaac headless 验收。",
+          "root_cause": "nvidia-smi 显示 GPU 仅剩 Xorg 占用 33MiB，但 sandbox 和非 sandbox 的 Torch CUDA probe 都报 CUDA unknown error，cuda_available=False。",
+          "fix": "没有继续做 GPU reset 等高风险操作；本轮只完成纯 Python/PCT/DWA/配置层验证。",
+          "prevention": "真实验收前先跑 Torch CUDA probe；如仍是 CUDA unknown error，需要用户重启 Isaac/Kit/CUDA 会话或整机后再运行 pipeline。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/interfaces/navigation.py source/navigation/pct_adapter.py source/navigation/executor.py source/navigation/navlib/dwa.py source/pipeline/config.py source/pipeline/navigation_smoke.py scripts/pipeline/run_full_physics_pipeline.py source/robot_lab/robot_lab/assets/go2_x5.py",
+          "result": "passed",
+          "note": "相关导航、配置、pipeline CLI 和机器人资产语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation -q",
+          "result": "passed",
+          "note": "58 passed，覆盖 PCT 配置、planner selection、frame utils 等导航单元测试。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_astar_dwa_smoke.py -q",
+          "result": "passed",
+          "note": "35 passed，覆盖 DWA、carry path recovery、stair-float 起点和执行器行为。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_astar_dwa_smoke.py tests/navigation/test_locomotion_policy_config.py::test_pct_robot_config_isolated_from_default_single_floor_asset tests/test_isaaclab_navigation_runtime.py::IsaacLabNavigationRuntimeActionTest::test_go2_x5_arm_uses_implicit_drive_for_manipulation_tracking -q",
+          "result": "passed",
+          "note": "37 passed，专项覆盖 PCT DogOnly arm implicit drive、DWA 和 runtime baseline arm 测试。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/navigation/probe_pct_plan.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json ...",
+          "result": "passed",
+          "note": "PCT 探针成功：start_to_pick 为 same_floor_direct；pick_to_place 为 astar_3d_via_gateway_strict_monotonic，path_3d_count=46，slice 9->15。"
+        },
+        {
+          "command": "纯 Python create_navigation_components + PCT plan + DwaNavExecutor carry 离线回放 15000 tick",
+          "result": "passed",
+          "note": "stair-float 约 2863 tick，释放后 DWA 继续前进并在 tick≈9574 达到 place XY 容差；activation_inserted_current_point=True，首帧目标无 0.45m 横跳。"
+        },
+        {
+          "command": "nvidia-smi; /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -c \"import torch; ...\"（sandbox 与 require_escalated 各一次）",
+          "result": "failed",
+          "note": "nvidia-smi 正常但 Torch CUDA 初始化仍报 CUDA unknown error，无法运行真实 Isaac headless pipeline。"
+        }
+      ],
+      "next_steps": [
+        "用户重启 CUDA/Isaac/图形会话后，先跑 Torch CUDA probe；可用后再复跑 full_physics --pct-stair-float。",
+        "真实复跑重点观察 pick 后 arm_joint4 是否不再滞后、stair-float 上楼段关节是否保持姿态、释放到 F2 后 DWA 是否继续到 place。",
+        "如果真实 Isaac 中仍发生碰撞或停滞，优先读取 summary.json/data.csv/samples.jsonl 中 nav executor 的 path_recovery_active、path_deviation_limit_used、stair_float 状态和 arm_tracking_peak_report。"
+      ]
+    },
+    {
+      "time": "2026-07-09 03:25:05",
+      "summary": "按目标实际启动 headless full_physics PCT pipeline；Isaac App 启动并创建 FullPhysicsPipeline，但 build_stage 创建 IsaacLab env 时 CUDA 999/unknown error 导致 torch.cuda 初始化失败，未进入导航 tick。",
+      "files_changed": [
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "本轮 headless 验收仍无法判断机器狗是否相比上次往前、是否成功上楼梯。",
+          "root_cause": "CUDA runtime 仍处于 bad state：nvidia-smi 只显示 Xorg 占用 33MiB，但 sandbox 与非 sandbox 的 Torch probe 均 cuda_available=False；Isaac 日志显示 CUDA error 999、Failed to query CUDA device count、Skipping NVIDIA GPU due CUDA being in bad state。",
+          "fix": "实际执行 headless pipeline 并生成 outputs/headless_validation_phase59/startup_failure.json；确认失败发生在 build_stage/gym.make/torch.zeros(cuda:0)，duration_steps=0，没有进入 PCT/DWA/pick/carry 逻辑。",
+          "prevention": "下次真实验收前必须先跑 Torch CUDA probe；如果仍是 CUDA unknown error，需要先重启 Isaac/Kit/CUDA 会话或整机，再启动 pipeline。"
+        },
+        {
+          "problem": "cuRobo planner server 在本轮也提前退出。",
+          "root_cause": "同一个 CUDA bad state 使 scripts/curobo/grasp_planner_server.py 中 torch.cuda.is_available 为 False，create_planner 明确报 CUDA 不可用。",
+          "fix": "未做代码绕行；保留 one-shot fallback 逻辑，但当前 IsaacLab env 本身已因 CUDA 失败无法创建。",
+          "prevention": "恢复 CUDA 后同时检查 /tmp/go2_x5_curobo_planner_server.log，确认 server_ready 后再解读 pick/place 规划问题。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "nvidia-smi",
+          "result": "passed",
+          "note": "GPU 枚举正常，RTX 4060 仅 Xorg 约 4MiB/总 33MiB 显存占用。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -c \"import torch; ...\"（sandbox 与 require_escalated 各一次）",
+          "result": "failed",
+          "note": "两次均 CUDA unknown error，cuda_available=False，device_count=1，device_name=no_cuda。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --global-planner pct --pct-no-fallback --policy-profile pct_multifloor --locomotion-checkpoint checkpoints/go2_x5/pct_multifloor/model_26000.pt --pct-stair-float --no-randomize-task --no-randomize-base-goal --navigation-visual-mode collision --headless --output-dir outputs/headless_validation_phase59",
+          "result": "failed",
+          "note": "真实 headless 启动失败：pipeline_created 后 build_stage 创建 IsaacLab env 时 torch.cuda 初始化 CUDA unknown error；summary duration_steps=0。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_astar_dwa_smoke.py::AStarDwaSmokeTest::test_dwa_path_recovery_activates_before_zero_velocity_deadlock tests/test_astar_dwa_smoke.py::AStarDwaSmokeTest::test_pct_carry_stair_float_starts_from_activation_pose_without_xy_jump tests/navigation/test_locomotion_policy_config.py::test_pct_robot_config_isolated_from_default_single_floor_asset -q",
+          "result": "passed",
+          "note": "3 passed in 0.21s；覆盖 DWA 提前恢复、楼梯 float 起点不跳变、PCT DogOnly 机械臂 actuator 配置。"
+        }
+      ],
+      "next_steps": [
+        "用户重启 CUDA/Isaac/图形会话或整机后，先运行 Torch CUDA probe；cuda_available=True 后复跑同一条 headless full_physics 命令。",
+        "复跑若进入导航，优先比较 state_trace 是否超过旧记录中的 verify_pick_success -> plan_nav_to_place，并检查 stair_float status 是否 active/completed。",
+        "复跑若进入 place，继续分析 arm_tracking_peak_report、object_tcp_distance 和 place verification，保证苹果不掉落。"
+      ]
+    },
+    {
+      "time": "2026-07-09 04:22:19",
+      "summary": "再次按目标启动 headless full_physics PCT pipeline，phase60 与 phase59 一样停在 build_stage，duration_steps=0；未进入 PCT/DWA/pick/carry，因此无法比较真实导航是否往前。离线 PCT 探针和 DWA/stair-float/机械臂配置回归仍通过。",
+      "files_changed": [
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "真实 headless IsaacSim 验收仍未进入导航阶段。",
+          "root_cause": "PyTorch CUDA probe 在普通 sandbox 内失败，sandbox 内 /dev/nvidia* 不可见；即使使用已批准的 sandbox 外 python -c probe，torch.cuda.is_available 仍为 False 并报 CUDA unknown error。IsaacSim 日志同样显示 CUDA error 999、Failed to query CUDA device count、Skipping NVIDIA GPU due CUDA being in bad state。",
+          "fix": "没有继续改导航代码或做 GPU reset；实际运行 pipeline 并记录 outputs/headless_validation_phase60/startup_failure.json，确认失败点仍是 IsaacLab env 创建时 torch.zeros(cuda:0) 触发 CUDA 初始化失败。",
+          "prevention": "真实验收前先运行 sandbox 外 Torch CUDA probe；只有 cuda_available=True 后再运行 full_physics。若 nvidia-smi 正常但 torch CUDA unknown，需要重启 CUDA/Isaac/图形会话或整机。"
+        },
+        {
+          "problem": "cuRobo planner server 本轮仍提前退出。",
+          "root_cause": "同一个 CUDA bad state 使 grasp_planner_server.py 中 torch.cuda.is_available=False，cuRobo create_planner 明确报 CUDA 不可用。",
+          "fix": "未做 one-shot 或 CPU fallback 绕行，因为 pipeline build_stage 本身已经无法创建 IsaacLab CUDA env。",
+          "prevention": "恢复 CUDA 后同时检查 /tmp/go2_x5_curobo_planner_server.log 中 server_ready，再解读 pick/place 规划稳定性。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "nvidia-smi",
+          "result": "passed",
+          "note": "GPU 可被 nvidia-smi 枚举，RTX 4060 约 33MiB 占用。"
+        },
+        {
+          "command": "torch CUDA probe in sandbox and require_escalated",
+          "result": "failed",
+          "note": "两次均 CUDA unknown error，cuda_available=False；因此真实 IsaacSim/CuRobo 均无法创建 CUDA context。"
+        },
+        {
+          "command": "scripts/pipeline/run_full_physics_pipeline.py phase60 headless full_physics pct stair-float",
+          "result": "failed",
+          "note": "真实 headless 启动失败：pipeline_created 后 build_stage 创建 IsaacLab env 时 torch CUDA 初始化失败；summary duration_steps=0，state_trace=[build_stage]。"
+        },
+        {
+          "command": "scripts/navigation/probe_pct_plan.py task multifloor pct assets to outputs/headless_validation_phase60/pct_probe.json",
+          "result": "passed",
+          "note": "PCT 探针通过：start_to_pick same_floor_direct；pick_to_place astar_3d_via_gateway_strict_monotonic，path_3d_count=46，slice 9->15。"
+        },
+        {
+          "command": "targeted pytest for DWA recovery, stair-float activation, PCT DogOnly actuator config",
+          "result": "passed",
+          "note": "3 passed in 0.21s；覆盖 DWA 提前恢复、楼梯 float 起点不跳变、PCT DogOnly 机械臂 actuator 配置。"
+        },
+        {
+          "command": "phase59 phase60 summary comparison script",
+          "result": "passed",
+          "note": "两轮均 final_state=build_stage、duration_steps=0、last_phase=pipeline_created；phase60 没有比 phase59 多进入任何 pipeline 状态。"
+        }
+      ],
+      "next_steps": [
+        "先在本机恢复 CUDA：重启 Isaac/Kit/图形会话或整机；然后用 sandbox 外 Torch CUDA probe 确认 cuda_available=True。",
+        "CUDA 恢复后复跑同一条 phase60 headless full_physics 命令；如果进入导航，再比较 state_trace 是否超过 verify_pick_success -> plan_nav_to_place，并检查 stair_float 是否 completed。",
+        "如果真实复跑进入 place 阶段，继续检查 arm_tracking_peak_report、object_tcp_distance、apple 掉落和 place verification。"
+      ]
+    },
+    {
+      "time": "2026-07-09 16:55:49",
+      "summary": "回答当前稳定性状态前复查最新 headless 验收：CUDA 已恢复，phase62 能进入 reset 和 nav_to_pick，但在距离 pick base goal 约 0.257m 处 stall/nav_collision，未进入 pick，更未验证 carry/nav2place/place。",
+      "files_changed": [
+        "project.json",
+        "tasks/nav_pick_place_apple_multifloor_pct.json",
+        "tests/navigation/test_multifloor_task_goal.py"
+      ],
+      "problems": [
+        {
+          "problem": "不能把当前 pipeline 判定为稳定 pick/place 或稳定跨楼层导航。",
+          "root_cause": "最新真实 headless full_physics phase62 的 state_trace 为 build_stage -> reset_episode -> plan_nav_to_pick -> exec_nav_to_pick -> failed；executor 在近 pick base goal 处检测到 stall/nav_collision，pick 还没有开始。",
+          "fix": "先前已将 task start.z 从 0.25 恢复到 0.36742，修复了 reset base_settle_timeout；phase62 暴露的是后续 nav_to_pick 近目标 stall，需要继续调 DWA 近目标验收/停滞逻辑或 pick base goal 站位。",
+          "prevention": "每次声称稳定前必须以最新 summary.json 的 success、state_trace、failure_reason 和 pick/place verification 为准，不能只依据早期 GUI 单次成功。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation/test_multifloor_task_goal.py tests/test_astar_dwa_smoke.py::AStarDwaSmokeTest::test_pct_carry_stair_float_starts_from_activation_pose_without_xy_jump tests/navigation/test_locomotion_policy_config.py::test_pct_robot_config_isolated_from_default_single_floor_asset -q",
+          "result": "passed",
+          "note": "5 passed in 0.30s；覆盖 start.z 语义、stair-float 起点不跳变、PCT DogOnly 机械臂 actuator 配置。"
+        },
+        {
+          "command": "phase62 headless full_physics PCT stair-float validation",
+          "result": "failed",
+          "note": "真实仿真进入 exec_nav_to_pick 后失败，failure_reason=nav_collision，distance_to_goal≈0.257m，未进入 pick/place。"
+        }
+      ],
+      "next_steps": [
+        "优先修复 nav_to_pick 近目标 stall/nav_collision：检查近目标 position_tolerance、collision/stall 判定和 pick base_goal 是否过近。",
+        "修复后复跑同一条 headless full_physics 命令，要求 state_trace 至少通过 verify_pick_success 再进入 nav_to_place。",
+        "只有完整跑到 exec_place/verification 后，才能把机械臂 pick/place 和跨楼层导航标记为稳定。"
+      ]
+    },
+    {
+      "time": "2026-07-09 17:58:57",
+      "summary": "复查 phase63 headless full_physics 输出后更新当前稳定性判断：nav_to_pick 已通过近目标 handoff 进入 pick，pick 执行和验证成功，pipeline 已进入 nav_to_place；但 nav_to_place 在 stair-float 完成并释放后发生 nav_path_deviation，未进入 place，因此不能判定完整 pick/place 或跨楼层导航稳定。",
+      "files_changed": [
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "当前 pipeline 还不能被判定为稳定完成 nav + pick + 跨楼层 carry + place。",
+          "root_cause": "phase63 的 state_trace 已到 verify_pick_success -> plan_nav_to_place -> exec_nav_to_place，但最终 failure_reason=nav_path_deviation；executor status 显示 stair_float completed 后机器人距离 place base goal 仍约 8.47m，并在 F2 释放后偏离路径。",
+          "fix": "本次只做状态记录和判断，没有修改导航逻辑；下一步应优先修复 stair-float 释放高度/释放位置与 F2 后续 DWA 接管的连续性。",
+          "prevention": "稳定性结论必须同时满足 summary.success=true、state_trace 进入并完成 exec_place/verify_place，以及 object_carry_verified/physical_manipulation_success 等字段通过；不能只依据 pick_success。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "读取 outputs/headless_validation_phase63/episode_000000/summary.json 和 events.jsonl",
+          "result": "passed",
+          "note": "确认 pick_verification_result.success=true，failure_reason=nav_path_deviation，最终停在 exec_nav_to_place。"
+        },
+        {
+          "command": "本次未运行新的 pytest 或 py_compile",
+          "result": "not_run",
+          "note": "本次是状态复查和记录更新，没有代码逻辑改动。"
+        }
+      ],
+      "next_steps": [
+        "修复 stair-float 完成后的释放高度和 F2 接管逻辑，避免释放后掉落/偏离路径。",
+        "复跑 headless full_physics，目标是 state_trace 通过 exec_nav_to_place 并进入 plan_place/exec_place。",
+        "只有完整完成 place verification 后，再把 pick/place 和跨楼层导航标记为稳定。"
+      ]
+    },
+    {
+      "time": "2026-07-09 18:33:57",
+      "summary": "根据最新 phase64 headless full_physics 输出更新稳定性判断：nav_to_pick 与 pick 再次成功，stair-float 释放高度已修到 F2 root 高度附近；但释放回 DWA/RL 后机器人失去稳定支撑并触发 navigation_environment_terminated，未进入 place，因此当前不能判定机械臂 pick/place 或跨楼层导航稳定。",
+      "files_changed": [
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "当前 full_physics 仍不能稳定完成 nav + pick + 跨楼层 carry + place。",
+          "root_cause": "phase64 中 pick_verification_result.success=true，楼梯段 stair_float completed；但释放回底层策略后 root z 从约 3.626m 快速下降，环境终止标记为 navigation_environment_terminated，说明楼梯漂浮释放后的腿部支撑/策略接管仍不连续。",
+          "fix": "本次状态回答只同步记录，没有修改执行逻辑；下一步应检查 stair-float full-body lock、腿部 nominal stand 姿态和 release/landing 接管策略。",
+          "prevention": "以后只有 summary.success=true 且 state_trace 完整通过 exec_nav_to_place、exec_place/verify_place，并且 physical_navigation_success/physical_manipulation_success 通过，才能标记为稳定。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "读取 outputs/headless_validation_phase64/episode_000000/summary.json 与 phase63/full_physics summary 关键字段",
+          "result": "passed",
+          "note": "确认 phase64 pick 成功，但最终 failure_reason=navigation_environment_terminated，state_trace 停在 exec_nav_to_place -> failed。"
+        },
+        {
+          "command": "本次未运行新的 pytest 或 py_compile",
+          "result": "not_run",
+          "note": "本次是稳定性状态核对和 project.json 记录更新，没有新增代码逻辑。"
+        }
+      ],
+      "next_steps": [
+        "优先排查 stair-float 释放后腿部支撑和 RL policy 接管：检查 navigation_full_body_joint_lock 是否冻结了非站立腿姿态。",
+        "修复后复跑 headless full_physics，目标是通过 exec_nav_to_place 并进入 plan_place/exec_place。",
+        "在完整 place verification 通过前，不把 pipeline 标记为稳定。"
+      ]
+    },
+    {
+      "time": "2026-07-09 22:37:53",
+      "summary": "暂停跨楼层导航验证，优先修复保存图像和 GUI 录制的场景灯光：新增 camera light 默认模式，并保留 stage light 回退入口。",
+      "files_changed": [
+        "source/simulation/lighting.py",
+        "source/simulation/isaaclab_runtime.py",
+        "source/pipeline/config.py",
+        "source/pipeline/__init__.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "tests/test_astar_dwa_smoke.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "当前多楼层场景的保存图像/视频依赖 stage 原灯光，视觉层和录制视角切换时亮度不稳定，且没有 camera light / stage light 的运行时切换入口。",
+          "root_cause": "IsaacLab runtime 只加载视觉 sublayer 和配置 viewport，没有独立的 lighting 配置；Camera0-8、front、wrist 等相机也没有随相机挂载的补光灯。",
+          "fix": "新增 source/simulation/lighting.py，在 camera 模式下给 /World 内 Camera prim 挂 camera_light SphereLight 并隐藏原 stage light；在 stage 模式下显示原 stage light 并隐藏 camera_light。新增 SceneLightingSettings 和 CLI 参数 --scene-light-mode/--camera-light-intensity/--camera-light-radius，并在 stage 加载、env spawn、env reset 后刷新灯光。",
+          "prevention": "后续视觉渲染策略通过统一 SceneLightingSettings 切换，不直接手改 USD 资产或在录制器里散落灯光逻辑；正式启用 Gaussian 视觉层时可用 --scene-light-mode stage 回到原场景灯。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/simulation/lighting.py source/simulation/isaaclab_runtime.py source/pipeline/config.py source/pipeline/__init__.py scripts/pipeline/run_full_physics_pipeline.py tests/test_isaaclab_navigation_runtime.py tests/test_astar_dwa_smoke.py tests/navigation/test_locomotion_policy_config.py",
+          "result": "passed",
+          "note": "语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_isaaclab_navigation_runtime.py::IsaacLabNavigationRuntimeActionTest::test_runtime_defaults_to_current_scene_camera tests/test_isaaclab_navigation_runtime.py::IsaacLabNavigationRuntimeActionTest::test_navigation_stair_float_updates_root_lock_target tests/test_astar_dwa_smoke.py::AStarDwaSmokeTest::test_pct_carry_stair_float_default_exit_matches_phase65_handoff tests/test_astar_dwa_smoke.py::AStarDwaSmokeTest::test_pct_carry_stair_float_release_settle_unlocks_root_before_dwa tests/navigation/test_locomotion_policy_config.py::test_pct_multifloor_dwa_commands_stay_inside_checkpoint_training_range -q",
+          "result": "passed",
+          "note": "5 passed in 0.35s；该命令在重命名测试函数前运行，覆盖 runtime 默认 camera light 和 stair-float 接管相关逻辑。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_astar_dwa_smoke.py::AStarDwaSmokeTest::test_pct_carry_stair_float_release_settle_drops_full_body_before_root_release -q",
+          "result": "passed",
+          "note": "1 passed in 0.17s；测试名修正后复跑通过。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py --help",
+          "result": "passed",
+          "note": "CLI 帮助中已出现 --scene-light-mode、--camera-light-intensity、--camera-light-radius。"
+        },
+        {
+          "command": "真实 Isaac Sim GUI/full_physics 灯光复测",
+          "result": "not_run",
+          "note": "本次只做轻量检查，未重新启动完整 Isaac GUI pipeline；需要用户本机复跑观察 Camera0/overview/front/wrist 图像亮度。"
+        }
+      ],
+      "next_steps": [
+        "用默认 camera light 复跑 GUI 或 headless 录制，检查 overview PNG/MP4 和 front/wrist 保存图像是否变亮且无异常曝光。",
+        "如果 camera light 过亮或过暗，优先调 --camera-light-intensity 和 --camera-light-radius，不改 USD 资产。",
+        "灯光确认后继续 phase65 路线：重点验证 F2 后解冻底盘并完成 nav2place/place。"
       ]
     }
   ],

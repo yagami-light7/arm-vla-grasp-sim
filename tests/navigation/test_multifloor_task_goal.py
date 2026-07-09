@@ -36,7 +36,8 @@ def test_prepare_episode_spec_preserves_multifloor_goal_fields() -> None:
         ),
     )
 
-    assert episode.start.z == 0.25
+    # start.z 表示机器人 root 高度，不是地面高度。
+    assert episode.start.z == 0.36742
     assert episode.start.floor_id == "F1"
     assert episode.start.slice_id is None
     assert episode.pick_goal.z == 0.36742

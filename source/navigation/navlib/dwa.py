@@ -35,6 +35,7 @@ class DWAConfig:
     speed_bias: float = 0.35
     obstacle_distance_cap: float = 0.5
     rotate_in_place_angle: float = 1.05
+    large_heading_creep_velocity: float | None = None
     close_goal_distance: float = 0.45
     close_goal_speed_limit: float = 0.22
     goal_tracking_distance: float = 0.80
@@ -192,12 +193,21 @@ class DWAController:
             not self._initial_alignment_active
             and self.config.path_recovery_deviation_limit is not None
         ):
+            recovery_enter_limit = 0.90 * self.config.path_deviation_limit
+            recovery_exit_limit = 0.80 * self.config.path_deviation_limit
             if current_path_distance > self.config.path_deviation_limit:
                 self._path_recovery_active = True
             elif (
+                not self._path_recovery_active
+                and self.config.enforce_path_deviation_limit
+                and current_path_distance >= recovery_enter_limit
+            ):
+                # 当前点还没越界，但 rollout 前进后可能被硬偏差阈值全部拒绝；
+                # 提前进入恢复模式，避免在边界内侧反复选择零速度。
+                self._path_recovery_active = True
+            elif (
                 self._path_recovery_active
-                and current_path_distance
-                <= 0.8 * self.config.path_deviation_limit
+                and current_path_distance <= recovery_exit_limit
             ):
                 self._path_recovery_active = False
         path_deviation_limit = float(self.config.path_deviation_limit)
@@ -411,9 +421,34 @@ class DWAController:
         )
 
         if abs(heading_error) > self.config.rotate_in_place_angle:
-            linear_values = np.array(
-                [np.clip(0.0, linear_lower, linear_upper)],
-                dtype=np.float64,
+            creep_velocity = (
+                max(0.08, 0.5 * min_active_linear_velocity)
+                if self.config.large_heading_creep_velocity is None
+                else max(0.0, float(self.config.large_heading_creep_velocity))
+            )
+            creep_cap = min(
+                linear_upper,
+                max(
+                    linear_lower,
+                    min(
+                        linear_cap,
+                        creep_velocity,
+                    ),
+                ),
+            )
+            stopped = float(np.clip(0.0, linear_lower, linear_upper))
+            linear_values = np.unique(
+                np.round(
+                    np.array(
+                        [
+                            stopped,
+                            0.5 * (stopped + creep_cap),
+                            creep_cap,
+                        ],
+                        dtype=np.float64,
+                    ),
+                    decimals=4,
+                )
             )
         else:
             linear_values = np.linspace(

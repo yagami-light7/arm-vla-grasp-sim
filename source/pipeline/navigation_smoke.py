@@ -399,6 +399,9 @@ def create_navigation_components(
         stair_float_approach_distance_m=nav.pct_stair_float_approach_distance_m,
         stair_float_exit_distance_m=nav.pct_stair_float_exit_distance_m,
         stair_float_settle_time_s=nav.pct_stair_float_settle_time_s,
+        stair_float_release_settle_time_s=(
+            nav.pct_stair_float_release_settle_time_s
+        ),
         stair_float_yaw_lookahead_m=nav.pct_stair_float_yaw_lookahead_m,
         stair_float_min_root_z_offset_m=(
             nav.pct_stair_float_min_root_z_offset_m

@@ -25,6 +25,7 @@ from source.pipeline import (  # noqa: E402
     PCT_MULTIFLOOR_LOCOMOTION_TASK,
     RandomizationSettings,
     RecordingSettings,
+    SceneLightingSettings,
     VideoRecordingSettings,
 )
 from source.pipeline.dry_run import create_dry_run_pipeline  # noqa: E402
@@ -227,6 +228,24 @@ def _build_parser() -> argparse.ArgumentParser:
             "物理验收视觉模式；auto 在 pct_multifloor 中使用轻量碰撞层，"
             "flat 保持完整视觉。"
         ),
+    )
+    parser.add_argument(
+        "--scene-light-mode",
+        choices=("camera", "stage"),
+        default=SceneLightingSettings().scene_light_mode,
+        help="真实 Isaac stage 灯光模式；camera 为保存图像默认，stage 使用 USD 原场景灯光。",
+    )
+    parser.add_argument(
+        "--camera-light-intensity",
+        type=float,
+        default=SceneLightingSettings().camera_light_intensity,
+        help="camera light 的 SphereLight 强度。",
+    )
+    parser.add_argument(
+        "--camera-light-radius",
+        type=float,
+        default=SceneLightingSettings().camera_light_radius,
+        help="camera light 的 SphereLight 半径。",
     )
     parser.add_argument(
         "--record-video",
@@ -510,6 +529,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=NavigationSettings().pct_stair_float_settle_time_s,
         help="PCT 楼梯漂移完成后保持 root 与全身关节锁的稳定时间。",
+    )
+    parser.add_argument(
+        "--pct-stair-float-release-settle-time",
+        type=float,
+        default=NavigationSettings().pct_stair_float_release_settle_time_s,
+        help="解除 PCT 楼梯漂移 root 锁后保持零速站稳的时间。",
     )
     parser.add_argument(
         "--pct-stair-float-min-root-z-offset",
@@ -811,6 +836,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             pct_stair_float_settle_time_s=float(
                 args.pct_stair_float_settle_time
             ),
+            pct_stair_float_release_settle_time_s=float(
+                args.pct_stair_float_release_settle_time
+            ),
             pct_stair_float_min_root_z_offset_m=float(
                 args.pct_stair_float_min_root_z_offset
             ),
@@ -843,6 +871,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             debug_per_episode_lerobot=(
                 os.environ.get("FULL_PHYSICS_DEFER_LEROBOT_EXPORT") != "1"
             ),
+        ),
+        lighting=SceneLightingSettings(
+            scene_light_mode=str(args.scene_light_mode),
+            camera_light_intensity=float(args.camera_light_intensity),
+            camera_light_radius=float(args.camera_light_radius),
         ),
         video=VideoRecordingSettings(
             enabled=bool(args.record_video),
@@ -886,6 +919,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "headless": bool(config.headless),
         "keep_window_open": bool(config.keep_window_open),
         "record_video": bool(config.video.enabled),
+        "scene_light_mode": config.lighting.scene_light_mode,
         "global_planner": config.navigation.global_planner,
         "policy_profile": config.locomotion.policy_profile,
         "pct_plan_preview_auto_keep_window_open": bool(
@@ -1152,6 +1186,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                             ),
                             wrist_camera_height=config.recording.image_height,
                             wrist_camera_width=config.recording.image_width,
+                            scene_light_mode=config.lighting.scene_light_mode,
+                            camera_light_intensity=(
+                                config.lighting.camera_light_intensity
+                            ),
+                            camera_light_radius=config.lighting.camera_light_radius,
                             place_release_clearance_min_m=(
                                 config.manipulation.place_release_clearance_min_m
                             ),
@@ -1227,6 +1266,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 config.locomotion.policy_profile,
                                 args.navigation_visual_mode,
                             ),
+                            scene_light_mode=config.lighting.scene_light_mode,
+                            camera_light_intensity=(
+                                config.lighting.camera_light_intensity
+                            ),
+                            camera_light_radius=config.lighting.camera_light_radius,
                             show_randomization_debug=(
                                 config.randomization.show_debug_region
                             ),

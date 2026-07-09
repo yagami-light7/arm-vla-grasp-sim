@@ -158,14 +158,69 @@ class Go2LocomotionAdapter:
             "uses_direct_root_state": True,
         }
 
-    def set_support_joint_lock(self, enabled: bool = True) -> dict[str, Any]:
+    def _dog_joint_target_tensor(
+        self,
+        dog_joint_target: Any | None,
+        dog_joint_names: Any | None,
+    ) -> Any:
+        """把外部传入的四足站立姿态转换为当前设备上的张量。"""
+
+        if dog_joint_names is not None:
+            names = tuple(str(name) for name in dog_joint_names)
+            if names != tuple(DOG_JOINT_NAMES):
+                return {
+                    "error": "dog_joint_names_mismatch",
+                    "expected": list(DOG_JOINT_NAMES),
+                    "received": list(names),
+                }
+        if dog_joint_target is None:
+            return (
+                self.robot.data.joint_pos[0, self.dog_joint_ids]
+                .detach()
+                .clone()
+                .reshape(1, -1)
+            )
+        import torch
+
+        target = torch.as_tensor(
+            dog_joint_target,
+            dtype=torch.float32,
+            device=self.runtime.device,
+        ).reshape(1, -1)
+        if target.shape[1] != len(DOG_JOINT_NAMES):
+            return {
+                "error": "dog_joint_target_count_mismatch",
+                "target_count": int(target.shape[1]),
+                "joint_count": len(DOG_JOINT_NAMES),
+            }
+        return target.detach().clone()
+
+    def set_support_joint_lock(
+        self,
+        enabled: bool = True,
+        *,
+        dog_joint_target: Any | None = None,
+        dog_joint_names: Any | None = None,
+    ) -> dict[str, Any]:
         """冻结当前四足支撑关节姿态，不直接改写关节状态。"""
 
         if enabled:
             if len(self.dog_joint_ids) != len(DOG_JOINT_NAMES):
                 self._dog_joint_lock_target = None
             else:
-                self._dog_joint_lock_target = self.robot.data.joint_pos[0, self.dog_joint_ids].detach().clone().reshape(1, -1)
+                target = self._dog_joint_target_tensor(
+                    dog_joint_target,
+                    dog_joint_names,
+                )
+                if isinstance(target, dict):
+                    self._dog_joint_lock_target = None
+                    return {
+                        "enabled": False,
+                        "reason": target.get("error", "dog_joint_target_invalid"),
+                        **target,
+                        "uses_direct_joint_state": False,
+                    }
+                self._dog_joint_lock_target = target
         else:
             self._dog_joint_lock_target = None
         return {
@@ -173,6 +228,17 @@ class Go2LocomotionAdapter:
             "joint_names": list(DOG_JOINT_NAMES) if self._dog_joint_lock_target is not None else [],
             "joint_ids": [int(index) for index in self.dog_joint_ids] if self._dog_joint_lock_target is not None else [],
             "action_indices": list(self.dog_action_indices or []),
+            "target_positions": (
+                [
+                    float(value)
+                    for value in self._dog_joint_lock_target.reshape(-1)
+                    .detach()
+                    .cpu()
+                    .tolist()
+                ]
+                if self._dog_joint_lock_target is not None
+                else []
+            ),
             "uses_direct_joint_state": False,
         }
 
@@ -213,6 +279,8 @@ class Go2LocomotionAdapter:
         enabled: bool = True,
         *,
         arm_joint_target: Any | None = None,
+        dog_joint_target: Any | None = None,
+        dog_joint_names: Any | None = None,
     ) -> dict[str, Any]:
         """楼梯漂移期间锁住腿部和机械臂姿态，避免 root 漂移时关节被拉歪。"""
 
@@ -237,16 +305,17 @@ class Go2LocomotionAdapter:
                 "uses_direct_joint_state": False,
             }
 
-        import torch
-
         joint_ids: list[int] = [int(index) for index in self.dog_joint_ids]
         joint_names: list[str] = list(DOG_JOINT_NAMES)
-        target_parts = [
-            self.robot.data.joint_pos[0, self.dog_joint_ids]
-            .detach()
-            .clone()
-            .reshape(1, -1)
-        ]
+        dog_target = self._dog_joint_target_tensor(dog_joint_target, dog_joint_names)
+        if isinstance(dog_target, dict):
+            return {
+                "enabled": False,
+                "reason": dog_target.get("error", "dog_joint_target_invalid"),
+                **dog_target,
+                "uses_direct_joint_state": False,
+            }
+        target_parts = [dog_target]
 
         if len(self.arm_joint_ids) == len(ARM_JOINT_NAMES):
             joint_ids.extend(int(index) for index in self.arm_joint_ids)
@@ -259,6 +328,8 @@ class Go2LocomotionAdapter:
                     .reshape(1, -1)
                 )
             else:
+                import torch
+
                 arm_target = torch.as_tensor(
                     arm_joint_target,
                     dtype=torch.float32,

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from source.interfaces.navigation import NavGoal
+from source.interfaces.navigation import NavGoal, NavPlan
 from source.interfaces.simulation import SimulationState
 from source.navigation.executor import DwaNavExecutor
 from source.navigation.navlib import DWAConfig, OccupancyGridMap
@@ -258,6 +258,92 @@ class FullPhysicsNavigationTest(unittest.TestCase):
         self.assertEqual(status["stall"]["sample_count"], 4)
         self.assertEqual(status["stall"]["max_displacement_m"], 0.0)
         self.assertGreaterEqual(status["stall"]["forward_command_ratio"], 0.75)
+
+    def test_nav_to_pick_near_goal_stall_hands_off_to_pick_planner(self) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((80, 80), dtype=bool),
+            0.05,
+            (-2.0, -2.0, 0.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=1.0, y=0.0, yaw=0.0),
+            waypoints=((0.0, 0.0), (1.0, 0.0)),
+            metadata={"execution_phase": "nav_to_pick"},
+        )
+        executor = DwaNavExecutor(
+            grid_map=grid,
+            dwa_config=DWAConfig(
+                control_dt=0.05,
+                goal_tolerance=0.15,
+                max_linear_accel=10.0,
+                use_command_velocity_window=True,
+            ),
+            position_tolerance=0.18,
+            pick_near_goal_handoff_tolerance_m=0.32,
+            stall_window_steps=4,
+            stall_min_progress_m=0.05,
+            stall_min_forward_command=0.05,
+            stall_min_forward_ratio=0.75,
+            require_yaw_alignment=False,
+        )
+        state = _state(x=0.75, y=0.0, yaw=0.0)
+        executor.reset(plan)
+
+        actions = [executor.compute_action(state) for _ in range(4)]
+        status = executor.status()
+
+        self.assertEqual(actions[-1].source, "navigation_completed")
+        self.assertTrue(executor.is_done(state))
+        self.assertTrue(status["success"])
+        self.assertFalse(status["failed"])
+        self.assertFalse(status["stall_detected"])
+        self.assertTrue(status["near_goal_stall_handoff"])
+        self.assertEqual(status["phase"], "completed_near_goal_stall")
+        self.assertAlmostEqual(
+            status["near_goal_stall_handoff_tolerance"],
+            0.32,
+        )
+
+    def test_carry_near_goal_stall_still_fails(self) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((80, 80), dtype=bool),
+            0.05,
+            (-2.0, -2.0, 0.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=1.0, y=0.0, yaw=0.0),
+            waypoints=((0.0, 0.0), (1.0, 0.0)),
+            metadata={"execution_phase": "carry_nav_to_place"},
+        )
+        executor = DwaNavExecutor(
+            grid_map=grid,
+            dwa_config=DWAConfig(
+                control_dt=0.05,
+                goal_tolerance=0.15,
+                max_linear_accel=10.0,
+                use_command_velocity_window=True,
+            ),
+            position_tolerance=0.18,
+            pick_near_goal_handoff_tolerance_m=0.32,
+            stall_window_steps=4,
+            stall_min_progress_m=0.05,
+            stall_min_forward_command=0.05,
+            stall_min_forward_ratio=0.75,
+            require_yaw_alignment=False,
+        )
+        state = _state(x=0.75, y=0.0, yaw=0.0)
+        executor.reset(plan)
+
+        actions = [executor.compute_action(state) for _ in range(4)]
+        status = executor.status()
+
+        self.assertEqual(actions[-1].source, "navigation_stalled")
+        self.assertTrue(executor.is_done(state))
+        self.assertFalse(status["success"])
+        self.assertTrue(status["failed"])
+        self.assertTrue(status["stall_detected"])
+        self.assertFalse(status["near_goal_stall_handoff"])
+        self.assertEqual(status["failure_reason"], "nav_collision")
 
     def test_executor_can_lazily_load_planner_map_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

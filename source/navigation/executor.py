@@ -21,6 +21,36 @@ from .adapters.yaw_align import (
 from .navlib import AStarPlanner, DWAConfig, DWAController, DWADebug, OccupancyGridMap
 
 
+PCT_STAIR_FLOAT_DOG_JOINT_NAMES = (
+    "FR_hip_joint",
+    "FR_thigh_joint",
+    "FR_calf_joint",
+    "FL_hip_joint",
+    "FL_thigh_joint",
+    "FL_calf_joint",
+    "RR_hip_joint",
+    "RR_thigh_joint",
+    "RR_calf_joint",
+    "RL_hip_joint",
+    "RL_thigh_joint",
+    "RL_calf_joint",
+)
+PCT_STAIR_FLOAT_DOG_STAND_JOINT_POSITIONS = (
+    0.1,
+    0.8,
+    -1.5,
+    -0.1,
+    0.8,
+    -1.5,
+    0.1,
+    1.0,
+    -1.5,
+    -0.1,
+    1.0,
+    -1.5,
+)
+
+
 class DwaNavExecutor:
     """跟踪 A* 路径，并按配置决定是否做终点 yaw 对齐。"""
 
@@ -41,6 +71,7 @@ class DwaNavExecutor:
         stall_min_progress_m: float = 0.05,
         stall_min_forward_command: float = 0.05,
         stall_min_forward_ratio: float = 0.25,
+        pick_near_goal_handoff_tolerance_m: float = 0.32,
         completion_linear_velocity_tolerance: float | None = None,
         completion_angular_velocity_tolerance: float | None = None,
         require_yaw_alignment: bool = True,
@@ -62,6 +93,7 @@ class DwaNavExecutor:
         stair_float_approach_distance_m: float = 1.80,
         stair_float_exit_distance_m: float = 0.75,
         stair_float_settle_time_s: float = 1.20,
+        stair_float_release_settle_time_s: float = 0.0,
         stair_float_yaw_lookahead_m: float = 0.35,
         stair_float_min_root_z_offset_m: float = 0.18,
     ) -> None:
@@ -75,6 +107,8 @@ class DwaNavExecutor:
             raise ValueError("位置和朝向容差不能为负数。")
         if command_recompute_interval_steps < 1:
             raise ValueError("DWA 命令重算间隔必须至少为 1 个物理步。")
+        if pick_near_goal_handoff_tolerance_m < 0.0:
+            raise ValueError("抓取前近目标 handoff 容差不能为负数。")
         if multifloor_obstacle_inflate_radius < 0.0:
             raise ValueError("跨楼层障碍膨胀半径不能为负数。")
         if (
@@ -111,6 +145,8 @@ class DwaNavExecutor:
             raise ValueError("楼梯漂移出口后扩展距离不能为负数。")
         if stair_float_settle_time_s < 0.0:
             raise ValueError("楼梯漂移结束稳定时间不能为负数。")
+        if stair_float_release_settle_time_s < 0.0:
+            raise ValueError("楼梯漂移解冻稳定时间不能为负数。")
         if stair_float_yaw_lookahead_m < 0.0:
             raise ValueError("楼梯漂移朝向前瞻距离不能为负数。")
         if stair_float_min_root_z_offset_m < 0.0:
@@ -160,6 +196,9 @@ class DwaNavExecutor:
         )
         self.stair_float_exit_distance_m = float(stair_float_exit_distance_m)
         self.stair_float_settle_time_s = float(stair_float_settle_time_s)
+        self.stair_float_release_settle_time_s = float(
+            stair_float_release_settle_time_s
+        )
         self.stair_float_yaw_lookahead_m = float(stair_float_yaw_lookahead_m)
         self.stair_float_min_root_z_offset_m = float(
             stair_float_min_root_z_offset_m
@@ -180,6 +219,9 @@ class DwaNavExecutor:
             min_progress_m=float(stall_min_progress_m),
             min_forward_command=float(stall_min_forward_command),
             min_forward_ratio=float(stall_min_forward_ratio),
+        )
+        self.pick_near_goal_handoff_tolerance_m = float(
+            pick_near_goal_handoff_tolerance_m
         )
         self.completion_linear_velocity_tolerance = completion_linear_velocity_tolerance
         self.completion_angular_velocity_tolerance = completion_angular_velocity_tolerance
@@ -222,10 +264,16 @@ class DwaNavExecutor:
         self._stair_float_started = False
         self._stair_float_last_timestamp: float | None = None
         self._stair_float_root_z_offset = 0.0
+        self._stair_float_initial_root_z_offset = 0.0
+        self._stair_float_target_root_z_offset = 0.0
         self._stair_float_settling = False
         self._stair_float_settle_remaining_s = 0.0
+        self._stair_float_release_settling = False
+        self._stair_float_release_settle_remaining_s = 0.0
         self._stair_float_hold_xyzyaw: tuple[float, float, float, float] | None = None
         self._stair_float_report: dict[str, Any] = {"enabled": False}
+        self._near_goal_stall_handoff = False
+        self._near_goal_stall_handoff_tolerance: float | None = None
 
     def reset(self, plan: NavPlan) -> None:
         """载入新路径并清空执行、终点和停滞状态。"""
@@ -283,6 +331,8 @@ class DwaNavExecutor:
         self._max_dwa_compute_duration_s = 0.0
         self._command_recomputed_this_tick = False
         self._consecutive_infeasible_recomputes = 0
+        self._near_goal_stall_handoff = False
+        self._near_goal_stall_handoff_tolerance = None
 
     def compute_action(self, state: SimulationState) -> RobotAction:
         """根据当前观测计算一个 tick 的 RobotAction，不推进仿真。"""
@@ -358,6 +408,9 @@ class DwaNavExecutor:
         self._last_command = tuple(float(value) for value in command)
         if self._phase == "dwa" and not self._stall_detected:
             self._update_stall(pose, self._last_command)
+        if self._done and self._success:
+            self._last_command = (0.0, 0.0, 0.0)
+            return self._zero_action()
         if self._stall_detected:
             self._last_command = (0.0, 0.0, 0.0)
             return self._zero_action()
@@ -443,6 +496,10 @@ class DwaNavExecutor:
             "dwa_limits": self._active_dwa_limits(),
             "local_refinement": self._local_refinement_report,
             "map_selection": self._map_selection_report,
+            "near_goal_stall_handoff": self._near_goal_stall_handoff,
+            "near_goal_stall_handoff_tolerance": (
+                self._near_goal_stall_handoff_tolerance
+            ),
             "stair_float": self._stair_float_status(),
             "dwa": (
                 None
@@ -803,11 +860,42 @@ class DwaNavExecutor:
         self._stall_diagnostics = diagnostics
         if not stalled:
             return
+        if self._accept_near_goal_pick_handoff():
+            self._done = True
+            self._success = True
+            self._failure_reason = ""
+            self._phase = "completed_near_goal_stall"
+            self._last_command = (0.0, 0.0, 0.0)
+            return
         self._stall_detected = True
         self._done = True
         self._success = False
         self._failure_reason = "nav_collision"
         self._phase = "stalled"
+
+    def _accept_near_goal_pick_handoff(self) -> bool:
+        """允许 nav_to_pick 在近目标物理停滞时交给抓取规划继续验证。"""
+
+        if self.plan is None:
+            return False
+        if self.plan.metadata.get("execution_phase") != "nav_to_pick":
+            return False
+        if self._active_require_yaw_alignment:
+            return False
+        if self._distance_to_goal is None:
+            return False
+        tolerance = max(
+            float(self.position_tolerance),
+            float(self.pick_near_goal_handoff_tolerance_m),
+        )
+        self._near_goal_stall_handoff_tolerance = tolerance
+        if float(self._distance_to_goal) > tolerance:
+            return False
+        debug = self._last_dwa_debug
+        if debug is not None and debug.feasible_candidates <= 0:
+            return False
+        self._near_goal_stall_handoff = True
+        return True
 
     def _zero_action(self) -> RobotAction:
         source = (
@@ -837,6 +925,10 @@ class DwaNavExecutor:
             "dwa_limits": self._active_dwa_limits(),
             "local_refinement": self._local_refinement_report,
             "map_selection": self._map_selection_report,
+            "near_goal_stall_handoff": self._near_goal_stall_handoff,
+            "near_goal_stall_handoff_tolerance": (
+                self._near_goal_stall_handoff_tolerance
+            ),
             "stair_float": self._stair_float_status(),
             "dwa": (
                 None
@@ -894,6 +986,9 @@ class DwaNavExecutor:
             "rotate_in_place_angle": float(
                 self._active_dwa_config.rotate_in_place_angle
             ),
+            "large_heading_creep_velocity": (
+                self._active_dwa_config.large_heading_creep_velocity
+            ),
             "consecutive_infeasible_recomputes": int(
                 self._consecutive_infeasible_recomputes
             ),
@@ -907,6 +1002,10 @@ class DwaNavExecutor:
                 "active": bool(self._stair_float_active),
                 "done": bool(self._stair_float_done),
                 "started": bool(self._stair_float_started),
+                "release_settling": bool(self._stair_float_release_settling),
+                "release_settle_remaining_s": float(
+                    self._stair_float_release_settle_remaining_s
+                ),
                 "progress_m": float(self._stair_float_progress),
                 "total_length_m": float(self._stair_float_total_length),
             }
@@ -925,8 +1024,12 @@ class DwaNavExecutor:
         self._stair_float_started = False
         self._stair_float_last_timestamp = None
         self._stair_float_root_z_offset = 0.0
+        self._stair_float_initial_root_z_offset = 0.0
+        self._stair_float_target_root_z_offset = 0.0
         self._stair_float_settling = False
         self._stair_float_settle_remaining_s = 0.0
+        self._stair_float_release_settling = False
+        self._stair_float_release_settle_remaining_s = 0.0
         self._stair_float_hold_xyzyaw = None
         self._stair_float_report = {
             "enabled": False,
@@ -970,6 +1073,9 @@ class DwaNavExecutor:
         self._stair_float_path = path
         self._stair_float_segment_lengths = tuple(lengths)
         self._stair_float_total_length = float(total)
+        self._stair_float_target_root_z_offset = (
+            self._desired_stair_float_target_root_z_offset(plan, path)
+        )
         self._stair_float_report = {
             "enabled": True,
             "reason": "ready",
@@ -984,7 +1090,11 @@ class DwaNavExecutor:
             "approach_distance_m": self.stair_float_approach_distance_m,
             "exit_distance_m": self.stair_float_exit_distance_m,
             "settle_time_s": self.stair_float_settle_time_s,
+            "release_settle_time_s": self.stair_float_release_settle_time_s,
             "min_root_z_offset_m": self.stair_float_min_root_z_offset_m,
+            "target_root_z_offset_m": float(
+                self._stair_float_target_root_z_offset
+            ),
         }
 
     def _compute_stair_float_action(
@@ -996,6 +1106,8 @@ class DwaNavExecutor:
 
         if not self._stair_float_path or self._stair_float_done:
             return None
+        if self._stair_float_release_settling:
+            return self._compute_stair_float_release_settle_action(state)
         if self._stair_float_settling:
             return self._compute_stair_float_settle_action(state)
         if not self._stair_float_active:
@@ -1021,9 +1133,16 @@ class DwaNavExecutor:
                 self._stair_float_progress + self.stair_float_yaw_lookahead_m,
             ),
         )
-        target = self._stair_float_root_pose_target(path_target)
+        target = self._stair_float_root_pose_target(
+            path_target,
+            progress_m=self._stair_float_progress,
+        )
         lookahead_target = self._stair_float_root_pose_target(
-            path_lookahead_target
+            path_lookahead_target,
+            progress_m=min(
+                self._stair_float_total_length,
+                self._stair_float_progress + self.stair_float_yaw_lookahead_m,
+            ),
         )
         yaw = _float_path_yaw(
             target,
@@ -1036,9 +1155,19 @@ class DwaNavExecutor:
         )
         if completed:
             self._stair_float_progress = self._stair_float_total_length
-            target = self._stair_float_root_pose_target(self._stair_float_path[-1])
+            target = self._stair_float_root_pose_target(
+                self._stair_float_path[-1],
+                progress_m=self._stair_float_total_length,
+            )
             yaw = _float_path_yaw(
-                self._stair_float_root_pose_target(self._stair_float_path[-2]),
+                self._stair_float_root_pose_target(
+                    self._stair_float_path[-2],
+                    progress_m=max(
+                        0.0,
+                        self._stair_float_total_length
+                        - self._stair_float_segment_lengths[-1],
+                    ),
+                ),
                 target,
                 fallback_yaw=yaw,
             )
@@ -1051,7 +1180,12 @@ class DwaNavExecutor:
                 float(target[2]),
                 float(yaw),
             )
-            self._stair_float_done = not self._stair_float_settling
+            if self._stair_float_settling:
+                self._stair_float_done = False
+            elif self.stair_float_release_settle_time_s > 0.0:
+                self._begin_stair_float_release_settle()
+            else:
+                self._stair_float_done = True
             self._sync_controller_after_stair_float(target)
         self._phase = "stair_float_completed" if completed else "stair_float"
         self._last_command = (0.0, 0.0, 0.0)
@@ -1077,6 +1211,10 @@ class DwaNavExecutor:
                 "navigation_support_joint_lock_phase": "pct_stair_float",
                 "navigation_full_body_joint_lock": True,
                 "navigation_full_body_joint_lock_phase": "pct_stair_float",
+                "navigation_dog_joint_names": PCT_STAIR_FLOAT_DOG_JOINT_NAMES,
+                "navigation_dog_joint_positions": (
+                    PCT_STAIR_FLOAT_DOG_STAND_JOINT_POSITIONS
+                ),
                 "navigation_stair_float": True,
                 "navigation_carry_object_follow": True,
                 "navigation_stair_float_completed": completed,
@@ -1109,8 +1247,11 @@ class DwaNavExecutor:
         completed = self._stair_float_settle_remaining_s <= 0.0
         if completed:
             self._stair_float_settling = False
-            self._stair_float_done = True
-            self._stair_float_report["reason"] = "completed"
+            if self.stair_float_release_settle_time_s > 0.0:
+                self._begin_stair_float_release_settle()
+            else:
+                self._stair_float_done = True
+                self._stair_float_report["reason"] = "completed"
         else:
             self._stair_float_report["reason"] = "settling"
         self._stair_float_report["settle_remaining_s"] = float(
@@ -1130,6 +1271,10 @@ class DwaNavExecutor:
                 "navigation_support_joint_lock_phase": "pct_stair_float_settle",
                 "navigation_full_body_joint_lock": True,
                 "navigation_full_body_joint_lock_phase": "pct_stair_float_settle",
+                "navigation_dog_joint_names": PCT_STAIR_FLOAT_DOG_JOINT_NAMES,
+                "navigation_dog_joint_positions": (
+                    PCT_STAIR_FLOAT_DOG_STAND_JOINT_POSITIONS
+                ),
                 "navigation_stair_float": True,
                 "navigation_carry_object_follow": True,
                 "navigation_stair_float_settling": not completed,
@@ -1147,6 +1292,96 @@ class DwaNavExecutor:
                 "navigation_stair_float_completed"
                 if completed
                 else "navigation_stair_float_settle"
+            ),
+            metadata=metadata,
+        )
+
+    def _begin_stair_float_release_settle(self) -> None:
+        """进入解冻过渡：释放 root/direct joint state 前先记录剩余站稳时间。"""
+
+        self._stair_float_release_settling = True
+        self._stair_float_done = False
+        self._stair_float_release_settle_remaining_s = (
+            self.stair_float_release_settle_time_s
+        )
+        self._stair_float_report.update(
+            {
+                "reason": "release_settling",
+                "release_settle_remaining_s": float(
+                    self._stair_float_release_settle_remaining_s
+                ),
+            }
+        )
+
+    def _compute_stair_float_release_settle_action(
+        self,
+        state: SimulationState,
+    ) -> RobotAction:
+        """先解除 direct 关节写入但保持 root 锁，让支撑 target 接管。"""
+
+        if self._stair_float_hold_xyzyaw is None:
+            raise RuntimeError("楼梯漂移解冻阶段缺少锁定目标。")
+
+        dt = self._stair_float_dt(state)
+        self._stair_float_release_settle_remaining_s = max(
+            0.0,
+            self._stair_float_release_settle_remaining_s - dt,
+        )
+        completed = self._stair_float_release_settle_remaining_s <= 0.0
+        if completed:
+            self._stair_float_release_settling = False
+            self._stair_float_done = True
+            self._stair_float_report["reason"] = "completed"
+        else:
+            self._stair_float_report["reason"] = "release_settling"
+        self._stair_float_report["release_settle_remaining_s"] = float(
+            self._stair_float_release_settle_remaining_s
+        )
+        self._phase = (
+            "stair_float_completed" if completed else "stair_float_release_settle"
+        )
+        self._last_command = (0.0, 0.0, 0.0)
+        self._command_recomputed_this_tick = True
+        self._tick_index += 1
+        metadata = self._action_metadata()
+        metadata.update(
+            {
+                "navigation_stair_float": True,
+                "navigation_stair_float_release_settling": not completed,
+                "navigation_stair_float_completed": completed,
+                "navigation_stair_float_release_settle_remaining_s": float(
+                    self._stair_float_release_settle_remaining_s
+                ),
+            }
+        )
+        if not completed:
+            metadata.update(
+                {
+                    "navigation_base_pose_lock": True,
+                    "navigation_base_pose_lock_phase": (
+                        "pct_stair_float_release_settle"
+                    ),
+                    "navigation_base_pose_lock_xyzyaw": (
+                        self._stair_float_hold_xyzyaw
+                    ),
+                    "navigation_support_joint_lock": True,
+                    "navigation_support_joint_lock_phase": (
+                        "pct_stair_float_release_settle"
+                    ),
+                    "navigation_dog_joint_names": PCT_STAIR_FLOAT_DOG_JOINT_NAMES,
+                    "navigation_dog_joint_positions": (
+                        PCT_STAIR_FLOAT_DOG_STAND_JOINT_POSITIONS
+                    ),
+                    "navigation_carry_object_follow": True,
+                }
+            )
+        return RobotAction(
+            base_velocity=(0.0, 0.0, 0.0),
+            gripper_command="hold",
+            source=(
+                "navigation_stair_float_release_settle_completed"
+                if completed
+                else "navigation_stair_float_release_settle"
             ),
             metadata=metadata,
         )
@@ -1188,10 +1423,40 @@ class DwaNavExecutor:
             projected,
         )
         measured_offset = current[2] - projected_point[2]
-        self._stair_float_root_z_offset = max(
+        self._stair_float_initial_root_z_offset = max(
             measured_offset,
             self.stair_float_min_root_z_offset_m,
         )
+        self._stair_float_target_root_z_offset = max(
+            self._stair_float_target_root_z_offset,
+            self._stair_float_initial_root_z_offset,
+        )
+        self._stair_float_root_z_offset = self._stair_float_initial_root_z_offset
+        target_distance = _distance_3d(
+            self._stair_float_root_pose_target(
+                projected_point,
+                progress_m=projected,
+            ),
+            current,
+        )
+        inserted_current_point = False
+        if target_distance > 0.05:
+            # 触发半径可能让机器人在楼梯段起点前进入漂移；把当前点作为临时首点，
+            # 避免第一帧 root pose 直接跳到 PCT 折线起点。
+            current_path_point = (
+                current[0],
+                current[1],
+                current[2] - self._stair_float_root_z_offset,
+            )
+            self._stair_float_path = (current_path_point, *self._stair_float_path)
+            self._stair_float_segment_lengths = tuple(
+                _segment_lengths_3d(self._stair_float_path)
+            )
+            self._stair_float_total_length = float(
+                sum(self._stair_float_segment_lengths)
+            )
+            projected = 0.0
+            inserted_current_point = True
         self._stair_float_progress = max(
             0.0,
             min(projected, self._stair_float_total_length),
@@ -1205,7 +1470,17 @@ class DwaNavExecutor:
                 "activation_step_index": int(state.step_index),
                 "activation_progress_m": float(self._stair_float_progress),
                 "root_z_offset_m": float(self._stair_float_root_z_offset),
+                "initial_root_z_offset_m": float(
+                    self._stair_float_initial_root_z_offset
+                ),
+                "target_root_z_offset_m": float(
+                    self._stair_float_target_root_z_offset
+                ),
                 "measured_root_z_offset_m": float(measured_offset),
+                "activation_inserted_current_point": inserted_current_point,
+                "activation_target_jump_m": float(target_distance),
+                "path_point_count": len(self._stair_float_path),
+                "total_length_m": float(self._stair_float_total_length),
                 "settle_remaining_s": float(self._stair_float_settle_remaining_s),
             }
         )
@@ -1213,14 +1488,60 @@ class DwaNavExecutor:
     def _stair_float_root_pose_target(
         self,
         path_point: tuple[float, float, float],
+        *,
+        progress_m: float | None = None,
     ) -> tuple[float, float, float]:
         """把 PCT 楼层高度转换成连续的机器人 root 高度。"""
 
+        offset = self._stair_float_root_z_offset_at(progress_m)
+        self._stair_float_root_z_offset = offset
+        self._stair_float_report["root_z_offset_m"] = float(offset)
+        self._stair_float_report["current_root_z_offset_m"] = float(offset)
         return (
             float(path_point[0]),
             float(path_point[1]),
-            float(path_point[2]) + float(self._stair_float_root_z_offset),
+            float(path_point[2]) + float(offset),
         )
+
+    def _stair_float_root_z_offset_at(
+        self,
+        progress_m: float | None,
+    ) -> float:
+        """按漂移进度把 root 高度偏移从实测值平滑过渡到释放值。"""
+
+        if self._stair_float_total_length <= 1.0e-6 or progress_m is None:
+            return float(self._stair_float_initial_root_z_offset)
+        ratio = min(
+            1.0,
+            max(0.0, float(progress_m) / float(self._stair_float_total_length)),
+        )
+        smooth_ratio = ratio * ratio * (3.0 - 2.0 * ratio)
+        return float(self._stair_float_initial_root_z_offset) + (
+            float(self._stair_float_target_root_z_offset)
+            - float(self._stair_float_initial_root_z_offset)
+        ) * smooth_ratio
+
+    def _desired_stair_float_target_root_z_offset(
+        self,
+        plan: NavPlan,
+        path: tuple[tuple[float, float, float], ...],
+    ) -> float:
+        """根据 PCT 地面高度推导漂移结束时的 root 偏移。"""
+
+        robot_root_to_floor = plan.metadata.get("robot_root_to_floor_m")
+        if robot_root_to_floor is not None:
+            try:
+                value = float(robot_root_to_floor)
+            except (TypeError, ValueError):
+                value = 0.0
+            if math.isfinite(value) and value > 0.0:
+                return max(value, float(self.stair_float_min_root_z_offset_m))
+        candidates = [float(self.stair_float_min_root_z_offset_m)]
+        if plan.goal.z is not None and path:
+            goal_offset = float(plan.goal.z) - float(path[-1][2])
+            if math.isfinite(goal_offset) and goal_offset > 0.0:
+                candidates.append(goal_offset)
+        return max(candidates)
 
     def _stair_float_dt(self, state: SimulationState) -> float:
         timestamp = float(state.timestamp)

@@ -9,6 +9,7 @@ from .config import (
     PCT_MULTIFLOOR_LOCOMOTION_TASK,
     RandomizationSettings,
     RecordingSettings,
+    SceneLightingSettings,
     StateLimits,
     VideoRecordingSettings,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "PCT_MULTIFLOOR_LOCOMOTION_TASK",
     "RandomizationSettings",
     "RecordingSettings",
+    "SceneLightingSettings",
     "PipelineState",
     "StateLimits",
     "TickDecision",

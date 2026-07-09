@@ -20,6 +20,7 @@ from source.interfaces import (
     RobotAction,
     SimulationRuntime,
     SimulationState,
+    VerificationResult,
 )
 
 from .config import FullPhysicsConfig
@@ -1123,11 +1124,34 @@ class FullPhysicsStateMachine:
     ) -> tuple[RobotAction, list[PipelineEvent]]:
         result = self.verifier.verify_pick_reachable(observation, self.episode_spec)
         if not result.success:
-            return RobotAction.idle(source="verify_pick_reachable"), self._fail(
-                result.failure_reason or "pick_target_unreachable",
-                observation,
-                result.metadata,
-            )
+            handoff_status = dict(self.latest_executor_status or {})
+            if handoff_status.get("near_goal_stall_handoff") is True:
+                result = VerificationResult(
+                    success=True,
+                    failure_reason="",
+                    metadata={
+                        **result.metadata,
+                        "navigation_verifier_override": "near_goal_stall_handoff",
+                        "near_goal_stall_handoff": True,
+                        "executor_distance_to_goal": handoff_status.get(
+                            "distance_to_goal"
+                        ),
+                        "executor_position_tolerance": handoff_status.get(
+                            "position_tolerance"
+                        ),
+                        "executor_near_goal_stall_handoff_tolerance": (
+                            handoff_status.get(
+                                "near_goal_stall_handoff_tolerance"
+                            )
+                        ),
+                    },
+                )
+            else:
+                return RobotAction.idle(source="verify_pick_reachable"), self._fail(
+                    result.failure_reason or "pick_target_unreachable",
+                    observation,
+                    result.metadata,
+                )
         events = [self._event("nav_to_pick_success", observation.step_index, result.metadata)]
         if self.config.navigation_smoke:
             events.append(self._event("navigation_smoke_success", observation.step_index))

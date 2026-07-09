@@ -65,12 +65,17 @@ def test_pct_robot_config_isolated_from_default_single_floor_asset() -> None:
     assert "GO2_X5_PCT_DOG_ONLY_CFG = GO2_X5_CFG.replace(" in asset_source
     assert "GO2_X5_PCT_USD" not in asset_source
     assert "spawn=sim_utils.UsdFileCfg" not in asset_source
-    assert '"arm": DCMotorCfg(' in asset_source
-    assert 'joint_names_expr=["arm_joint[1-6]"]' in asset_source
-    assert "effort_limit=15.0" in asset_source
-    assert "velocity_limit=3.0" in asset_source
-    assert "stiffness=1000.0" in asset_source
-    assert "damping=50.0" in asset_source
+    pct_asset_source = asset_source.split(
+        "GO2_X5_PCT_DOG_ONLY_CFG = GO2_X5_CFG.replace(", 1
+    )[1]
+    pct_arm_source = pct_asset_source.split("# 主 pipeline 后续仍要抓取", 1)[0]
+    assert '"arm": ImplicitActuatorCfg(' in pct_arm_source
+    assert '"arm": DCMotorCfg(' not in pct_arm_source
+    assert 'joint_names_expr=["arm_joint[1-6]"]' in pct_arm_source
+    assert "effort_limit_sim=100.0" in pct_arm_source
+    assert "velocity_limit_sim=10.0" in pct_arm_source
+    assert "stiffness=1000.0" in pct_arm_source
+    assert "damping=50.0" in pct_arm_source
     assert "self.scene.robot = GO2_X5_PCT_DOG_ONLY_CFG.replace(" in task_source
     assert "self.scene.height_scanner.offset.pos = (0.0, 0.0, 1.0)" in task_source
     assert "self.scene.height_scanner_base.offset.pos = (0.0, 0.0, 1.0)" in task_source
@@ -113,7 +118,7 @@ def test_pct_multifloor_dwa_commands_stay_inside_checkpoint_training_range() -> 
     assert nav.pct_stair_float_activation_radius_m == pytest.approx(0.45)
     assert nav.pct_stair_float_completion_radius_m == pytest.approx(0.25)
     assert nav.pct_stair_float_min_z_delta_m == pytest.approx(0.75)
-    assert nav.pct_stair_float_approach_distance_m == pytest.approx(1.80)
+    assert nav.pct_stair_float_approach_distance_m == pytest.approx(6.00)
     assert nav.pct_stair_float_exit_distance_m == pytest.approx(0.75)
     assert nav.pct_stair_float_settle_time_s == pytest.approx(1.20)
     assert nav.pct_stair_float_yaw_lookahead_m == pytest.approx(0.35)

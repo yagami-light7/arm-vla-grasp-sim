@@ -26,6 +26,10 @@ class IsaacLabNavigationRuntimeConfig:
     enable_scene_visual: bool = True
     viewport_camera_prim_path: str = "/World/Camera0"
     hide_navigation_collision_visual: bool = True
+    scene_light_mode: str = "camera"
+    camera_light_intensity: float = 3500.0
+    camera_light_radius: float = 2.0
+    camera_light_name: str = "camera_light"
     # 数据相机严格对齐 DWA：Go2 头部前视、480x640 RGB、每个控制步更新。
     enable_front_camera: bool = False
     front_camera_height: int = 480
@@ -764,6 +768,10 @@ class IsaacLabNavigationRuntime:
             if navigation_support_requested
             else action.metadata.get("manipulation_support_joint_lock_phase")
         )
+        navigation_dog_joint_positions = action.metadata.get(
+            "navigation_dog_joint_positions"
+        )
+        navigation_dog_joint_names = action.metadata.get("navigation_dog_joint_names")
         if support_requested and not self._manipulation_support_joint_lock_active:
             if not hasattr(self._adapter, "set_support_joint_lock"):
                 report = {
@@ -771,7 +779,14 @@ class IsaacLabNavigationRuntime:
                     "reason": "adapter_missing_set_support_joint_lock",
                 }
             else:
-                report = self._adapter.set_support_joint_lock(True)
+                if navigation_support_requested:
+                    report = self._adapter.set_support_joint_lock(
+                        True,
+                        dog_joint_target=navigation_dog_joint_positions,
+                        dog_joint_names=navigation_dog_joint_names,
+                    )
+                else:
+                    report = self._adapter.set_support_joint_lock(True)
             self._manipulation_support_joint_lock_active = bool(report.get("enabled"))
             support_report = {
                 **report,
@@ -840,6 +855,10 @@ class IsaacLabNavigationRuntime:
                 report = self._adapter.set_navigation_joint_pose_lock(
                     True,
                     arm_joint_target=action.arm_joint_positions,
+                    dog_joint_target=action.metadata.get(
+                        "navigation_dog_joint_positions"
+                    ),
+                    dog_joint_names=action.metadata.get("navigation_dog_joint_names"),
                 )
             self._navigation_joint_pose_lock_active = bool(report.get("enabled"))
             lock_report = {
@@ -862,6 +881,13 @@ class IsaacLabNavigationRuntime:
         if not requested and self._navigation_joint_pose_lock_active:
             report = self._adapter.set_navigation_joint_pose_lock(False)
             self._navigation_joint_pose_lock_active = False
+            reset_policy_warmup = getattr(self._adapter, "reset_policy_warmup", None)
+            policy_warmup_reset = False
+            if callable(reset_policy_warmup):
+                # 楼梯漂移期间写过 root 和关节状态；解除 direct joint lock 后，
+                # 让 locomotion policy 重新渐入，避免第一帧目标阶跃。
+                reset_policy_warmup()
+                policy_warmup_reset = True
             self._metadata.update(
                 {
                     "navigation_joint_pose_lock_active": False,
@@ -870,6 +896,7 @@ class IsaacLabNavigationRuntime:
                         "transition": "disabled",
                         "phase": phase,
                         "source": "navigation",
+                        "policy_warmup_reset": policy_warmup_reset,
                     },
                 }
             )
@@ -1369,9 +1396,26 @@ class IsaacLabNavigationRuntime:
                 if stage_after_collision_patch is not None
                 else {"applied": False, "reason": "usd_stage_unavailable"}
             )
+            self._metadata["scene_lighting_after_spawn_report"] = (
+                self._configure_scene_lighting(
+                    stage_after_collision_patch,
+                    reason="after_spawn",
+                )
+                if stage_after_collision_patch is not None
+                else {"applied": False, "reason": "usd_stage_unavailable"}
+            )
             wrapped = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
             # wrapper 构造时会触发 env.reset；GUI viewport 只在 reset 完成后切相机。
             self.refresh_viewport(reason="environment_reset")
+            stage_after_reset = omni.usd.get_context().get_stage()
+            self._metadata["scene_lighting_after_reset_report"] = (
+                self._configure_scene_lighting(
+                    stage_after_reset,
+                    reason="after_environment_reset",
+                )
+                if stage_after_reset is not None
+                else {"applied": False, "reason": "usd_stage_unavailable"}
+            )
             checkpoint = retrieve_file_path(str(self._resolve_checkpoint()))
             if agent_cfg.class_name == "OnPolicyRunner":
                 runner = OnPolicyRunner(
@@ -1637,6 +1681,8 @@ class IsaacLabNavigationRuntime:
         self._metadata["object_collision_visual_hide_report"] = (
             object_collision_visual_hide
         )
+        scene_lighting = self._configure_scene_lighting(stage, reason="visual_scene_loaded")
+        self._metadata["scene_lighting_report"] = scene_lighting
         return {
             "loaded": True,
             "load_mode": "sublayer",
@@ -1651,7 +1697,23 @@ class IsaacLabNavigationRuntime:
             ),
             "object_visibility": object_visibility,
             "object_collision_visual_hide": object_collision_visual_hide,
+            "scene_lighting": scene_lighting,
         }
+
+    def _configure_scene_lighting(self, stage: Any, *, reason: str) -> dict[str, Any]:
+        """根据 runtime 配置切换 stage light / camera light。"""
+
+        from source.simulation.lighting import configure_scene_lighting
+
+        report = configure_scene_lighting(
+            stage=stage,
+            mode=self._config.scene_light_mode,
+            camera_light_name=self._config.camera_light_name,
+            camera_light_intensity=self._config.camera_light_intensity,
+            camera_light_radius=self._config.camera_light_radius,
+        )
+        report["reason"] = reason
+        return report
 
     def _hide_object_collision_visual(self, stage: Any) -> dict[str, Any]:
         """隐藏 Apple_M_Apple 碰撞视觉层，避免相机采集到占位碰撞网格。"""

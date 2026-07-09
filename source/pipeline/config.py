@@ -119,9 +119,10 @@ class NavigationSettings:
     pct_stair_float_activation_radius_m: float = 0.45
     pct_stair_float_completion_radius_m: float = 0.25
     pct_stair_float_min_z_delta_m: float = 0.75
-    pct_stair_float_approach_distance_m: float = 1.80
+    pct_stair_float_approach_distance_m: float = 6.00
     pct_stair_float_exit_distance_m: float = 0.75
     pct_stair_float_settle_time_s: float = 1.20
+    pct_stair_float_release_settle_time_s: float = 0.80
     pct_stair_float_yaw_lookahead_m: float = 0.35
     pct_stair_float_min_root_z_offset_m: float = 0.18
     goal_z_tolerance: float = 0.35
@@ -267,6 +268,15 @@ class RecordingSettings:
 
 
 @dataclass(frozen=True)
+class SceneLightingSettings:
+    """真实 Isaac stage 的灯光模式；默认先服务相机保存图像。"""
+
+    scene_light_mode: str = "camera"
+    camera_light_intensity: float = 3500.0
+    camera_light_radius: float = 2.0
+
+
+@dataclass(frozen=True)
 class VideoRecordingSettings:
     """展示用 overview 视频录制参数；不参与训练 observation 数据。"""
 
@@ -321,6 +331,7 @@ class FullPhysicsConfig:
     manipulation: ManipulationSettings = field(default_factory=ManipulationSettings)
     randomization: RandomizationSettings = field(default_factory=RandomizationSettings)
     recording: RecordingSettings = field(default_factory=RecordingSettings)
+    lighting: SceneLightingSettings = field(default_factory=SceneLightingSettings)
     video: VideoRecordingSettings = field(default_factory=VideoRecordingSettings)
     limits: StateLimits = field(default_factory=StateLimits)
 
@@ -390,6 +401,10 @@ class FullPhysicsConfig:
             )
         if self.navigation.pct_stair_float_settle_time_s < 0.0:
             raise ValueError("pct_stair_float_settle_time_s must be non-negative")
+        if self.navigation.pct_stair_float_release_settle_time_s < 0.0:
+            raise ValueError(
+                "pct_stair_float_release_settle_time_s must be non-negative"
+            )
         if self.navigation.pct_stair_float_yaw_lookahead_m < 0.0:
             raise ValueError(
                 "pct_stair_float_yaw_lookahead_m must be non-negative"
@@ -650,6 +665,12 @@ class FullPhysicsConfig:
             raise ValueError("recording camera_keys must not be empty")
         if self.recording.primary_camera_key not in self.recording.camera_keys:
             raise ValueError("recording primary_camera_key must be included in camera_keys")
+        if self.lighting.scene_light_mode not in {"camera", "stage"}:
+            raise ValueError("scene_light_mode 必须是 camera 或 stage")
+        if self.lighting.camera_light_intensity <= 0:
+            raise ValueError("camera_light_intensity 必须为正数")
+        if self.lighting.camera_light_radius <= 0:
+            raise ValueError("camera_light_radius 必须为正数")
         if self.video.enabled and self.video.mode.lower() not in {
             "overview",
             "front",

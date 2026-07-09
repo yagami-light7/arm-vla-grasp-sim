@@ -141,14 +141,13 @@ GO2_X5_PCT_DOG_ONLY_CFG = GO2_X5_CFG.replace(
             damping=1.0,
             friction=0.0,
         ),
-        # DogOnly 策略没有机械臂 action 槽位，因此 reset/nav 阶段仍需要
-        # DCMotor actuator 稳住机械臂；参数对齐 full_physics baseline 的
-        # 机械臂驱动增益，避免低刚度导致 place 末端滞后，同时不放大 effort/velocity。
-        "arm": DCMotorCfg(
+        # DogOnly 策略没有机械臂 action 槽位，因此机械臂仍走 pipeline
+        # 独立 position target；这里必须复用 baseline 的 implicit drive，
+        # 避免 DCMotor 速度/力矩曲线让 arm_joint4 等腕部关节滞后。
+        "arm": ImplicitActuatorCfg(
             joint_names_expr=["arm_joint[1-6]"],
-            effort_limit=15.0,
-            saturation_effort=15.0,
-            velocity_limit=3.0,
+            effort_limit_sim=100.0,
+            velocity_limit_sim=10.0,
             stiffness=1000.0,
             damping=50.0,
             friction=0.0,

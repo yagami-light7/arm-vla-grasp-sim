@@ -81,18 +81,24 @@ class FakeAdapter:
         self.base_pose_lock_flags: list[bool] = []
         self.base_pose_lock_targets: list[tuple[float, float, float, float] | None] = []
         self.support_joint_lock_flags: list[bool] = []
+        self.support_joint_lock_dog_targets: list[tuple[float, ...] | None] = []
         self.navigation_joint_pose_lock_flags: list[bool] = []
         self.navigation_joint_pose_lock_arm_targets: list[tuple[float, ...] | None] = []
+        self.navigation_joint_pose_lock_dog_targets: list[tuple[float, ...] | None] = []
         self.base_pose_lock_apply_count = 0
         self.support_joint_lock_apply_count = 0
         self.navigation_joint_pose_lock_apply_count = 0
         self.arm_position_target_apply_count = 0
         self.gripper_position_target_apply_count = 0
+        self.policy_warmup_reset_count = 0
         self.refresh_flags: list[bool] = []
         self.policy_action = FakePolicyAction()
 
     def apply_base_command(self, vx: float, vy: float, wz: float) -> None:
         self.base_commands.append((float(vx), float(vy), float(wz)))
+
+    def reset_policy_warmup(self) -> None:
+        self.policy_warmup_reset_count += 1
 
     def set_gripper_joint_target(self, target) -> None:
         self.gripper_targets.append(tuple(float(value) for value in target))
@@ -141,13 +147,27 @@ class FakeAdapter:
             "uses_direct_root_state": True,
         }
 
-    def set_support_joint_lock(self, enabled: bool = True) -> dict:
+    def set_support_joint_lock(
+        self,
+        enabled: bool = True,
+        *,
+        dog_joint_target=None,
+        dog_joint_names=None,
+    ) -> dict:
+        del dog_joint_names
         self.support_joint_lock_flags.append(bool(enabled))
+        target = (
+            None
+            if dog_joint_target is None
+            else tuple(float(value) for value in dog_joint_target)
+        )
+        self.support_joint_lock_dog_targets.append(target)
         return {
             "enabled": bool(enabled),
             "joint_names": [f"dog_joint{index}" for index in range(12)] if enabled else [],
             "joint_ids": list(range(12)) if enabled else [],
             "action_indices": list(range(12)),
+            "target_positions": list(target or []) if enabled else [],
         }
 
     def apply_support_joint_lock(self) -> dict:
@@ -161,14 +181,28 @@ class FakeAdapter:
             "lock_mode": "position_velocity_target_only",
         }
 
-    def set_navigation_joint_pose_lock(self, enabled: bool = True, *, arm_joint_target=None) -> dict:
+    def set_navigation_joint_pose_lock(
+        self,
+        enabled: bool = True,
+        *,
+        arm_joint_target=None,
+        dog_joint_target=None,
+        dog_joint_names=None,
+    ) -> dict:
+        del dog_joint_names
         self.navigation_joint_pose_lock_flags.append(bool(enabled))
         target = (
             None
             if arm_joint_target is None
             else tuple(float(value) for value in arm_joint_target)
         )
+        dog_target = (
+            None
+            if dog_joint_target is None
+            else tuple(float(value) for value in dog_joint_target)
+        )
         self.navigation_joint_pose_lock_arm_targets.append(target)
+        self.navigation_joint_pose_lock_dog_targets.append(dog_target)
         return {
             "enabled": bool(enabled),
             "joint_names": [f"joint{index}" for index in range(20)] if enabled else [],
@@ -521,6 +555,8 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
 
         self.assertEqual(config.viewport_camera_prim_path, "/World/Camera0")
         self.assertTrue(config.hide_navigation_collision_visual)
+        self.assertEqual(config.scene_light_mode, "camera")
+        self.assertGreater(config.camera_light_intensity, 0.0)
 
     def test_height_scanners_follow_runtime_navigation_terrain(self) -> None:
         scanner = type("ScannerCfg", (), {"mesh_prim_paths": ["/World/ground"]})()
@@ -1149,6 +1185,20 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
     def test_navigation_stair_float_updates_root_lock_target(self) -> None:
         runtime, adapter, _fake_runtime_obj = _fake_runtime()
         arm_target = (0.1, 0.2, 0.3, -0.1, -0.2, -0.3)
+        dog_target = (
+            0.1,
+            0.8,
+            -1.5,
+            -0.1,
+            0.8,
+            -1.5,
+            0.1,
+            1.0,
+            -1.5,
+            -0.1,
+            1.0,
+            -1.5,
+        )
 
         runtime.apply(
             RobotAction(
@@ -1163,6 +1213,21 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
                     "navigation_support_joint_lock_phase": "pct_stair_float",
                     "navigation_full_body_joint_lock": True,
                     "navigation_full_body_joint_lock_phase": "pct_stair_float",
+                    "navigation_dog_joint_names": (
+                        "FR_hip_joint",
+                        "FR_thigh_joint",
+                        "FR_calf_joint",
+                        "FL_hip_joint",
+                        "FL_thigh_joint",
+                        "FL_calf_joint",
+                        "RR_hip_joint",
+                        "RR_thigh_joint",
+                        "RR_calf_joint",
+                        "RL_hip_joint",
+                        "RL_thigh_joint",
+                        "RL_calf_joint",
+                    ),
+                    "navigation_dog_joint_positions": dog_target,
                 },
             )
         )
@@ -1170,8 +1235,10 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         self.assertEqual(adapter.base_pose_lock_flags, [True])
         self.assertEqual(adapter.base_pose_lock_targets, [(1.2, 6.3, 1.4, 1.57)])
         self.assertEqual(adapter.support_joint_lock_flags, [True])
+        self.assertEqual(adapter.support_joint_lock_dog_targets, [dog_target])
         self.assertEqual(adapter.navigation_joint_pose_lock_flags, [True])
         self.assertEqual(adapter.navigation_joint_pose_lock_arm_targets, [arm_target])
+        self.assertEqual(adapter.navigation_joint_pose_lock_dog_targets, [dog_target])
         self.assertTrue(runtime._metadata["used_navigation_base_lock"])  # type: ignore[attr-defined]
         self.assertTrue(runtime._metadata["used_navigation_support_joint_lock"])  # type: ignore[attr-defined]
         self.assertTrue(runtime._metadata["used_navigation_joint_pose_lock"])  # type: ignore[attr-defined]
@@ -1196,9 +1263,15 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         self.assertEqual(adapter.base_pose_lock_flags, [True, False])
         self.assertEqual(adapter.support_joint_lock_flags, [True, False])
         self.assertEqual(adapter.navigation_joint_pose_lock_flags, [True, False])
+        self.assertEqual(adapter.policy_warmup_reset_count, 1)
         self.assertFalse(runtime._metadata["manipulation_base_lock_active"])  # type: ignore[attr-defined]
         self.assertFalse(runtime._metadata["manipulation_support_joint_lock_active"])  # type: ignore[attr-defined]
         self.assertFalse(runtime._metadata["navigation_joint_pose_lock_active"])  # type: ignore[attr-defined]
+        self.assertTrue(
+            runtime._metadata["last_navigation_joint_pose_lock_report"][  # type: ignore[attr-defined]
+                "policy_warmup_reset"
+            ]
+        )
 
     def test_navigation_stair_float_moves_carried_object_with_root_target(self) -> None:
         runtime, adapter, _fake_runtime_obj = _fake_runtime()
