@@ -543,6 +543,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="PCT 楼梯漂移期间 root 高度相对 PCT 地面路径的最小偏移。",
     )
     parser.add_argument(
+        "--pct-stair-float-release-root-z-offset",
+        type=float,
+        default=(
+            NavigationSettings().pct_stair_float_release_root_z_offset_m
+        ),
+        help="PCT 楼梯漂移结束时 root 相对二楼地面的释放高度。",
+    )
+    parser.add_argument(
         "--goal-z-tolerance",
         type=float,
         default=0.35,
@@ -841,6 +849,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             pct_stair_float_min_root_z_offset_m=float(
                 args.pct_stair_float_min_root_z_offset
+            ),
+            pct_stair_float_release_root_z_offset_m=float(
+                args.pct_stair_float_release_root_z_offset
             ),
             goal_z_tolerance=float(args.goal_z_tolerance),
         ),

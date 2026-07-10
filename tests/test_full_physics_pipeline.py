@@ -536,6 +536,10 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             args.pct_stair_float_min_root_z_offset,
             NavigationSettings().pct_stair_float_min_root_z_offset_m,
         )
+        self.assertEqual(
+            args.pct_stair_float_release_root_z_offset,
+            NavigationSettings().pct_stair_float_release_root_z_offset_m,
+        )
 
     def test_cli_accepts_pct_stair_float_overrides(self) -> None:
         args = _build_parser().parse_args(
@@ -557,6 +561,8 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 "0.6",
                 "--pct-stair-float-min-root-z-offset",
                 "0.42",
+                "--pct-stair-float-release-root-z-offset",
+                "0.38",
             ]
         )
 
@@ -568,6 +574,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertEqual(args.pct_stair_float_exit_distance, 1.4)
         self.assertEqual(args.pct_stair_float_settle_time, 0.6)
         self.assertEqual(args.pct_stair_float_min_root_z_offset, 0.42)
+        self.assertEqual(args.pct_stair_float_release_root_z_offset, 0.38)
 
     def test_cli_dry_run_writes_startup_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

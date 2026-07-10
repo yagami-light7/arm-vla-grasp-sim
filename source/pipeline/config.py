@@ -120,11 +120,12 @@ class NavigationSettings:
     pct_stair_float_completion_radius_m: float = 0.25
     pct_stair_float_min_z_delta_m: float = 0.75
     pct_stair_float_approach_distance_m: float = 6.00
-    pct_stair_float_exit_distance_m: float = 0.75
+    pct_stair_float_exit_distance_m: float = 1.40
     pct_stair_float_settle_time_s: float = 1.20
     pct_stair_float_release_settle_time_s: float = 0.80
     pct_stair_float_yaw_lookahead_m: float = 0.35
     pct_stair_float_min_root_z_offset_m: float = 0.18
+    pct_stair_float_release_root_z_offset_m: float = 0.26
     goal_z_tolerance: float = 0.35
     # 对齐稳定 random nav-pick-place baseline；0.25 m 已会占用当前 place goal。
     global_inflate_radius: float = 0.20
@@ -412,6 +413,10 @@ class FullPhysicsConfig:
         if self.navigation.pct_stair_float_min_root_z_offset_m < 0.0:
             raise ValueError(
                 "pct_stair_float_min_root_z_offset_m must be non-negative"
+            )
+        if self.navigation.pct_stair_float_release_root_z_offset_m < 0.0:
+            raise ValueError(
+                "pct_stair_float_release_root_z_offset_m must be non-negative"
             )
         if self.navigation.pct_body_obstacle_min_height_m < 0.0:
             raise ValueError(

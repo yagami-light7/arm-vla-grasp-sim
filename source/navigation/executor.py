@@ -96,6 +96,7 @@ class DwaNavExecutor:
         stair_float_release_settle_time_s: float = 0.0,
         stair_float_yaw_lookahead_m: float = 0.35,
         stair_float_min_root_z_offset_m: float = 0.18,
+        stair_float_release_root_z_offset_m: float = 0.26,
     ) -> None:
         if grid_map is not None and map_json is not None:
             raise ValueError("map_json 与 grid_map 只能提供一个。")
@@ -151,6 +152,8 @@ class DwaNavExecutor:
             raise ValueError("楼梯漂移朝向前瞻距离不能为负数。")
         if stair_float_min_root_z_offset_m < 0.0:
             raise ValueError("楼梯漂移 root 最小离地高度不能为负数。")
+        if stair_float_release_root_z_offset_m < 0.0:
+            raise ValueError("楼梯漂移释放 root 离地高度不能为负数。")
 
         self.map_json = None if map_json is None else str(Path(map_json).expanduser().resolve())
         self._single_floor_raw_map = grid_map
@@ -202,6 +205,9 @@ class DwaNavExecutor:
         self.stair_float_yaw_lookahead_m = float(stair_float_yaw_lookahead_m)
         self.stair_float_min_root_z_offset_m = float(
             stair_float_min_root_z_offset_m
+        )
+        self.stair_float_release_root_z_offset_m = float(
+            stair_float_release_root_z_offset_m
         )
         self.terminal_start_distance = max(
             float(terminal_start_distance),
@@ -280,6 +286,7 @@ class DwaNavExecutor:
 
         if len(plan.waypoints) < 2:
             raise ValueError("DWA 路径至少需要两个 waypoint。")
+        self._reset_stair_float_state(plan)
         self._select_local_map(plan)
         self._ensure_local_map(plan)
         if self.local_map is None:
@@ -290,6 +297,11 @@ class DwaNavExecutor:
             for point in plan.waypoints
         ]
         path_world = self._refine_pct_path_for_local_map(plan, path_world)
+        path_world, stair_float_splice = _splice_stair_float_controller_path(
+            path_world,
+            self._stair_float_path,
+        )
+        self._stair_float_report["controller_path_splice"] = stair_float_splice
         self._active_dwa_config = self._dwa_config_for_plan(plan)
         self._carry_mode = (
             plan.metadata.get("execution_phase") == "carry_nav_to_place"
@@ -304,7 +316,6 @@ class DwaNavExecutor:
             self.terminal_pose_config,
             yaw_tolerance=self._active_yaw_tolerance,
         )
-        self._reset_stair_float_state(plan)
         self.plan = plan
         self._controller = DWAController(
             path_world=path_world,
@@ -637,6 +648,7 @@ class DwaNavExecutor:
             "obstacle_inflate_radius_m": 0.0,
             "route_corridor_radius_m": None,
             "route_cells_cleared": 0,
+            "stair_float_route_cells_cleared": 0,
             "protected_cells_preserved": 0,
         }
         if multifloor and self._multifloor_raw_map is not None:
@@ -651,27 +663,50 @@ class DwaNavExecutor:
                 self.multifloor_obstacle_inflate_radius
             )
             if self.multifloor_route_corridor_radius is not None:
-                selected, cleared_count, protected_count = (
-                    _clear_grid_path_corridor(
-                        selected,
+                route_paths: list[list[tuple[float, float]]] = [
+                    [
+                        (float(point[0]), float(point[1]))
+                        for point in plan.waypoints
+                    ]
+                ]
+                if self._stair_float_path:
+                    stair_route, _ = _splice_stair_float_controller_path(
                         [
                             (float(point[0]), float(point[1]))
                             for point in plan.waypoints
                         ],
-                        radius_m=float(
-                            self.multifloor_route_corridor_radius
-                        ),
-                        protected_obstacle_map=(
-                            self._multifloor_protected_obstacle_map
-                        ),
+                        self._stair_float_path,
                     )
-                )
+                    route_paths.append(stair_route)
+                cleared_count = 0
+                protected_count = 0
+                stair_float_cleared_count = 0
+                for path_index, route_path in enumerate(route_paths):
+                    selected, current_cleared, current_protected = (
+                        _clear_grid_path_corridor(
+                            selected,
+                            route_path,
+                            radius_m=float(
+                                self.multifloor_route_corridor_radius
+                            ),
+                            protected_obstacle_map=(
+                                self._multifloor_protected_obstacle_map
+                            ),
+                        )
+                    )
+                    cleared_count += int(current_cleared)
+                    protected_count += int(current_protected)
+                    if path_index > 0:
+                        stair_float_cleared_count += int(current_cleared)
                 self._map_selection_report.update(
                     {
                         "route_corridor_radius_m": float(
                             self.multifloor_route_corridor_radius
                         ),
                         "route_cells_cleared": cleared_count,
+                        "stair_float_route_cells_cleared": (
+                            stair_float_cleared_count
+                        ),
                         "protected_cells_preserved": protected_count,
                     }
                 )
@@ -1092,6 +1127,9 @@ class DwaNavExecutor:
             "settle_time_s": self.stair_float_settle_time_s,
             "release_settle_time_s": self.stair_float_release_settle_time_s,
             "min_root_z_offset_m": self.stair_float_min_root_z_offset_m,
+            "release_root_z_offset_m": (
+                self.stair_float_release_root_z_offset_m
+            ),
             "target_root_z_offset_m": float(
                 self._stair_float_target_root_z_offset
             ),
@@ -1526,22 +1564,13 @@ class DwaNavExecutor:
         plan: NavPlan,
         path: tuple[tuple[float, float, float], ...],
     ) -> float:
-        """根据 PCT 地面高度推导漂移结束时的 root 偏移。"""
+        """返回最低释放偏移，激活时再用机器人实测站立高度抬高。"""
 
-        robot_root_to_floor = plan.metadata.get("robot_root_to_floor_m")
-        if robot_root_to_floor is not None:
-            try:
-                value = float(robot_root_to_floor)
-            except (TypeError, ValueError):
-                value = 0.0
-            if math.isfinite(value) and value > 0.0:
-                return max(value, float(self.stair_float_min_root_z_offset_m))
-        candidates = [float(self.stair_float_min_root_z_offset_m)]
-        if plan.goal.z is not None and path:
-            goal_offset = float(plan.goal.z) - float(path[-1][2])
-            if math.isfinite(goal_offset) and goal_offset > 0.0:
-                candidates.append(goal_offset)
-        return max(candidates)
+        del plan, path
+        return max(
+            float(self.stair_float_min_root_z_offset_m),
+            float(self.stair_float_release_root_z_offset_m),
+        )
 
     def _stair_float_dt(self, state: SimulationState) -> float:
         timestamp = float(state.timestamp)
@@ -1805,7 +1834,210 @@ def _extract_stair_float_path(
     stair_z_values = [point[2] for point in stair_path]
     if max(stair_z_values) - min(stair_z_values) < float(min_z_delta_m):
         return ()
-    return stair_path
+    return _straighten_stair_float_tail(stair_path, z_trend=z_trend)
+
+
+def _stair_float_segment_heading(
+    start: tuple[float, float, float],
+    end: tuple[float, float, float],
+) -> float | None:
+    """返回楼梯漂移段的 XY 朝向；近似竖直段没有可靠朝向。"""
+
+    dx = float(end[0]) - float(start[0])
+    dy = float(end[1]) - float(start[1])
+    if math.hypot(dx, dy) <= 1.0e-6:
+        return None
+    return math.atan2(dy, dx)
+
+
+def _splice_stair_float_controller_path(
+    path_world: list[tuple[float, float]],
+    stair_path: tuple[tuple[float, float, float], ...],
+) -> tuple[list[tuple[float, float]], dict[str, Any]]:
+    """把实际楼梯漂移轨迹接入 DWA 路径，并选择前向的二楼合流点。"""
+
+    report: dict[str, Any] = {
+        "applied": False,
+        "input_waypoint_count": len(path_world),
+        "output_waypoint_count": len(path_world),
+    }
+    if len(path_world) < 2 or len(stair_path) < 2:
+        report["reason"] = "insufficient_path"
+        return list(path_world), report
+
+    stair_xy: list[tuple[float, float]] = []
+    for point in stair_path:
+        xy = (float(point[0]), float(point[1]))
+        if stair_xy and math.hypot(
+            xy[0] - stair_xy[-1][0],
+            xy[1] - stair_xy[-1][1],
+        ) <= 1.0e-5:
+            continue
+        stair_xy.append(xy)
+    if len(stair_xy) < 2:
+        report["reason"] = "degenerate_stair_path"
+        return list(path_world), report
+
+    start_xy = stair_xy[0]
+    release_xy = stair_xy[-1]
+    start_index = min(
+        range(len(path_world)),
+        key=lambda index: math.hypot(
+            float(path_world[index][0]) - start_xy[0],
+            float(path_world[index][1]) - start_xy[1],
+        ),
+    )
+    nearest_release_index = min(
+        range(start_index, len(path_world)),
+        key=lambda index: math.hypot(
+            float(path_world[index][0]) - release_xy[0],
+            float(path_world[index][1]) - release_xy[1],
+        ),
+    )
+    release_heading = math.atan2(
+        release_xy[1] - stair_xy[-2][1],
+        release_xy[0] - stair_xy[-2][0],
+    )
+    heading_x = math.cos(release_heading)
+    heading_y = math.sin(release_heading)
+    merge_index: int | None = None
+    merge_heading_error: float | None = None
+    for index in range(nearest_release_index + 1, len(path_world)):
+        candidate = path_world[index]
+        dx = float(candidate[0]) - release_xy[0]
+        dy = float(candidate[1]) - release_xy[1]
+        distance = math.hypot(dx, dy)
+        if distance < 0.35:
+            continue
+        forward_progress = dx * heading_x + dy * heading_y
+        if forward_progress < 0.20:
+            continue
+        heading_error = wrap_yaw(math.atan2(dy, dx) - release_heading)
+        if abs(heading_error) > math.radians(75.0):
+            continue
+        merge_index = index
+        merge_heading_error = heading_error
+        break
+
+    if merge_index is None:
+        merge_index = min(len(path_world), nearest_release_index + 1)
+
+    combined = [*path_world[:start_index], *stair_xy, *path_world[merge_index:]]
+    output: list[tuple[float, float]] = []
+    for point in combined:
+        xy = (float(point[0]), float(point[1]))
+        if output and math.hypot(
+            xy[0] - output[-1][0],
+            xy[1] - output[-1][1],
+        ) <= 1.0e-5:
+            continue
+        output.append(xy)
+    if len(output) < 2:
+        report["reason"] = "splice_collapsed_path"
+        return list(path_world), report
+
+    merge_point = (
+        output[-1]
+        if merge_index >= len(path_world)
+        else path_world[merge_index]
+    )
+    report.update(
+        {
+            "applied": True,
+            "reason": "stair_release_forward_merge",
+            "start_index": int(start_index),
+            "nearest_release_index": int(nearest_release_index),
+            "merge_index": int(merge_index),
+            "skipped_waypoint_count": max(
+                0,
+                int(merge_index - nearest_release_index),
+            ),
+            "release_xy": [float(release_xy[0]), float(release_xy[1])],
+            "merge_xy": [float(merge_point[0]), float(merge_point[1])],
+            "merge_heading_error_rad": (
+                None
+                if merge_heading_error is None
+                else float(merge_heading_error)
+            ),
+            "output_waypoint_count": len(output),
+        }
+    )
+    return output, report
+
+
+def _straighten_stair_float_tail(
+    path: tuple[tuple[float, float, float], ...],
+    *,
+    z_trend: float,
+) -> tuple[tuple[float, float, float], ...]:
+    """拉直楼梯尾部异常横切升高段，避免冻结底盘在台阶末端大幅转向。"""
+
+    changing_segments = [
+        index
+        for index in range(len(path) - 1)
+        if (path[index + 1][2] - path[index][2]) * float(z_trend) > 0.05
+    ]
+    if len(changing_segments) < 2:
+        return path
+    tail_index = changing_segments[-1]
+    z_values = [float(point[2]) for point in path]
+    z_range = max(z_values) - min(z_values)
+    if z_range <= 1.0e-6:
+        return path
+    tail_height_ratio = (
+        float(path[tail_index][2]) - min(z_values)
+    ) / z_range
+    if tail_height_ratio < 0.75:
+        return path
+    tail_heading = _stair_float_segment_heading(
+        path[tail_index],
+        path[tail_index + 1],
+    )
+    if tail_heading is None:
+        return path
+    reference_heading: float | None = None
+    for index in range(tail_index - 1, -1, -1):
+        heading = _stair_float_segment_heading(path[index], path[index + 1])
+        if heading is None:
+            continue
+        reference_heading = heading
+        break
+    if reference_heading is None:
+        return path
+    if abs(wrap_yaw(tail_heading - reference_heading)) <= math.radians(70.0):
+        return path
+    start = path[tail_index]
+    transition_end = path[tail_index + 1]
+    transition_horizontal = math.hypot(
+        transition_end[0] - start[0],
+        transition_end[1] - start[1],
+    )
+    if transition_horizontal <= 1.0e-6:
+        return path
+    heading_x = math.cos(reference_heading)
+    heading_y = math.sin(reference_heading)
+    straight_transition_end = (
+        float(start[0]) + heading_x * transition_horizontal,
+        float(start[1]) + heading_y * transition_horizontal,
+        float(transition_end[2]),
+    )
+    projected_tail: list[tuple[float, float, float]] = [straight_transition_end]
+    accumulated = transition_horizontal
+    for index in range(tail_index + 1, len(path) - 1):
+        current = path[index]
+        next_point = path[index + 1]
+        accumulated += math.hypot(
+            float(next_point[0]) - float(current[0]),
+            float(next_point[1]) - float(current[1]),
+        )
+        projected_tail.append(
+            (
+                float(start[0]) + heading_x * accumulated,
+                float(start[1]) + heading_y * accumulated,
+                float(next_point[2]),
+            )
+        )
+    return (*path[: tail_index + 1], *projected_tail)
 
 
 def _segment_lengths_3d(

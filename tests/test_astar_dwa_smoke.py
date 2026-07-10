@@ -907,7 +907,7 @@ class AStarDwaSmokeTest(unittest.TestCase):
             settle_action.metadata["navigation_carry_object_follow"]
         )
 
-    def test_pct_carry_stair_float_default_exit_matches_phase65_handoff(
+    def test_pct_carry_stair_float_straightens_tail_climb_turn(
         self,
     ) -> None:
         grid = OccupancyGridMap(
@@ -976,16 +976,157 @@ class AStarDwaSmokeTest(unittest.TestCase):
         executor.reset(plan)
         status = executor.status()["stair_float"]
 
+        tail_path = tuple(
+            point
+            for point in executor._stair_float_path
+            if float(point[2]) >= 2.5
+        )
+        self.assertGreaterEqual(len(tail_path), 3)
+        self.assertTrue(
+            all(
+                math.isclose(float(point[0]), 2.9214885711669925, abs_tol=1.0e-6)
+                for point in tail_path
+            )
+        )
+        self.assertTrue(
+            all(
+                float(next_point[1]) <= float(point[1]) + 1.0e-6
+                for point, next_point in zip(tail_path, tail_path[1:])
+            )
+        )
+
         self.assertEqual(status["exit_distance_m"], 0.75)
         self.assertEqual(
             status["start"][:2],
             [0.5214885711669923, 4.656423950195313],
         )
-        self.assertEqual(
-            status["end"],
-            [2.5214885711669925, 6.656423950195313, 3.0],
-        )
+        self.assertAlmostEqual(status["end"][0], 2.9214885711669925)
+        self.assertAlmostEqual(status["end"][1], 5.973581237720693)
+        self.assertAlmostEqual(status["end"][2], 3.0)
         self.assertEqual(status["path_point_count"], 18)
+        splice = status["controller_path_splice"]
+        self.assertTrue(splice["applied"])
+        self.assertEqual(splice["reason"], "stair_release_forward_merge")
+        self.assertLess(float(splice["merge_xy"][1]), float(status["end"][1]))
+        self.assertLess(
+            abs(float(splice["merge_heading_error_rad"])),
+            math.radians(75.0),
+        )
+
+        release = status["end"]
+        executor._sync_controller_after_stair_float(
+            (float(release[0]), float(release[1]), float(release[2]))
+        )
+        executor._stair_float_done = True
+        release_state = SimulationState(
+            step_index=0,
+            timestamp=0.0,
+            robot_root_pose=(
+                float(release[0]),
+                float(release[1]),
+                3.62628,
+                math.cos(-math.pi / 4.0),
+                0.0,
+                0.0,
+                math.sin(-math.pi / 4.0),
+            ),
+            robot_root_velocity=(0.0,) * 6,
+        )
+        resumed_action = executor.compute_action(release_state)
+        resumed_status = executor.status()
+
+        self.assertEqual(resumed_action.source, "navigation_dwa")
+        self.assertGreater(resumed_status["dwa"]["feasible_candidates"], 0)
+        self.assertEqual(resumed_status["dwa"]["path_deviation_rejections"], 0)
+
+    def test_pct_carry_stair_float_route_clears_projected_release_corridor(
+        self,
+    ) -> None:
+        single_floor_grid = OccupancyGridMap(
+            np.zeros((160, 160), dtype=bool),
+            0.10,
+            (-6.0, -1.0, 0.0),
+        )
+        multifloor_occupancy = np.zeros((160, 160), dtype=bool)
+        multifloor_grid = OccupancyGridMap(
+            multifloor_occupancy,
+            0.10,
+            (-6.0, -1.0, 0.0),
+        )
+        release_xy = (2.9214885711669925, 5.973581237720693)
+        release_row, release_col = multifloor_grid.world_to_grid(*release_xy)
+        multifloor_occupancy[
+            release_row - 1 : release_row + 2,
+            release_col - 1 : release_col + 2,
+        ] = True
+        path_3d = (
+            (-3.478511428833008, 6.456423950195314, 0.0),
+            (-3.278511428833008, 6.2564239501953125, 0.0),
+            (-3.278511428833008, 5.456423950195314, 0.0),
+            (-2.878511428833008, 5.056423950195313, 0.0),
+            (-2.6785114288330076, 5.056423950195313, 0.0),
+            (-2.478511428833008, 4.856423950195313, 0.0),
+            (-1.6785114288330079, 4.856423950195313, 0.0),
+            (-1.478511428833008, 4.656423950195313, 0.0),
+            (-0.6785114288330079, 4.656423950195313, 0.0),
+            (0.12148857116699219, 4.656423950195313, 0.0),
+            (0.5214885711669923, 4.656423950195313, 0.0),
+            (0.9214885711669922, 5.056423950195313, 0.0),
+            (1.3214885711669924, 5.056423950195313, 0.0),
+            (1.5214885711669925, 5.2564239501953125, 0.0),
+            (1.5214885711669925, 5.856423950195312, 0.0),
+            (1.5214885711669925, 6.656423950195313, 0.5),
+            (1.5214885711669925, 6.856423950195314, 0.5),
+            (1.7214885711669923, 7.656423950195313, 1.0),
+            (1.7214885711669923, 8.056423950195313, 1.0),
+            (1.9214885711669925, 8.856423950195314, 1.5),
+            (1.9214885711669925, 9.256423950195312, 1.5),
+            (2.3214885711669924, 9.256423950195312, 1.5),
+            (2.9214885711669925, 8.656423950195313, 2.0),
+            (2.9214885711669925, 8.456423950195314, 2.0),
+            (2.9214885711669925, 7.656423950195313, 2.5),
+            (2.3214885711669924, 7.656423950195313, 3.0),
+            (2.5214885711669925, 7.456423950195314, 3.0),
+            (2.5214885711669925, 6.656423950195313, 3.0),
+            (2.5214885711669925, 6.456423950195314, 3.0),
+            (2.3214885711669924, 6.2564239501953125, 3.0),
+            (2.3214885711669924, 5.2564239501953125, 3.0),
+            (2.3214885711669924, 5.056423950195313, 3.0),
+            (1.3214885711669924, 5.056423950195313, 3.0),
+            (1.1214885711669922, 4.856423950195313, 3.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=0.4, y=-0.1, z=3.62628, yaw=0.0),
+            waypoints=tuple((point[0], point[1]) for point in path_3d),
+            metadata={
+                "planner": "pct",
+                "path_3d": path_3d,
+                "slice_start": 8,
+                "slice_end": 15,
+                "execution_phase": "carry_nav_to_place",
+            },
+        )
+        executor = DwaNavExecutor(
+            grid_map=single_floor_grid,
+            multifloor_grid_map=multifloor_grid,
+            local_clearance_radius=0.0,
+            dwa_config=DWAConfig(control_dt=0.05),
+            multifloor_route_corridor_radius=0.24,
+            multifloor_obstacle_inflate_radius=0.0,
+            stair_float_enabled=True,
+            stair_float_speed_mps=0.5,
+            stair_float_activation_radius_m=0.45,
+            stair_float_min_z_delta_m=0.75,
+            stair_float_approach_distance_m=1.80,
+        )
+
+        self.assertTrue(multifloor_grid.is_occupied(release_row, release_col))
+        executor.reset(plan)
+        map_status = executor.status()["map_selection"]
+
+        self.assertGreater(map_status["stair_float_route_cells_cleared"], 0)
+        self.assertIsNotNone(executor.local_map)
+        self.assertFalse(executor.local_map.is_occupied(release_row, release_col))
 
     def test_pct_carry_stair_entry_recovery_handles_measured_lateral_drift(self) -> None:
         grid = OccupancyGridMap(
@@ -1253,7 +1394,7 @@ class AStarDwaSmokeTest(unittest.TestCase):
         self.assertLess(abs(target[0] - 0.65), 0.05)
         self.assertLess(abs(target[1]), 0.05)
 
-    def test_pct_carry_stair_float_releases_at_planner_root_to_floor_height(self) -> None:
+    def test_pct_carry_stair_float_preserves_measured_activation_height(self) -> None:
         grid = OccupancyGridMap(
             np.zeros((80, 80), dtype=bool),
             0.1,
@@ -1304,7 +1445,7 @@ class AStarDwaSmokeTest(unittest.TestCase):
 
         self.assertEqual(action.source, "navigation_stair_float")
         self.assertAlmostEqual(status["initial_root_z_offset_m"], 0.22)
-        self.assertAlmostEqual(status["target_root_z_offset_m"], 0.45)
+        self.assertAlmostEqual(status["target_root_z_offset_m"], 0.26)
         self.assertLess(abs(float(first_target[2]) - 0.22), 0.08)
 
         for step_index in range(1, 40):
@@ -1330,8 +1471,7 @@ class AStarDwaSmokeTest(unittest.TestCase):
 
         self.assertEqual(action.source, "navigation_stair_float_completed")
         final_target = action.metadata["navigation_base_pose_lock_xyzyaw"]
-        self.assertAlmostEqual(float(final_target[2]), 3.45, places=4)
-        self.assertLess(abs(float(final_target[2]) - 3.62628), 0.35)
+        self.assertAlmostEqual(float(final_target[2]), 3.26, places=4)
 
     def test_pct_carry_stair_float_release_settle_drops_full_body_before_root_release(
         self,

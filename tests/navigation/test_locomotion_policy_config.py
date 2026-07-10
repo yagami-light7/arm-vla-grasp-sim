@@ -119,10 +119,11 @@ def test_pct_multifloor_dwa_commands_stay_inside_checkpoint_training_range() -> 
     assert nav.pct_stair_float_completion_radius_m == pytest.approx(0.25)
     assert nav.pct_stair_float_min_z_delta_m == pytest.approx(0.75)
     assert nav.pct_stair_float_approach_distance_m == pytest.approx(6.00)
-    assert nav.pct_stair_float_exit_distance_m == pytest.approx(0.75)
+    assert nav.pct_stair_float_exit_distance_m == pytest.approx(1.40)
     assert nav.pct_stair_float_settle_time_s == pytest.approx(1.20)
     assert nav.pct_stair_float_yaw_lookahead_m == pytest.approx(0.35)
     assert nav.pct_stair_float_min_root_z_offset_m == pytest.approx(0.18)
+    assert nav.pct_stair_float_release_root_z_offset_m == pytest.approx(0.26)
     flat = _build_dwa_config(nav, policy_profile="flat")
     pct = _build_dwa_config(nav, policy_profile="pct_multifloor")
 

@@ -95,8 +95,18 @@ def create_navigation_carry_smoke_pipeline(
         start=carry_start,
         raw_task=raw_task,
     )
+    carry_config = config
+    if config.locomotion.policy_profile == "pct_multifloor":
+        carry_config = replace(
+            config,
+            limits=replace(
+                config.limits,
+                navigation=max(config.limits.navigation, 12000),
+                episode=max(config.limits.episode, 15000),
+            ),
+        )
     return _create_navigation_pipeline(
-        config=config,
+        config=carry_config,
         episode_spec=carry_spec,
         episode_seed=episode_seed,
         episode_dir=episode_dir,
@@ -405,6 +415,9 @@ def create_navigation_components(
         stair_float_yaw_lookahead_m=nav.pct_stair_float_yaw_lookahead_m,
         stair_float_min_root_z_offset_m=(
             nav.pct_stair_float_min_root_z_offset_m
+        ),
+        stair_float_release_root_z_offset_m=(
+            nav.pct_stair_float_release_root_z_offset_m
         ),
     )
     verifier = NavigationEpisodeVerifier(

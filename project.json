@@ -2,8 +2,8 @@
   "project": "arm_vla_pct",
   "branch": "pct",
   "goal": "将 flat A* 全局导航替换为 PCT 多楼层规划器，并接入新的 RL locomotion checkpoint 配置。",
-  "current_phase": "phase_72_scene_camera_light_default",
-  "last_updated": "2026-07-09 22:37:53",
+  "current_phase": "phase_78_stair_release_path_splice_waiting_gpu_reboot",
+  "last_updated": "2026-07-10 19:29:47",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -253,7 +253,18 @@
     "pct_phase64_nav_to_place_failed_after_release_environment_terminated": true,
     "scene_camera_light_default_added": true,
     "scene_stage_light_fallback_added": true,
-    "phase72_lighting_targeted_tests_passing": true
+    "phase72_lighting_targeted_tests_passing": true,
+    "pct_stair_float_tail_straightened": true,
+    "pct_stair_float_tail_frames_490_500_verified": true,
+    "pct_stair_float_release_route_corridor_cleared": true,
+    "pct_stair_float_release_controller_path_spliced": true,
+    "pct_phase77_nav_to_pick_verified": true,
+    "pct_phase77_pick_success_verified": true,
+    "pct_phase77_stair_float_completed": true,
+    "pct_phase77_failed_after_release_path_deviation": true,
+    "pct_phase78_headless_attempted": true,
+    "pct_phase78_blocked_by_nvidia_driver_library_mismatch": true,
+    "pct_phase78_runtime_verified": false
   },
   "local_assets": {
     "rl_policy_source_dir": null,
@@ -5180,6 +5191,62 @@
         "用默认 camera light 复跑 GUI 或 headless 录制，检查 overview PNG/MP4 和 front/wrist 保存图像是否变亮且无异常曝光。",
         "如果 camera light 过亮或过暗，优先调 --camera-light-intensity 和 --camera-light-radius，不改 USD 资产。",
         "灯光确认后继续 phase65 路线：重点验证 F2 后解冻底盘并完成 nav2place/place。"
+      ]
+    },
+    {
+      "time": "2026-07-10 19:29:47",
+      "summary": "根据 phase77 完整 headless 日志修复楼梯尾段与 F2 解冻后的 DWA 路径接缝：490-500 帧已验证为连续逐级上升且 yaw 恒定；实际楼梯释放点现嵌入 DWA 参考路径，并以前进方向选择 F2 合流点。phase78 真实复测因 NVIDIA 内核模块与用户态库版本不一致未能启动。",
+      "files_changed": [
+        "source/navigation/executor.py",
+        "tests/test_astar_dwa_smoke.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "楼梯尾部冻结阶段在接近 F2 时曾沿 PCT 最后一个横向升高段发生大角度转向。",
+          "root_cause": "PCT 0.5m 切片路径的最后升高段从 (2.921,7.656,2.5) 横切到 (2.321,7.656,3.0)，与此前楼梯纵向朝向相差约 90 度，冻结底盘逐点跟踪时把该稀疏切片跳转当成真实台阶方向。",
+          "fix": "只对楼梯高度后 25% 内且方向突变超过 70 度的最后升高段做直线延续，保留此前 U 型楼梯和平台路径；phase77 的导出帧 490-500 中 x 恒为 2.921、y 连续递减、z 连续升高、yaw 恒为 -1.571。",
+          "prevention": "保留真实 PCT 路径回归测试，固定检查楼梯尾点、点数和释放朝向，禁止对整段楼梯做全局平滑。"
+        },
+        {
+          "problem": "phase77 成功完成楼梯浮动后立即 nav_path_deviation，DWA 的 21 个候选全部被路径偏离限制拒绝。",
+          "root_cause": "机器人在修正后的实际释放点 (2.925,5.972) 解冻，但 DWA 仍追踪原 PCT 路径点 (2.321,6.056)，横向接缝约 0.61m，大于恢复阈值 0.50m；局部地图也只清除了两条路径本身，未显式表达释放点到 F2 前向路径的合流段。",
+          "fix": "在创建 DWAController 前把实际 stair-float 路径嵌入参考路径，跳过位于释放方向后方的旧点，选择前向且转角小于 75 度的 F2 合流点；同一拼接路径用于多楼层局部栅格 corridor 清理，并记录 controller_path_splice 元数据。",
+          "prevention": "新增真实路径回归断言：释放点必须进入 DWA 路径、F2 合流点必须位于尾段前方、释放后的首次 DWA 计算必须有可行候选且不能产生路径偏离拒绝。"
+        },
+        {
+          "problem": "phase78 navigation_carry_smoke 无法创建 CUDA context。",
+          "root_cause": "当前运行中的 NVIDIA 内核模块为 580.142，而磁盘上的 libcuda/libnvidia-ml 为 580.159.03；nvidia-smi 明确返回 Driver/library version mismatch，Isaac Sim 报 CUDA 804。",
+          "fix": "未修改项目或 CUDA 环境；确认没有残留 Isaac/Kit 进程。需重启系统让 580.159.03 内核模块加载后再继续 headless 验收。",
+          "prevention": "每次长时间 headless 验收前先运行 nvidia-smi；若系统刚更新 NVIDIA 包，先重启并确认内核模块与用户态库版本一致。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/navigation/executor.py tests/test_astar_dwa_smoke.py",
+          "result": "passed",
+          "note": "语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation tests/test_astar_dwa_smoke.py -q",
+          "result": "passed",
+          "note": "98 passed in 2.05s；覆盖 PCT/A*/DWA、楼梯浮动、释放接缝和单楼层 baseline。"
+        },
+        {
+          "command": "phase77 完整 headless full_physics",
+          "result": "failed",
+          "note": "运行 5585 步；nav2pick、pick、verify_pick_success 和 stair_float 全部完成，机器人到达 F2 释放点；随后因旧 DWA 路径接缝产生 nav_path_deviation。该根因已修复。"
+        },
+        {
+          "command": "phase78 headless navigation_carry_smoke",
+          "result": "not_run",
+          "note": "Isaac Sim 在 build_stage 前因 NVIDIA 580.142 内核模块与 580.159.03 用户态库不匹配报 CUDA 804，未进入仿真，不能据此评价新接缝的真实运行效果。"
+        }
+      ],
+      "next_steps": [
+        "重启系统后先确认 nvidia-smi 正常，再原样运行 phase78 navigation_carry_smoke。",
+        "若 carry smoke 到达 F2 并完成 nav2place，再运行完整 full_physics 验证抓取、携物、place 和苹果不掉落。",
+        "根据新 summary.json 的 final_state、stair_float、controller_path_splice、DWA feasible_candidates 和 object/TCP 距离继续定点排查。"
       ]
     }
   ],

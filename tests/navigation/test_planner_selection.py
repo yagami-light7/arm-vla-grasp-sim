@@ -10,8 +10,10 @@ from source.navigation import AStarNavPlanner, PCTNavPlanner
 from source.navigation.navlib import OccupancyGridMap
 from source.navigation.pct_adapter import PCTPlannerConfig
 from source.pipeline import FullPhysicsConfig, NavigationSettings
+from source.pipeline.config import PCT_MULTIFLOOR_LOCOMOTION_TASK
 from source.pipeline.navigation_smoke import (
     _navigation_carry_smoke_start,
+    create_navigation_carry_smoke_pipeline,
     create_navigation_components,
 )
 from source.tasks import JsonTaskProvider
@@ -146,6 +148,54 @@ def test_navigation_carry_smoke_without_override_uses_pick_goal() -> None:
 
     assert source == "pick.base_goal"
     assert start is spec.pick_goal
+
+
+def test_pct_navigation_carry_smoke_uses_multifloor_step_budget(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    spec = JsonTaskProvider().load(
+        PROJECT_ROOT / "tasks/nav_pick_place_apple_multifloor_pct.json"
+    )
+    config = _config(
+        tmp_path,
+        NavigationSettings(global_planner="pct", pct_enabled=True),
+    )
+    config = replace(
+        config,
+        locomotion=replace(
+            config.locomotion,
+            policy_profile="pct_multifloor",
+            locomotion_task=PCT_MULTIFLOOR_LOCOMOTION_TASK,
+            locomotion_checkpoint=(
+                PROJECT_ROOT / "checkpoints/go2_x5/pct_multifloor/model_26000.pt"
+            ),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_create_navigation_pipeline(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        "source.pipeline.navigation_smoke._create_navigation_pipeline",
+        fake_create_navigation_pipeline,
+    )
+
+    result = create_navigation_carry_smoke_pipeline(
+        config=config,
+        episode_spec=spec,
+        episode_seed=0,
+        episode_dir=tmp_path,
+        simulation=object(),
+    )
+
+    assert result is not None
+    carry_config = captured["config"]
+    assert isinstance(carry_config, FullPhysicsConfig)
+    assert carry_config.limits.navigation == 12000
+    assert carry_config.limits.episode >= 15000
 
 
 def test_pct_failure_falls_back_to_astar() -> None:
