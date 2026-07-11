@@ -84,7 +84,7 @@ class NavigationSettings:
         (1.5, 5.7, 0.6),
     )
     pct_cross_floor_stair_exit_points: tuple[tuple[float, float, float], ...] = (
-        (1.9, 8.0, 3.0),
+        (2.90, 7.05, 3.0),
     )
     pct_cross_floor_stair_midpoint_points: tuple[tuple[float, float, float], ...] = (
         (1.51822, 6.27683, 0.29486),

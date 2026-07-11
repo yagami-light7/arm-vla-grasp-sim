@@ -2,8 +2,8 @@
   "project": "arm_vla_pct",
   "branch": "pct",
   "goal": "将 flat A* 全局导航替换为 PCT 多楼层规划器，并接入新的 RL locomotion checkpoint 配置。",
-  "current_phase": "phase_106_full_pipeline_planned_trajectory_visualization",
-  "last_updated": "2026-07-11 19:47:38",
+  "current_phase": "phase_113_no_float_stair_diagnosis_and_pick_arrival_fix",
+  "last_updated": "2026-07-11 21:53:50",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -271,8 +271,16 @@
     "pct_pure_physics_pipeline_verified": false,
     "pct_lerobot_export_verified": true,
     "full_pipeline_planned_trajectory_visualization_added": true,
+    "full_pipeline_planned_trajectory_visualization_real_verified": true,
+    "pct_navigation_guide_real_verified": true,
+    "curobo_tcp_guide_real_verified": true,
     "full_pipeline_no_gauss_gui_command_available": true,
-    "pct_no_stair_float_full_pipeline_verified": false
+    "pct_no_stair_float_full_pipeline_verified": false,
+    "pct_stair_centerline_calibrated": true,
+    "pct_stair_entry_bezier_added": true,
+    "pct_no_float_stair_entry_real_verified": true,
+    "pct_no_float_stair_ascent_real_verified": false,
+    "pct_nav_to_pick_decisive_stop_real_verified": true
   },
   "local_assets": {
     "rl_policy_source_dir": null,
@@ -5360,6 +5368,84 @@
         "运行 no-stair-float GUI 命令，重点观察真实 RL 楼梯足端动力学，并从 events.jsonl 检查 planned_trajectory_visualized 报告。",
         "若目标是稳定完成而不是纯动力学实验，继续使用 phase104/105 已验证的 --pct-stair-float baseline。"
       ]
+    },
+    {
+      "time": "2026-07-11 21:53:50",
+      "summary": "完成 phase107-113 无 stair-float 诊断与修复：完整 pipeline 中真实验证 PCT/cuRobo 轨迹 guide；修复楼梯锯齿、扶手横切、入口急转和 DWA 过早失败；修复 nav2pick 低速死区造成的停顿小碎步。phase112 已首次沿无碰撞平滑入口进入第一阶，随后在 DWA 21/21 候选可行时发生真实物理侧翻，剩余限制定位为当前 locomotion policy 的楼梯稳定性。",
+      "files_changed": [
+        "source/diagnostics/planned_trajectories.py",
+        "source/navigation/executor.py",
+        "source/navigation/pct_adapter.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/navigation/test_pct_adapter.py",
+        "tests/test_astar_dwa_smoke.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "完整 GUI pipeline 没有显示 PCT 和 cuRobo 规划轨迹，事件中报告 Path must be an absolute path: <>。",
+          "root_cause": "USD guide 子 prim 使用了以数字开头的名称，例如 00_path；该名称不是合法 Sdf prim identifier，DefinePrim 失败。",
+          "fix": "统一改为 curve_00_path、curve_00_01_move_to_pregrasp 等合法名称，并用 Sdf.Path 定义 prim；phase107 中 navigation/pick/place guide 均 available=true。",
+          "prevention": "所有动态 USD prim 名先经过合法化并使用非数字前缀；保留真实 Isaac stage smoke 和 traceback/draw_step 诊断。"
+        },
+        {
+          "problem": "原 PCT 跨层路径在楼梯上段斜切扶手，0.45m route corridor 又抹掉扶手障碍；入口处急转使真实 policy 向扶手侧漂移。",
+          "root_cause": "PCT 0.5m slice 路径把跨 slice 网格跳转直接当作物理中心线，末段存在横向升高；DWA 对整段统一使用宽清廊和恢复范围，入口折线曲率也超过短前瞻控制的稳定跟踪能力。",
+          "fix": "按实测 gateway、两段楼梯和平台控制点重建单调 3D 中心线，上层出口校正为 (2.90,7.05,3.0)；楼梯清廊缩到 0.30m、恢复边界设为 0.30m；入口前 1.4m 改为 x<=1.50 的三次 Bezier 缓弯，并允许纯原地回正完成后再判断 infeasible。",
+          "prevention": "同时保存 pct_raw_path_3d 与 refinement report，回归检查上段 x 误差、入口曲率、扶手侧 0.36m 偏移拒绝和实际 Isaac root pose。"
+        },
+        {
+          "problem": "nav2pick 接近 base_goal 时先停住，再小碎步前进。",
+          "root_cause": "pct_multifloor profile 把 close-goal 命令从配置的 0.30m/s 降到 0.18m/s，落入当前 policy 的低速站立死区；旧日志中连续约 1.4 秒命令为 0.18m/s，而实测速度多为 0.01-0.05m/s。",
+          "fix": "PCT 近目标和 close-goal 速度固定为 0.30m/s；executor 仍在进入 0.18m 验收半径的同一 tick 直接切零。phase107 从 0.217m 连续前进到 0.174m，下一 0.2秒采样速度为零，60-step base settle 中 XY 不变。",
+          "prevention": "policy profile 测试固定最低有效步态命令，并用真实末段 command/measured velocity/goal distance 三者联合验收。"
+        },
+        {
+          "problem": "不使用 stair-float 时最终仍不能完成真实上楼。",
+          "root_cause": "phase112 已排除当前 planner/DWA 碰撞：失败前路径为平滑直线楼梯中心线，DWA 21/21 候选可行、collision/path rejection 均为 0；机器人在第一阶 roll 从约 0.25rad 快速增至 1.06rad，触发 environment termination。",
+          "fix": "本轮已修完可归因于规划和局部执行的入口问题，但不伪造 pure-physics 成功；保留默认关闭的 stair-float 和 phase104/105 稳定 baseline。phase113 的全程 0.30m lookahead 实验在一楼产生切角回归，已撤回。",
+          "prevention": "后续 pure-physics 工作应使用针对该楼梯、机械臂姿态和负载训练的 locomotion policy，并以 phase112 的无碰撞中心线作为固定评测路线。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/diagnostics/planned_trajectories.py source/navigation/executor.py source/navigation/pct_adapter.py source/pipeline/config.py source/pipeline/navigation_smoke.py tests/navigation/test_pct_adapter.py tests/navigation/test_locomotion_policy_config.py tests/test_astar_dwa_smoke.py",
+          "result": "passed",
+          "note": "最终保留代码语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/navigation tests/test_planned_trajectories.py tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_collision_terrain_wrapper.py",
+          "result": "passed",
+          "note": "155 passed in 2.86s；最终撤回 lookahead 实验后复跑通过。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/navigation/probe_pct_plan.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --output-json /tmp/pct_phase113_final_probe.json",
+          "result": "passed",
+          "note": "真实 PCT server 规划成功；pick-to-place 为 75 点，包含入口 Bezier、单调楼梯中心线和 (2.90,7.05,3.0) 出口。"
+        },
+        {
+          "command": "phase107 headless full_physics without --pct-stair-float",
+          "result": "failed",
+          "note": "nav2pick 果断停靠、pick 成功、PCT/cuRobo guide 成功；无 float carry 在入口因过严 0.24m recovery 报 nav_path_deviation，该问题随后修复。"
+        },
+        {
+          "command": "phase112 headless navigation_carry_smoke without --pct-stair-float",
+          "result": "failed",
+          "note": "平滑入口首次进入第一阶；最终 navigation_environment_terminated。失败时 DWA 21/21 候选可行、0 collision rejection、0 path rejection，root roll 达 1.06rad。"
+        },
+        {
+          "command": "phase113 0.30m global lookahead experiment",
+          "result": "failed",
+          "note": "在一楼早期锐角产生 nav_path_deviation；实验代码已撤回，不属于最终实现。"
+        }
+      ],
+      "next_steps": [
+        "稳定采集继续使用 phase104/105 已两次验证的 --pct-stair-float pipeline。",
+        "pure-physics 上楼以 phase112 中心线为固定路线，训练或接入包含该楼梯、机械臂姿态和携物负载的 locomotion policy。",
+        "用户用 GUI no-float 命令复核规划轨迹、入口弧线和第一阶侧翻；不要再把当前失败归因为 PCT 横切扶手。"
+      ]
     }
   ],
   "open_questions": [
@@ -5373,7 +5459,7 @@
     "navigation collision 模式为避免 NuRec/PhysX 同进程的 CUDA external semaphore 问题会停用 /World/gauss；原生高质量 3DGS GUI 渲染和最终前景合成视频仍未完成。",
     "Isaac Sim 5.1 的 USD 0.24.5 不包含 ParticleField3DGaussianSplat schema，当前环境不能通过安全启用扩展直接获得原生 3DGS ParticleField。",
     "任务没有可用 flat nav_map 时会显式禁用 PCT 到 A* fallback；PCT server 或资产失败会直接报错，不会静默回退。",
-    "phase104/105 每轮完整录制约占 1.1GB；当前工作盘只剩约 4.3GB，继续批量采集前需要清理历史 outputs。",
+    "phase104/105 每轮完整录制约占 1.1GB；当前工作盘约剩 6.3GB，继续批量采集前仍应清理历史 outputs。",
     "phase104/105 启动期间仍有 Go2-X5 rotor visual unresolved-reference 警告，但不影响 collision 模式下的完整状态链、物理验证和 LeRobot 导出。"
   ]
 }

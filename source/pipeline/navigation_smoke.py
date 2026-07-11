@@ -687,11 +687,10 @@ def _build_dwa_config(nav, *, policy_profile: str = "flat") -> DWAConfig:
         # 训练快照的 vx=0.55 m/s、wz=0.60 rad/s 上限。
         max_linear_velocity = min(max_linear_velocity, 0.45)
         min_active_linear_velocity = min(min_active_linear_velocity, 0.25)
-        near_goal_min_active_linear_velocity = min(
-            near_goal_min_active_linear_velocity,
-            0.12,
-        )
-        close_goal_speed_limit = min(close_goal_speed_limit, 0.18)
+        # 低于 0.25 m/s 的命令落入当前 policy 的站立死区，会造成临近目标时
+        # 先停住再偶发迈步。保持有效步态速度，进入验收半径后由 executor 直接切零。
+        near_goal_min_active_linear_velocity = 0.30
+        close_goal_speed_limit = 0.30
         max_angular_velocity = min(max_angular_velocity, 0.50)
         max_linear_accel = min(max_linear_accel, 2.5)
         speed_bias = min(speed_bias, 0.90)

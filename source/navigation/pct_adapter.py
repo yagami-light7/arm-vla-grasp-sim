@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import itertools
+import math
 import os
 import queue
 import subprocess
@@ -37,7 +39,7 @@ class PCTPlannerConfig:
         (1.5, 5.7, 0.6),
     )
     cross_floor_stair_exit_points: tuple[tuple[float, float, float], ...] = (
-        (1.9, 8.0, 3.0),
+        (2.90, 7.05, 3.0),
     )
     cross_floor_stair_midpoint_points: tuple[tuple[float, float, float], ...] = (
         (1.51822, 6.27683, 0.29486),
@@ -77,6 +79,288 @@ def _xyz(values: Sequence[float]) -> tuple[float, float, float]:
     if len(values) < 3:
         raise ValueError("expected an xyz sequence with at least three values")
     return (float(values[0]), float(values[1]), float(values[2]))
+
+
+def _refine_cross_floor_stair_centerline(
+    path_3d: tuple[tuple[float, float, float], ...],
+    config: PCTPlannerConfig,
+) -> tuple[tuple[tuple[float, float, float], ...], dict[str, Any]]:
+    """用实测楼梯中心线替换 PCT 切片路径中的锯齿和扶手横切段。"""
+
+    report: dict[str, Any] = {
+        "applied": False,
+        "reason": "stair_anchors_unavailable",
+        "raw_point_count": len(path_3d),
+        "sample_spacing_m": 0.20,
+    }
+    if (
+        len(path_3d) < 2
+        or not config.cross_floor_gateway_points
+        or not config.cross_floor_stair_exit_points
+    ):
+        return path_3d, report
+
+    gateway = config.cross_floor_gateway_points[0]
+    stair_exit = config.cross_floor_stair_exit_points[0]
+    midpoints = _ordered_stair_centerline_midpoints(
+        gateway,
+        stair_exit,
+        config.cross_floor_stair_midpoint_points,
+    )
+    anchors = _normalized_stair_centerline_anchors(
+        (gateway, *midpoints, stair_exit)
+    )
+    if len(anchors) < 2:
+        return path_3d, report
+
+    start_index = min(
+        range(len(path_3d) - 1),
+        key=lambda index: _stair_anchor_path_score(path_3d[index], anchors[0]),
+    )
+    end_index = min(
+        range(start_index + 1, len(path_3d)),
+        key=lambda index: _stair_anchor_path_score(path_3d[index], anchors[-1]),
+    )
+    if end_index <= start_index:
+        report["reason"] = "stair_path_indices_invalid"
+        return path_3d, report
+
+    adjusted_anchors = list(anchors)
+    adjusted_anchors[0] = (
+        float(adjusted_anchors[0][0]),
+        float(adjusted_anchors[0][1]),
+        float(path_3d[start_index][2]),
+    )
+    adjusted_anchors[-1] = (
+        float(adjusted_anchors[-1][0]),
+        float(adjusted_anchors[-1][1]),
+        max(float(adjusted_anchors[-1][2]), float(path_3d[end_index][2])),
+    )
+    approach_start_index = _stair_approach_start_index(
+        path_3d,
+        stair_start_index=start_index,
+        gateway=adjusted_anchors[0],
+    )
+    approach = _sample_stair_approach_curve(
+        path_3d,
+        start_index=approach_start_index,
+        gateway=adjusted_anchors[0],
+        spacing_m=0.15,
+    )
+    stair_centerline = _sample_stair_centerline(
+        tuple(adjusted_anchors),
+        spacing_m=0.20,
+    )
+    centerline = _deduplicate_path_3d((*approach, *stair_centerline))
+    refined = _deduplicate_path_3d(
+        (
+            *path_3d[:approach_start_index],
+            *centerline,
+            *path_3d[end_index + 1 :],
+        )
+    )
+    report.update(
+        {
+            "applied": True,
+            "reason": "calibrated_stair_centerline",
+            "raw_start_index": int(start_index),
+            "raw_end_index": int(end_index),
+            "raw_start": list(path_3d[start_index]),
+            "raw_end": list(path_3d[end_index]),
+            "approach_start_index": int(approach_start_index),
+            "approach_start": list(path_3d[approach_start_index]),
+            "approach_point_count": len(approach),
+            "centerline_anchors": [list(point) for point in adjusted_anchors],
+            "centerline_point_count": len(centerline),
+            "refined_point_count": len(refined),
+        }
+    )
+    return refined, report
+
+
+def _ordered_stair_centerline_midpoints(
+    gateway: tuple[float, float, float],
+    stair_exit: tuple[float, float, float],
+    midpoints: tuple[tuple[float, float, float], ...],
+) -> tuple[tuple[float, float, float], ...]:
+    """按高度和平台拓扑排列无序实测点，避免平台两端顺序反转。"""
+
+    if not midpoints:
+        return ()
+    ascending = float(stair_exit[2]) >= float(gateway[2])
+    sorted_points = sorted(
+        midpoints,
+        key=lambda point: float(point[2]),
+        reverse=not ascending,
+    )
+    clusters: list[list[tuple[float, float, float]]] = []
+    for point in sorted_points:
+        if not clusters or abs(float(point[2]) - float(clusters[-1][-1][2])) > 0.25:
+            clusters.append([point])
+        else:
+            clusters[-1].append(point)
+
+    ordered: list[tuple[float, float, float]] = []
+    previous = gateway
+    for cluster_index, cluster in enumerate(clusters):
+        next_anchor = (
+            clusters[cluster_index + 1][0]
+            if cluster_index + 1 < len(clusters)
+            else stair_exit
+        )
+        candidates = itertools.permutations(cluster)
+        plateau = min(
+            candidates,
+            key=lambda candidate: (
+                _xy_distance(previous, candidate[0])
+                + sum(
+                    _xy_distance(start, end)
+                    for start, end in zip(candidate, candidate[1:])
+                )
+                + _xy_distance(candidate[-1], next_anchor)
+            ),
+        )
+        ordered.extend(plateau)
+        previous = plateau[-1]
+    return tuple(ordered)
+
+
+def _normalized_stair_centerline_anchors(
+    anchors: tuple[tuple[float, float, float], ...],
+) -> tuple[tuple[float, float, float], ...]:
+    """保持中心线高度沿行走顺序单调，吸收平台测量的厘米级高度差。"""
+
+    if len(anchors) < 2:
+        return anchors
+    points = [list(map(float, point)) for point in anchors]
+    ascending = points[-1][2] >= points[0][2]
+    if ascending:
+        points[0][2] = min(points[0][2], points[1][2])
+        for index in range(1, len(points)):
+            points[index][2] = max(points[index][2], points[index - 1][2])
+    else:
+        points[0][2] = max(points[0][2], points[1][2])
+        for index in range(1, len(points)):
+            points[index][2] = min(points[index][2], points[index - 1][2])
+    return tuple(tuple(point) for point in points)
+
+
+def _sample_stair_centerline(
+    anchors: tuple[tuple[float, float, float], ...],
+    *,
+    spacing_m: float,
+) -> tuple[tuple[float, float, float], ...]:
+    """逐段线性采样楼梯中心线，并保留每个平台控制点。"""
+
+    output: list[tuple[float, float, float]] = [anchors[0]]
+    for start, end in zip(anchors, anchors[1:]):
+        horizontal = _xy_distance(start, end)
+        steps = max(1, int(math.ceil(horizontal / max(spacing_m, 1.0e-3))))
+        for step in range(1, steps + 1):
+            alpha = step / steps
+            output.append(
+                (
+                    float(start[0]) + alpha * (float(end[0]) - float(start[0])),
+                    float(start[1]) + alpha * (float(end[1]) - float(start[1])),
+                    float(start[2]) + alpha * (float(end[2]) - float(start[2])),
+                )
+            )
+    return tuple(output)
+
+
+def _stair_approach_start_index(
+    path_3d: tuple[tuple[float, float, float], ...],
+    *,
+    stair_start_index: int,
+    gateway: tuple[float, float, float],
+) -> int:
+    """在扶手区域之前选择足够长的平层点，用于提前完成楼梯入口转向。"""
+
+    selected = max(1, stair_start_index - 1)
+    gateway_z = float(gateway[2])
+    for index in range(stair_start_index - 1, 0, -1):
+        point = path_3d[index]
+        if abs(float(point[2]) - gateway_z) > 0.10:
+            continue
+        selected = index
+        if _xy_distance(point, gateway) >= 1.20:
+            break
+    return selected
+
+
+def _sample_stair_approach_curve(
+    path_3d: tuple[tuple[float, float, float], ...],
+    *,
+    start_index: int,
+    gateway: tuple[float, float, float],
+    spacing_m: float,
+) -> tuple[tuple[float, float, float], ...]:
+    """以平层来向和楼梯朝向为切线，生成入口前的三次 Bezier 缓弯。"""
+
+    start = path_3d[start_index]
+    previous = path_3d[max(0, start_index - 1)]
+    incoming_x = float(start[0]) - float(previous[0])
+    incoming_y = float(start[1]) - float(previous[1])
+    incoming_norm = math.hypot(incoming_x, incoming_y)
+    if incoming_norm <= 1.0e-6:
+        incoming_x, incoming_y, incoming_norm = 1.0, 0.0, 1.0
+    incoming_x /= incoming_norm
+    incoming_y /= incoming_norm
+
+    distance = _xy_distance(start, gateway)
+    handle = min(0.55, max(0.25, 0.40 * distance))
+    control_1 = (
+        float(start[0]) + handle * incoming_x,
+        float(start[1]) + handle * incoming_y,
+    )
+    # 当前实测楼梯从 gateway 沿 +Y 上升，终点控制柄放在入口下方。
+    control_2 = (float(gateway[0]), float(gateway[1]) - handle)
+    sample_count = max(2, int(math.ceil(distance / max(spacing_m, 1.0e-3))))
+    output: list[tuple[float, float, float]] = []
+    for sample_index in range(sample_count + 1):
+        t = sample_index / sample_count
+        one_minus_t = 1.0 - t
+        x = (
+            one_minus_t**3 * float(start[0])
+            + 3.0 * one_minus_t**2 * t * control_1[0]
+            + 3.0 * one_minus_t * t**2 * control_2[0]
+            + t**3 * float(gateway[0])
+        )
+        y = (
+            one_minus_t**3 * float(start[1])
+            + 3.0 * one_minus_t**2 * t * control_1[1]
+            + 3.0 * one_minus_t * t**2 * control_2[1]
+            + t**3 * float(gateway[1])
+        )
+        z = float(start[2]) + t * (float(gateway[2]) - float(start[2]))
+        output.append((x, y, z))
+    return tuple(output)
+
+
+def _stair_anchor_path_score(
+    point: tuple[float, float, float],
+    anchor: tuple[float, float, float],
+) -> float:
+    return _xy_distance(point, anchor) + 0.20 * abs(float(point[2]) - float(anchor[2]))
+
+
+def _xy_distance(
+    first: Sequence[float],
+    second: Sequence[float],
+) -> float:
+    return math.hypot(float(first[0]) - float(second[0]), float(first[1]) - float(second[1]))
+
+
+def _deduplicate_path_3d(
+    points: Sequence[tuple[float, float, float]],
+) -> tuple[tuple[float, float, float], ...]:
+    output: list[tuple[float, float, float]] = []
+    for point in points:
+        normalized = tuple(float(value) for value in point[:3])
+        if output and math.dist(output[-1], normalized) <= 1.0e-6:
+            continue
+        output.append(normalized)
+    return tuple(output)
 
 
 def _validate_coord_config(
@@ -489,11 +773,24 @@ class PCTNavPlanner:
         raw_traj = response.get("traj")
         if not isinstance(raw_traj, list) or len(raw_traj) < 2:
             raise RuntimeError("PCT planner returned fewer than two trajectory points")
-        path_3d = tuple(self._pct_to_sim(point) for point in raw_traj)
+        raw_path_3d = tuple(self._pct_to_sim(point) for point in raw_traj)
+        if response.get("cross_floor") is True:
+            path_3d, stair_centerline_refinement = (
+                _refine_cross_floor_stair_centerline(raw_path_3d, self.config)
+            )
+        else:
+            path_3d = raw_path_3d
+            stair_centerline_refinement = {
+                "applied": False,
+                "reason": "same_floor_plan",
+                "raw_point_count": len(raw_path_3d),
+            }
         waypoints_xy = tuple((float(x), float(y)) for x, y, _z in path_3d)
         metadata = {
             "planner": "pct",
             "path_3d": path_3d,
+            "pct_raw_path_3d": raw_path_3d,
+            "stair_centerline_refinement": stair_centerline_refinement,
             "sim_start": start_sim,
             "slice_start": _first_present(response, "slice_start", "start_slice", "slice_id_start"),
             "slice_end": _first_present(response, "slice_end", "end_slice", "slice_id_end"),

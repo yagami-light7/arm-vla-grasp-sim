@@ -90,7 +90,7 @@ def test_pct_multifloor_dwa_commands_stay_inside_checkpoint_training_range() -> 
     assert nav.pct_global_vertical_obstacle_min_slices == 7
     assert nav.pct_cross_floor_vertical_obstacle_min_slices == 9
     assert nav.pct_cross_floor_gateway_points == ((1.5, 5.7, 0.6),)
-    assert nav.pct_cross_floor_stair_exit_points == ((1.9, 8.0, 3.0),)
+    assert nav.pct_cross_floor_stair_exit_points == ((2.90, 7.05, 3.0),)
     assert nav.pct_cross_floor_stair_midpoint_points == (
         (1.51822, 6.27683, 0.29486),
         (2.94512, 9.14634, 1.64666),
@@ -141,8 +141,9 @@ def test_pct_multifloor_dwa_commands_stay_inside_checkpoint_training_range() -> 
     assert pct.obstacle_distance_cap == pytest.approx(1.00)
     assert pct.clearance_bias == pytest.approx(0.55)
     assert pct.path_deviation_limit == pytest.approx(0.30)
-    assert pct.close_goal_speed_limit == pytest.approx(0.18)
-    assert pct.near_goal_min_active_linear_velocity == pytest.approx(0.12)
+    assert pct.close_goal_speed_limit == pytest.approx(0.30)
+    assert pct.near_goal_min_active_linear_velocity == pytest.approx(0.30)
+    assert pct.close_goal_speed_limit >= pct.min_active_linear_velocity
     assert pct.min_active_linear_velocity <= pct.max_linear_velocity
 
 

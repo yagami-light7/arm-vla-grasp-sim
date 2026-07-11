@@ -6,6 +6,7 @@ import json
 import math
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -656,11 +657,11 @@ class AStarDwaSmokeTest(unittest.TestCase):
         self.assertTrue(status["dwa_limits"]["enforce_path_deviation_limit"])
         self.assertAlmostEqual(
             status["dwa_limits"]["initial_alignment_path_deviation_limit"],
-            0.40,
+            0.30,
         )
         self.assertAlmostEqual(
             status["dwa_limits"]["path_recovery_deviation_limit"],
-            0.35,
+            0.30,
         )
         self.assertAlmostEqual(
             status["dwa_limits"]["near_goal_path_deviation_limit"],
@@ -1226,7 +1227,7 @@ class AStarDwaSmokeTest(unittest.TestCase):
             )
         )
 
-    def test_pct_carry_stair_entry_recovery_handles_measured_lateral_drift(self) -> None:
+    def test_pct_carry_stair_entry_allows_turn_but_rejects_handrail_drift(self) -> None:
         grid = OccupancyGridMap(
             np.zeros((80, 80), dtype=bool),
             0.10,
@@ -1307,8 +1308,41 @@ class AStarDwaSmokeTest(unittest.TestCase):
         self.assertLessEqual(abs(action.base_velocity[0]), 0.20 + 1.0e-6)
         self.assertLessEqual(abs(action.base_velocity[2]), 0.30 + 1.0e-6)
         self.assertGreater(status["dwa"]["feasible_candidates"], 0)
+        self.assertGreater(float(action.base_velocity[0]), 0.0)
         self.assertTrue(status["dwa"]["path_recovery_active"])
-        self.assertAlmostEqual(status["dwa"]["path_deviation_limit_used"], 0.35)
+        self.assertAlmostEqual(status["dwa"]["path_deviation_limit_used"], 0.30)
+
+        handrail_drift_state = SimulationState(
+            step_index=2,
+            timestamp=0.10,
+            robot_root_pose=(
+                1.88,
+                6.036071300506592,
+                0.31,
+                math.cos(2.087394762116031 / 2.0),
+                0.0,
+                0.0,
+                math.sin(2.087394762116031 / 2.0),
+            ),
+            robot_root_velocity=(0.0,) * 6,
+        )
+        handrail_action = executor.compute_action(handrail_drift_state)
+        handrail_status = executor.status()
+
+        self.assertEqual(handrail_status["dwa"]["feasible_candidates"], 0)
+        self.assertAlmostEqual(float(handrail_action.base_velocity[0]), 0.0)
+
+        executor._last_dwa_debug = replace(
+            executor._last_dwa_debug,
+            heading_error=1.50,
+            best_linear_velocity=0.0,
+            best_angular_velocity=0.30,
+        )
+        executor._consecutive_infeasible_recomputes = 0
+        for _ in range(10):
+            executor._update_infeasible_recomputes()
+        self.assertFalse(executor.status()["failed"])
+        self.assertEqual(executor._consecutive_infeasible_recomputes, 0)
 
     def test_pct_carry_route_corridor_covers_grid_discretization_margin(self) -> None:
         single_floor_grid = OccupancyGridMap(

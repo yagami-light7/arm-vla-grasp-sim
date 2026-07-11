@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import traceback
 from typing import Any
 
 
@@ -125,26 +126,29 @@ def _draw_curve_group(
     report_type: str,
     phase: str,
 ) -> dict[str, Any]:
+    draw_step = "import_usd"
     try:
         import omni.usd
-        from pxr import Gf, UsdGeom
+        from pxr import Gf, Sdf, UsdGeom
 
+        draw_step = "get_stage"
         stage = omni.usd.get_context().get_stage()
         if stage is None:
             raise RuntimeError("stage_unavailable")
+        draw_step = "replace_group"
         if stage.GetPrimAtPath(group_path).IsValid():
             stage.RemovePrim(group_path)
-        UsdGeom.Xform.Define(stage, _ROOT_PRIM_PATH)
-        parent_path = group_path.rsplit("/", 1)[0]
-        UsdGeom.Xform.Define(stage, parent_path)
-        UsdGeom.Xform.Define(stage, group_path)
+        stage.DefinePrim(Sdf.Path(_ROOT_PRIM_PATH), "Xform")
+        stage.DefinePrim(Sdf.Path(group_path), "Xform")
 
         curve_reports: list[dict[str, Any]] = []
         for curve_index, (name, points) in enumerate(curves):
-            curve_root = f"{group_path}/{curve_index:02d}_{_safe_name(name)}"
-            UsdGeom.Xform.Define(stage, curve_root)
+            draw_step = f"define_curve_root:{curve_index}"
+            curve_root = f"{group_path}/curve_{curve_index:02d}_{_safe_name(name)}"
+            stage.DefinePrim(Sdf.Path(curve_root), "Xform")
             curve_path = f"{curve_root}/curve"
-            curve = UsdGeom.BasisCurves.Define(stage, curve_path)
+            curve = UsdGeom.BasisCurves.Define(stage, Sdf.Path(curve_path))
+            draw_step = f"configure_curve:{curve_index}"
             curve.CreateTypeAttr(UsdGeom.Tokens.linear)
             curve.CreateWrapAttr(UsdGeom.Tokens.nonperiodic)
             curve.CreateCurveVertexCountsAttr([len(points)])
@@ -158,9 +162,10 @@ def _draw_curve_group(
             if marker_indices[-1] != len(points) - 1:
                 marker_indices.append(len(points) - 1)
             for marker_index in marker_indices:
+                draw_step = f"define_marker:{curve_index}:{marker_index}"
                 point = points[marker_index]
                 marker_path = f"{curve_root}/wp_{marker_index:04d}"
-                marker = UsdGeom.Sphere.Define(stage, marker_path)
+                marker = UsdGeom.Sphere.Define(stage, Sdf.Path(marker_path))
                 marker.CreateRadiusAttr(marker_radius)
                 marker.CreateDisplayColorAttr([Gf.Vec3f(*color)])
                 UsdGeom.Xformable(marker.GetPrim()).AddTranslateOp().Set(
@@ -189,7 +194,9 @@ def _draw_curve_group(
             "type": report_type,
             "phase": phase,
             "reason": "usd_draw_failed",
+            "draw_step": draw_step,
             "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
         }
 
 

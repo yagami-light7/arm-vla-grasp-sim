@@ -49,6 +49,7 @@ PCT_STAIR_FLOAT_DOG_STAND_JOINT_POSITIONS = (
     1.0,
     -1.5,
 )
+PCT_INFEASIBLE_ROTATION_RECOVERY_HEADING_TOLERANCE = 0.45
 
 
 class DwaNavExecutor:
@@ -680,12 +681,29 @@ class DwaNavExecutor:
                 self.multifloor_obstacle_inflate_radius
             )
             if self.multifloor_route_corridor_radius is not None:
-                route_paths: list[list[tuple[float, float]]] = [
-                    [
-                        (float(point[0]), float(point[1]))
-                        for point in plan.waypoints
-                    ]
+                route_paths: list[
+                    tuple[str, list[tuple[float, float]], float]
+                ] = [
+                    (
+                        "full_path",
+                        [
+                            (float(point[0]), float(point[1]))
+                            for point in plan.waypoints
+                        ],
+                        float(self.multifloor_route_corridor_radius),
+                    )
                 ]
+                if not self.stair_float_enabled:
+                    route_paths = _pct_no_float_route_corridors(
+                        plan,
+                        flat_radius_m=float(
+                            self.multifloor_route_corridor_radius
+                        ),
+                        stair_radius_m=min(
+                            float(self.multifloor_route_corridor_radius),
+                            0.30,
+                        ),
+                    )
                 if self._stair_float_path:
                     stair_route, _ = _splice_stair_float_controller_path(
                         [
@@ -694,18 +712,23 @@ class DwaNavExecutor:
                         ],
                         self._stair_float_path,
                     )
-                    route_paths.append(stair_route)
+                    route_paths.append(
+                        (
+                            "stair_float_path",
+                            stair_route,
+                            float(self.multifloor_route_corridor_radius),
+                        )
+                    )
                 cleared_count = 0
                 protected_count = 0
                 stair_float_cleared_count = 0
-                for path_index, route_path in enumerate(route_paths):
+                corridor_reports: list[dict[str, Any]] = []
+                for route_name, route_path, route_radius in route_paths:
                     selected, current_cleared, current_protected = (
                         _clear_grid_path_corridor(
                             selected,
                             route_path,
-                            radius_m=float(
-                                self.multifloor_route_corridor_radius
-                            ),
+                            radius_m=route_radius,
                             protected_obstacle_map=(
                                 self._multifloor_protected_obstacle_map
                             ),
@@ -713,8 +736,17 @@ class DwaNavExecutor:
                     )
                     cleared_count += int(current_cleared)
                     protected_count += int(current_protected)
-                    if path_index > 0:
+                    if route_name == "stair_float_path":
                         stair_float_cleared_count += int(current_cleared)
+                    corridor_reports.append(
+                        {
+                            "name": route_name,
+                            "radius_m": float(route_radius),
+                            "waypoint_count": len(route_path),
+                            "cleared_cells": int(current_cleared),
+                            "protected_cells": int(current_protected),
+                        }
+                    )
                 self._map_selection_report.update(
                     {
                         "route_corridor_radius_m": float(
@@ -725,6 +757,7 @@ class DwaNavExecutor:
                             stair_float_cleared_count
                         ),
                         "protected_cells_preserved": protected_count,
+                        "route_corridors": corridor_reports,
                     }
                 )
         self._raw_map = selected
@@ -800,6 +833,37 @@ class DwaNavExecutor:
                 0.75,
             )
             updates["near_goal_path_deviation_distance"] = 0.65
+        if _pct_plan_is_multifloor(plan) and not self.stair_float_enabled:
+            path_limit = float(
+                updates.get(
+                    "path_deviation_limit",
+                    self.dwa_config.path_deviation_limit,
+                )
+            )
+            updates["initial_alignment_path_deviation_limit"] = max(
+                path_limit,
+                min(
+                    float(
+                        updates.get(
+                            "initial_alignment_path_deviation_limit",
+                            path_limit,
+                        )
+                    ),
+                    0.30,
+                ),
+            )
+            updates["path_recovery_deviation_limit"] = max(
+                path_limit,
+                min(
+                    float(
+                        updates.get(
+                            "path_recovery_deviation_limit",
+                            path_limit,
+                        )
+                    ),
+                    0.30,
+                ),
+            )
         return replace(self.dwa_config, **updates)
 
     def _update_infeasible_recomputes(self) -> None:
@@ -811,6 +875,16 @@ class DwaNavExecutor:
             self._consecutive_infeasible_recomputes = 0
             return
         if debug.feasible_candidates > 0:
+            self._consecutive_infeasible_recomputes = 0
+            return
+        if (
+            abs(float(debug.heading_error))
+            > PCT_INFEASIBLE_ROTATION_RECOVERY_HEADING_TOLERANCE
+            and abs(float(debug.best_angular_velocity)) > 1.0e-6
+            and abs(float(debug.best_linear_velocity)) <= 1.0e-6
+        ):
+            # 入口侧偏时 DWA 会先停止前进并原地朝路径回正；这不是持续碰撞命令，
+            # 不能用数个重算周期提前终止，否则机器人没有足够时间完成大角度转向。
             self._consecutive_infeasible_recomputes = 0
             return
         self._consecutive_infeasible_recomputes += 1
@@ -1017,6 +1091,9 @@ class DwaNavExecutor:
 
     def _active_dwa_limits(self) -> dict[str, Any]:
         return {
+            "lookahead_distance": float(
+                self._active_dwa_config.lookahead_distance
+            ),
             "max_linear_velocity": float(
                 self._active_dwa_config.max_linear_velocity
             ),
@@ -1893,6 +1970,63 @@ def _pct_plan_is_multifloor(plan: NavPlan) -> bool:
         return abs(int(slice_end) - int(slice_start)) >= 2
     except (TypeError, ValueError):
         return False
+
+
+def _pct_no_float_route_corridors(
+    plan: NavPlan,
+    *,
+    flat_radius_m: float,
+    stair_radius_m: float,
+) -> list[tuple[str, list[tuple[float, float]], float]]:
+    """把跨层路径拆为平层和楼梯清廊，防止宽清廊抹掉扶手。"""
+
+    raw_path = plan.metadata.get("path_3d")
+    if not isinstance(raw_path, (list, tuple)):
+        return [
+            (
+                "full_path",
+                [(float(point[0]), float(point[1])) for point in plan.waypoints],
+                float(flat_radius_m),
+            )
+        ]
+    path = [
+        (float(point[0]), float(point[1]), float(point[2]))
+        for point in raw_path
+        if isinstance(point, (list, tuple)) and len(point) >= 3
+    ]
+    changing_segments = [
+        index
+        for index, (start, end) in enumerate(zip(path, path[1:]))
+        if abs(float(end[2]) - float(start[2])) > 1.0e-4
+    ]
+    if not changing_segments:
+        return [
+            (
+                "full_path",
+                [(point[0], point[1]) for point in path],
+                float(flat_radius_m),
+            )
+        ]
+
+    stair_start = max(0, changing_segments[0] - 1)
+    stair_end = min(len(path) - 1, changing_segments[-1] + 1)
+    routes: list[tuple[str, list[tuple[float, float]], float]] = []
+    before = [(point[0], point[1]) for point in path[: stair_start + 1]]
+    stair = [(point[0], point[1]) for point in path[stair_start : stair_end + 1]]
+    after = [(point[0], point[1]) for point in path[stair_end:]]
+    if len(before) >= 2:
+        routes.append(("flat_before_stair", before, float(flat_radius_m)))
+    if len(stair) >= 2:
+        routes.append(("stair_centerline", stair, float(stair_radius_m)))
+    if len(after) >= 2:
+        routes.append(("flat_after_stair", after, float(flat_radius_m)))
+    return routes or [
+        (
+            "full_path",
+            [(point[0], point[1]) for point in path],
+            float(flat_radius_m),
+        )
+    ]
 
 
 def _clear_grid_path_corridor(
