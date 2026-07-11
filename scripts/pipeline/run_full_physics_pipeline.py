@@ -155,6 +155,8 @@ def _locomotion_runtime_kwargs(config: FullPhysicsConfig) -> dict[str, object]:
         # 避免 DWA 起步爬升阶段触发原地换脚。
         kwargs["standing_command_threshold"] = 0.08
         kwargs["policy_action_warmup_steps"] = 50
+        # Yinluyuan 扫描碰撞网格在 F2 有厘米级裂缝，使用窄物理通行面避免足端卡住。
+        kwargs["collision_floor_proxy_profile"] = "yinluyuan_f2"
     return kwargs
 
 

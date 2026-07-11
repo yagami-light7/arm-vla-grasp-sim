@@ -546,7 +546,7 @@ class Go2LocomotionAdapter:
             }
         self.robot.set_joint_position_target(target, joint_ids=self.arm_joint_ids)
         velocity_target_written = False
-        if self._arm_joint_velocity_hold_enabled:
+        if getattr(self, "_arm_joint_velocity_hold_enabled", False):
             velocity = torch.zeros_like(target)
             self.robot.set_joint_velocity_target(velocity, joint_ids=self.arm_joint_ids)
             velocity_target_written = True
@@ -844,8 +844,30 @@ class Go2LocomotionAdapter:
             foot_ids = [index for index, name in enumerate(contact_sensor.body_names) if "foot" in name.lower()]
             nonfoot_ids = [index for index, name in enumerate(contact_sensor.body_names) if "foot" not in name.lower()]
             values["contact_force_max"] = _item(contact_forces.max())
-            values["foot_contact_force_max"] = _item(contact_forces[foot_ids].max()) if foot_ids else 0.0
-            values["nonfoot_contact_force_max"] = _item(contact_forces[nonfoot_ids].max()) if nonfoot_ids else 0.0
+            if foot_ids:
+                foot_forces = contact_forces[foot_ids]
+                foot_local_index = int(foot_forces.argmax().item())
+                values["foot_contact_force_max"] = _item(
+                    foot_forces[foot_local_index]
+                )
+                values["foot_contact_body_name"] = contact_sensor.body_names[
+                    foot_ids[foot_local_index]
+                ]
+            else:
+                values["foot_contact_force_max"] = 0.0
+                values["foot_contact_body_name"] = None
+            if nonfoot_ids:
+                nonfoot_forces = contact_forces[nonfoot_ids]
+                nonfoot_local_index = int(nonfoot_forces.argmax().item())
+                values["nonfoot_contact_force_max"] = _item(
+                    nonfoot_forces[nonfoot_local_index]
+                )
+                values["nonfoot_contact_body_name"] = contact_sensor.body_names[
+                    nonfoot_ids[nonfoot_local_index]
+                ]
+            else:
+                values["nonfoot_contact_force_max"] = 0.0
+                values["nonfoot_contact_body_name"] = None
         except (AttributeError, IndexError, KeyError, RuntimeError, TypeError):
             pass
         return values

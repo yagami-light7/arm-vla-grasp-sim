@@ -22,6 +22,7 @@ class IsaacLabNavigationRuntimeConfig:
     standing_command_threshold: float = 0.0
     policy_action_warmup_steps: int = 0
     terrain_prim_path: str = "/World/scene_collision"
+    collision_floor_proxy_profile: str | None = None
     visual_prim_path: str = "/World/gauss"
     enable_scene_visual: bool = True
     viewport_camera_prim_path: str = "/World/Camera0"
@@ -1486,7 +1487,12 @@ class IsaacLabNavigationRuntime:
         terrain_usd = write_collision_terrain_wrapper(
             scene_usd,
             self._config.terrain_prim_path,
+            floor_proxy_profile=self._config.collision_floor_proxy_profile,
         )
+        self._metadata["collision_floor_proxy_report"] = {
+            "profile": self._config.collision_floor_proxy_profile,
+            "terrain_wrapper": str(terrain_usd),
+        }
         env_cfg.scene.num_envs = 1
         env_cfg.scene.env_spacing = 0.0
         env_cfg.sim.device = self._config.device

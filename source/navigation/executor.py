@@ -62,6 +62,7 @@ class DwaNavExecutor:
         *,
         grid_map: OccupancyGridMap | None = None,
         multifloor_grid_map: OccupancyGridMap | None = None,
+        post_stair_grid_map: OccupancyGridMap | None = None,
         multifloor_protected_obstacle_map: OccupancyGridMap | None = None,
         terminal_pose_config: TerminalPoseConfig | None = None,
         terminal_start_distance: float = 0.50,
@@ -71,6 +72,8 @@ class DwaNavExecutor:
         stall_min_progress_m: float = 0.05,
         stall_min_forward_command: float = 0.05,
         stall_min_forward_ratio: float = 0.25,
+        stall_recovery_linear_speed_mps: float = 0.08,
+        stall_recovery_progress_ratio: float = 0.75,
         pick_near_goal_handoff_tolerance_m: float = 0.32,
         completion_linear_velocity_tolerance: float | None = None,
         completion_angular_velocity_tolerance: float | None = None,
@@ -96,7 +99,7 @@ class DwaNavExecutor:
         stair_float_release_settle_time_s: float = 0.0,
         stair_float_yaw_lookahead_m: float = 0.35,
         stair_float_min_root_z_offset_m: float = 0.18,
-        stair_float_release_root_z_offset_m: float = 0.26,
+        stair_float_release_root_z_offset_m: float = 0.36,
     ) -> None:
         if grid_map is not None and map_json is not None:
             raise ValueError("map_json 与 grid_map 只能提供一个。")
@@ -110,6 +113,10 @@ class DwaNavExecutor:
             raise ValueError("DWA 命令重算间隔必须至少为 1 个物理步。")
         if pick_near_goal_handoff_tolerance_m < 0.0:
             raise ValueError("抓取前近目标 handoff 容差不能为负数。")
+        if stall_recovery_linear_speed_mps < 0.0:
+            raise ValueError("stall 恢复速度阈值不能为负数。")
+        if not 0.0 <= stall_recovery_progress_ratio <= 1.0:
+            raise ValueError("stall 恢复进度比例必须位于 0 到 1。")
         if multifloor_obstacle_inflate_radius < 0.0:
             raise ValueError("跨楼层障碍膨胀半径不能为负数。")
         if (
@@ -158,6 +165,7 @@ class DwaNavExecutor:
         self.map_json = None if map_json is None else str(Path(map_json).expanduser().resolve())
         self._single_floor_raw_map = grid_map
         self._multifloor_raw_map = multifloor_grid_map
+        self._post_stair_raw_map = post_stair_grid_map
         self._multifloor_protected_obstacle_map = (
             multifloor_protected_obstacle_map
         )
@@ -226,6 +234,12 @@ class DwaNavExecutor:
             min_forward_command=float(stall_min_forward_command),
             min_forward_ratio=float(stall_min_forward_ratio),
         )
+        self.stall_recovery_linear_speed_mps = float(
+            stall_recovery_linear_speed_mps
+        )
+        self.stall_recovery_progress_ratio = float(
+            stall_recovery_progress_ratio
+        )
         self.pick_near_goal_handoff_tolerance_m = float(
             pick_near_goal_handoff_tolerance_m
         )
@@ -245,6 +259,7 @@ class DwaNavExecutor:
         self._success = False
         self._failure_reason = ""
         self._stall_detected = False
+        self._stall_recovery_count = 0
         self._stall_diagnostics = self.stall_detector.diagnostics()
         self._last_command = (0.0, 0.0, 0.0)
         self._last_pose: tuple[float, float, float] | None = None
@@ -329,6 +344,7 @@ class DwaNavExecutor:
         self._success = False
         self._failure_reason = ""
         self._stall_detected = False
+        self._stall_recovery_count = 0
         self._stall_diagnostics = self.stall_detector.diagnostics()
         self._last_command = (0.0, 0.0, 0.0)
         self._last_pose = None
@@ -418,7 +434,7 @@ class DwaNavExecutor:
         self._tick_index += 1
         self._last_command = tuple(float(value) for value in command)
         if self._phase == "dwa" and not self._stall_detected:
-            self._update_stall(pose, self._last_command)
+            self._update_stall(pose, body_velocity, self._last_command)
         if self._done and self._success:
             self._last_command = (0.0, 0.0, 0.0)
             return self._zero_action()
@@ -503,6 +519,7 @@ class DwaNavExecutor:
             "measured_body_velocity": self._last_body_velocity,
             "stall_detected": self._stall_detected,
             "stall": self._stall_status(self._stall_diagnostics),
+            "stall_recovery_count": self._stall_recovery_count,
             "dwa_compute": self._dwa_compute_status(),
             "dwa_limits": self._active_dwa_limits(),
             "local_refinement": self._local_refinement_report,
@@ -885,6 +902,7 @@ class DwaNavExecutor:
     def _update_stall(
         self,
         pose: tuple[float, float, float],
+        body_velocity: tuple[float, float, float],
         command: tuple[float, float, float],
     ) -> None:
         stalled, diagnostics = self.stall_detector.update(
@@ -894,6 +912,21 @@ class DwaNavExecutor:
         )
         self._stall_diagnostics = diagnostics
         if not stalled:
+            return
+        recovery_speed = math.hypot(body_velocity[0], body_velocity[1])
+        recovery_progress = (
+            float(self.stall_detector.min_progress_m)
+            * self.stall_recovery_progress_ratio
+        )
+        if (
+            self._carry_mode
+            and diagnostics.max_displacement_m >= recovery_progress
+            and recovery_speed >= self.stall_recovery_linear_speed_mps
+        ):
+            # 机器人刚从接触中恢复实际位移时重开窗口，避免旧停滞样本误杀脱困动作。
+            self.stall_detector.reset()
+            self._stall_diagnostics = self.stall_detector.diagnostics()
+            self._stall_recovery_count += 1
             return
         if self._accept_near_goal_pick_handoff():
             self._done = True
@@ -1589,6 +1622,8 @@ class DwaNavExecutor:
     ) -> None:
         """楼梯漂移结束后把 DWA target_index 推进到二楼附近。"""
 
+        if self._replan_controller_on_post_stair_floor(target):
+            return
         if self._controller is None:
             return
         path = self._controller.path_world
@@ -1615,6 +1650,203 @@ class DwaNavExecutor:
                     self._controller.target_index
                 ),
             }
+        )
+
+    def _replan_controller_on_post_stair_floor(
+        self,
+        target: tuple[float, float, float],
+    ) -> bool:
+        """楼梯结束后切换到目标楼层地图，避免跨层清廊抹掉二楼墙体。"""
+
+        report: dict[str, Any] = {
+            "applied": False,
+            "reason": "unavailable",
+        }
+        floor_raw_map = (
+            self._post_stair_raw_map
+            if self._post_stair_raw_map is not None
+            else self._single_floor_raw_map
+        )
+        if self.plan is None or floor_raw_map is None:
+            self._stair_float_report["post_stair_floor_replan"] = report
+            return False
+
+        floor_map = floor_raw_map.inflate(self.local_clearance_radius)
+        start_xy = (float(target[0]), float(target[1]))
+        goal_xy = (float(self.plan.goal.x), float(self.plan.goal.y))
+        try:
+            result = AStarPlanner().plan(
+                floor_map,
+                start_xy,
+                goal_xy,
+                snap_to_free=True,
+                max_snap_distance_m=max(
+                    0.50,
+                    float(self.local_clearance_radius) + 0.50,
+                ),
+            )
+        except Exception as exc:
+            report.update(
+                {
+                    "reason": "astar_failed",
+                    "failure_reason": str(exc),
+                    "start_xy": list(start_xy),
+                    "goal_xy": list(goal_xy),
+                }
+            )
+            self._stair_float_report["post_stair_floor_replan"] = report
+            return False
+
+        path_world = [start_xy]
+        for point in result.path_world:
+            xy = (float(point[0]), float(point[1]))
+            if math.hypot(
+                xy[0] - path_world[-1][0],
+                xy[1] - path_world[-1][1],
+            ) > 1.0e-5:
+                path_world.append(xy)
+        if math.hypot(
+            goal_xy[0] - path_world[-1][0],
+            goal_xy[1] - path_world[-1][1],
+        ) > 1.0e-5:
+            path_world.append(goal_xy)
+        if len(path_world) < 2:
+            report.update(
+                {
+                    "reason": "path_too_short",
+                    "start_xy": list(start_xy),
+                    "goal_xy": list(goal_xy),
+                }
+            )
+            self._stair_float_report["post_stair_floor_replan"] = report
+            return False
+
+        post_stair_dwa_config = self._post_stair_dwa_config()
+        self._raw_map = floor_raw_map
+        self.local_map = floor_map
+        self._active_dwa_config = post_stair_dwa_config
+        self._controller = DWAController(
+            path_world=path_world,
+            grid_map=floor_map,
+            config=post_stair_dwa_config,
+        )
+        self._consecutive_infeasible_recomputes = 0
+        self.stall_detector.reset()
+        report.update(
+            {
+                "applied": True,
+                "reason": "post_stair_single_floor_astar",
+                "start_xy": list(start_xy),
+                "goal_xy": list(goal_xy),
+                "waypoint_count": len(path_world),
+                "raw_grid_waypoint_count": len(result.raw_path_grid),
+                "astar_cost": float(result.cost),
+                "path_world": [list(point) for point in path_world],
+                "max_linear_velocity": float(
+                    post_stair_dwa_config.max_linear_velocity
+                ),
+                "min_active_linear_velocity": float(
+                    post_stair_dwa_config.min_active_linear_velocity
+                ),
+                "path_deviation_limit": float(
+                    post_stair_dwa_config.path_deviation_limit
+                ),
+                "path_recovery_deviation_limit": (
+                    post_stair_dwa_config.path_recovery_deviation_limit
+                ),
+                "corner_waypoint_tolerance": float(
+                    post_stair_dwa_config.corner_waypoint_tolerance
+                ),
+                "lookahead_distance": float(
+                    post_stair_dwa_config.lookahead_distance
+                ),
+            }
+        )
+        self._stair_float_report.update(
+            {
+                "reason": "completed",
+                "controller_target_index_after_float": int(
+                    self._controller.target_index
+                ),
+                "post_stair_floor_replan": report,
+            }
+        )
+        if self._map_selection_report is not None:
+            self._map_selection_report.update(
+                {
+                    "active_map": "post_stair_single_floor",
+                    "post_stair_floor_replan": report,
+                }
+            )
+        return True
+
+    def _post_stair_dwa_config(self) -> DWAConfig:
+        """为二楼窄走廊收紧速度、转角和横向路径恢复范围。"""
+
+        config = self._active_dwa_config
+        path_deviation_limit = min(
+            float(config.path_deviation_limit),
+            0.14,
+        )
+        return replace(
+            config,
+            lookahead_distance=max(
+                float(config.lookahead_distance),
+                0.40,
+            ),
+            max_linear_velocity=min(
+                float(config.max_linear_velocity),
+                0.20,
+            ),
+            min_active_linear_velocity=min(
+                float(config.min_active_linear_velocity),
+                0.18,
+            ),
+            near_goal_min_active_linear_velocity=min(
+                float(config.near_goal_min_active_linear_velocity),
+                0.08,
+            ),
+            close_goal_speed_limit=min(
+                float(config.close_goal_speed_limit),
+                0.10,
+            ),
+            speed_bias=min(float(config.speed_bias), 0.75),
+            clearance_bias=max(float(config.clearance_bias), 0.75),
+            path_bias=max(float(config.path_bias), 1.40),
+            trajectory_path_bias=max(
+                float(config.trajectory_path_bias),
+                1.80,
+            ),
+            path_deviation_penalty_bias=max(
+                float(config.path_deviation_penalty_bias),
+                2.40,
+            ),
+            path_deviation_limit=path_deviation_limit,
+            initial_alignment_path_deviation_limit=max(
+                path_deviation_limit,
+                min(
+                    float(config.initial_alignment_path_deviation_limit or 0.30),
+                    0.30,
+                ),
+            ),
+            path_recovery_deviation_limit=max(
+                path_deviation_limit,
+                min(
+                    float(config.path_recovery_deviation_limit or 0.25),
+                    0.25,
+                ),
+            ),
+            near_goal_path_deviation_limit=max(
+                path_deviation_limit,
+                min(
+                    float(config.near_goal_path_deviation_limit or 0.30),
+                    0.30,
+                ),
+            ),
+            corner_waypoint_tolerance=min(
+                float(config.corner_waypoint_tolerance),
+                0.08,
+            ),
         )
 
     @staticmethod

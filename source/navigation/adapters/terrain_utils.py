@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from pathlib import Path
 
 
@@ -15,30 +16,99 @@ def _top_level_child_name(prim_path: str) -> str | None:
     return parts[1]
 
 
-def write_collision_terrain_wrapper(scene_usd: str | Path, prim_path: str = "/World/scene_collision") -> Path:
-    """Write a USD layer that references only one collision subtree from a scene."""
+def _yinluyuan_f2_floor_proxy_lines() -> list[str]:
+    """生成 Yinluyuan 二楼导航走廊的不可见平滑碰撞体。"""
 
-    scene_usd = Path(scene_usd).expanduser().resolve()
-    digest = hashlib.sha256(f"{scene_usd}:{prim_path}".encode("utf-8")).hexdigest()[:12]
-    wrapper = Path("/tmp") / f"go2_x5_collision_terrain_{digest}.usda"
-    wrapper.write_text(
-        "\n".join(
+    route = (
+        ((2.921488571, 5.490738525), (1.921488571, 4.456363678)),
+        ((1.921488571, 4.456363678), (0.321488571, 4.456363678)),
+        ((0.321488571, 4.456363678), (0.321488571, -0.143636322)),
+        ((0.321488571, -0.143636322), (0.40, -0.10)),
+    )
+    width_m = 0.65
+    endpoint_padding_m = 0.40
+    thickness_m = 0.04
+    # 高于原 mesh 约 17--19 mm，覆盖 PhysX contact offset 对裂缝边缘的提前接触。
+    top_z_m = 3.05
+    lines: list[str] = []
+    for index, (start, end) in enumerate(route):
+        # scene_collision 根节点带 Z 轴 180 度旋转，子节点需先写为 PLY 局部坐标。
+        local_start = (-float(start[0]), -float(start[1]))
+        local_end = (-float(end[0]), -float(end[1]))
+        dx = local_end[0] - local_start[0]
+        dy = local_end[1] - local_start[1]
+        length = math.hypot(dx, dy) + 2.0 * endpoint_padding_m
+        yaw = math.atan2(dy, dx)
+        half_yaw = yaw * 0.5
+        center_x = (local_start[0] + local_end[0]) * 0.5
+        center_y = (local_start[1] + local_end[1]) * 0.5
+        center_z = top_z_m - thickness_m * 0.5
+        lines.extend(
             [
-                "#usda 1.0",
-                "(",
-                '    defaultPrim = "scene_collision"',
-                ")",
-                "",
-                'def Xform "scene_collision" (',
-                f"    prepend references = @{scene_usd}@<{prim_path}>",
-                ")",
-                "{",
-                "}",
+                f'    def Cube "f2_floor_proxy_{index:02d}" (',
+                '        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysxCollisionAPI"]',
+                "    )",
+                "    {",
+                "        bool physics:collisionEnabled = 1",
+                "        float physxCollision:contactOffset = 0.005",
+                "        float physxCollision:restOffset = 0",
+                "        double size = 2",
+                '        token visibility = "invisible"',
+                (
+                    "        quatf xformOp:orient = "
+                    f"({math.cos(half_yaw):.9f}, 0, 0, {math.sin(half_yaw):.9f})"
+                ),
+                (
+                    "        float3 xformOp:scale = "
+                    f"({length * 0.5:.9f}, {width_m * 0.5:.9f}, "
+                    f"{thickness_m * 0.5:.9f})"
+                ),
+                (
+                    "        double3 xformOp:translate = "
+                    f"({center_x:.9f}, {center_y:.9f}, {center_z:.9f})"
+                ),
+                (
+                    '        uniform token[] xformOpOrder = '
+                    '["xformOp:translate", "xformOp:orient", "xformOp:scale"]'
+                ),
+                "    }",
                 "",
             ]
-        ),
-        encoding="utf-8",
-    )
+        )
+    return lines
+
+
+def write_collision_terrain_wrapper(
+    scene_usd: str | Path,
+    prim_path: str = "/World/scene_collision",
+    *,
+    floor_proxy_profile: str | None = None,
+) -> Path:
+    """写入只引用碰撞子树、并可选附加平滑通行面的 USD layer。"""
+
+    scene_usd = Path(scene_usd).expanduser().resolve()
+    supported_profiles = {None, "yinluyuan_f2"}
+    if floor_proxy_profile not in supported_profiles:
+        raise ValueError(f"未知碰撞地面代理 profile: {floor_proxy_profile}")
+    digest = hashlib.sha256(
+        f"{scene_usd}:{prim_path}:{floor_proxy_profile}".encode("utf-8")
+    ).hexdigest()[:12]
+    wrapper = Path("/tmp") / f"go2_x5_collision_terrain_{digest}.usda"
+    lines = [
+        "#usda 1.0",
+        "(",
+        '    defaultPrim = "scene_collision"',
+        ")",
+        "",
+        'def Xform "scene_collision" (',
+        f"    prepend references = @{scene_usd}@<{prim_path}>",
+        ")",
+        "{",
+    ]
+    if floor_proxy_profile == "yinluyuan_f2":
+        lines.extend(_yinluyuan_f2_floor_proxy_lines())
+    lines.extend(["}", ""])
+    wrapper.write_text("\n".join(lines), encoding="utf-8")
     return wrapper
 
 

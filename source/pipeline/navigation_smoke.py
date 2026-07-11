@@ -287,6 +287,10 @@ def create_navigation_components(
                 episode_spec,
                 nav,
             ),
+            "post_stair_grid_map": _open_pct_post_stair_grid_map(
+                episode_spec,
+                nav,
+            ),
             # 全局 PCT 已按路径所在 slice 校验 3D 墙体；旧二维投影会让其他楼层
             # 的墙体错误封住合法楼梯中心线，因此这里不再重复保护。
             "multifloor_protected_obstacle_map": None,
@@ -459,6 +463,39 @@ def _open_local_grid_map(episode_spec: EpisodeSpec) -> OccupancyGridMap:
 def _open_pct_local_grid_map(episode_spec: EpisodeSpec, nav) -> OccupancyGridMap:
     """从 PCT walkable slice 创建 DWA 局部避障地图。"""
 
+    return _open_pct_grid_map_at_z(
+        episode_spec,
+        nav,
+        z=_local_map_reference_z(episode_spec),
+    )
+
+
+def _open_pct_post_stair_grid_map(
+    episode_spec: EpisodeSpec,
+    nav,
+) -> OccupancyGridMap | None:
+    """跨楼层任务按 place 高度创建解冻后的目标楼层地图。"""
+
+    if episode_spec.place_goal is None or episode_spec.place_goal.z is None:
+        return None
+    z_values = _multifloor_route_z_values(episode_spec)
+    if z_values is None:
+        return None
+    return _open_pct_grid_map_at_z(
+        episode_spec,
+        nav,
+        z=float(episode_spec.place_goal.z),
+    )
+
+
+def _open_pct_grid_map_at_z(
+    episode_spec: EpisodeSpec,
+    nav,
+    *,
+    z: float,
+) -> OccupancyGridMap:
+    """按指定世界高度创建 PCT 单楼层局部避障地图。"""
+
     tomogram_path = _optional_project_path(nav.pct_tomogram_path) or DEFAULT_PCT_TOMOGRAM_PATH
     walkable_path = _optional_project_path(nav.pct_walkable_path) or DEFAULT_PCT_WALKABLE_PATH
     collision_ply_path = (
@@ -470,7 +507,6 @@ def _open_pct_local_grid_map(episode_spec: EpisodeSpec, nav) -> OccupancyGridMap
             "PCT DWA 局部地图需要 tomogram 和 walkable 资产；"
             "请先运行 scripts/navigation/build_pct_multifloor_assets.py。"
         )
-    z = _local_map_reference_z(episode_spec)
     grid_map = load_pct_slice_local_map(
         tomogram_path=tomogram_path,
         walkable_path=walkable_path,
