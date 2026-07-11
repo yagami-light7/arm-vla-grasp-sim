@@ -107,7 +107,7 @@ class NavigationSettings:
     pct_multifloor_obstacle_inflate_radius: float = 0.12
     pct_multifloor_route_corridor_radius: float = 0.45
     pct_task_object_keepout_radius: float = 0.18
-    pct_carry_max_linear_velocity: float = 0.20
+    pct_carry_max_linear_velocity: float = 0.25
     pct_carry_max_angular_velocity: float = 0.30
     pct_carry_max_linear_accel: float = 1.00
     pct_carry_path_deviation_limit: float = 0.14
@@ -219,6 +219,8 @@ class ManipulationSettings:
     place_pre_clearance_min_m: float = 0.06
     hold_arm_home_during_carry: bool = True
     carry_home_tracking_tolerance: float = 0.25
+    # pick 接触确认后仅额外闭合少量预紧，避免导航时持续以零开度挤压物体。
+    carry_gripper_preload_m: float = 0.012
     # carry 前后 object-TCP 相对位置变化超过该阈值，视为抓取滑移或掉落。
     carry_object_tcp_slip_tolerance: float = 0.10
     insert_place_plan_start_transition: bool = True
@@ -316,6 +318,7 @@ class FullPhysicsConfig:
     seed: int = 0
     headless: bool = True
     keep_window_open: bool = False
+    show_planned_trajectories: bool = False
     dry_run: bool = False
     simulation_smoke: bool = False
     navigation_smoke: bool = False
@@ -585,6 +588,8 @@ class FullPhysicsConfig:
             raise ValueError("place_pre_clearance_min_m must cover release clearance")
         if self.manipulation.carry_home_tracking_tolerance < 0.0:
             raise ValueError("carry_home_tracking_tolerance must be non-negative")
+        if self.manipulation.carry_gripper_preload_m < 0.0:
+            raise ValueError("carry_gripper_preload_m must be non-negative")
         if self.manipulation.carry_object_tcp_slip_tolerance < 0.0:
             raise ValueError("carry_object_tcp_slip_tolerance must be non-negative")
         if self.manipulation.place_plan_start_transition_duration_s <= 0.0:

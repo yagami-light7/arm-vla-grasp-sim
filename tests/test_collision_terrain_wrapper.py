@@ -42,7 +42,7 @@ class CollisionTerrainWrapperTest(unittest.TestCase):
             self.assertIn("float physxCollision:restOffset = 0", text)
             self.assertIn('token visibility = "invisible"', text)
             self.assertIn("3.030000000", text)
-            self.assertIn("0.325000000", text)
+            self.assertIn("0.450000000", text)
             self.assertIn("(-2.421488571, -4.973551102, 3.030000000)", text)
 
     def test_collision_wrapper_rejects_unknown_floor_proxy_profile(self) -> None:

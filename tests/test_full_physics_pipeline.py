@@ -280,6 +280,23 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 (0.0, 0.0),
             )
 
+            pipeline.machine._capture_verified_carry_gripper_preload(
+                contact_observation
+            )
+            self.assertEqual(
+                pipeline.machine._carry_gripper_target["hold_position_source"],
+                "verified_contact_preload",
+            )
+            hold_positions = pipeline.machine._carry_gripper_target[
+                "gripper_joint_positions"
+            ]
+            self.assertAlmostEqual(hold_positions[0], 0.023)
+            self.assertAlmostEqual(hold_positions[1], 0.008)
+            self.assertEqual(
+                pipeline.machine._carry_gripper_target["commanded_close_positions"],
+                (0.0, 0.0),
+            )
+
     def test_carry_object_tracking_is_read_only_and_reports_drop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_path = PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json"
@@ -359,6 +376,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertIn("--pct-stair-float", help_text)
         self.assertIn("--pct-stair-float-exit-distance", help_text)
         self.assertIn("--pct-stair-float-settle-time", help_text)
+        self.assertIn("--show-planned-trajectories", help_text)
         self.assertIn("--pick-smoke", help_text)
         self.assertIn("--manipulation-smoke", help_text)
         self.assertIn("--manipulation-apply-smoke", help_text)
@@ -457,6 +475,18 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             ["--task-json", "tasks/nav_pick_place_apple_contact.json"]
         )
         self.assertEqual(args.mode, "full_physics")
+        self.assertFalse(args.show_planned_trajectories)
+
+    def test_cli_can_enable_planned_trajectory_visualization(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "--task-json",
+                "tasks/nav_pick_place_apple_contact.json",
+                "--show-planned-trajectories",
+            ]
+        )
+
+        self.assertTrue(args.show_planned_trajectories)
 
     def test_pct_plan_preview_mode_does_not_require_locomotion_checkpoint(self) -> None:
         args = _build_parser().parse_args(

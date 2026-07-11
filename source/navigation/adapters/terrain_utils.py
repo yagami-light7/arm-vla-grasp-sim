@@ -25,8 +25,9 @@ def _yinluyuan_f2_floor_proxy_lines() -> list[str]:
         ((0.321488571, 4.456363678), (0.321488571, -0.143636322)),
         ((0.321488571, -0.143636322), (0.40, -0.10)),
     )
-    width_m = 0.65
-    endpoint_padding_m = 0.40
+    # 覆盖 DWA 允许的 0.25 m recovery 偏差及 Go2 足端横向跨度。
+    width_m = 0.90
+    endpoint_padding_m = 0.45
     thickness_m = 0.04
     # 高于原 mesh 约 17--19 mm，覆盖 PhysX contact offset 对裂缝边缘的提前接触。
     top_z_m = 3.05

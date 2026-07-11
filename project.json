@@ -2,8 +2,8 @@
   "project": "arm_vla_pct",
   "branch": "pct",
   "goal": "将 flat A* 全局导航替换为 PCT 多楼层规划器，并接入新的 RL locomotion checkpoint 配置。",
-  "current_phase": "phase_78_stair_release_path_splice_waiting_gpu_reboot",
-  "last_updated": "2026-07-10 19:29:47",
+  "current_phase": "phase_106_full_pipeline_planned_trajectory_visualization",
+  "last_updated": "2026-07-11 19:47:38",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -14,7 +14,7 @@
     "pct_external_planner_backend_available": false,
     "pct_runtime_assets_available": true,
     "pct_real_server_plan_verified": true,
-    "pct_cross_floor_navigation_verified": false,
+    "pct_cross_floor_navigation_verified": true,
     "rl_checkpoint_config_added": true,
     "multifloor_scene_config_added": true,
     "yinluyuan_usd_build_script_added": true,
@@ -38,7 +38,7 @@
     "yinluyuan_points_preview_confirmed": true,
     "video_preview_visual_ready": true,
     "final_video_visual_ready": false,
-    "tests_passing": false,
+    "tests_passing": true,
     "sage_multifloor_asset_pipeline_added": true,
     "sage_multifloor_ply_renamed": true,
     "sage_multifloor_usdz_available": true,
@@ -88,7 +88,7 @@
     "multifloor_pick_base_goal_standoff_fixed": true,
     "pct_navigation_pick_smoke_cli_added": true,
     "pct_navigation_pick_smoke_unit_tested": true,
-    "pct_full_physics_crossfloor_place_verified": false,
+    "pct_full_physics_crossfloor_place_verified": true,
     "default_viewport_camera0": true,
     "overview_camera0_default_added": true,
     "full_physics_navigation_visual_mode_supported": true,
@@ -245,8 +245,8 @@
     "pct_phase63_pick_success_verified": true,
     "pct_phase63_stair_float_completed": true,
     "pct_phase63_nav_to_place_failed_after_stair_release": true,
-    "pct_current_pick_place_stable": false,
-    "pct_current_cross_floor_navigation_stable": false,
+    "pct_current_pick_place_stable": true,
+    "pct_current_cross_floor_navigation_stable": true,
     "pct_phase64_nav_to_pick_verified": true,
     "pct_phase64_pick_success_verified": true,
     "pct_phase64_stair_float_release_height_fixed": true,
@@ -264,7 +264,15 @@
     "pct_phase77_failed_after_release_path_deviation": true,
     "pct_phase78_headless_attempted": true,
     "pct_phase78_blocked_by_nvidia_driver_library_mismatch": true,
-    "pct_phase78_runtime_verified": false
+    "pct_phase78_runtime_verified": false,
+    "pct_phase104_full_pipeline_verified": true,
+    "pct_phase105_full_pipeline_repeat_verified": true,
+    "pct_stable_physics_pipeline_verified": true,
+    "pct_pure_physics_pipeline_verified": false,
+    "pct_lerobot_export_verified": true,
+    "full_pipeline_planned_trajectory_visualization_added": true,
+    "full_pipeline_no_gauss_gui_command_available": true,
+    "pct_no_stair_float_full_pipeline_verified": false
   },
   "local_assets": {
     "rl_policy_source_dir": null,
@@ -2883,8 +2891,6 @@
         "source/pipeline/config.py",
         "source/pipeline/navigation_smoke.py",
         "source/pipeline/state_machine.py",
-        "source/simulation/isaaclab_runtime.py",
-        "scripts/pipeline/run_full_physics_pipeline.py",
         "tests/navigation/test_locomotion_policy_config.py",
         "tests/test_astar_dwa_smoke.py",
         "tests/test_full_physics_pipeline.py",
@@ -5248,69 +5254,126 @@
         "若 carry smoke 到达 F2 并完成 nav2place，再运行完整 full_physics 验证抓取、携物、place 和苹果不掉落。",
         "根据新 summary.json 的 final_state、stair_float、controller_path_splice、DWA feasible_candidates 和 object/TCP 距离继续定点排查。"
       ]
+    },
+    {
+      "time": "2026-07-11 19:42:00",
+      "summary": "完成 phase95-105 连续真实 headless 调试：补齐 F2 隐形碰撞支撑、携物夹爪预紧、周期性掉落检测、楼梯释放后 DWA 负载速度和近目标速度下限。phase104 与 phase105 两次完整跑通 nav2pick、pick、携物上楼、nav2place、place、稳定验证和 LeRobot 导出。",
+      "files_changed": [
+        "source/navigation/adapters/terrain_utils.py",
+        "source/navigation/executor.py",
+        "source/pipeline/config.py",
+        "source/pipeline/state_machine.py",
+        "source/simulation/isaaclab_runtime.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/test_collision_terrain_wrapper.py",
+        "tests/test_full_physics_pipeline.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "机器人到达 F2 后在经过验证的 PCT 路径上发生 nav_collision 或物理停滞。",
+          "root_cause": "当前 collision mesh 的 F2 路径局部缺少连续、足够宽的承重表面，窄支撑和碰撞接触偏移会让带负载足端在合法规划路径上卡住。",
+          "fix": "仅在 pct_multifloor 运行时 wrapper 中加入 yinluyuan_f2 隐形碰撞支撑 profile，按已验证 F2 路径生成 0.90m 宽分段支撑，并显式设置较小 contact/rest offset；flat/A* 默认场景不受影响。",
+          "prevention": "将场景级物理补丁封装为显式 profile，并用 USDA 文本测试固定坐标变换、尺寸和 PhysX 接触参数，禁止散落修改原始资产。"
+        },
+        {
+          "problem": "夹爪完全闭合会产生约 20N 内部接触，而预紧不足时苹果在楼梯释放后掉落。",
+          "root_cause": "抓取后的 carry target 没有根据真实接触关节位置设置，固定 close target 在接触力和抗滑能力之间失衡。",
+          "fix": "verify_pick_success 后读取真实夹爪接触位置并施加 0.012m 预紧，carry 期间每 10 步检查 object-TCP 距离；最终两轮完整运行中苹果均未掉落。",
+          "prevention": "携物控制使用已验证接触状态作为闭环基线，并保留周期性 slip/drop 检查，失败时立即终止而不是等到 place 才发现。"
+        },
+        {
+          "problem": "带苹果的机器人在 F2 中段和距 place goal 约 0.42m 处反复 stall。",
+          "root_cause": "负载下的有效步态阈值高于原 carry 与 near-goal 命令；close-goal 限速把命令降到 0.18m/s，低于当前 dog-only policy 的可靠前进区间。",
+          "fix": "F2 接管后最大携物速度提升到 0.25m/s，最小活动速度和近目标速度下限提升到 0.22m/s，并仅在有实际机体速度时放宽临界 stall 窗口。phase104/105 均以 0.1567m goal distance 完成 nav2place。",
+          "prevention": "将负载速度范围纳入 policy profile 回归测试，并用完整真实运行同时验证中段、转弯和近目标三个动力学区间。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/navigation/executor.py source/pipeline/config.py source/pipeline/state_machine.py source/navigation/adapters/terrain_utils.py source/simulation/isaaclab_runtime.py scripts/pipeline/run_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "本轮修改文件语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/test_astar_dwa_smoke.py tests/navigation/test_locomotion_policy_config.py tests/test_full_physics_pipeline.py tests/test_collision_terrain_wrapper.py",
+          "result": "passed",
+          "note": "96 passed in 1.73s；覆盖 A*/PCT 默认隔离、F2 支撑 wrapper、负载速度、夹爪预紧和 full pipeline 状态机。"
+        },
+        {
+          "command": "phase104 headless full_physics with --pct-stair-float",
+          "result": "passed",
+          "note": "8445 步完整成功；place XY 误差 0.0586m、Z 误差 0.0048m、物体速度 0.000264m/s，LeRobot 845 帧双相机数据校验 0 error/0 warning。"
+        },
+        {
+          "command": "phase105 headless full_physics repeat with --pct-stair-float",
+          "result": "passed",
+          "note": "第二次 8445 步完整成功，关键导航、抓取、carry、place 和最终物体位姿与 phase104 一致；stable_physics_success=true，pure_physics_success=false。"
+        }
+      ],
+      "next_steps": [
+        "把当前 --pct-stair-float 完整 pipeline 作为可复现 baseline，保留 phase104/105 summary 与 LeRobot validation report。",
+        "若目标升级为 pure_physics_success=true，需要训练或接入能在真实楼梯足端动力学下携物上楼的新 locomotion policy，并移除 stair-float workaround。",
+        "磁盘当前只剩约 4.3GB，继续生成 1.1GB/轮的完整录制前应由用户清理旧 outputs。"
+      ]
+    },
+    {
+      "time": "2026-07-11 19:47:38",
+      "summary": "新增完整 pipeline 规划轨迹显示开关 --show-planned-trajectories：在当前 Isaac USD stage 同时绘制 PCT 三维导航路径和 cuRobo 已计算 FK 的 TCP 世界坐标轨迹，并给出 GUI、collision-only、no-Gauss、no-stair-float、全相机录像命令。",
+      "files_changed": [
+        "source/diagnostics/planned_trajectories.py",
+        "source/pipeline/config.py",
+        "source/pipeline/state_machine.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/test_planned_trajectories.py",
+        "tests/test_full_physics_pipeline.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "现有 --pct-plan-preview 只能单独显示 PCT 路径，完整执行 pipeline 没有同时显示导航和机械臂规划轨迹的开关。",
+          "root_cause": "PCT preview 使用独立 pipeline，cuRobo TCP 轨迹虽然已写入每个 motion segment 的 tcp_position_world，但状态机没有把两类规划结果写入当前 USD stage。",
+          "fix": "新增 planned_trajectories 显示模块和 --show-planned-trajectories；导航规划后绘制 path_3d，pick/place 规划后绘制各 motion segment 的 tcp_position_world，全部使用无 PhysicsAPI 的 BasisCurves 和 Sphere。",
+          "prevention": "规划轨迹显示只消费规划器已返回的结构化坐标；机械臂手写段若没有 cuRobo FK 数据则跳过，不用插值或假轨迹补齐。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/diagnostics/planned_trajectories.py source/pipeline/config.py source/pipeline/state_machine.py scripts/pipeline/run_full_physics_pipeline.py tests/test_planned_trajectories.py tests/test_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "新增可视化模块、配置、状态机和 CLI 语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/test_planned_trajectories.py tests/test_full_physics_pipeline.py tests/test_astar_dwa_smoke.py tests/navigation/test_locomotion_policy_config.py tests/test_collision_terrain_wrapper.py",
+          "result": "passed",
+          "note": "100 passed in 1.61s；覆盖 PCT path_3d 提取、XY fallback、cuRobo TCP 分段提取、CLI 开关和原 pipeline 回归。"
+        },
+        {
+          "command": "GUI full pipeline without --pct-stair-float",
+          "result": "not_run",
+          "note": "本次按用户要求提供直接运行命令，未额外占用约 1.1GB 输出启动长时 GUI；且当前 checkpoint 的 no-float 携物上楼尚未通过真实验收，不能标记为稳定。"
+        }
+      ],
+      "next_steps": [
+        "运行 no-stair-float GUI 命令，重点观察真实 RL 楼梯足端动力学，并从 events.jsonl 检查 planned_trajectory_visualized 报告。",
+        "若目标是稳定完成而不是纯动力学实验，继续使用 phase104/105 已验证的 --pct-stair-float baseline。"
+      ]
     }
   ],
   "open_questions": [
-    "Yinluyuan 对应的 Isaac Sim USD stage 已本地生成，/World/gauss 当前可引用点云 visual USD；真实 3DGS 离线渲染和按相机轨迹批量渲染已可用，但正式视频仍需要 Isaac 机器人前景 alpha/depth 合成。",
-    "当前 Isaac Sim 5.1.0.0 缺少 OpenUSD ParticleField3DGaussianSplat schema，且本次已确认不能安全地只补本地 extension/schema；如要原生 3DGS viewport，需要隔离新 Isaac/Kit/OpenUSD 环境验证。",
-    "如果 Isaac Sim 打开 multifloor.usda 后 /World/gauss 存在但 HydraEngine compute graph 渲染失败，应排查 NuRec/RTX 渲染设置、扩展、驱动和 RTX 模式。",
-    "请在 Isaac Sim 中先打开 source/scene/multifloor/usda/multifloor_collision_only.usda；如果它不报错而 multifloor.usda 报错，则优先排查 NuRec/RTX 渲染层。",
-    "请用户确认当前 Isaac Sim 打开默认 collision-proxy multifloor.usda 是否已不再报 HydraEngine compute graph error。",
-    "请用户在 Isaac Sim 中打开最终 source/scene/multifloor/usda/multifloor.usda，确认 17M clean NuRec visual 与 collision mesh 已经对齐。",
-    "PCT start->pick、apple_01 真实沉降和真实 pick_smoke 已由用户验证；当前待验证真实 RL carry 上楼和 place。",
-    "请用户用 --pct-plan-preview 验证 stair_constraint_mode=surface_3d 后，黄色路径是否按下段 -> 平台 -> 上段通过 U 形楼梯。",
-    "请用户用 --pct-stair-float 复跑 full_physics，观察楼梯段是否沿黄色 PCT 3D 路径平滑漂移到二楼，并确认二楼解冻后是否继续 nav2place/place。",
-    "请用户用最新默认 --pct-stair-float 复跑 full_physics，确认 stair_float.end 是否推进到 F2 更深处，并观察是否还在 release 后 nav_collision。",
-    "请用户用最新默认 --pct-stair-float 复跑 full_physics，确认 10.5m root-lock handoff 后是否进入 plan_place/exec_place。"
+    "是否将当前 --pct-stair-float 稳定版定义为阶段性交付，还是继续以 pure_physics_success=true 为目标训练新的携物上楼 locomotion policy？",
+    "是否继续投入原生 3DGS GUI/最终机器人前景与 3DGS 背景逐帧合成；该工作不阻塞 collision 模式下的数据采集 pipeline？"
   ],
   "known_limitations": [
-    "Isaac Sim start->pick 与真实机械臂 pick 已由用户确认成功；跨楼层 carry/place 尚未完成真实 Isaac 验收。",
-    "当前 PCT path 的完整 3D 信息已进入 NavPlan.metadata[\"path_3d\"]，但 DwaNavExecutor 仍只消费 XY waypoints。",
-    "Yinluyuan 当前 Isaac viewport visual layer 是 3DGS PLY 的 UsdGeom.Points 近似，可用于预览检查；真实 3DGS 目前通过离线 gsplat PNG 和相机轨迹批量渲染验证。",
-    "当前 Isaac Sim 5.1.0.0 的 pxr.UsdVol 和底层 USD 0.24.5 库不包含 ParticleField3DGaussianSplat，不能通过安全启用扩展直接打开原生 3DGS ParticleField USD。",
-    "最终视频仍需要实现机器人/物体前景输出和 3DGS 背景逐帧合成；相机轨迹同步导出已接入。",
-    "真实 pct_multifloor RL checkpoint 已作为 checkpoints/go2_x5/pct_multifloor/ 下的本地实体文件使用，不进入 git；Rough/ 已删除。",
-    "source/scene/multifloor/usdz/multifloor_unpack/ 是当前机器 USD resolver fallback 的解包目录，会额外占用约 2.7GB。",
-    "GUI PCT navigation smoke 已复现日志级 CUDA error 700：NuRec /World/gauss 与 PhysX/CUDA 同进程运行时 RTX external semaphore 失败；当前通过 navigation collision 模式规避，尚未完成获授权的 GUI 复测。",
-    "移动后的 USD/USDA/PLY 大资产受 .gitignore 保护；如用户决定提交已有 baseline 资产的重命名，需要手动 git add -f 对应路径。",
-    "multifloor.usda 是最终高质量 NuRec 场景；PCT navigation smoke 的 auto 模式会停用 /World/gauss 并显示 collision mesh，以隔离导航验收和视频渲染。",
-    "最终 17M clean NuRec stage 已通过 USD API 静态验证，但 Isaac Sim GUI 渲染结果仍需用户本机确认。",
-    "PCT 本地 server 已验证跨楼层全局路径；真实 smoke 目前只接近同层 pick 点，尚未验证 RL policy 实际上楼。",
-    "当前 pipeline 中 DwaNavExecutor 仍只消费 XY waypoints，完整 3D path 先保存在 NavPlan.metadata[\"path_3d\"]。",
-    "external/PCT 仅作为参考 codebase；运行时默认使用本仓库 scripts/navigation/pct_grid_server.py。",
-    "当前 headless Isaac 环境可访问 GPU 并执行 locomotion；本轮没有与现有 Isaac/Python GPU 进程并行启动第二个仿真。",
-    "当前 pct_multifloor checkpoint 是 12 维 dog-only policy；机械臂 locomotion 联动仍需未来训练兼容多楼层抓取搬运的 checkpoint。",
-    "本次未在 Codex 内启动真实 Isaac Sim navigation smoke；需要用户在本地 GUI/GPU 环境用修复后的命令复测。",
-    "当前 PCT 接入仍是全局 3D path + DWA XY 跟踪，完整利用 z/slice 的局部控制器仍需后续实现。",
-    "viewport PyCapsule 取帧已通过单元测试，真实 pick-smoke 的 Camera0 录像和 reset_episode 尚未在本次 Codex 会话中复跑。",
-    "apple_01 已在真实场景 24 个物理步后稳定，稳定 pose 已写入 task；运行时 settle 检查仍保留。",
-    "最新 pick-smoke 已出现 pick_success 并由用户确认成功；尚未进入完整 full_physics 的跨楼层 carry/place。",
-    "DogOnly pct_multifloor checkpoint 仍是 12 维腿部策略；机械臂独立 position target 已通过真实 pick，跨楼层 carry 时的联合稳定性仍待验收。",
-    "pre-episode 启动诊断已接入；真实窗口立即关闭的根因需要用户复跑后依据 startup_status.json / startup_failure.json 判断。",
-    "PCT 多楼层 task 缺少 flat nav_map 时会自动禁用 A* fallback；如果 PCT server/asset 失败，将直接报 PCT 错误而不是回退 A*。",
-    "collision PLY 垂直障碍层会制造同层假障碍，现已默认关闭；如显式开启必须先用直线占用探针验证。",
-    "PCT 全局 planner 已使用 collision PLY 三角网格生成逐 slice 机器人身体碰撞体积；DWA 仍使用二维多层合并地图并只消费 XY waypoints，真实楼梯执行仍需要 Isaac Sim 验收。",
-    "本次未在 Codex 内启动真实 Isaac Sim GUI pick-smoke；需要用户本机复跑确认 retreat 后是否进入 verify_pick_success。",
-    "本次只用纯 Python DWA 探针验证新起点到 pick base goal 的局部控制，不等价于真实 Isaac Sim/RL policy 动力学验收；仍需用户复跑 GUI pick_smoke。",
-    "跨楼层楼梯段现在保留每个 0.50m PCT slice 的 waypoint，并限制换层中心带；真实机器人是否能沿该轨迹稳定携物上楼仍需 GUI/full_physics 验收。",
-    "当前楼梯折线使用一个用户提供的平台拐角点；如果还需要逐级贴合每一级台阶，需要继续补充更多 stair midpoint 或提升 PCT slice 分辨率。",
-    "楼梯采样点现在是无序地图级标定点，不是 task waypoint；当前 PCT 仍依赖 0.5m slice tomogram，可视化路径不会逐物理台阶生成每一级小台阶节点。",
-    "PCT 楼梯已使用 surface_3d 三维约束并通过离线真实资产探针，但真实 Isaac Sim 携物上楼仍未验收；DWA 执行器当前主要消费 XY waypoint，RL policy 的台阶动力学稳定性仍是独立限制。",
-    "多楼层 pick base_goal 已根据历史成功 cuRobo 快照恢复到 y=6.7491；真实 full_physics 尚需确认底盘能稳定到达 y≈6.69 并完成 pick。",
-    "carry 门口锐角已在真实 PCT 地图纯 Python 闭环回放中无碰撞通过，但 Isaac Sim 中 RL policy、机器人足端接触和携物动力学仍需 GUI 复跑验收。",
-    "navigation_carry_smoke 已增加初始朝向恢复带和普通转弯 0.20m 恢复带；最新 697 帧真实轨迹离线回放通过，但完整 GUI carry 到 place 仍需单进程复跑确认。",
-    "跨楼层 DWA 路径清廊默认值已从 0.16m 调到 0.24m，以覆盖 0.2m 栅格离散化；最新 1351 帧离线回放通过，但完整 GUI carry 到楼梯和 place 仍需用户复跑确认。",
-    "真实 GUI 上一次 navigation_carry_smoke 失败日志仍使用 route_corridor_radius_m=0.16；当前代码已同步 CLI 默认值为 0.24，但完整 GUI 携物上楼仍需用户重启进程后复跑确认。",
-    "carry 上楼 profile 已降低到 vx=0.20、wz=0.30、accel=1.00，并把楼梯入口恢复带放宽到 0.35；真实 GUI 上楼仍需用户复跑确认是否能越过当前楼梯入口失败点。",
-    "carry 速度 CLI 默认值已同步到 NavigationSettings；复跑时无需显式传速度参数也应使用 vx=0.20、wz=0.30。",
-    "PCT stair-float 是临时携物上楼 workaround：启用 --pct-stair-float 后会在 PCT carry 楼梯段冻结底盘并沿 path_3d 小步写 root pose，因此 pure_physics_success 仍应为 false，不能视为真实 locomotion policy 已学会上楼。",
-    "stair-float 默认关闭；flat/A*、nav2pick 和普通同层导航仍走原 DWA/RL 路径。真实 GUI full_physics 仍需用户复跑验证 pick -> stair-float -> F2 nav2place -> place。",
-    "截至本次 headless 验收，完整 full_physics 仍未跑通；pick 成功，但 nav2place 在楼梯间入口前 nav_collision。",
-    "stair-float 入口前扩展修复已完成轻量测试，但尚未完成第二轮真实 IsaacSim 复验。",
-    "截至本次 headless 验收，PCT 全局路径和楼梯段 stair-float 已能越过楼梯间窄通道；失败点后移到 F2 释放后的 DWA/locomotion carry 执行。",
-    "当前 pct_multifloor DogOnly policy 仍无法可靠在携物状态下从楼梯漂移释放后继续稳定二楼 DWA；6m 出口缓冲默认值已写入，但仍需用户或下一轮复跑确认。",
-    "本轮尝试显式传 --pct-stair-float-exit-distance 6.0 的 headless run，summary 仍记录 3.0；默认值已提升到 6.0，CLI override 真实仿真链路仍需后续单独复查。",
-    "2026-07-07第三轮真实headless已验证机器人沿U型PCT stair-float上楼并把苹果稳定带到F2 place附近；尚未完成place，因为该轮在正常前进时触发旧9000-tick导航超时，12000-tick修复尚待下一次GPU额度恢复后复验。",
-    "当前 --pct-stair-float 已临时延伸到 10.5m，基本覆盖楼梯和 F2 末段到 place base goal 附近；这仍是 policy 训练不足下的 root-lock workaround，不代表真实 dog-only locomotion 已能自主完成携物上楼和 F2 窄空间导航。"
+    "PCT stair-float 是显式启用、默认关闭的临时上楼方案：楼梯段会冻结底盘并沿 path_3d 写入 root pose，因此 phase104/105 的 stable_physics_success=true，但 pure_physics_success=false。",
+    "当前 pct_multifloor checkpoint 是 12 维 dog-only policy；要获得纯足端动力学的携物上楼能力，仍需训练或接入针对楼梯和机械臂负载的新 locomotion policy。",
+    "当前 PCT 全局路径完整保存在 NavPlan.metadata[\"path_3d\"]，普通局部执行仍主要由 DWA 消费 XY waypoints；z/slice 只在 stair-float 等多楼层专用逻辑中使用。",
+    "navigation collision 模式为避免 NuRec/PhysX 同进程的 CUDA external semaphore 问题会停用 /World/gauss；原生高质量 3DGS GUI 渲染和最终前景合成视频仍未完成。",
+    "Isaac Sim 5.1 的 USD 0.24.5 不包含 ParticleField3DGaussianSplat schema，当前环境不能通过安全启用扩展直接获得原生 3DGS ParticleField。",
+    "任务没有可用 flat nav_map 时会显式禁用 PCT 到 A* fallback；PCT server 或资产失败会直接报错，不会静默回退。",
+    "phase104/105 每轮完整录制约占 1.1GB；当前工作盘只剩约 4.3GB，继续批量采集前需要清理历史 outputs。",
+    "phase104/105 启动期间仍有 Go2-X5 rotor visual unresolved-reference 警告，但不影响 collision 模式下的完整状态链、物理验证和 LeRobot 导出。"
   ]
 }

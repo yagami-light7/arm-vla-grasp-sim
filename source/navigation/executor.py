@@ -1024,6 +1024,15 @@ class DwaNavExecutor:
                 self._active_dwa_config.max_angular_velocity
             ),
             "max_linear_accel": float(self._active_dwa_config.max_linear_accel),
+            "min_active_linear_velocity": float(
+                self._active_dwa_config.min_active_linear_velocity
+            ),
+            "near_goal_min_active_linear_velocity": float(
+                self._active_dwa_config.near_goal_min_active_linear_velocity
+            ),
+            "close_goal_speed_limit": float(
+                self._active_dwa_config.close_goal_speed_limit
+            ),
             "path_deviation_limit": float(
                 self._active_dwa_config.path_deviation_limit
             ),
@@ -1748,6 +1757,12 @@ class DwaNavExecutor:
                 "min_active_linear_velocity": float(
                     post_stair_dwa_config.min_active_linear_velocity
                 ),
+                "near_goal_min_active_linear_velocity": float(
+                    post_stair_dwa_config.near_goal_min_active_linear_velocity
+                ),
+                "close_goal_speed_limit": float(
+                    post_stair_dwa_config.close_goal_speed_limit
+                ),
                 "path_deviation_limit": float(
                     post_stair_dwa_config.path_deviation_limit
                 ),
@@ -1781,7 +1796,7 @@ class DwaNavExecutor:
         return True
 
     def _post_stair_dwa_config(self) -> DWAConfig:
-        """为二楼窄走廊收紧速度、转角和横向路径恢复范围。"""
+        """为二楼走廊限速，同时保留已验证的平滑转角恢复范围。"""
 
         config = self._active_dwa_config
         path_deviation_limit = min(
@@ -1796,19 +1811,19 @@ class DwaNavExecutor:
             ),
             max_linear_velocity=min(
                 float(config.max_linear_velocity),
-                0.20,
+                0.25,
             ),
             min_active_linear_velocity=min(
                 float(config.min_active_linear_velocity),
-                0.18,
+                0.22,
             ),
-            near_goal_min_active_linear_velocity=min(
+            near_goal_min_active_linear_velocity=max(
                 float(config.near_goal_min_active_linear_velocity),
-                0.08,
+                0.22,
             ),
-            close_goal_speed_limit=min(
+            close_goal_speed_limit=max(
                 float(config.close_goal_speed_limit),
-                0.10,
+                0.22,
             ),
             speed_bias=min(float(config.speed_bias), 0.75),
             clearance_bias=max(float(config.clearance_bias), 0.75),
@@ -1825,27 +1840,27 @@ class DwaNavExecutor:
             initial_alignment_path_deviation_limit=max(
                 path_deviation_limit,
                 min(
-                    float(config.initial_alignment_path_deviation_limit or 0.30),
-                    0.30,
+                    float(config.initial_alignment_path_deviation_limit or 0.40),
+                    0.40,
                 ),
             ),
             path_recovery_deviation_limit=max(
                 path_deviation_limit,
                 min(
-                    float(config.path_recovery_deviation_limit or 0.25),
-                    0.25,
+                    float(config.path_recovery_deviation_limit or 0.50),
+                    0.50,
                 ),
             ),
             near_goal_path_deviation_limit=max(
                 path_deviation_limit,
                 min(
-                    float(config.near_goal_path_deviation_limit or 0.30),
-                    0.30,
+                    float(config.near_goal_path_deviation_limit or 0.75),
+                    0.75,
                 ),
             ),
-            corner_waypoint_tolerance=min(
+            corner_waypoint_tolerance=max(
                 float(config.corner_waypoint_tolerance),
-                0.08,
+                0.18,
             ),
         )
 

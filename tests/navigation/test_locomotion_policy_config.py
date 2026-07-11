@@ -107,7 +107,7 @@ def test_pct_multifloor_dwa_commands_stay_inside_checkpoint_training_range() -> 
     assert nav.pct_multifloor_vertical_obstacle_min_slices == 5
     assert nav.pct_multifloor_obstacle_inflate_radius == pytest.approx(0.12)
     assert nav.pct_multifloor_route_corridor_radius == pytest.approx(0.45)
-    assert nav.pct_carry_max_linear_velocity == pytest.approx(0.20)
+    assert nav.pct_carry_max_linear_velocity == pytest.approx(0.25)
     assert nav.pct_carry_max_angular_velocity == pytest.approx(0.30)
     assert nav.pct_carry_max_linear_accel == pytest.approx(1.00)
     assert nav.pct_carry_initial_alignment_path_deviation_limit == pytest.approx(0.40)

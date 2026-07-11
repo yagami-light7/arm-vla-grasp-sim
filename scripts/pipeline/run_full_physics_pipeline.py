@@ -205,6 +205,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="显示 pick/place 随机区域和采样点的非物理 USD guide；默认关闭。",
     )
     parser.add_argument(
+        "--show-planned-trajectories",
+        action="store_true",
+        help="在完整 pipeline 中显示 PCT 路径和 cuRobo TCP 规划轨迹；仅添加非物理 USD guide。",
+    )
+    parser.add_argument(
         "--randomize-base-goal",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -743,6 +748,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed=args.seed,
         headless=args.headless,
         keep_window_open=args.keep_window_open,
+        show_planned_trajectories=bool(args.show_planned_trajectories),
         pick_plan_json=_project_path(args.pick_plan_json) if args.pick_plan_json else None,
         place_plan_json=_project_path(args.place_plan_json) if args.place_plan_json else None,
         dry_run=dry_run,

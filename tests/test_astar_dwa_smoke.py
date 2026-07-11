@@ -1191,11 +1191,19 @@ class AStarDwaSmokeTest(unittest.TestCase):
         replan = status["stair_float"]["post_stair_floor_replan"]
         self.assertTrue(replan["applied"])
         self.assertEqual(replan["reason"], "post_stair_single_floor_astar")
-        self.assertAlmostEqual(replan["max_linear_velocity"], 0.20)
-        self.assertAlmostEqual(replan["min_active_linear_velocity"], 0.18)
+        self.assertAlmostEqual(replan["max_linear_velocity"], 0.25)
+        self.assertAlmostEqual(replan["min_active_linear_velocity"], 0.22)
+        self.assertAlmostEqual(
+            replan["near_goal_min_active_linear_velocity"],
+            0.22,
+        )
+        self.assertAlmostEqual(
+            replan["close_goal_speed_limit"],
+            0.22,
+        )
         self.assertAlmostEqual(replan["path_deviation_limit"], 0.14)
-        self.assertAlmostEqual(replan["path_recovery_deviation_limit"], 0.25)
-        self.assertAlmostEqual(replan["corner_waypoint_tolerance"], 0.08)
+        self.assertAlmostEqual(replan["path_recovery_deviation_limit"], 0.50)
+        self.assertAlmostEqual(replan["corner_waypoint_tolerance"], 0.18)
         self.assertGreaterEqual(replan["lookahead_distance"], 0.40)
         self.assertEqual(
             status["map_selection"]["active_map"],

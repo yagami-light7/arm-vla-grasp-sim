@@ -1112,6 +1112,14 @@ class FullPhysicsStateMachine:
             "waypoint_count": len(plan.waypoints),
             **plan.metadata,
         }
+        visualization_event = self._visualize_planned_trajectory(
+            plan,
+            trajectory_type="navigation",
+            phase="pick",
+            step_index=observation.step_index,
+        )
+        if visualization_event is not None:
+            events.append(visualization_event)
         events.extend(self._transition(PipelineState.EXEC_NAV_TO_PICK, observation.step_index))
         return RobotAction.idle(source="nav_plan_pick"), events
 
@@ -1251,6 +1259,14 @@ class FullPhysicsStateMachine:
                 pre_execution_observation,
                 target_drift_report,
             )
+        visualization_event = self._visualize_planned_trajectory(
+            plan,
+            trajectory_type="manipulation",
+            phase="pick",
+            step_index=observation.step_index,
+        )
+        if visualization_event is not None:
+            events.append(visualization_event)
         self.arm_executor.reset(plan)
         self._pick_peak_object_lift_height_m = None
         self._pick_peak_object_pose = None
@@ -1319,6 +1335,7 @@ class FullPhysicsStateMachine:
             )
         )
         events = [self._event(pick_success_event, observation.step_index, result.metadata)]
+        self._capture_verified_carry_gripper_preload(observation)
         self._capture_carry_object_tcp_offset(observation)
         if self.config.pick_smoke:
             events.append(self._event("pick_smoke_success", observation.step_index, result.metadata))
@@ -1367,10 +1384,37 @@ class FullPhysicsStateMachine:
             "waypoint_count": len(plan.waypoints),
             **plan.metadata,
         }
+        visualization_event = self._visualize_planned_trajectory(
+            plan,
+            trajectory_type="navigation",
+            phase="place",
+            step_index=observation.step_index,
+        )
+        if visualization_event is not None:
+            events.append(visualization_event)
         events.extend(self._transition(PipelineState.EXEC_NAV_TO_PLACE, observation.step_index))
         return RobotAction.idle(source="nav_plan_place"), events
 
     def _exec_nav_to_place(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
+        if self.config.full_physics:
+            raw_carry = self.episode_spec.raw_task.get("carry")
+            interval_steps = 10
+            if isinstance(raw_carry, dict):
+                interval_steps = max(
+                    1,
+                    int(raw_carry.get("verify_carry_every_steps", interval_steps)),
+                )
+            if observation.step_index % interval_steps == 0:
+                carry_check = self._verify_carry_object_tracking(observation)
+                if not carry_check["success"]:
+                    return RobotAction.idle(source="exec_nav_to_place"), self._fail(
+                        str(carry_check["failure_reason"]),
+                        observation,
+                        {
+                            **carry_check,
+                            "carry_verify_interval_steps": interval_steps,
+                        },
+                    )
         return self._execute_nav(observation, PipelineState.VERIFY_PLACE_REACHABLE)
 
     def _verify_place_reachable(
@@ -1563,6 +1607,14 @@ class FullPhysicsStateMachine:
                         place_return_home_report,
                     )
                 )
+        visualization_event = self._visualize_planned_trajectory(
+            plan,
+            trajectory_type="manipulation",
+            phase="place",
+            step_index=observation.step_index,
+        )
+        if visualization_event is not None:
+            events.append(visualization_event)
         self.arm_executor.reset(plan)
         events.extend(self._transition(PipelineState.EXEC_PLACE, observation.step_index))
         events.append(self._event("place_execute_start", observation.step_index))
@@ -1570,6 +1622,40 @@ class FullPhysicsStateMachine:
 
     def _exec_place(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
         return self._execute_arm(observation, PipelineState.VERIFY_PLACE_SUCCESS)
+
+    def _visualize_planned_trajectory(
+        self,
+        plan: Any,
+        *,
+        trajectory_type: str,
+        phase: str,
+        step_index: int,
+    ) -> PipelineEvent | None:
+        """按显式开关向当前 USD stage 写入非物理规划轨迹。"""
+
+        if not self.config.show_planned_trajectories:
+            return None
+        from source.diagnostics.planned_trajectories import (
+            draw_manipulation_plan,
+            draw_navigation_plan,
+        )
+
+        if trajectory_type == "navigation":
+            report = draw_navigation_plan(plan, phase=phase)
+        elif trajectory_type == "manipulation":
+            report = draw_manipulation_plan(plan, phase=phase)
+        else:
+            report = {
+                "available": False,
+                "type": trajectory_type,
+                "phase": phase,
+                "reason": "unsupported_trajectory_type",
+            }
+        self.latest_planner_result = {
+            **self.latest_planner_result,
+            "trajectory_visualization": report,
+        }
+        return self._event("planned_trajectory_visualized", step_index, report)
 
     def _verify_place_success(
         self,
@@ -1779,6 +1865,53 @@ class FullPhysicsStateMachine:
         if "segment_name" in action.metadata:
             target["segment_name"] = action.metadata["segment_name"]
         self._carry_gripper_target = target
+
+    def _capture_verified_carry_gripper_preload(
+        self,
+        observation: SimulationState,
+    ) -> None:
+        """按验证后的真实接触开度生成低内力 carry 夹持目标。"""
+
+        target = self._carry_gripper_target
+        if target is None:
+            return
+        gripper_names = tuple(str(value) for value in target.get("gripper_joint_names") or ())
+        close_positions = tuple(
+            float(value) for value in target.get("commanded_close_positions") or ()
+        )
+        joint_names = tuple(
+            str(value) for value in observation.metadata.get("joint_names") or ()
+        )
+        if (
+            not gripper_names
+            or len(close_positions) != len(gripper_names)
+            or len(joint_names) != len(observation.joint_positions)
+        ):
+            return
+        position_by_name = {
+            name: float(position)
+            for name, position in zip(joint_names, observation.joint_positions)
+        }
+        if any(name not in position_by_name for name in gripper_names):
+            return
+
+        contact_positions = tuple(position_by_name[name] for name in gripper_names)
+        preload = float(self.config.manipulation.carry_gripper_preload_m)
+        hold_positions = tuple(
+            max(close_position, contact_position - preload)
+            for close_position, contact_position in zip(
+                close_positions,
+                contact_positions,
+            )
+        )
+        target.update(
+            {
+                "gripper_joint_positions": hold_positions,
+                "hold_position_source": "verified_contact_preload",
+                "verified_contact_positions": contact_positions,
+                "carry_gripper_preload_m": preload,
+            }
+        )
 
     def _capture_carry_object_tcp_offset(self, observation: SimulationState) -> None:
         """记录 pick 完成时的物体-TCP 相对位置，仅用于后续只读掉落检测。"""
