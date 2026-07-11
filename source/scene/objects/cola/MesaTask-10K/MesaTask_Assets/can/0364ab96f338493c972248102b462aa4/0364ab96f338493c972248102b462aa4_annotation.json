@@ -1,0 +1,17 @@
+{
+    "uid": "0364ab96f338493c972248102b462aa4",
+    "category": "can",
+    "description": "Cylindrical aluminum can with a smooth, glossy surface and bright graphics featuring a red label.",
+    "material": "aluminum, ink, plastic",
+    "dimensions": "0.065 * 0.065 * 0.12",
+    "mass": 0.12,
+    "placement": [
+        "OnFloor",
+        "OnTable"
+    ],
+    "asset_type": "rigid",
+    "glb_size": 1.17,
+    "usd_size": 1.18,
+    "usd_material_softlink": false,
+    "source": "holodeck"
+}
