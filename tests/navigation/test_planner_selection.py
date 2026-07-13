@@ -1,20 +1,29 @@
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from source.interfaces import NavGoal, SimulationState
-from source.navigation import AStarNavPlanner, PCTNavPlanner
+from source.navigation import (
+    AStarNavPlanner,
+    PCTNavPlanner,
+    StairCenterlinePlanner,
+    StairLocomotionExecutor,
+)
 from source.navigation.navlib import OccupancyGridMap
 from source.navigation.pct_adapter import PCTPlannerConfig
 from source.pipeline import FullPhysicsConfig, NavigationSettings
 from source.pipeline.config import PCT_MULTIFLOOR_LOCOMOTION_TASK
 from source.pipeline.navigation_smoke import (
     _navigation_carry_smoke_start,
+    _stair_locomotion_smoke_spec,
     create_navigation_carry_smoke_pipeline,
     create_navigation_components,
+    create_stair_locomotion_smoke_pipeline,
 )
 from source.tasks import JsonTaskProvider
 
@@ -196,6 +205,69 @@ def test_pct_navigation_carry_smoke_uses_multifloor_step_budget(
     assert isinstance(carry_config, FullPhysicsConfig)
     assert carry_config.limits.navigation == 12000
     assert carry_config.limits.episode >= 15000
+
+
+def test_stair_locomotion_smoke_uses_calibrated_entry_and_exit(tmp_path: Path) -> None:
+    spec = JsonTaskProvider().load(
+        PROJECT_ROOT / "tasks/nav_pick_place_apple_multifloor_pct.json"
+    )
+    config = _config(
+        tmp_path,
+        NavigationSettings(global_planner="pct", pct_enabled=True),
+    )
+
+    stair_spec, centerline = _stair_locomotion_smoke_spec(config, spec)
+
+    assert stair_spec.start.x == 1.5
+    assert stair_spec.start.y == 5.7
+    assert stair_spec.start.z == 0.36742
+    assert stair_spec.start.yaw == pytest.approx(
+        math.atan2(6.27683 - 5.7, 1.51822 - 1.5)
+    )
+    assert stair_spec.pick_goal.x == 2.70
+    assert stair_spec.pick_goal.y == 7.05
+    assert stair_spec.pick_goal.z == 3.62628
+    assert stair_spec.place_goal is None
+    assert stair_spec.object_prim_path is None
+    assert stair_spec.raw_task["runtime_override"]["float_enabled"] is False
+    assert all(
+        current[2] <= following[2]
+        for current, following in zip(centerline, centerline[1:])
+    )
+
+
+def test_stair_locomotion_smoke_builds_isolated_planner_and_executor(
+    tmp_path: Path,
+) -> None:
+    spec = JsonTaskProvider().load(
+        PROJECT_ROOT / "tasks/nav_pick_place_apple_multifloor_pct.json"
+    )
+    config = FullPhysicsConfig(
+        task_json=TASK_PATH,
+        output_dir=tmp_path,
+        navigation=NavigationSettings(
+            global_planner="pct",
+            pct_enabled=True,
+            pct_stair_float_enabled=True,
+        ),
+        stair_locomotion_smoke=True,
+    )
+
+    pipeline = create_stair_locomotion_smoke_pipeline(
+        config=config,
+        episode_spec=spec,
+        episode_seed=0,
+        episode_dir=tmp_path,
+        simulation=object(),
+    )
+
+    assert isinstance(pipeline.nav_planner, StairCenterlinePlanner)
+    assert isinstance(pipeline.machine.nav_executor, StairLocomotionExecutor)
+    assert pipeline.config.navigation.pct_stair_float_enabled is False
+    assert pipeline.config.stair_locomotion_smoke is True
+    assert pipeline.episode_spec.raw_task["runtime_override"]["controller"] == (
+        "stair_heading_tracker"
+    )
 
 
 def test_pct_failure_falls_back_to_astar() -> None:

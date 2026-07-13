@@ -50,6 +50,16 @@ PCT_STAIR_FLOAT_DOG_STAND_JOINT_POSITIONS = (
     -1.5,
 )
 PCT_INFEASIBLE_ROTATION_RECOVERY_HEADING_TOLERANCE = 0.45
+PCT_FLAT_APPROACH_SHORTCUT_CLEARANCE_M = 0.40
+PCT_FLAT_APPROACH_SHORTCUT_START_DISTANCE_M = 1.00
+PCT_PRE_STAIR_PLAN_PRESERVE_DISTANCE_M = 1.00
+PCT_PRE_STAIR_MAX_ROUTE_DEVIATION_M = 0.45
+PCT_PRE_STAIR_EXECUTION_CORRIDOR_RADIUS_M = 0.45
+PCT_NO_FLOAT_CARRY_GAIT_ACTIVATION_VX = 0.25
+PCT_POST_STAIR_FLOAT_STALL_RECOVERY_PROGRESS_RATIO = 0.90
+PCT_POST_STAIR_FLOAT_STALL_RECOVERY_LINEAR_SPEED_MPS = 0.04
+PCT_CARRY_STALL_RECOVERY_PROGRESS_RATIO = 0.90
+PCT_CARRY_STALL_RECOVERY_LINEAR_SPEED_MPS = 0.01
 
 
 class DwaNavExecutor:
@@ -82,6 +92,8 @@ class DwaNavExecutor:
         command_recompute_interval_steps: int = 1,
         multifloor_obstacle_inflate_radius: float = 0.0,
         multifloor_route_corridor_radius: float | None = None,
+        multifloor_no_float_clearance_radius: float = 0.0,
+        post_stair_clearance_radius: float = 0.0,
         carry_max_linear_velocity: float | None = None,
         carry_max_angular_velocity: float | None = None,
         carry_max_linear_accel: float | None = None,
@@ -91,10 +103,10 @@ class DwaNavExecutor:
         carry_max_infeasible_recomputes: int | None = None,
         stair_float_enabled: bool = False,
         stair_float_speed_mps: float = 0.18,
-        stair_float_activation_radius_m: float = 0.45,
+        stair_float_activation_radius_m: float = 0.12,
         stair_float_completion_radius_m: float = 0.25,
         stair_float_min_z_delta_m: float = 0.75,
-        stair_float_approach_distance_m: float = 1.80,
+        stair_float_approach_distance_m: float = 0.0,
         stair_float_exit_distance_m: float = 0.75,
         stair_float_settle_time_s: float = 1.20,
         stair_float_release_settle_time_s: float = 0.0,
@@ -120,6 +132,10 @@ class DwaNavExecutor:
             raise ValueError("stall 恢复进度比例必须位于 0 到 1。")
         if multifloor_obstacle_inflate_radius < 0.0:
             raise ValueError("跨楼层障碍膨胀半径不能为负数。")
+        if multifloor_no_float_clearance_radius < 0.0:
+            raise ValueError("无漂移跨楼层 footprint 半径不能为负数。")
+        if post_stair_clearance_radius < 0.0:
+            raise ValueError("楼梯释放后 footprint 半径不能为负数。")
         if (
             multifloor_route_corridor_radius is not None
             and multifloor_route_corridor_radius < 0.0
@@ -183,6 +199,10 @@ class DwaNavExecutor:
             multifloor_obstacle_inflate_radius
         )
         self.multifloor_route_corridor_radius = multifloor_route_corridor_radius
+        self.multifloor_no_float_clearance_radius = float(
+            multifloor_no_float_clearance_radius
+        )
+        self.post_stair_clearance_radius = float(post_stair_clearance_radius)
         self.carry_max_linear_velocity = carry_max_linear_velocity
         self.carry_max_angular_velocity = carry_max_angular_velocity
         self.carry_max_linear_accel = carry_max_linear_accel
@@ -261,6 +281,7 @@ class DwaNavExecutor:
         self._failure_reason = ""
         self._stall_detected = False
         self._stall_recovery_count = 0
+        self._last_stall_recovery_reason: str | None = None
         self._stall_diagnostics = self.stall_detector.diagnostics()
         self._last_command = (0.0, 0.0, 0.0)
         self._last_pose: tuple[float, float, float] | None = None
@@ -294,6 +315,12 @@ class DwaNavExecutor:
         self._stair_float_release_settle_remaining_s = 0.0
         self._stair_float_hold_xyzyaw: tuple[float, float, float, float] | None = None
         self._stair_float_report: dict[str, Any] = {"enabled": False}
+        self._post_stair_reference_path: tuple[tuple[float, float], ...] = ()
+        self._post_stair_path_optimization_report: dict[str, Any] = {
+            "applied": False,
+            "reason": "not_prepared",
+        }
+        self._post_stair_release_bridge_replan_count = 0
         self._near_goal_stall_handoff = False
         self._near_goal_stall_handoff_tolerance: float | None = None
 
@@ -302,15 +329,28 @@ class DwaNavExecutor:
 
         if len(plan.waypoints) < 2:
             raise ValueError("DWA 路径至少需要两个 waypoint。")
+        self._prepare_pct_pre_stair_path(plan)
         self._reset_stair_float_state(plan)
+        self._prepare_pct_post_stair_reference_path(plan)
         self._select_local_map(plan)
         self._ensure_local_map(plan)
         if self.local_map is None:
             raise RuntimeError("导航执行器没有可用的占用栅格地图。")
 
+        metadata_path = plan.metadata.get("path_3d")
+        path_source = (
+            metadata_path
+            if (
+                plan.metadata.get("planner") == "pct"
+                and isinstance(metadata_path, (list, tuple))
+                and len(metadata_path) >= 2
+            )
+            else plan.waypoints
+        )
         path_world = [
             (float(point[0]), float(point[1]))
-            for point in plan.waypoints
+            for point in path_source
+            if isinstance(point, (list, tuple)) and len(point) >= 2
         ]
         path_world = self._refine_pct_path_for_local_map(plan, path_world)
         path_world, stair_float_splice = _splice_stair_float_controller_path(
@@ -346,6 +386,7 @@ class DwaNavExecutor:
         self._failure_reason = ""
         self._stall_detected = False
         self._stall_recovery_count = 0
+        self._last_stall_recovery_reason = None
         self._stall_diagnostics = self.stall_detector.diagnostics()
         self._last_command = (0.0, 0.0, 0.0)
         self._last_pose = None
@@ -375,6 +416,7 @@ class DwaNavExecutor:
         stair_float_action = self._compute_stair_float_action(state, pose)
         if stair_float_action is not None:
             return stair_float_action
+        self._refresh_post_stair_release_bridge(state, pose)
         next_phase = (
             "terminal_pose"
             if self._active_require_yaw_alignment
@@ -431,6 +473,29 @@ class DwaNavExecutor:
                 # 中间物理步保持上一条命令，避免 DWA 计算阻塞每一次 world.step。
                 self._dwa_hold_count += 1
                 command = self._last_command
+
+        no_float_activation_vx = min(
+            PCT_NO_FLOAT_CARRY_GAIT_ACTIVATION_VX,
+            float(self._active_dwa_config.max_linear_velocity),
+        )
+        if (
+            self._phase == "dwa"
+            and self._carry_mode
+            and (
+                not self.stair_float_enabled
+                or not self._stair_float_started
+            )
+            and self._last_dwa_debug is not None
+            and abs(float(self._last_dwa_debug.heading_error)) <= 0.20
+            and 0.0 < float(command[0]) < no_float_activation_vx
+        ):
+            # 该策略把 0.08m/s 以下命令解释为站立；物理携物转弯时保持
+            # 最小激活速度，避免 DWA 小速度与策略站立死区互相锁住。
+            command = (
+                no_float_activation_vx,
+                float(command[1]),
+                float(command[2]),
+            )
 
         self._tick_index += 1
         self._last_command = tuple(float(value) for value in command)
@@ -521,6 +586,7 @@ class DwaNavExecutor:
             "stall_detected": self._stall_detected,
             "stall": self._stall_status(self._stall_diagnostics),
             "stall_recovery_count": self._stall_recovery_count,
+            "last_stall_recovery_reason": self._last_stall_recovery_reason,
             "dwa_compute": self._dwa_compute_status(),
             "dwa_limits": self._active_dwa_limits(),
             "local_refinement": self._local_refinement_report,
@@ -564,6 +630,10 @@ class DwaNavExecutor:
             return path_world
         if _pct_plan_is_multifloor(plan):
             refined = _remove_consecutive_duplicate_waypoints(path_world)
+            refined, flat_approach_report = self._refine_pct_flat_approach(
+                plan,
+                refined,
+            )
             exact_goal = (float(plan.goal.x), float(plan.goal.y))
             if math.hypot(
                 refined[-1][0] - exact_goal[0],
@@ -579,6 +649,7 @@ class DwaNavExecutor:
                 "multifloor": True,
                 "slice_start": plan.metadata.get("slice_start"),
                 "slice_end": plan.metadata.get("slice_end"),
+                "flat_approach": flat_approach_report,
             }
             return refined
         exact_goal = (float(plan.goal.x), float(plan.goal.y))
@@ -656,11 +727,139 @@ class DwaNavExecutor:
         }
         return refined
 
+    def _uses_physical_pre_stair_navigation(self) -> bool:
+        """仅在楼梯起点才启用 float 时，F1 必须继续使用真实物理导航。"""
+
+        return (
+            not self.stair_float_enabled
+            or self.stair_float_approach_distance_m <= 1.0e-6
+        )
+
+    def _refine_pct_flat_approach(
+        self,
+        plan: NavPlan,
+        path_world: list[tuple[float, float]],
+    ) -> tuple[list[tuple[float, float]], dict[str, Any]]:
+        """在楼梯入口缓弯之前消除 PCT 栅格折线的反向转向。"""
+
+        report: dict[str, Any] = {
+            "applied": False,
+            "reason": "stair_approach_metadata_unavailable",
+        }
+        planner_optimization = plan.metadata.get("pre_stair_path_optimization")
+        if (
+            isinstance(planner_optimization, dict)
+            and planner_optimization.get("applied") is True
+        ):
+            report.update(
+                {
+                    "applied": True,
+                    "reason": "planner_path_already_clearance_optimized",
+                    "planner_optimization": dict(planner_optimization),
+                }
+            )
+            return path_world, report
+        if not self._uses_physical_pre_stair_navigation():
+            report["reason"] = "stair_float_approach_covers_flat_path"
+            return path_world, report
+        if self._single_floor_raw_map is None:
+            report["reason"] = "single_floor_map_unavailable"
+            return path_world, report
+        stair_report = plan.metadata.get("stair_centerline_refinement")
+        if not isinstance(stair_report, dict):
+            return path_world, report
+        raw_approach_start = stair_report.get("approach_start")
+        if not isinstance(raw_approach_start, (list, tuple)) or len(raw_approach_start) < 2:
+            return path_world, report
+
+        approach_start = (
+            float(raw_approach_start[0]),
+            float(raw_approach_start[1]),
+        )
+        approach_index = min(
+            range(len(path_world)),
+            key=lambda index: math.hypot(
+                path_world[index][0] - approach_start[0],
+                path_world[index][1] - approach_start[1],
+            ),
+        )
+        approach_error = math.hypot(
+            path_world[approach_index][0] - approach_start[0],
+            path_world[approach_index][1] - approach_start[1],
+        )
+        if approach_index < 2 or approach_error > 0.25:
+            report.update(
+                {
+                    "reason": "stair_approach_start_not_found",
+                    "approach_match_error_m": approach_error,
+                }
+            )
+            return path_world, report
+
+        clearance_required = max(
+            PCT_FLAT_APPROACH_SHORTCUT_CLEARANCE_M,
+            2.0 * float(self._single_floor_raw_map.resolution),
+        )
+        shortcut_start_index = _path_index_after_distance(
+            path_world[: approach_index + 1],
+            distance_m=PCT_FLAT_APPROACH_SHORTCUT_START_DISTANCE_M,
+        )
+        shortcut = _shortcut_path_with_clearance(
+            path_world[shortcut_start_index : approach_index + 1],
+            self._single_floor_raw_map,
+            clearance_required_m=clearance_required,
+        )
+        prefix = _remove_consecutive_duplicate_waypoints(
+            [*path_world[:shortcut_start_index], *shortcut]
+        )
+        shortcut_output_waypoints = len(prefix)
+        if shortcut_output_waypoints >= approach_index + 1:
+            report.update(
+                {
+                    "reason": "no_clear_shortcut",
+                    "input_waypoints": approach_index + 1,
+                    "output_waypoints": shortcut_output_waypoints,
+                    "clearance_required_m": clearance_required,
+                }
+            )
+            return path_world, report
+        prefix, smoothed_corner_count = _smooth_clearance_shortcut_corners(
+            prefix,
+            self._single_floor_raw_map,
+            clearance_required_m=clearance_required,
+        )
+
+        refined = _remove_consecutive_duplicate_waypoints(
+            [*prefix, *path_world[approach_index + 1 :]]
+        )
+        report.update(
+            {
+                "applied": True,
+                "reason": "clearance_constrained_shortcut",
+                "input_waypoints": approach_index + 1,
+                "output_waypoints": len(prefix),
+                "shortcut_output_waypoints": shortcut_output_waypoints,
+                "removed_waypoints": (
+                    approach_index + 1 - shortcut_output_waypoints
+                ),
+                "clearance_required_m": clearance_required,
+                "shortcut_start_index": shortcut_start_index,
+                "shortcut_start_distance_m": (
+                    PCT_FLAT_APPROACH_SHORTCUT_START_DISTANCE_M
+                ),
+                "smoothed_corner_count": smoothed_corner_count,
+                "approach_start": list(approach_start),
+                "approach_match_error_m": approach_error,
+            }
+        )
+        return refined, report
+
     def _select_local_map(self, plan: NavPlan) -> None:
         """按 PCT 路径是否跨楼层选择对应的二维避障投影。"""
 
         selected = self._single_floor_raw_map
         multifloor = _pct_plan_is_multifloor(plan)
+        physical_pre_stair = self._uses_physical_pre_stair_navigation()
         self._map_selection_report = {
             "multifloor": multifloor,
             "obstacle_inflate_radius_m": 0.0,
@@ -668,6 +867,7 @@ class DwaNavExecutor:
             "route_cells_cleared": 0,
             "stair_float_route_cells_cleared": 0,
             "protected_cells_preserved": 0,
+            "local_clearance_radius_m": float(self.local_clearance_radius),
         }
         if multifloor and self._multifloor_raw_map is not None:
             selected = self._multifloor_raw_map
@@ -693,7 +893,7 @@ class DwaNavExecutor:
                         float(self.multifloor_route_corridor_radius),
                     )
                 ]
-                if not self.stair_float_enabled:
+                if physical_pre_stair:
                     route_paths = _pct_no_float_route_corridors(
                         plan,
                         flat_radius_m=float(
@@ -761,7 +961,87 @@ class DwaNavExecutor:
                     }
                 )
         self._raw_map = selected
-        self.local_map = selected.inflate(self.local_clearance_radius)
+        active_clearance_radius = float(self.local_clearance_radius)
+        if multifloor and physical_pre_stair:
+            active_clearance_radius = max(
+                active_clearance_radius,
+                self.multifloor_no_float_clearance_radius,
+            )
+        self._map_selection_report["local_clearance_radius_m"] = (
+            active_clearance_radius
+        )
+        self.local_map = selected.inflate(active_clearance_radius)
+        if multifloor and physical_pre_stair and active_clearance_radius > 0.0:
+            flat_approach_path = _pct_flat_approach_path(plan)
+            if flat_approach_path and self._single_floor_raw_map is not None:
+                single_floor_local_map = self._single_floor_raw_map.inflate(
+                    active_clearance_radius
+                )
+                self.local_map, replaced_cells = _replace_grid_path_corridor(
+                    self.local_map,
+                    single_floor_local_map,
+                    flat_approach_path,
+                    radius_m=max(
+                        active_clearance_radius,
+                        float(self.multifloor_route_corridor_radius or 0.0),
+                    ),
+                )
+                self._map_selection_report.update(
+                    {
+                        "flat_approach_single_floor_map": True,
+                        "flat_approach_replaced_cells": int(replaced_cells),
+                    }
+                )
+                planner_optimization = plan.metadata.get(
+                    "pre_stair_path_optimization"
+                )
+                execution_corridor_radius = (
+                    float(
+                        planner_optimization.get(
+                            "execution_corridor_radius_m",
+                            0.0,
+                        )
+                    )
+                    if isinstance(planner_optimization, dict)
+                    else 0.0
+                )
+                if execution_corridor_radius > 0.0:
+                    self.local_map, reopened_cells, _ = (
+                        _clear_grid_path_corridor(
+                            self.local_map,
+                            flat_approach_path,
+                            radius_m=execution_corridor_radius,
+                        )
+                    )
+                    self._map_selection_report.update(
+                        {
+                            "flat_approach_execution_corridor_radius_m": (
+                                execution_corridor_radius
+                            ),
+                            "flat_approach_execution_corridor_reopened_cells": int(
+                                reopened_cells
+                            ),
+                        }
+                    )
+            stair_path = _pct_stair_approach_and_centerline_path(plan)
+            if stair_path:
+                # footprint 膨胀用于平层墙柱；楼梯中心线由 3D PCT 校验，
+                # 这里只恢复一个窄栅格，避免二维跨层投影重新封住台阶。
+                stair_reopen_radius = min(
+                    0.10,
+                    0.5 * float(self.local_map.resolution),
+                )
+                self.local_map, reopened_cells, _ = _clear_grid_path_corridor(
+                    self.local_map,
+                    stair_path,
+                    radius_m=stair_reopen_radius,
+                )
+                self._map_selection_report.update(
+                    {
+                        "no_float_stair_reopen_radius_m": stair_reopen_radius,
+                        "no_float_stair_reopened_cells": int(reopened_cells),
+                    }
+                )
 
     def _dwa_config_for_plan(self, plan: NavPlan) -> DWAConfig:
         """携物导航使用更保守的速度和路径偏离上限。"""
@@ -833,7 +1113,10 @@ class DwaNavExecutor:
                 0.75,
             )
             updates["near_goal_path_deviation_distance"] = 0.65
-        if _pct_plan_is_multifloor(plan) and not self.stair_float_enabled:
+        if (
+            _pct_plan_is_multifloor(plan)
+            and self._uses_physical_pre_stair_navigation()
+        ):
             path_limit = float(
                 updates.get(
                     "path_deviation_limit",
@@ -998,9 +1281,25 @@ class DwaNavExecutor:
             and recovery_speed >= self.stall_recovery_linear_speed_mps
         ):
             # 机器人刚从接触中恢复实际位移时重开窗口，避免旧停滞样本误杀脱困动作。
-            self.stall_detector.reset()
-            self._stall_diagnostics = self.stall_detector.diagnostics()
-            self._stall_recovery_count += 1
+            self._reset_stall_after_motion_recovery("carry_motion")
+            return
+        if self._post_stair_float_motion_is_recovering(
+            diagnostics,
+            recovery_speed,
+        ):
+            # float 释放后的首段真实步态可能只比全局位移阈值小毫米级；
+            # 仅在 DWA 全部候选都无碰撞且机体仍在前进时重开窗口。
+            self._reset_stall_after_motion_recovery(
+                "post_stair_float_near_threshold_motion"
+            )
+            return
+        if self._carry_near_threshold_motion_is_recovering(
+            diagnostics,
+            recovery_speed,
+        ):
+            self._reset_stall_after_motion_recovery(
+                "carry_near_threshold_motion"
+            )
             return
         if self._accept_near_goal_pick_handoff():
             self._done = True
@@ -1014,6 +1313,71 @@ class DwaNavExecutor:
         self._success = False
         self._failure_reason = "nav_collision"
         self._phase = "stalled"
+
+    def _carry_near_threshold_motion_is_recovering(
+        self,
+        diagnostics: StallDiagnostics,
+        recovery_speed: float,
+    ) -> bool:
+        """携物转向仍有可行轨迹时，避免毫米级阈值误杀真实慢速运动。"""
+
+        debug = self._last_dwa_debug
+        if not self._carry_mode or debug is None:
+            return False
+        minimum_feasible_candidates = max(
+            1,
+            int(math.ceil(float(debug.sampled_candidates) * 0.50)),
+        )
+        if debug.feasible_candidates < minimum_feasible_candidates:
+            return False
+        minimum_progress = (
+            float(self.stall_detector.min_progress_m)
+            * PCT_CARRY_STALL_RECOVERY_PROGRESS_RATIO
+        )
+        return (
+            diagnostics.max_displacement_m >= minimum_progress
+            and recovery_speed >= PCT_CARRY_STALL_RECOVERY_LINEAR_SPEED_MPS
+        )
+
+    def _post_stair_float_motion_is_recovering(
+        self,
+        diagnostics: StallDiagnostics,
+        recovery_speed: float,
+    ) -> bool:
+        """判断 float 释放后是否仅因阈值边界而误报停滞。"""
+
+        debug = self._last_dwa_debug
+        if (
+            not self._carry_mode
+            or not self.stair_float_enabled
+            or not self._stair_float_done
+            or debug is None
+        ):
+            return False
+        if (
+            debug.sampled_candidates <= 0
+            or debug.feasible_candidates != debug.sampled_candidates
+            or debug.collision_rejections != 0
+            or debug.path_deviation_rejections != 0
+        ):
+            return False
+        minimum_progress = (
+            float(self.stall_detector.min_progress_m)
+            * PCT_POST_STAIR_FLOAT_STALL_RECOVERY_PROGRESS_RATIO
+        )
+        return (
+            diagnostics.max_displacement_m >= minimum_progress
+            and recovery_speed
+            >= PCT_POST_STAIR_FLOAT_STALL_RECOVERY_LINEAR_SPEED_MPS
+        )
+
+    def _reset_stall_after_motion_recovery(self, reason: str) -> None:
+        """确认机体仍在运动后清空停滞窗口并记录原因。"""
+
+        self.stall_detector.reset()
+        self._stall_diagnostics = self.stall_detector.diagnostics()
+        self._stall_recovery_count += 1
+        self._last_stall_recovery_reason = str(reason)
 
     def _accept_near_goal_pick_handoff(self) -> bool:
         """允许 nav_to_pick 在近目标物理停滞时交给抓取规划继续验证。"""
@@ -1122,6 +1486,9 @@ class DwaNavExecutor:
             "path_recovery_deviation_limit": (
                 self._active_dwa_config.path_recovery_deviation_limit
             ),
+            "path_recovery_speed_limit": (
+                self._active_dwa_config.path_recovery_speed_limit
+            ),
             "near_goal_path_deviation_limit": (
                 self._active_dwa_config.near_goal_path_deviation_limit
             ),
@@ -1142,6 +1509,14 @@ class DwaNavExecutor:
             ),
             "large_heading_creep_velocity": (
                 self._active_dwa_config.large_heading_creep_velocity
+            ),
+            "no_float_carry_gait_activation_vx": (
+                min(
+                    PCT_NO_FLOAT_CARRY_GAIT_ACTIVATION_VX,
+                    float(self._active_dwa_config.max_linear_velocity),
+                )
+                if self._carry_mode and not self.stair_float_enabled
+                else None
             ),
             "consecutive_infeasible_recomputes": int(
                 self._consecutive_infeasible_recomputes
@@ -1166,6 +1541,45 @@ class DwaNavExecutor:
         )
         return status
 
+    def _refresh_post_stair_release_bridge(
+        self,
+        state: SimulationState,
+        pose: tuple[float, float, float],
+    ) -> None:
+        """解冻初段若实际落点进入膨胀格，则从实时位姿短接回 F2 路径。"""
+
+        if (
+            not self._stair_float_done
+            or self.local_map is None
+            or len(self._post_stair_reference_path) < 3
+        ):
+            return
+        nearest_index = min(
+            range(len(self._post_stair_reference_path)),
+            key=lambda index: math.hypot(
+                self._post_stair_reference_path[index][0] - pose[0],
+                self._post_stair_reference_path[index][1] - pose[1],
+            ),
+        )
+        if nearest_index > 2:
+            return
+        row, col = self.local_map.world_to_grid(pose[0], pose[1])
+        if not self.local_map.is_occupied(row, col):
+            return
+        if self._post_stair_release_bridge_replan_count >= 2:
+            return
+        if self._replan_controller_on_post_stair_floor(
+            (
+                float(pose[0]),
+                float(pose[1]),
+                float(state.robot_root_pose[2]),
+            )
+        ):
+            self._post_stair_release_bridge_replan_count += 1
+            self._stair_float_report[
+                "post_stair_release_bridge_replan_count"
+            ] = self._post_stair_release_bridge_replan_count
+
     def _reset_stair_float_state(self, plan: NavPlan) -> None:
         """为当前 PCT carry plan 准备可选楼梯漂移段。"""
 
@@ -1185,6 +1599,7 @@ class DwaNavExecutor:
         self._stair_float_release_settling = False
         self._stair_float_release_settle_remaining_s = 0.0
         self._stair_float_hold_xyzyaw = None
+        self._post_stair_release_bridge_replan_count = 0
         self._stair_float_report = {
             "enabled": False,
             "reason": "disabled",
@@ -1489,6 +1904,13 @@ class DwaNavExecutor:
             self._stair_float_release_settling = False
             self._stair_float_done = True
             self._stair_float_report["reason"] = "completed"
+            self._replan_controller_on_post_stair_floor(
+                (
+                    float(state.robot_root_pose[0]),
+                    float(state.robot_root_pose[1]),
+                    float(state.robot_root_pose[2]),
+                )
+            )
         else:
             self._stair_float_report["reason"] = "release_settling"
         self._stair_float_report["release_settle_remaining_s"] = float(
@@ -1548,14 +1970,43 @@ class DwaNavExecutor:
         pose: tuple[float, float, float],
     ) -> bool:
         start = self._stair_float_path[0]
-        distance = math.hypot(pose[0] - start[0], pose[1] - start[1])
+        point_distance = math.hypot(pose[0] - start[0], pose[1] - start[1])
+        corridor_distance: float | None = None
+        corridor_progress: float | None = None
+        trigger: str | None = None
+        if point_distance <= self.stair_float_activation_radius_m:
+            trigger = "point_radius"
+        elif len(self._stair_float_path) >= 2:
+            end = self._stair_float_path[1]
+            segment_x = float(end[0] - start[0])
+            segment_y = float(end[1] - start[1])
+            segment_length_sq = segment_x * segment_x + segment_y * segment_y
+            if segment_length_sq > 1.0e-12:
+                projection = (
+                    (float(pose[0]) - float(start[0])) * segment_x
+                    + (float(pose[1]) - float(start[1])) * segment_y
+                ) / segment_length_sq
+                if 0.0 <= projection <= 1.0:
+                    projected_x = float(start[0]) + projection * segment_x
+                    projected_y = float(start[1]) + projection * segment_y
+                    corridor_distance = math.hypot(
+                        float(pose[0]) - projected_x,
+                        float(pose[1]) - projected_y,
+                    )
+                    corridor_progress = projection * math.sqrt(segment_length_sq)
+                    if corridor_distance <= self.stair_float_activation_radius_m:
+                        trigger = "entry_corridor"
         self._stair_float_report.update(
             {
-                "distance_to_activation_m": float(distance),
+                "distance_to_activation_m": float(point_distance),
+                "activation_point_distance_m": float(point_distance),
+                "activation_corridor_distance_m": corridor_distance,
+                "activation_corridor_progress_m": corridor_progress,
+                "activation_trigger": trigger,
                 "activation_pose_xyyaw": list(pose),
             }
         )
-        return distance <= self.stair_float_activation_radius_m
+        return trigger is not None
 
     def _activate_stair_float(
         self,
@@ -1738,6 +2189,84 @@ class DwaNavExecutor:
             }
         )
 
+    def _prepare_pct_pre_stair_path(self, plan: NavPlan) -> None:
+        """在拿取点离场后优化 F1 大门转角，并写回 PCT path_3d。"""
+
+        report: dict[str, Any] = {
+            "applied": False,
+            "reason": "not_applicable",
+            "clearance_radius_m": float(self.multifloor_no_float_clearance_radius),
+        }
+        if (
+            plan.metadata.get("planner") != "pct"
+            or plan.metadata.get("execution_phase") != "carry_nav_to_place"
+            or self._single_floor_raw_map is None
+        ):
+            plan.metadata["pre_stair_path_optimization"] = report
+            return
+        clearance_radius = max(
+            float(self.post_stair_clearance_radius),
+            float(self.multifloor_no_float_clearance_radius),
+        )
+        try:
+            _optimized_path, report = optimize_pct_pre_stair_plan_path(
+                plan,
+                pre_stair_grid_map=self._single_floor_raw_map,
+                clearance_radius_m=clearance_radius,
+                preserve_start_distance_m=PCT_PRE_STAIR_PLAN_PRESERVE_DISTANCE_M,
+            )
+        except Exception as exc:
+            report.update(
+                {
+                    "reason": "optimization_failed",
+                    "failure_reason": str(exc),
+                    "clearance_radius_m": clearance_radius,
+                }
+            )
+        plan.metadata["pre_stair_path_optimization"] = report
+
+    def _prepare_pct_post_stair_reference_path(self, plan: NavPlan) -> None:
+        """在 float 释放点后生成具有足迹净空的 PCT 目标楼层路径。"""
+
+        self._post_stair_reference_path = ()
+        report: dict[str, Any] = {
+            "applied": False,
+            "reason": "not_applicable",
+            "clearance_radius_m": float(self.post_stair_clearance_radius),
+        }
+        self._post_stair_path_optimization_report = report
+        if (
+            plan.metadata.get("planner") != "pct"
+            or plan.metadata.get("execution_phase") != "carry_nav_to_place"
+            or not self._stair_float_path
+            or self._post_stair_raw_map is None
+        ):
+            self._stair_float_report["post_stair_path_optimization"] = report
+            return
+
+        try:
+            optimized_path, report = _optimize_pct_post_stair_plan_path(
+                plan,
+                stair_float_path=self._stair_float_path,
+                post_stair_grid_map=self._post_stair_raw_map,
+                clearance_radius_m=self.post_stair_clearance_radius,
+            )
+        except Exception as exc:
+            report.update(
+                {
+                    "reason": "optimization_failed",
+                    "failure_reason": str(exc),
+                }
+            )
+            self._stair_float_report["post_stair_path_optimization"] = report
+            return
+        if len(optimized_path) < 2:
+            self._stair_float_report["post_stair_path_optimization"] = report
+            return
+        self._post_stair_reference_path = tuple(optimized_path)
+        self._post_stair_path_optimization_report = report
+        self._stair_float_report["post_stair_path_optimization"] = report
+
     def _replan_controller_on_post_stair_floor(
         self,
         target: tuple[float, float, float],
@@ -1757,45 +2286,78 @@ class DwaNavExecutor:
             self._stair_float_report["post_stair_floor_replan"] = report
             return False
 
-        floor_map = floor_raw_map.inflate(self.local_clearance_radius)
         start_xy = (float(target[0]), float(target[1]))
         goal_xy = (float(self.plan.goal.x), float(self.plan.goal.y))
-        try:
-            result = AStarPlanner().plan(
-                floor_map,
-                start_xy,
-                goal_xy,
-                snap_to_free=True,
-                max_snap_distance_m=max(
-                    0.50,
-                    float(self.local_clearance_radius) + 0.50,
+        reference_nearest_index: int | None = None
+        reference_nearest_distance = math.inf
+        if len(self._post_stair_reference_path) >= 2:
+            reference_nearest_index = min(
+                range(len(self._post_stair_reference_path) - 1),
+                key=lambda index: math.hypot(
+                    self._post_stair_reference_path[index][0] - start_xy[0],
+                    self._post_stair_reference_path[index][1] - start_xy[1],
                 ),
             )
-        except Exception as exc:
-            report.update(
-                {
-                    "reason": "astar_failed",
-                    "failure_reason": str(exc),
-                    "start_xy": list(start_xy),
-                    "goal_xy": list(goal_xy),
-                }
+            reference_nearest_distance = math.hypot(
+                self._post_stair_reference_path[reference_nearest_index][0]
+                - start_xy[0],
+                self._post_stair_reference_path[reference_nearest_index][1]
+                - start_xy[1],
             )
-            self._stair_float_report["post_stair_floor_replan"] = report
-            return False
-
-        path_world = [start_xy]
-        for point in result.path_world:
-            xy = (float(point[0]), float(point[1]))
-            if math.hypot(
-                xy[0] - path_world[-1][0],
-                xy[1] - path_world[-1][1],
-            ) > 1.0e-5:
-                path_world.append(xy)
-        if math.hypot(
-            goal_xy[0] - path_world[-1][0],
-            goal_xy[1] - path_world[-1][1],
-        ) > 1.0e-5:
-            path_world.append(goal_xy)
+        if (
+            reference_nearest_index is not None
+            and reference_nearest_distance <= 0.50
+        ):
+            floor_map = floor_raw_map.inflate(self.post_stair_clearance_radius)
+            reference_tail = list(
+                self._post_stair_reference_path[reference_nearest_index:]
+            )
+            release_bridge = [start_xy, reference_tail[0]]
+            bridge_corridor_radius = max(
+                0.10,
+                float(self.post_stair_clearance_radius),
+            )
+            floor_map, bridge_reopened_cells, _ = _clear_grid_path_corridor(
+                floor_map,
+                release_bridge,
+                radius_m=bridge_corridor_radius,
+            )
+            path_world = (
+                [start_xy, *reference_tail[1:]]
+                if reference_nearest_distance <= 1.0e-6
+                else [start_xy, *reference_tail]
+            )
+            path_report = dict(self._post_stair_path_optimization_report)
+            path_report["release_bridge"] = {
+                "applied": True,
+                "start_xy": list(start_xy),
+                "reference_index": int(reference_nearest_index),
+                "reference_xy": list(reference_tail[0]),
+                "reference_distance_m": float(reference_nearest_distance),
+                "corridor_radius_m": float(bridge_corridor_radius),
+                "reopened_cells": int(bridge_reopened_cells),
+            }
+        else:
+            try:
+                floor_map, path_world, path_report = (
+                    _plan_clearance_optimized_floor_path(
+                        floor_raw_map,
+                        start_xy,
+                        goal_xy,
+                        clearance_radius_m=self.post_stair_clearance_radius,
+                    )
+                )
+            except Exception as exc:
+                report.update(
+                    {
+                        "reason": "pct_target_floor_optimization_failed",
+                        "failure_reason": str(exc),
+                        "start_xy": list(start_xy),
+                        "goal_xy": list(goal_xy),
+                    }
+                )
+                self._stair_float_report["post_stair_floor_replan"] = report
+                return False
         if len(path_world) < 2:
             report.update(
                 {
@@ -1821,15 +2383,18 @@ class DwaNavExecutor:
         report.update(
             {
                 "applied": True,
-                "reason": "post_stair_single_floor_astar",
+                "reason": "post_stair_pct_clearance_optimized",
                 "start_xy": list(start_xy),
                 "goal_xy": list(goal_xy),
                 "waypoint_count": len(path_world),
-                "raw_grid_waypoint_count": len(result.raw_path_grid),
-                "astar_cost": float(result.cost),
                 "path_world": [list(point) for point in path_world],
+                "path_optimization": path_report,
+                "clearance_radius_m": float(self.post_stair_clearance_radius),
                 "max_linear_velocity": float(
                     post_stair_dwa_config.max_linear_velocity
+                ),
+                "max_angular_velocity": float(
+                    post_stair_dwa_config.max_angular_velocity
                 ),
                 "min_active_linear_velocity": float(
                     post_stair_dwa_config.min_active_linear_velocity
@@ -1846,11 +2411,17 @@ class DwaNavExecutor:
                 "path_recovery_deviation_limit": (
                     post_stair_dwa_config.path_recovery_deviation_limit
                 ),
+                "path_recovery_speed_limit": (
+                    post_stair_dwa_config.path_recovery_speed_limit
+                ),
                 "corner_waypoint_tolerance": float(
                     post_stair_dwa_config.corner_waypoint_tolerance
                 ),
                 "lookahead_distance": float(
                     post_stair_dwa_config.lookahead_distance
+                ),
+                "rotate_in_place_angle": float(
+                    post_stair_dwa_config.rotate_in_place_angle
                 ),
             }
         )
@@ -1890,6 +2461,11 @@ class DwaNavExecutor:
                 float(config.max_linear_velocity),
                 0.25,
             ),
+            # 二楼转入长走廊时，0.30 rad/s 无法在 0.25 m/s 下跟上路径曲率。
+            max_angular_velocity=min(
+                float(self.dwa_config.max_angular_velocity),
+                0.50,
+            ),
             min_active_linear_velocity=min(
                 float(config.min_active_linear_velocity),
                 0.22,
@@ -1913,6 +2489,12 @@ class DwaNavExecutor:
                 float(config.path_deviation_penalty_bias),
                 2.40,
             ),
+            path_recovery_speed_limit=0.20,
+            # 朝向误差较大时先逐步降速再转向，避免机器人横穿中心线后继续外漂。
+            rotate_in_place_angle=min(
+                float(config.rotate_in_place_angle),
+                0.55,
+            ),
             path_deviation_limit=path_deviation_limit,
             initial_alignment_path_deviation_limit=max(
                 path_deviation_limit,
@@ -1924,7 +2506,11 @@ class DwaNavExecutor:
             path_recovery_deviation_limit=max(
                 path_deviation_limit,
                 min(
-                    float(config.path_recovery_deviation_limit or 0.50),
+                    float(
+                        self.carry_path_recovery_deviation_limit
+                        if self.carry_path_recovery_deviation_limit is not None
+                        else 0.50
+                    ),
                     0.50,
                 ),
             ),
@@ -2029,6 +2615,156 @@ def _pct_no_float_route_corridors(
     ]
 
 
+def _pct_flat_approach_path(plan: NavPlan) -> list[tuple[float, float]]:
+    """读取楼梯入口缓弯起点之前的一楼路径，供真实楼层地图接管。"""
+
+    stair_report = plan.metadata.get("stair_centerline_refinement")
+    if not isinstance(stair_report, dict):
+        return []
+    raw_approach_start = stair_report.get("approach_start")
+    if not isinstance(raw_approach_start, (list, tuple)) or len(raw_approach_start) < 2:
+        return []
+    metadata_path = plan.metadata.get("path_3d")
+    path_source = (
+        metadata_path
+        if isinstance(metadata_path, (list, tuple)) and len(metadata_path) >= 2
+        else plan.waypoints
+    )
+    path = [
+        (float(point[0]), float(point[1]))
+        for point in path_source
+        if isinstance(point, (list, tuple)) and len(point) >= 2
+    ]
+    if len(path) < 2:
+        return []
+    approach_start = (
+        float(raw_approach_start[0]),
+        float(raw_approach_start[1]),
+    )
+    approach_index = min(
+        range(len(path)),
+        key=lambda index: math.hypot(
+            path[index][0] - approach_start[0],
+            path[index][1] - approach_start[1],
+        ),
+    )
+    match_error = math.hypot(
+        path[approach_index][0] - approach_start[0],
+        path[approach_index][1] - approach_start[1],
+    )
+    if approach_index < 1 or match_error > 0.25:
+        return []
+    return path[: approach_index + 1]
+
+
+def _pct_stair_approach_and_centerline_path(
+    plan: NavPlan,
+) -> list[tuple[float, float]]:
+    """从入口缓弯起点截取到楼梯末端，供 no-float 窄通道重开。"""
+
+    raw_path = plan.metadata.get("path_3d")
+    stair_report = plan.metadata.get("stair_centerline_refinement")
+    if not isinstance(raw_path, (list, tuple)) or not isinstance(stair_report, dict):
+        return []
+    raw_approach_start = stair_report.get("approach_start")
+    if not isinstance(raw_approach_start, (list, tuple)) or len(raw_approach_start) < 2:
+        return []
+    path = [
+        (float(point[0]), float(point[1]), float(point[2]))
+        for point in raw_path
+        if isinstance(point, (list, tuple)) and len(point) >= 3
+    ]
+    if len(path) < 2:
+        return []
+    approach_start = (
+        float(raw_approach_start[0]),
+        float(raw_approach_start[1]),
+    )
+    approach_index = min(
+        range(len(path)),
+        key=lambda index: math.hypot(
+            path[index][0] - approach_start[0],
+            path[index][1] - approach_start[1],
+        ),
+    )
+    changing_segments = [
+        index
+        for index, (start, end) in enumerate(zip(path, path[1:]))
+        if abs(end[2] - start[2]) > 1.0e-4
+    ]
+    if not changing_segments:
+        return []
+    stair_end = min(len(path) - 1, changing_segments[-1] + 1)
+    if approach_index >= stair_end:
+        return []
+    return [(point[0], point[1]) for point in path[approach_index : stair_end + 1]]
+
+
+def _replace_grid_path_corridor(
+    target_map: OccupancyGridMap,
+    source_map: OccupancyGridMap,
+    path_world: list[tuple[float, float]],
+    *,
+    radius_m: float,
+) -> tuple[OccupancyGridMap, int]:
+    """在指定路径走廊内使用单楼层占用值，排除其他楼层的投影假障碍。"""
+
+    if len(path_world) < 2:
+        return target_map, 0
+    if (
+        source_map.shape != target_map.shape
+        or not math.isclose(
+            source_map.resolution,
+            target_map.resolution,
+            rel_tol=1.0e-9,
+            abs_tol=1.0e-12,
+        )
+        or any(
+            not math.isclose(left, right, rel_tol=1.0e-9, abs_tol=1.0e-9)
+            for left, right in zip(source_map.origin, target_map.origin)
+        )
+    ):
+        raise ValueError("单楼层地图与跨楼层局部地图不对齐。")
+
+    occupancy = target_map.occupancy.copy()
+    radius = max(0.0, float(radius_m))
+    radius_cells = int(math.ceil(radius / float(target_map.resolution)))
+    sample_spacing = max(0.01, 0.5 * float(target_map.resolution))
+    replaced_cells: set[tuple[int, int]] = set()
+    for start, end in zip(path_world, path_world[1:]):
+        segment_length = math.hypot(end[0] - start[0], end[1] - start[1])
+        sample_count = max(1, int(math.ceil(segment_length / sample_spacing)))
+        for sample_index in range(sample_count + 1):
+            ratio = float(sample_index) / float(sample_count)
+            x = start[0] + ratio * (end[0] - start[0])
+            y = start[1] + ratio * (end[1] - start[1])
+            center_row, center_col = target_map.world_to_grid(x, y)
+            for dr in range(-radius_cells, radius_cells + 1):
+                for dc in range(-radius_cells, radius_cells + 1):
+                    row = center_row + dr
+                    col = center_col + dc
+                    if not target_map.in_bounds(row, col):
+                        continue
+                    cell_x, cell_y = target_map.grid_to_world(row, col)
+                    if math.hypot(cell_x - x, cell_y - y) > radius:
+                        continue
+                    source_value = bool(source_map.occupancy[row, col])
+                    if bool(occupancy[row, col]) == source_value:
+                        continue
+                    occupancy[row, col] = source_value
+                    replaced_cells.add((row, col))
+    return (
+        OccupancyGridMap(
+            occupancy=occupancy,
+            resolution=target_map.resolution,
+            origin=target_map.origin,
+            image_path=target_map.image_path,
+            meta_path=target_map.meta_path,
+        ),
+        len(replaced_cells),
+    )
+
+
 def _clear_grid_path_corridor(
     grid_map: OccupancyGridMap,
     path_world: list[tuple[float, float]],
@@ -2109,6 +2845,625 @@ def _clear_grid_path_corridor(
     )
 
 
+def optimize_pct_pre_stair_plan_path(
+    plan: NavPlan,
+    *,
+    pre_stair_grid_map: OccupancyGridMap,
+    clearance_radius_m: float,
+    preserve_start_distance_m: float,
+) -> tuple[tuple[tuple[float, float], ...], dict[str, Any]]:
+    """保留 pick 后稳定离场段，并把 F1 大门折线替换为净空缓弯。"""
+
+    report: dict[str, Any] = {
+        "applied": False,
+        "reason": "not_applicable",
+        "clearance_radius_m": float(clearance_radius_m),
+        "preserve_start_distance_m": float(preserve_start_distance_m),
+    }
+    if plan.metadata.get("planner") != "pct":
+        report["reason"] = "planner_is_not_pct"
+        return (), report
+    raw_path = plan.metadata.get("path_3d")
+    path_3d = (
+        [
+            (float(point[0]), float(point[1]), float(point[2]))
+            for point in raw_path
+            if isinstance(point, (list, tuple)) and len(point) >= 3
+        ]
+        if isinstance(raw_path, (list, tuple))
+        else []
+    )
+    stair_report = plan.metadata.get("stair_centerline_refinement")
+    if len(path_3d) < 3 or not isinstance(stair_report, dict):
+        report["reason"] = "stair_approach_metadata_unavailable"
+        return (), report
+    raw_approach_start = stair_report.get("approach_start")
+    if (
+        not isinstance(raw_approach_start, (list, tuple))
+        or len(raw_approach_start) < 2
+    ):
+        report["reason"] = "stair_approach_start_unavailable"
+        return (), report
+    approach_start = (
+        float(raw_approach_start[0]),
+        float(raw_approach_start[1]),
+    )
+    approach_index = min(
+        range(len(path_3d)),
+        key=lambda index: math.hypot(
+            path_3d[index][0] - approach_start[0],
+            path_3d[index][1] - approach_start[1],
+        ),
+    )
+    approach_match_distance = math.hypot(
+        path_3d[approach_index][0] - approach_start[0],
+        path_3d[approach_index][1] - approach_start[1],
+    )
+    if approach_index < 2 or approach_match_distance > 0.25:
+        report.update(
+            {
+                "reason": "stair_approach_start_not_found",
+                "approach_match_distance_m": float(approach_match_distance),
+            }
+        )
+        return (), report
+
+    original_pre_stair_path = [
+        (float(point[0]), float(point[1]))
+        for point in path_3d[: approach_index + 1]
+    ]
+    preserve_index = min(
+        approach_index - 1,
+        _path_index_after_distance(
+            original_pre_stair_path,
+            distance_m=preserve_start_distance_m,
+        ),
+    )
+    preserve_xy = original_pre_stair_path[preserve_index]
+    _footprint_map, optimized_tail, tail_report = (
+        _plan_clearance_optimized_floor_path(
+            pre_stair_grid_map,
+            preserve_xy,
+            approach_start,
+            clearance_radius_m=clearance_radius_m,
+        )
+    )
+    combined = [
+        *original_pre_stair_path[: preserve_index + 1],
+        *optimized_tail[1:],
+    ]
+    footprint_map = pre_stair_grid_map.inflate(clearance_radius_m)
+    rounded, rounded_corner_count = _round_path_corners_with_clearance(
+        combined,
+        footprint_map,
+        clearance_required_m=0.0,
+        trim_distance_m=0.30,
+        sample_spacing_m=0.08,
+    )
+    route_deviation = _path_maximum_distance_to_polyline(
+        rounded,
+        original_pre_stair_path,
+    )
+    original_path_clear = _world_path_is_clear(
+        original_pre_stair_path,
+        footprint_map,
+    )
+    execution_corridor_radius = 0.0
+    corridor_fallback_report: dict[str, Any] = {
+        "applied": False,
+        "reason": "clearance_route_preserves_pct_topology",
+        "maximum_route_deviation_m": float(route_deviation),
+        "maximum_allowed_route_deviation_m": (
+            PCT_PRE_STAIR_MAX_ROUTE_DEVIATION_M
+        ),
+        "original_pct_path_clear_in_footprint_map": bool(original_path_clear),
+    }
+    if (
+        plan.metadata.get("execution_phase") == "carry_nav_to_place"
+        or not original_path_clear
+        or route_deviation > PCT_PRE_STAIR_MAX_ROUTE_DEVIATION_M
+    ):
+        execution_corridor_radius = PCT_PRE_STAIR_EXECUTION_CORRIDOR_RADIUS_M
+        corridor_map, cleared_cells, protected_cells = _clear_grid_path_corridor(
+            footprint_map,
+            original_pre_stair_path,
+            radius_m=execution_corridor_radius,
+        )
+        rounded, rounded_corner_count = _round_path_corners_with_clearance(
+            original_pre_stair_path,
+            corridor_map,
+            clearance_required_m=0.0,
+            trim_distance_m=0.30,
+            sample_spacing_m=0.08,
+        )
+        footprint_map = corridor_map
+        corridor_fallback_report = {
+            "applied": True,
+            "reason": (
+                "carry_execution_preserves_pct_corridor"
+                if plan.metadata.get("execution_phase")
+                == "carry_nav_to_place"
+                else "clearance_route_changed_pct_corridor"
+            ),
+            "maximum_route_deviation_m": float(route_deviation),
+            "maximum_allowed_route_deviation_m": (
+                PCT_PRE_STAIR_MAX_ROUTE_DEVIATION_M
+            ),
+            "original_pct_path_clear_in_footprint_map": bool(
+                original_path_clear
+            ),
+            "execution_corridor_radius_m": float(execution_corridor_radius),
+            "cleared_cells": int(cleared_cells),
+            "protected_cells": int(protected_cells),
+        }
+    if len(rounded) < 2 or not _world_path_is_clear(rounded, footprint_map):
+        raise RuntimeError("F1 大门路径圆角后未通过 footprint 净空校验。")
+
+    floor_z = float(path_3d[0][2])
+    optimized_pre_stair_path_3d = [
+        (float(point[0]), float(point[1]), floor_z)
+        for point in rounded
+    ]
+    optimized_path_3d = tuple(
+        (*optimized_pre_stair_path_3d, *path_3d[approach_index + 1 :])
+    )
+    if "pct_pre_pre_stair_optimized_path_3d" not in plan.metadata:
+        plan.metadata["pct_pre_pre_stair_optimized_path_3d"] = tuple(path_3d)
+    plan.metadata["path_3d"] = optimized_path_3d
+    preserved_distance = sum(
+        math.hypot(end[0] - start[0], end[1] - start[1])
+        for start, end in zip(
+            original_pre_stair_path[:preserve_index],
+            original_pre_stair_path[1 : preserve_index + 1],
+        )
+    )
+    report = {
+        "applied": True,
+        "reason": (
+            "pct_f1_route_corridor_rounded"
+            if corridor_fallback_report["applied"]
+            else "pct_f1_door_clearance_optimized"
+        ),
+        "clearance_radius_m": float(clearance_radius_m),
+        "preserve_start_distance_m": float(preserve_start_distance_m),
+        "preserved_actual_distance_m": float(preserved_distance),
+        "preserve_end_index": int(preserve_index),
+        "approach_path_index": int(approach_index),
+        "approach_match_distance_m": float(approach_match_distance),
+        "original_pre_stair_point_count": len(original_pre_stair_path),
+        "optimized_pre_stair_point_count": len(rounded),
+        "rounded_corner_count": int(rounded_corner_count),
+        "minimum_raw_map_clearance_m": _world_path_minimum_clearance(
+            rounded,
+            pre_stair_grid_map,
+        ),
+        "maximum_heading_change_before_rad": _path_maximum_heading_change(
+            original_pre_stair_path
+        ),
+        "maximum_heading_change_after_rad": _path_maximum_heading_change(
+            rounded
+        ),
+        "tail_optimization": tail_report,
+        "corridor_fallback": corridor_fallback_report,
+        "execution_corridor_radius_m": float(execution_corridor_radius),
+        "optimized_path_3d_point_count": len(optimized_path_3d),
+    }
+    plan.metadata["pre_stair_path_optimization"] = report
+    return tuple(rounded), report
+
+
+def _path_maximum_distance_to_polyline(
+    path_world: list[tuple[float, float]],
+    reference_path: list[tuple[float, float]],
+) -> float:
+    """计算候选路径相对 PCT 原始走廊的最大横向偏移。"""
+
+    if not path_world or len(reference_path) < 2:
+        return 0.0
+    maximum_distance = 0.0
+    for point in path_world:
+        minimum_distance = min(
+            _point_to_segment_distance(point, start, end)
+            for start, end in zip(reference_path, reference_path[1:])
+        )
+        maximum_distance = max(maximum_distance, minimum_distance)
+    return float(maximum_distance)
+
+
+def _point_to_segment_distance(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    """返回二维点到线段的最短距离。"""
+
+    segment_x = end[0] - start[0]
+    segment_y = end[1] - start[1]
+    denominator = segment_x * segment_x + segment_y * segment_y
+    if denominator <= 1.0e-12:
+        return math.hypot(point[0] - start[0], point[1] - start[1])
+    ratio = (
+        (point[0] - start[0]) * segment_x
+        + (point[1] - start[1]) * segment_y
+    ) / denominator
+    ratio = max(0.0, min(1.0, ratio))
+    closest_x = start[0] + ratio * segment_x
+    closest_y = start[1] + ratio * segment_y
+    return math.hypot(point[0] - closest_x, point[1] - closest_y)
+
+
+def optimize_pct_post_stair_plan_path(
+    plan: NavPlan,
+    *,
+    post_stair_grid_map: OccupancyGridMap,
+    min_z_delta_m: float,
+    approach_distance_m: float,
+    exit_distance_m: float,
+    clearance_radius_m: float,
+) -> tuple[tuple[tuple[float, float], ...], dict[str, Any]]:
+    """为执行器和纯预览模式生成同一条 PCT 目标楼层路径。"""
+
+    stair_float_path = _extract_stair_float_path(
+        plan,
+        min_z_delta_m=min_z_delta_m,
+        approach_distance_m=approach_distance_m,
+        exit_distance_m=exit_distance_m,
+    )
+    return _optimize_pct_post_stair_plan_path(
+        plan,
+        stair_float_path=stair_float_path,
+        post_stair_grid_map=post_stair_grid_map,
+        clearance_radius_m=clearance_radius_m,
+    )
+
+
+def _optimize_pct_post_stair_plan_path(
+    plan: NavPlan,
+    *,
+    stair_float_path: tuple[tuple[float, float, float], ...],
+    post_stair_grid_map: OccupancyGridMap,
+    clearance_radius_m: float,
+) -> tuple[tuple[tuple[float, float], ...], dict[str, Any]]:
+    """用 float 释放点切分 PCT path_3d，并替换为净空优化后的 F2 尾段。"""
+
+    report: dict[str, Any] = {
+        "applied": False,
+        "reason": "not_applicable",
+        "clearance_radius_m": float(clearance_radius_m),
+    }
+    if plan.metadata.get("planner") != "pct":
+        report["reason"] = "planner_is_not_pct"
+        return (), report
+    if len(stair_float_path) < 2:
+        report["reason"] = "stair_float_path_unavailable"
+        return (), report
+
+    release = stair_float_path[-1]
+    start_xy = (float(release[0]), float(release[1]))
+    goal_xy = (float(plan.goal.x), float(plan.goal.y))
+    _floor_map, optimized_path, optimizer_report = (
+        _plan_clearance_optimized_floor_path(
+            post_stair_grid_map,
+            start_xy,
+            goal_xy,
+            clearance_radius_m=clearance_radius_m,
+        )
+    )
+    if len(optimized_path) < 2:
+        report.update(
+            {
+                "reason": "optimized_path_too_short",
+                "start_xy": list(start_xy),
+                "goal_xy": list(goal_xy),
+            }
+        )
+        return (), report
+
+    raw_path = plan.metadata.get("path_3d")
+    path_3d = (
+        [
+            (float(point[0]), float(point[1]), float(point[2]))
+            for point in raw_path
+            if isinstance(point, (list, tuple)) and len(point) >= 3
+        ]
+        if isinstance(raw_path, (list, tuple))
+        else []
+    )
+    if len(path_3d) < 2:
+        report["reason"] = "path_3d_unavailable"
+        return (), report
+
+    release_index = min(
+        range(len(path_3d)),
+        key=lambda index: _distance_3d(path_3d[index], release),
+    )
+    release_match_distance = _distance_3d(path_3d[release_index], release)
+    if release_match_distance > 0.35:
+        report.update(
+            {
+                "reason": "release_point_not_on_pct_path",
+                "release_match_distance_m": float(release_match_distance),
+            }
+        )
+        return (), report
+
+    prefix = list(path_3d[: release_index + 1])
+    if _distance_3d(prefix[-1], release) > 1.0e-5:
+        prefix.append(release)
+    floor_z = float(release[2])
+    optimized_tail = [
+        (float(point[0]), float(point[1]), floor_z)
+        for point in optimized_path[1:]
+    ]
+    optimized_path_3d = tuple((*prefix, *optimized_tail))
+    if "pct_pre_post_stair_optimized_path_3d" not in plan.metadata:
+        plan.metadata["pct_pre_post_stair_optimized_path_3d"] = tuple(path_3d)
+    plan.metadata["path_3d"] = optimized_path_3d
+    report = {
+        **optimizer_report,
+        "applied": True,
+        "reason": "pct_target_floor_clearance_optimized",
+        "release_path_index": int(release_index),
+        "release_match_distance_m": float(release_match_distance),
+        "original_tail_point_count": int(len(path_3d) - release_index),
+        "optimized_tail_point_count": len(optimized_path),
+        "optimized_path_3d_point_count": len(optimized_path_3d),
+    }
+    plan.metadata["post_stair_path_optimization"] = report
+    return tuple(optimized_path), report
+
+
+def _plan_clearance_optimized_floor_path(
+    raw_map: OccupancyGridMap,
+    start_xy: tuple[float, float],
+    goal_xy: tuple[float, float],
+    *,
+    clearance_radius_m: float,
+) -> tuple[OccupancyGridMap, list[tuple[float, float]], dict[str, Any]]:
+    """在目标楼层 PCT 地图上生成净空、捷径和圆角都已校验的路径。"""
+
+    clearance_radius = max(0.0, float(clearance_radius_m))
+    floor_map = raw_map.inflate(clearance_radius)
+    result = AStarPlanner().plan(
+        floor_map,
+        start_xy,
+        goal_xy,
+        snap_to_free=True,
+        max_snap_distance_m=max(0.50, clearance_radius + 0.50),
+    )
+    path_world = [start_xy]
+    for point in result.path_world:
+        xy = (float(point[0]), float(point[1]))
+        if math.hypot(
+            xy[0] - path_world[-1][0],
+            xy[1] - path_world[-1][1],
+        ) > 1.0e-5:
+            path_world.append(xy)
+
+    goal_segment_free, _goal_clearance = _world_segment_clearance(
+        path_world[-1],
+        goal_xy,
+        floor_map,
+    )
+    if (
+        goal_segment_free
+        and math.hypot(
+            goal_xy[0] - path_world[-1][0],
+            goal_xy[1] - path_world[-1][1],
+        ) > 1.0e-5
+    ):
+        path_world.append(goal_xy)
+
+    shortcut = _shortcut_path_with_clearance(
+        path_world,
+        floor_map,
+        clearance_required_m=0.0,
+    )
+    rounded, rounded_corner_count = _round_path_corners_with_clearance(
+        shortcut,
+        floor_map,
+        clearance_required_m=0.0,
+        trim_distance_m=0.24,
+        sample_spacing_m=0.08,
+    )
+    if not _world_path_is_clear(rounded, floor_map):
+        rounded = shortcut
+        rounded_corner_count = 0
+    if len(rounded) < 2 or not _world_path_is_clear(rounded, floor_map):
+        raise RuntimeError("目标楼层路径优化后未通过净空校验。")
+
+    report = {
+        "applied": True,
+        "reason": "clearance_aware_astar_shortcut_rounding",
+        "clearance_radius_m": clearance_radius,
+        "astar_cost": float(result.cost),
+        "astar_raw_grid_waypoint_count": len(result.raw_path_grid),
+        "astar_collinear_waypoint_count": len(result.path_world),
+        "shortcut_waypoint_count": len(shortcut),
+        "rounded_waypoint_count": len(rounded),
+        "rounded_corner_count": int(rounded_corner_count),
+        "minimum_raw_map_clearance_m": _world_path_minimum_clearance(
+            rounded,
+            raw_map,
+        ),
+        "maximum_heading_change_before_rad": _path_maximum_heading_change(
+            shortcut
+        ),
+        "maximum_heading_change_after_rad": _path_maximum_heading_change(
+            rounded
+        ),
+        "start_xy": list(start_xy),
+        "goal_xy": list(goal_xy),
+        "path_end_xy": list(rounded[-1]),
+        "goal_snap_distance_m": float(
+            math.hypot(
+                rounded[-1][0] - goal_xy[0],
+                rounded[-1][1] - goal_xy[1],
+            )
+        ),
+    }
+    return floor_map, rounded, report
+
+
+def _round_path_corners_with_clearance(
+    path_world: list[tuple[float, float]],
+    grid_map: OccupancyGridMap,
+    *,
+    clearance_required_m: float,
+    trim_distance_m: float,
+    sample_spacing_m: float,
+) -> tuple[list[tuple[float, float]], int]:
+    """用二次贝塞尔圆角替换折点，并逐段校验障碍净空。"""
+
+    if len(path_world) < 3:
+        return list(path_world), 0
+    output: list[tuple[float, float]] = [path_world[0]]
+    rounded_count = 0
+    required = max(0.0, float(clearance_required_m))
+    for index in range(1, len(path_world) - 1):
+        previous = path_world[index - 1]
+        vertex = path_world[index]
+        following = path_world[index + 1]
+        incoming = (vertex[0] - previous[0], vertex[1] - previous[1])
+        outgoing = (following[0] - vertex[0], following[1] - vertex[1])
+        incoming_length = math.hypot(*incoming)
+        outgoing_length = math.hypot(*outgoing)
+        if incoming_length <= 1.0e-6 or outgoing_length <= 1.0e-6:
+            output.append(vertex)
+            continue
+        incoming_yaw = math.atan2(incoming[1], incoming[0])
+        outgoing_yaw = math.atan2(outgoing[1], outgoing[0])
+        heading_change = abs(wrap_yaw(outgoing_yaw - incoming_yaw))
+        if heading_change < 0.15:
+            output.append(vertex)
+            continue
+
+        trim = min(
+            max(0.0, float(trim_distance_m)),
+            0.35 * incoming_length,
+            0.35 * outgoing_length,
+        )
+        if trim <= 0.02:
+            output.append(vertex)
+            continue
+        entry = (
+            vertex[0] - trim * incoming[0] / incoming_length,
+            vertex[1] - trim * incoming[1] / incoming_length,
+        )
+        exit_point = (
+            vertex[0] + trim * outgoing[0] / outgoing_length,
+            vertex[1] + trim * outgoing[1] / outgoing_length,
+        )
+        curve_length = math.hypot(entry[0] - vertex[0], entry[1] - vertex[1])
+        curve_length += math.hypot(
+            exit_point[0] - vertex[0],
+            exit_point[1] - vertex[1],
+        )
+        sample_count = max(
+            3,
+            int(math.ceil(curve_length / max(0.02, float(sample_spacing_m)))),
+        )
+        curve = [entry]
+        for sample_index in range(1, sample_count + 1):
+            ratio = float(sample_index) / float(sample_count)
+            one_minus_ratio = 1.0 - ratio
+            curve.append(
+                (
+                    one_minus_ratio**2 * entry[0]
+                    + 2.0 * one_minus_ratio * ratio * vertex[0]
+                    + ratio**2 * exit_point[0],
+                    one_minus_ratio**2 * entry[1]
+                    + 2.0 * one_minus_ratio * ratio * vertex[1]
+                    + ratio**2 * exit_point[1],
+                )
+            )
+        candidate = [output[-1], *curve]
+        if not _world_path_has_required_clearance(
+            candidate,
+            grid_map,
+            clearance_required_m=required,
+        ):
+            output.append(vertex)
+            continue
+        output.extend(curve)
+        rounded_count += 1
+    output.append(path_world[-1])
+    output = _remove_consecutive_duplicate_waypoints(output)
+    if not _world_path_has_required_clearance(
+        output,
+        grid_map,
+        clearance_required_m=required,
+    ):
+        return list(path_world), 0
+    return output, rounded_count
+
+
+def _world_path_has_required_clearance(
+    path_world: list[tuple[float, float]],
+    grid_map: OccupancyGridMap,
+    *,
+    clearance_required_m: float,
+) -> bool:
+    """校验折线所有线段均可通行且满足最小净空。"""
+
+    required = max(0.0, float(clearance_required_m))
+    return all(
+        segment_free
+        and (clearance is None or clearance + 1.0e-6 >= required)
+        for segment_free, clearance in (
+            _world_segment_clearance(start, end, grid_map)
+            for start, end in zip(path_world, path_world[1:])
+        )
+    )
+
+
+def _world_path_is_clear(
+    path_world: list[tuple[float, float]],
+    grid_map: OccupancyGridMap,
+) -> bool:
+    """校验整条世界坐标折线不穿过占用栅格。"""
+
+    return _world_path_has_required_clearance(
+        path_world,
+        grid_map,
+        clearance_required_m=0.0,
+    )
+
+
+def _world_path_minimum_clearance(
+    path_world: list[tuple[float, float]],
+    grid_map: OccupancyGridMap,
+) -> float | None:
+    """返回折线沿线的最小障碍净空。"""
+
+    clearances: list[float] = []
+    for start, end in zip(path_world, path_world[1:]):
+        segment_free, clearance = _world_segment_clearance(start, end, grid_map)
+        if not segment_free:
+            return 0.0
+        if clearance is not None:
+            clearances.append(float(clearance))
+    return min(clearances) if clearances else None
+
+
+def _path_maximum_heading_change(
+    path_world: list[tuple[float, float]],
+) -> float:
+    """返回折线相邻线段的最大朝向变化。"""
+
+    if len(path_world) < 3:
+        return 0.0
+    headings = [
+        math.atan2(end[1] - start[1], end[0] - start[0])
+        for start, end in zip(path_world, path_world[1:])
+        if math.hypot(end[0] - start[0], end[1] - start[1]) > 1.0e-6
+    ]
+    return max(
+        (abs(wrap_yaw(end - start)) for start, end in zip(headings, headings[1:])),
+        default=0.0,
+    )
+
+
 def _world_segment_clearance(
     start: tuple[float, float],
     end: tuple[float, float],
@@ -2132,6 +3487,137 @@ def _world_segment_clearance(
             return False, None
         minimum_clearance = min(minimum_clearance, float(clearance))
     return True, minimum_clearance
+
+
+def _shortcut_path_with_clearance(
+    path_world: list[tuple[float, float]],
+    grid_map: OccupancyGridMap,
+    *,
+    clearance_required_m: float,
+) -> list[tuple[float, float]]:
+    """贪心保留满足净距的最远点，减少短折线导致的连续反向转向。"""
+
+    if len(path_world) < 3:
+        return list(path_world)
+    required = max(0.0, float(clearance_required_m))
+    output = [path_world[0]]
+    current_index = 0
+    while current_index < len(path_world) - 1:
+        selected_index = current_index + 1
+        for candidate_index in range(len(path_world) - 1, current_index, -1):
+            segment_free, clearance = _world_segment_clearance(
+                path_world[current_index],
+                path_world[candidate_index],
+                grid_map,
+            )
+            if not segment_free:
+                continue
+            if clearance is not None and clearance + 1.0e-6 < required:
+                continue
+            selected_index = candidate_index
+            break
+        output.append(path_world[selected_index])
+        current_index = selected_index
+    return output
+
+
+def _smooth_clearance_shortcut_corners(
+    path_world: list[tuple[float, float]],
+    grid_map: OccupancyGridMap,
+    *,
+    clearance_required_m: float,
+) -> tuple[list[tuple[float, float]], int]:
+    """用净距校验后的三次缓弯替换长捷径两端的突变朝向。"""
+
+    if len(path_world) < 4:
+        return list(path_world), 0
+    output: list[tuple[float, float]] = [path_world[0]]
+    smoothed_count = 0
+    index = 0
+    while index < len(path_world) - 1:
+        start = path_world[index]
+        end = path_world[index + 1]
+        segment_length = math.hypot(end[0] - start[0], end[1] - start[1])
+        if index == 0 or index + 2 >= len(path_world) or segment_length < 1.0:
+            output.append(end)
+            index += 1
+            continue
+
+        previous = path_world[index - 1]
+        following = path_world[index + 2]
+        incoming_yaw = math.atan2(start[1] - previous[1], start[0] - previous[0])
+        segment_yaw = math.atan2(end[1] - start[1], end[0] - start[0])
+        outgoing_yaw = math.atan2(following[1] - end[1], following[0] - end[0])
+        heading_change = max(
+            abs(wrap_yaw(segment_yaw - incoming_yaw)),
+            abs(wrap_yaw(outgoing_yaw - segment_yaw)),
+        )
+        if heading_change < 0.35:
+            output.append(end)
+            index += 1
+            continue
+
+        handle = min(0.50, 0.30 * segment_length)
+        control_1 = (
+            start[0] + handle * math.cos(incoming_yaw),
+            start[1] + handle * math.sin(incoming_yaw),
+        )
+        control_2 = (
+            end[0] - handle * math.cos(outgoing_yaw),
+            end[1] - handle * math.sin(outgoing_yaw),
+        )
+        sample_count = max(3, int(math.ceil(segment_length / 0.15)))
+        curve: list[tuple[float, float]] = []
+        for sample_index in range(sample_count + 1):
+            t = float(sample_index) / float(sample_count)
+            one_minus_t = 1.0 - t
+            curve.append(
+                (
+                    one_minus_t**3 * start[0]
+                    + 3.0 * one_minus_t**2 * t * control_1[0]
+                    + 3.0 * one_minus_t * t**2 * control_2[0]
+                    + t**3 * end[0],
+                    one_minus_t**3 * start[1]
+                    + 3.0 * one_minus_t**2 * t * control_1[1]
+                    + 3.0 * one_minus_t * t**2 * control_2[1]
+                    + t**3 * end[1],
+                )
+            )
+        curve_is_clear = all(
+            segment_free
+            and clearance is not None
+            and clearance + 1.0e-6 >= float(clearance_required_m)
+            for segment_free, clearance in (
+                _world_segment_clearance(curve_start, curve_end, grid_map)
+                for curve_start, curve_end in zip(curve, curve[1:])
+            )
+        )
+        if not curve_is_clear:
+            output.append(end)
+            index += 1
+            continue
+        output.extend(curve[1:])
+        smoothed_count += 1
+        index += 1
+    return _remove_consecutive_duplicate_waypoints(output), smoothed_count
+
+
+def _path_index_after_distance(
+    path_world: list[tuple[float, float]],
+    *,
+    distance_m: float,
+) -> int:
+    """返回累计路径长度首次超过阈值的点，保留抓取区附近原始离场路径。"""
+
+    if len(path_world) < 2:
+        return 0
+    target_distance = max(0.0, float(distance_m))
+    accumulated = 0.0
+    for index, (start, end) in enumerate(zip(path_world, path_world[1:]), start=1):
+        accumulated += math.hypot(end[0] - start[0], end[1] - start[1])
+        if accumulated >= target_distance:
+            return index
+    return max(0, len(path_world) - 2)
 
 
 def _remove_consecutive_duplicate_waypoints(

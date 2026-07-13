@@ -1161,8 +1161,13 @@ class FullPhysicsStateMachine:
                     result.metadata,
                 )
         events = [self._event("nav_to_pick_success", observation.step_index, result.metadata)]
-        if self.config.navigation_smoke:
-            events.append(self._event("navigation_smoke_success", observation.step_index))
+        if self.config.navigation_smoke or self.config.stair_locomotion_smoke:
+            success_event = (
+                "stair_locomotion_smoke_success"
+                if self.config.stair_locomotion_smoke
+                else "navigation_smoke_success"
+            )
+            events.append(self._event(success_event, observation.step_index))
             events.extend(self._transition(PipelineState.CLEANUP_EPISODE, observation.step_index))
             return RobotAction.idle(source="verify_pick_reachable"), events
         events.extend(self._transition(PipelineState.PLAN_PICK, observation.step_index))

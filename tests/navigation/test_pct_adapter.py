@@ -98,13 +98,13 @@ def test_pct_client_exports_cross_floor_gateway_in_pct_frame() -> None:
 
     assert json.loads(env["PCT_CROSS_FLOOR_GATEWAYS_PCT"]) == [[-1.5, -5.7, 0.6]]
     assert json.loads(env["PCT_CROSS_FLOOR_STAIR_EXITS_PCT"]) == [
-        [-2.9, -7.05, 3.0]
+        [-2.7, -7.05, 3.0]
     ]
     assert json.loads(env["PCT_CROSS_FLOOR_STAIR_MIDPOINTS_PCT"]) == [
         [-1.51822, -6.27683, 0.29486],
-        [-2.94512, -9.14634, 1.64666],
+        [-2.74512, -9.14634, 1.64666],
         [-1.9202, -9.52807, 1.71919],
-        [-2.89841, -7.79872, 2.61031],
+        [-2.69841, -7.79872, 2.61031],
     ]
     assert env["PCT_CROSS_FLOOR_GATEWAY_RADIUS_M"] == "1.2"
     assert env["PCT_ROBOT_ROOT_TO_FLOOR_M"] == "0.45"
@@ -185,8 +185,8 @@ def test_pct_nav_planner_replaces_stair_zigzag_with_calibrated_centerline() -> N
         for start, end in zip(headings, headings[1:])
     ]
     assert max(heading_steps) < 0.20
-    assert anchors[-2][:2] == pytest.approx((2.89841, 7.79872))
-    assert anchors[-1][:2] == pytest.approx((2.90, 7.05))
+    assert anchors[-2][:2] == pytest.approx((2.69841, 7.79872))
+    assert anchors[-1][:2] == pytest.approx((2.70, 7.05))
     upper_flight = [
         point
         for point in plan.metadata["path_3d"]
@@ -194,7 +194,7 @@ def test_pct_nav_planner_replaces_stair_zigzag_with_calibrated_centerline() -> N
         and 7.0 <= float(point[1]) <= 7.85
     ]
     assert len(upper_flight) >= 4
-    assert max(abs(float(point[0]) - 2.90) for point in upper_flight) < 0.01
+    assert max(abs(float(point[0]) - 2.70) for point in upper_flight) < 0.01
     assert all(
         float(next_point[1]) <= float(point[1]) + 1.0e-9
         for point, next_point in zip(upper_flight, upper_flight[1:])

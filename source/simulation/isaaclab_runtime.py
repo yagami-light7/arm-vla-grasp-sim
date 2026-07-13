@@ -26,6 +26,7 @@ class IsaacLabNavigationRuntimeConfig:
     visual_prim_path: str = "/World/gauss"
     enable_scene_visual: bool = True
     viewport_camera_prim_path: str = "/World/Camera0"
+    auto_manage_viewport_camera: bool = True
     hide_navigation_collision_visual: bool = True
     scene_light_mode: str = "camera"
     camera_light_intensity: float = 3500.0
@@ -1797,6 +1798,8 @@ class IsaacLabNavigationRuntime:
     def _retry_viewport_after_stage_updates(self) -> None:
         """IsaacLab 创建窗口和 sublayer 解析可能滞后，前几帧允许轻量重试。"""
 
+        if not self._config.auto_manage_viewport_camera:
+            return
         if self._config.viewport_camera_prim_path in {"", "none", "None"}:
             return
         report = self._metadata.get("viewport_report")
@@ -1817,12 +1820,13 @@ class IsaacLabNavigationRuntime:
         report = configure_navigation_viewport(
             camera_prim_path=self._config.viewport_camera_prim_path,
             hide_collision_visual=self._config.hide_navigation_collision_visual,
+            apply_camera=self._config.auto_manage_viewport_camera,
         )
         report["configure_reason"] = reason
         report["configure_attempt"] = self._viewport_config_attempts
         self._metadata["viewport_report"] = report
         selected_camera = report.get("selected_camera_prim_path")
-        if selected_camera:
+        if selected_camera and report.get("camera_applied") is True:
             self._metadata["camera_prim_path"] = selected_camera
         return report
 

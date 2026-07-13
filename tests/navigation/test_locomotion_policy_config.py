@@ -90,12 +90,12 @@ def test_pct_multifloor_dwa_commands_stay_inside_checkpoint_training_range() -> 
     assert nav.pct_global_vertical_obstacle_min_slices == 7
     assert nav.pct_cross_floor_vertical_obstacle_min_slices == 9
     assert nav.pct_cross_floor_gateway_points == ((1.5, 5.7, 0.6),)
-    assert nav.pct_cross_floor_stair_exit_points == ((2.90, 7.05, 3.0),)
+    assert nav.pct_cross_floor_stair_exit_points == ((2.70, 7.05, 3.0),)
     assert nav.pct_cross_floor_stair_midpoint_points == (
         (1.51822, 6.27683, 0.29486),
-        (2.94512, 9.14634, 1.64666),
+        (2.74512, 9.14634, 1.64666),
         (1.9202, 9.52807, 1.71919),
-        (2.89841, 7.79872, 2.61031),
+        (2.69841, 7.79872, 2.61031),
     )
     assert nav.pct_cross_floor_gateway_radius_m == 0.6
     assert nav.pct_robot_root_to_floor_m == 0.45
@@ -110,15 +110,16 @@ def test_pct_multifloor_dwa_commands_stay_inside_checkpoint_training_range() -> 
     assert nav.pct_carry_max_linear_velocity == pytest.approx(0.25)
     assert nav.pct_carry_max_angular_velocity == pytest.approx(0.30)
     assert nav.pct_carry_max_linear_accel == pytest.approx(1.00)
+    assert nav.pct_carry_path_deviation_limit == pytest.approx(0.12)
     assert nav.pct_carry_initial_alignment_path_deviation_limit == pytest.approx(0.40)
-    assert nav.pct_carry_path_recovery_deviation_limit == pytest.approx(0.50)
+    assert nav.pct_carry_path_recovery_deviation_limit == pytest.approx(0.35)
     assert nav.pct_carry_max_infeasible_recomputes == 8
     assert nav.pct_stair_float_enabled is False
     assert nav.pct_stair_float_speed_mps == pytest.approx(0.18)
-    assert nav.pct_stair_float_activation_radius_m == pytest.approx(0.45)
+    assert nav.pct_stair_float_activation_radius_m == pytest.approx(0.12)
     assert nav.pct_stair_float_completion_radius_m == pytest.approx(0.25)
     assert nav.pct_stair_float_min_z_delta_m == pytest.approx(0.75)
-    assert nav.pct_stair_float_approach_distance_m == pytest.approx(6.00)
+    assert nav.pct_stair_float_approach_distance_m == pytest.approx(0.00)
     assert nav.pct_stair_float_exit_distance_m == pytest.approx(1.40)
     assert nav.pct_stair_float_settle_time_s == pytest.approx(1.20)
     assert nav.pct_stair_float_yaw_lookahead_m == pytest.approx(0.35)

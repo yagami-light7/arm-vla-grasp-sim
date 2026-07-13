@@ -71,6 +71,13 @@ class FullPhysicsPipeline:
                 settings=self.config.video,
                 episode_dir=self.recorder.output_dir,
                 episode_id=self.episode_spec.episode_id,
+                auto_switch_camera=bool(self.config.headless),
+                save_overview_images=bool(
+                    self.config.recording.enabled
+                    and self.config.recording.save_raw_images
+                ),
+                overview_image_fps=float(self.config.recording.dataset_fps),
+                overview_jpeg_quality=int(self.config.recording.jpeg_quality),
             )
             if self.config.video.enabled
             else None
@@ -115,6 +122,7 @@ class FullPhysicsPipeline:
                         timestamp=post_step.timestamp,
                         step_index=duration_steps,
                         camera_images=post_step.camera_images,
+                        robot_root_pose=post_step.robot_root_pose,
                     )
                 current_operation = "record_step"
                 self.recorder.record_step(
@@ -227,6 +235,8 @@ class FullPhysicsPipeline:
             execution_mode = "dry_run"
         elif self.config.simulation_smoke:
             execution_mode = "simulation_smoke"
+        elif self.config.stair_locomotion_smoke:
+            execution_mode = "stair_locomotion_smoke"
         elif self.config.navigation_smoke:
             execution_mode = "navigation_smoke"
         elif self.config.navigation_carry_smoke:
@@ -276,6 +286,7 @@ class FullPhysicsPipeline:
         simulation_smoke = bool(self.config.simulation_smoke)
         navigation_smoke = bool(self.config.navigation_smoke)
         navigation_carry_smoke = bool(self.config.navigation_carry_smoke)
+        stair_locomotion_smoke = bool(self.config.stair_locomotion_smoke)
         pick_smoke = bool(self.config.pick_smoke)
         manipulation_smoke = bool(self.config.manipulation_smoke)
         manipulation_apply_smoke = bool(self.config.manipulation_apply_smoke)
@@ -304,6 +315,7 @@ class FullPhysicsPipeline:
             and not simulation_smoke
             and not navigation_smoke
             and not navigation_carry_smoke
+            and not stair_locomotion_smoke
             and not pick_smoke
             and not manipulation_smoke
             and not manipulation_apply_smoke
@@ -378,6 +390,9 @@ class FullPhysicsPipeline:
         elif simulation_smoke:
             execution_mode = "simulation_smoke"
             success_semantics = "stage_build_and_reset_only"
+        elif stair_locomotion_smoke:
+            execution_mode = "stair_locomotion_smoke"
+            success_semantics = "pure_physics_stair_locomotion_without_dwa_or_float"
         elif navigation_smoke:
             execution_mode = "navigation_smoke"
             success_semantics = "physical_nav_to_pick_only"
@@ -407,7 +422,13 @@ class FullPhysicsPipeline:
             execution_mode = "full_physics"
             success_semantics = "physical_execution"
         navigation_acceptance = None
-        if navigation_smoke or navigation_carry_smoke or pick_smoke or full_physics:
+        if (
+            navigation_smoke
+            or navigation_carry_smoke
+            or stair_locomotion_smoke
+            or pick_smoke
+            or full_physics
+        ):
             navigation_acceptance = {
                 "global_planner": self.config.navigation.global_planner,
                 "mode": (
@@ -483,8 +504,17 @@ class FullPhysicsPipeline:
             "stable_physics_success": stable_physics_success,
             "physical_navigation_success": bool(
                 success
-                and (navigation_smoke or navigation_carry_smoke or pick_smoke or full_physics)
+                and (
+                    navigation_smoke
+                    or navigation_carry_smoke
+                    or stair_locomotion_smoke
+                    or pick_smoke
+                    or full_physics
+                )
                 and provenance_verified
+            ),
+            "low_level_stair_locomotion_success": bool(
+                success and stair_locomotion_smoke and provenance_verified
             ),
             "carry_control_success": bool(
                 success and (navigation_carry_smoke or full_physics)

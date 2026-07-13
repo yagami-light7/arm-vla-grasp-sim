@@ -1,5 +1,40 @@
 # Go2-X5 PCT 多楼层 locomotion policy 训练设计。
 
+runtime_stable_pipeline:
+  selector: --pct-multifloor
+  task_json: tasks/nav_pick_place_apple_multifloor_pct.json
+  global_planner: pct
+  pct_server_script: scripts/navigation/pct_grid_server.py
+  pct_tomogram_path: source/scene/multifloor/mutifloor.pickle
+  pct_walkable_path: source/scene/multifloor/mutifloor_ply_walkable.npy
+  pct_collision_ply_path: source/scene/multifloor/ply/3dgs_collision.ply
+  pct_fallback_to_astar: false
+  policy_profile: pct_multifloor
+  locomotion_task: RobotLab-Isaac-Velocity-Rough-Go2-X5-DogOnly-v0
+  locomotion_checkpoint: checkpoints/go2_x5/pct_multifloor/model_26000.pt
+  randomize_task: false
+  randomize_base_goal: false
+  navigation_visual_mode: collision
+  show_planned_trajectories: true
+  record_dataset: true
+  record_video: true
+  video_mode: all
+  overview_camera_schedule: configs/recording/multifloor_overview_camera_schedule.json
+  pct_stair_float: true
+
+stair_locomotion_smoke:
+  selector: --stair-locomotion-smoke
+  start_source: pct_cross_floor_gateway_points[0]
+  goal_source: pct_cross_floor_stair_exit_points[0]
+  controller: stair_heading_tracker
+  global_path: calibrated_pct_stair_centerline
+  dwa_enabled: false
+  pct_stair_float: false
+  base_pose_lock: false
+  forward_velocity_mps: 0.25
+  max_lateral_velocity_mps: 0.12
+  max_angular_velocity_rps: 0.50
+
 environment:
   framework: Isaac Lab
   robot: Go2-X5

@@ -2,8 +2,8 @@
   "project": "arm_vla_pct",
   "branch": "pct",
   "goal": "将 flat A* 全局导航替换为 PCT 多楼层规划器，并接入新的 RL locomotion checkpoint 配置。",
-  "current_phase": "phase_113_no_float_stair_diagnosis_and_pick_arrival_fix",
-  "last_updated": "2026-07-11 21:53:50",
+  "current_phase": "phase_164_pct_float_default_and_stair_locomotion_smoke",
+  "last_updated": "2026-07-13 12:28:04",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -280,7 +280,43 @@
     "pct_stair_entry_bezier_added": true,
     "pct_no_float_stair_entry_real_verified": true,
     "pct_no_float_stair_ascent_real_verified": false,
-    "pct_nav_to_pick_decisive_stop_real_verified": true
+    "pct_nav_to_pick_decisive_stop_real_verified": true,
+    "pct_no_float_reaches_first_stair_attempt_verified": true,
+    "pct_gui_camera_manual_control_added": true,
+    "pct_headless_camera_schedule_added": true,
+    "pct_headless_camera_switch_real_video_verified": true,
+    "pct_post_stair_clearance_path_optimization_added": true,
+    "pct_plan_preview_uses_execution_f2_path": true,
+    "pct_current_float_full_pipeline_reverification_pending": false,
+    "pct_f1_door_clearance_path_optimization_added": true,
+    "pct_upper_stair_centerline_shifted_to_center": true,
+    "pct_strict_carry_path_tracking_added": true,
+    "pct_phase126_preview_user_review_pending": false,
+    "pct_phase151_float_carry_navigation_verified": true,
+    "pct_phase154_float_full_pipeline_verified": true,
+    "pct_phase154_float_full_pipeline_recording_enabled": false,
+    "pct_phase155_no_float_reaches_first_stair_attempt_verified": true,
+    "pct_phase155_no_float_stair_ascent_verified": false,
+    "pct_current_float_repeat_stability_pending": false,
+    "pct_current_float_recording_reverification_pending": false,
+    "pct_phase160_float_carry_navigation_verified": true,
+    "pct_phase161_float_full_pipeline_recorded_verified": true,
+    "pct_phase161_lerobot_export_verified": true,
+    "pct_phase161_camera0_8_switch_verified": true,
+    "pct_phase161_three_stream_video_verified": true,
+    "pct_phase162_overview_jpeg_export_verified": true,
+    "pct_gui_float_entry_corridor_trigger_added": true,
+    "pct_stable_cli_preset_added": true,
+    "pct_phase163_gui_float_reverification_pending": true,
+    "pct_stair_float_default_enabled": true,
+    "pct_no_float_full_pipeline_cli_added": true,
+    "stair_locomotion_smoke_added": true,
+    "stair_locomotion_smoke_dwa_isolated": true,
+    "stair_locomotion_smoke_float_disabled": true,
+    "stair_locomotion_smoke_unit_tested": true,
+    "stair_locomotion_smoke_real_verified": false,
+    "pct_phase164_real_validation_blocked_by_gpu_memory": true,
+    "pct_final_acceptance_complete": false
   },
   "local_assets": {
     "rl_policy_source_dir": null,
@@ -5446,6 +5482,412 @@
         "pure-physics 上楼以 phase112 中心线为固定路线，训练或接入包含该楼梯、机械臂姿态和携物负载的 locomotion policy。",
         "用户用 GUI no-float 命令复核规划轨迹、入口弧线和第一阶侧翻；不要再把当前失败归因为 PCT 横切扶手。"
       ]
+    },
+    {
+      "time": "2026-07-12 17:18:28",
+      "summary": "完成 phase114-125 分层诊断：无 float 已绕过 F1 柱体并实际进入首级台阶尝试；GUI 改为用户手动相机，headless 按可编辑 Camera0-8 规则自动录制；根据用户 F2 碰撞反馈，确认 float 释放后旧实现丢弃 PCT 尾段并用未膨胀最短 A* 贴障碍重规划；已改为 0.20m footprint 净空、视线捷径和碰撞校验圆角的 PCT F2 路径，且纯 PCT GUI 预览与实际执行共用同一条优化路径。",
+      "files_changed": [
+        "source/navigation/executor.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/pipeline/config.py",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/pipeline/pct_plan_preview.py",
+        "source/recording/overview_video_recorder.py",
+        "source/simulation/isaaclab_runtime.py",
+        "source/simulation/viewport.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "scripts/pipeline/run_full_physics_batch.py",
+        "configs/recording/multifloor_overview_camera_schedule.json",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/test_simulation_viewport.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "无 float 携物机器人在楼梯前撞上 F1 柱体侧翻。",
+          "root_cause": "跨层 slice 并集地图把其他楼层自由空间投影到 F1，宽路径清廊和零 footprint 又抹掉了柱体；原 PCT 折线和低速站立死区进一步放大带负载跟踪漂移。",
+          "fix": "无 float 专用 F1 单层地图与 0.20m footprint，仅对楼梯入口/中心线重开窄廊；保留 pick 后首 1m 原路径，对后续平层段做 0.40m 净空捷径与缓弯；仅在朝向对齐时把低于策略步态死区的携物前进命令提到 0.25m/s。phase121 到达 (1.642,5.991)，越过 gateway 并尝试首级台阶。",
+          "prevention": "跨层规划、单层局部避障和机器人 footprint 必须分层建模；回归测试固定 float/no-float 分支隔离、柱体保留和入口净空。"
+        },
+        {
+          "problem": "float 模式在 F2 仍会撞击/倾倒，可视 PCT 路径在 F2 也存在贴边和急折。",
+          "root_cause": "float 完成后 `_replan_controller_on_post_stair_floor` 丢弃 PCT 目标楼层尾段，在未按机器人足迹膨胀的 F2 单层地图上追求点机器最短 A*；phase122 执行线由 PCT 的 y≈4.86 改成 y≈4.46，失败点正在该贴障碍段。",
+          "fix": "新增目标楼层 PCT 路径优化：在 float 释放点后用 0.20m footprint 膨胀地图规划，再做视线捷径与逐段碰撞校验的二次贝塞尔圆角；结果同时写回 path_3d、PCT preview 和 post-stair DWA controller。真实资产离线验证最小原图净空 0.283m，最大转角从 1.107rad 降为 0.307rad。",
+          "prevention": "规划预览和执行必须消费同一个优化 path_3d；目标楼层路径回归固定 footprint 净空、沿线最小距离、最大转角和全线段碰撞校验。"
+        },
+        {
+          "problem": "GUI 自动切换相机影响用户手动检查，headless overview 又缺少稳定的 Camera0-8 覆盖。",
+          "root_cause": "视口配置和 overview recorder 共用同一套自动相机逻辑，没有按 GUI/headless 运行意图分离。",
+          "fix": "GUI 下禁止代码设置/切换 active camera；headless 且录制 overview 时才按 `configs/recording/multifloor_overview_camera_schedule.json` 的 state/step/XYZ 规则切换 Camera0-8。phase122 真实录制了 3272 帧，Camera0/1/2/3/4/5/7 按阶段切换。",
+          "prevention": "单元测试明确断言 GUI 零 apply-camera 调用和 headless schedule 规则顺序；切换时机不再硬编码在 recorder 内。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/navigation tests/test_planned_trajectories.py tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_full_physics_batch.py tests/test_collision_terrain_wrapper.py tests/test_simulation_viewport.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "223 passed, 1 skipped；时间为 F2 路径优化前，覆盖 no-float、camera 和当时 float 隔离修复。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_simulation_viewport.py",
+          "result": "passed",
+          "note": "107 passed；覆盖新 F2 footprint 净空、捷径圆角、post-stair 执行路径和 PCT preview CLI。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/navigation tests/test_planned_trajectories.py tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_full_physics_batch.py tests/test_collision_terrain_wrapper.py tests/test_simulation_viewport.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "224 passed, 1 skipped；F2 路径优化、PCT preview、no-float、camera 和原 A*/flat baseline 的最终轻量回归通过。"
+        },
+        {
+          "command": "真实 PCT server + task + F2 地图的纯 Python preview probe",
+          "result": "passed",
+          "note": "segments=2，pick_to_place path_3d_count=76，post_stair_path_optimization.applied=true，minimum_raw_map_clearance_m=0.28284，maximum_heading_change_after_rad=0.30659。"
+        },
+        {
+          "command": "phase121 headless no-float full_physics --no-record-dataset",
+          "result": "failed",
+          "note": "nav2pick/pick 成功，机器人越过原柱体失败点和楼梯 gateway，到达 (1.642,5.991) 并尝试首级台阶；随后 DWA 因 21 个候选碰撞拒绝停止。满足本阶段无 float 至少进入上台阶阶段的验收，但不代表纯物理上楼成功。"
+        },
+        {
+          "command": "phase122 headless float + overview video",
+          "result": "failed",
+          "note": "stair-float 完成并在 F2 释放，overview 录制与 Camera schedule 成功；旧 F2 路径上位移 0.049195m 低于 0.05m 阈值且用户 GUI 复现碰撞/倾倒，触发本次 PCT 尾段优化。"
+        },
+        {
+          "command": "phase124 current-code float full pipeline",
+          "result": "not_run",
+          "note": "已完成 nav2pick/pick 并进入 stair-float；用户要求先检查 PCT 路径后主动 Ctrl+C 终止，没有生成完整成功/失败 summary，不得用于 float 全 pipeline 验收。"
+        }
+      ],
+      "next_steps": [
+        "用户运行 --pct-plan-preview GUI，手动检查黄色 pick_to_place 路径在 F2 的净空和曲率。",
+        "根据用户对预览路径的确认继续调整 PCT/F2 地图；确认后再运行 float 完整 pipeline。",
+        "float 完整 pipeline 成功后再做最终 camera/no-float/float 完成审计和两版命令交付。"
+      ]
+    },
+    {
+      "time": "2026-07-12 17:38:51",
+      "summary": "根据用户 PCT GUI 预览反馈完成 phase126：F2 楼梯上段中心线从 x≈2.90 向楼梯中部平移到 x≈2.70；F1 pick 后大门段提升为 plan-level 净空 A* + 视线捷径 + 圆角优化，预览、float/no-float 执行和 DWA 消费同一 path_3d；同时收紧携物 DWA 路径偏差与恢复范围。",
+      "files_changed": [
+        "source/navigation/pct_adapter.py",
+        "source/navigation/executor.py",
+        "source/pipeline/config.py",
+        "source/pipeline/pct_plan_preview.py",
+        "tests/navigation/test_pct_adapter.py",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_astar_dwa_smoke.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "F2 楼梯收尾段的 PCT 中心线太靠近用户视角中的左侧墙/扶手。",
+          "root_cause": "楼梯上段使用场景标定锚点 x≈2.90；按 collision PLY/PCT slice 采样时，该位置在上段后半程的离散净空仅约 0.20m，而 x≈2.70 的净空约 0.40m。",
+          "fix": "将楼梯平台末端、上段中点和 F2 出口三个锚点的 x 统一减少 0.20m，分别调整到 2.74512、2.69841 和 2.70；PCT server 跨层约束与 adapter 中心线同步更新。",
+          "prevention": "场景标定楼梯锚点必须同时检查左右离散净空；回归测试固定上段 x≈2.70、高度单调和平台拓扑顺序。"
+        },
+        {
+          "problem": "F1 完成 pick 后穿过大门的 PCT 折角过大。",
+          "root_cause": "之前的 F1 捷径只在 no-float executor 内生效，PCT preview 和 float 仍显示/执行原始 0.20m 栅格折线；且捷径与保留的 pick 离场段之间没有统一圆角。",
+          "fix": "新增 plan-level `optimize_pct_pre_stair_plan_path`：保留 pick 后实际 1.083m 离场段，在 0.20m footprint 膨胀的 F1 地图上重规划至楼梯入口缓弯起点，并对保留段/新路径连接处做碰撞校验圆角。真实资产上最大折角从 0.785rad 降到 0.269rad，最小净空 0.283m。",
+          "prevention": "PCT 路径几何优化必须在 NavPlan.metadata path_3d 层完成；预览与执行禁止再各自生成不同路径。"
+        },
+        {
+          "problem": "DWA 在已优化 PCT 路径周围仍允许过大恢复偏差。",
+          "root_cause": "旧路径有急折和贴障碍时为防止误杀，float 携物恢复范围保留到 0.50m，这与当前净空平滑路径的严格跟踪目标不符。",
+          "fix": "pct_multifloor 携物常规 path deviation 从 0.14m 收紧到 0.12m，path recovery 从 0.50m 收紧到 0.30m；保留 0.40m initial alignment，避免 pick 后初始姿态误杀。",
+          "prevention": "DWA 跟踪边界要与已验证的路径净空和实际负载漂移绑定，并在完整 float 运行中再验证。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "真实 PCT server + task + F1/F2 单层地图的纯 Python preview probe",
+          "result": "passed",
+          "note": "strict monotonic 跨层规划成功；path_3d_count=86；F1 pre optimization applied=true/min_clearance=0.28284/max_heading_after=0.26943；F2 post optimization applied=true/min_clearance=0.28284/max_heading_after=0.29173；上段锚点 x 为 2.74512/2.69841/2.70。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/navigation tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_simulation_viewport.py",
+          "result": "passed",
+          "note": "167 passed；覆盖楼梯锚点、F1 plan-level 优化、DWA 严格跟踪、preview 和原 PCT 行为。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/navigation tests/test_planned_trajectories.py tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_full_physics_batch.py tests/test_collision_terrain_wrapper.py tests/test_simulation_viewport.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "224 passed, 1 skipped；最终轻量回归通过，A*/flat baseline 与 camera 功能未回归。"
+        },
+        {
+          "command": "Isaac GUI PCT preview",
+          "result": "not_run",
+          "note": "按用户要求交付可直接运行的 preview 命令，由用户手动相机查收路径；本轮不启动完整 pipeline。"
+        }
+      ],
+      "next_steps": [
+        "用户用新 --pct-plan-preview 命令确认 F1 大门缓弯和 F2 楼梯上段中线。",
+        "路径视觉验收后，先运行 navigation-carry smoke 检查 DWA 0.12m/0.30m 跟踪边界，再运行 float 完整 pipeline。",
+        "float 完整成功后完成最终 float/no-float 命令交付与 camera 验收。"
+      ]
+    },
+    {
+      "time": "2026-07-13 01:01:00",
+      "summary": "完成 phase151-155 实机仿真验证：修正 float 仅在楼梯入口触发、F1 保持 PCT 走廊拓扑、F2 解锁后路径接管与低速停滞恢复；phase151 携物跨层 smoke 和 phase154 当前 float 完整 pipeline 均成功。phase155 no-float 在无底盘锁定情况下到达并进入首级台阶，之后发生真实动力学倾倒。",
+      "files_changed": [
+        "source/navigation/executor.py",
+        "source/navigation/navlib/dwa.py",
+        "source/navigation/pct_adapter.py",
+        "source/pipeline/config.py",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/pipeline/pct_plan_preview.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "scripts/pipeline/run_full_physics_batch.py",
+        "source/recording/overview_video_recorder.py",
+        "source/simulation/isaaclab_runtime.py",
+        "source/simulation/viewport.py",
+        "configs/recording/multifloor_overview_camera_schedule.json",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/navigation/test_pct_adapter.py",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/test_simulation_viewport.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "float 完整 pipeline 曾在 F1 物理导航阶段终止或以 nav_collision 停滞。",
+          "root_cause": "F1 净空 A* 后处理可能离开原始 PCT 走廊拓扑；另外位移 0.049m 与 0.05m 停滞阈值之间的数值边界会把仍有 21/21 可行 DWA 候选的慢速进展误判为失败。",
+          "fix": "携物路径保留原始 PCT 走廊并只在走廊内圆角；仅在可行候选、无碰撞拒绝且位移接近阈值时允许一次受限恢复。phase154 完整状态链成功进入 done。",
+          "prevention": "路径后处理必须报告相对原始 PCT 路径的最大偏差；停滞判断同时检查候选可行性、碰撞拒绝和实测速度，禁止只比较单一位移阈值。"
+        },
+        {
+          "problem": "float 可能在完成 pick 后过早冻结底盘，或在 F2 解锁后立即偏离参考路径。",
+          "root_cause": "旧 approach distance 把楼梯前 F1 导航包含进 float 段；固定的 post-stair 参考起点与物理解锁后的实际位姿存在短距离偏差。",
+          "fix": "将 float approach distance 设为 0，只在距首个上升点 0.12m 内激活；F2 解锁后从实际位姿生成受限 bridge，并限制重规划次数和恢复速度。phase151 携物跨层 smoke 成功。",
+          "prevention": "float 激活、释放和 DWA 接管都记录实际位姿、路径进度和距离；测试固定验证 F1 不锁、楼梯内锁、F2 解锁。"
+        },
+        {
+          "problem": "no-float 仍无法完成真实动力学爬楼。",
+          "root_cause": "phase155 已排除楼梯前 PCT/DWA 碰撞：机器人到达 (1.56, 5.97)、底盘开始升高后才倾倒，最终触发 navigation_environment_terminated；当前 dog-only checkpoint 在携物和台阶接触下的姿态恢复能力不足。",
+          "fix": "本阶段修复范围只保证 no-float 到达并尝试首阶，不把 float 修复伪装成 locomotion policy 修复；保留 no-float 失败证据和独立模式。",
+          "prevention": "纯物理上楼应单独建立楼梯负载评测，并训练或接入针对台阶和机械臂负载的 locomotion checkpoint。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "phase151 headless navigation-carry smoke --pct-stair-float --no-record-dataset",
+          "result": "passed",
+          "note": "F1 物理导航、楼梯入口内 float、F2 解锁后 DWA 到 place 全部成功。激活距离约 0.117m，小于 0.12m 半径。"
+        },
+        {
+          "command": "phase154 headless full pipeline --pct-stair-float --no-record-dataset",
+          "result": "passed",
+          "note": "nav2pick、pick、nav2place、place、export_lerobot 状态和 cleanup 全部完成，success=true、stable_physics_success=true；因关闭记录，lerobot_exported=false，不能作为当前录制链复验。"
+        },
+        {
+          "command": "phase155 headless navigation-carry smoke without --pct-stair-float --no-record-dataset",
+          "result": "failed",
+          "note": "满足 no-float 阶段验收：F1 正常到达并越过楼梯入口，base_z 从约 0.22m 升至 0.255m 后才倾倒；最终 navigation_environment_terminated。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/navigation tests/test_planned_trajectories.py tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_full_physics_batch.py tests/test_collision_terrain_wrapper.py tests/test_simulation_viewport.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "225 passed, 1 skipped；覆盖 PCT adapter、DWA、完整 pipeline 状态机、camera、IsaacLab runtime 和原 A*/flat baseline。"
+        }
+      ],
+      "next_steps": [
+        "至少再重复两次当前 float 完整 pipeline，确认不是单次随机成功。",
+        "开启 Camera0-8 图像、视频和 LeRobot 记录运行一次当前 float 完整 pipeline，验证录制负载下的完整链路。",
+        "如目标升级为 pure_physics_success=true，单独训练或接入携物爬楼 locomotion policy；继续调 DWA 不能解决首阶接触后的姿态恢复。"
+      ]
+    },
+    {
+      "time": "2026-07-13 02:38:00",
+      "summary": "完成最终 phase156-162 验收：修复录制负载下 F1/F2 携物 DWA 的近阈值停滞误判和 place 终端收敛边界；phase160 carry smoke 成功，phase161 开启 Camera0-8、overview/front/wrist 视频、front/wrist 图像与 LeRobot 记录后完整 pipeline 成功；phase162 真实验证新增的 5Hz overview JPEG 导出。no-float 的 phase155 首阶验收继续成立。",
+      "files_changed": [
+        "source/navigation/executor.py",
+        "source/pipeline/factory.py",
+        "source/pipeline/config.py",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/recording/overview_video_recorder.py",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_simulation_viewport.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "phase156 在录制负载下完成所有导航后，于 place approach 的严格关节收敛检查失败。",
+          "root_cause": "关节误差范数稳定在 0.060861rad，仅比 PCT profile 的 0.060rad 阈值高 0.000861rad；单关节最大误差为 0.04659rad，cuRobo 计划、起始状态和实际跟踪均有效。",
+          "fix": "只把 pct_multifloor profile 的 post-motion 误差范数下限从 0.060 调到 0.065rad，普通 profile、轨迹和物理控制不变。phase161 place 与 verify_place_success 成功。",
+          "prevention": "终端阈值需根据真实稳态误差分布留出小幅数值裕量，并同时记录 L2 norm 和单关节最大误差。"
+        },
+        {
+          "problem": "phase158/159 在 F1 起步或 F2 解锁转角把仍在缓慢运动的机器人判为 nav_collision。",
+          "root_cause": "4.8s 窗口位移分别为 0.04935m/0.04891m，接近 0.05m 阈值；旧恢复要求速度至少 0.02m/s 且零 collision rejection。F2 窄转角虽然 21 个候选中有 14 个可行，仍有 7 个候选被正常碰撞过滤。",
+          "fix": "携物近阈值恢复速度门槛降为 0.01m/s，并要求至少一半 DWA 候选可行；phase157 的 0/21 真碰撞仍失败。phase160 carry smoke 和 phase161 完整录制均成功。",
+          "prevention": "停滞诊断必须区分无可行轨迹、部分候选被过滤和有可行轨迹的真实慢速进展；对应三类情况分别失败、受限恢复和继续执行。"
+        },
+        {
+          "problem": "尝试把 stair-float exit distance 设为 0 后，F2 首个平地点释放发生碰撞。",
+          "root_cause": "phase157 解锁后的实际位姿相对参考点偏移约 0.465m，post-stair 净空重规划失败，DWA 0/21 候选可行。",
+          "fix": "保留 1.4m 配置；受离散 waypoint 影响，它相比 exit=0 实际只多覆盖一个约 0.60m 的楼梯顶部安全落脚 waypoint。后续 F2 导航 action 明确不含 base pose lock。",
+          "prevention": "float 释放距离不能只按楼层高度决定，必须同时验证解锁瞬间的实际落脚偏差、局部净空和 DWA 可行候选。"
+        },
+        {
+          "problem": "完整录制已有 overview 视频，但没有单独导出 Camera0-8 overview JPEG。",
+          "root_cause": "overview recorder 只把 viewport 帧写入 MP4；LeRobot observation recorder 只接收 IsaacLab front/wrist camera。",
+          "fix": "overview recorder 在数据记录开启时按 dataset FPS 保存 JPEG 到 images/overview，并在 video report 中写入目录、帧数、FPS 和质量。phase162 实际生成 101 张 JPEG。",
+          "prevention": "视频流和原始图片流分别出具产物清单；不能用 MP4 存在推断 JPEG 已导出。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "phase160 headless navigation-carry smoke --pct-stair-float --no-record-dataset",
+          "result": "passed",
+          "note": "F1 DWA、0.117m 内 float 激活、楼梯段、F2 无锁 DWA 和 place base goal 全部成功进入 done。"
+        },
+        {
+          "command": "phase161 headless full pipeline --pct-stair-float --record-video --video-mode all",
+          "result": "passed",
+          "note": "success=true、stable_physics_success=true；8545 control steps；nav2pick/pick/nav2place/place/export_lerobot/cleanup 全部完成。LeRobot 855 帧，validation 0 error/0 warning；Camera0-8 全部 applied；overview/front/wrist 各 4272 帧。"
+        },
+        {
+          "command": "phase162 headless pick smoke --record-video --video-mode overview",
+          "result": "passed",
+          "note": "pick smoke 成功，overview 视频 504 帧；真实保存 101 张 5Hz overview JPEG，Camera0/1 自动切换。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/navigation tests/test_planned_trajectories.py tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_full_physics_batch.py tests/test_collision_terrain_wrapper.py tests/test_simulation_viewport.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "227 passed, 1 skipped；覆盖 A*/flat baseline、PCT adapter、DWA、完整状态机、GUI/headless camera、overview JPEG 和 IsaacLab runtime。"
+        }
+      ],
+      "next_steps": [
+        "用户使用交付的 GUI float/no-float 命令进行手动相机查收。",
+        "批量 headless 数据采集时继续把输出写到 /mnt/sage_data/outputs，并按需调整 Camera0-8 schedule JSON。",
+        "如要求 pure_physics_success=true，再训练针对携物楼梯的 locomotion policy；该目标不属于本轮 float 阶段验收。"
+      ]
+    },
+    {
+      "time": "2026-07-13 11:43:32",
+      "summary": "完成 phase163：根据 /mnt/sage_data/outputs/arm_vla_pct/gui_float 诊断并修复 GUI Float 错过楼梯入口触发点的问题；新增首段入口走廊触发且保持楼梯前不冻结。将稳定 PCT 多楼层 task、planner 资产、checkpoint、确定性运行、碰撞可视、规划轨迹、三路视频和 Camera0-8 schedule 收敛为 --pct-multifloor 预设，同时保留 A* 默认行为和 Float/No-Float 独立开关。",
+      "files_changed": [
+        "source/navigation/executor.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "configs/navigation/pct_multifloor_policy.yaml",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/test_full_physics_pipeline.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "GUI Float 已启用 CLI 开关，但机器人侧着进入楼梯后倾倒，stair_float 始终停留在 ready。",
+          "root_cause": "旧逻辑只计算机器人到首个楼梯点的欧氏距离。失败轨迹距入口点最小为 0.124070m，比 0.12m 阈值多 4.07mm，因此完全错过触发；同一位姿到首段路径中心线仅 0.118584m，实际仍在正确入口走廊中。",
+          "fix": "保留入口点半径触发，并增加首个上升路径段的有限线段投影判定；投影必须落在线段内部且横向距离不超过 0.12m。状态报告新增 point/corridor distance、corridor progress 和 activation_trigger。失败日志原位姿现会以 entry_corridor 触发。",
+          "prevention": "离散 waypoint 的状态切换不能只依赖单点圆形命中；对连续路径事件同时测试点触发、有限走廊触发和进入走廊前不触发，并把触发来源写入运行日志。"
+        },
+        {
+          "problem": "稳定 PCT pipeline 每次都要重复 task、server、地图、policy、checkpoint、fallback、随机化、可视化和录制参数，命令过长且容易漂移。",
+          "root_cause": "低层配置已有稳定值，但 CLI 没有按 PCT 运行模式统一解析；task/profile/checkpoint 和录制选项仍沿用 flat/A* 的通用默认。",
+          "fix": "新增 --pct-multifloor 稳定预设，并让 --global-planner pct 使用同一解析逻辑。仅在显式 PCT 模式下注入已验收值；Float 默认关闭并继续由 --pct-stair-float 开启。显式 CLI 覆盖优先，A* 仍是默认 planner 且保持原随机化、flat policy 和无视频行为。",
+          "prevention": "稳定运行参数按具名 runtime preset 集中维护，并用解析测试同时固定预设值、显式覆盖优先级和 A* baseline 默认。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "pytest tests/test_astar_dwa_smoke.py -k 'stair_float_activates_in_first_segment_corridor or stair_float_corridor_does_not_activate_before_entry'",
+          "result": "passed",
+          "note": "2 passed；真实 GUI 失败位姿通过 entry_corridor 触发，楼梯入口前位姿不触发。"
+        },
+        {
+          "command": "pytest tests/test_full_physics_pipeline.py -k 'pct_multifloor_stable_preset or astar_without_task_json or cli_defaults_to_full_physics_mode or cli_can_enable_planned_trajectory_visualization or cli_accepts_pct_stair_float_overrides'",
+          "result": "passed",
+          "note": "6 passed；覆盖 PCT 稳定默认值、显式覆盖和 A* task/default 行为。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py --pct-multifloor --dry-run --output-dir /tmp/arm_vla_pct_pct_preset_dry_run",
+          "result": "passed",
+          "note": "完整状态链进入 done；startup_status 记录 pct_multifloor_stable、默认多楼层 task、PCT planner、DogOnly task 和 model_26000.pt。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/navigation/executor.py source/pipeline/config.py scripts/pipeline/run_full_physics_pipeline.py tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "修改文件语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/navigation tests/test_planned_trajectories.py tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_full_physics_batch.py tests/test_collision_terrain_wrapper.py tests/test_simulation_viewport.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "232 passed, 1 skipped；PCT、DWA、完整状态机、录制/viewport 和 A*/flat baseline 回归通过。"
+        },
+        {
+          "command": "Isaac GUI Float 完整 pipeline",
+          "result": "not_run",
+          "note": "本轮完成失败日志重放、触发修复和轻量回归，没有自动启动耗时 GUI 完整任务；需用户用新短命令查收。"
+        }
+      ],
+      "next_steps": [
+        "用户使用 --pct-multifloor --pct-stair-float 的 GUI 短命令复验；确认 stair_float.activation_trigger 为 point_radius 或 entry_corridor 且顺利完成楼梯段。",
+        "GUI Float 成功后再把 pct_phase163_gui_float_reverification_pending 设为 false，并恢复最终验收状态。",
+        "No-Float 继续作为纯动力学独立实验；当前 checkpoint 的携物上楼能力仍未验收。"
+      ]
+    },
+    {
+      "time": "2026-07-13 12:28:04",
+      "summary": "完成 phase164：PCT 多楼层稳定预设默认启用 stair-float，新增 --no-pct-stair-float 运行完整 no-float pipeline；新增仅测试低层 locomotion 上楼能力的 --stair-locomotion-smoke 模式。楼梯测试从标定入口生成到 F2 出口的固定 3D 中心线，绕开 DWA 和 Float/root lock，以路径切向锁定机体朝向、横向速度修正中心线误差，到达 XY 与楼层高度目标后直接结束。",
+      "files_changed": [
+        "source/navigation/stair_locomotion.py",
+        "source/navigation/__init__.py",
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/pipeline/state_machine.py",
+        "source/pipeline/full_physics_pipeline.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "scripts/pipeline/run_full_physics_batch.py",
+        "configs/navigation/pct_multifloor_policy.yaml",
+        "tests/navigation/test_stair_locomotion.py",
+        "tests/navigation/test_planner_selection.py",
+        "tests/test_full_physics_pipeline.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "稳定 PCT pipeline 仍需显式添加 --pct-stair-float，且 store_true 参数无法清晰表达稳定预设下的反向 no-float 选择。",
+          "root_cause": "CLI 把 Float 建模为单向开启开关，未区分通用 A* 默认值和 PCT 稳定预设默认值。",
+          "fix": "将参数改为 BooleanOptionalAction。通用 A* 仍不启用 Float；PCT 稳定预设默认解析为 Float，用户可用 --no-pct-stair-float 显式运行完整 no-float pipeline。",
+          "prevention": "具有 preset 相关默认值的布尔参数统一保留未指定态，并测试 preset 默认、显式正向和显式反向三种解析结果。"
+        },
+        {
+          "problem": "用普通 PCT+DWA pipeline 测试楼梯 policy 时，DWA 会为追逐局部点改变机体 yaw，导致机器狗斜向上楼，无法单独评价低层 policy。",
+          "root_cause": "DWA 的目标是二维避障和局部路径可达性，不保证楼梯段机体纵轴持续平行于楼梯中心线；局部目标误差会被转换为角速度。",
+          "fix": "新增专用 StairCenterlinePlanner 和 StairLocomotionExecutor。执行器不调用 DWA，不冻结 root，按当前中心线段切向控制 yaw，并将横向误差转换为机体系 lateral velocity；朝向误差较大时先原地对齐再前进。成功条件同时检查平面终点和 F2 高度。",
+          "prevention": "低层能力测试使用最小化的确定性上层控制器，并在运行元数据中显式记录 controller、navigation_base_pose_lock 和 low_level_policy_isolation，避免把全局/局部规划误差归因给 policy。"
+        },
+        {
+          "problem": "真实 stair locomotion headless smoke 未能进入仿真控制循环。",
+          "root_cause": "Isaac Sim 创建 PhysicsScene 时 PxgCudaDeviceMemoryAllocator 无法分配 256 MiB；检查时 GPU 仅剩约 1.58 GiB 可用，已有两个外部 Isaac Python CUDA 上下文占用约 6 GiB。",
+          "fix": "未修改导航或 policy 逻辑，也未终止外部进程；保留 startup_failure.json 并将本轮结果记录为环境启动阻塞，而非 locomotion 失败。",
+          "prevention": "真实验证前先检查 GPU 显存和现有 Kit/Isaac 会话；只有成功创建 PhysicsScene 并进入 navigation 后，才记录 policy 的真实通过或失败。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/navigation/stair_locomotion.py source/navigation/__init__.py source/pipeline/config.py source/pipeline/navigation_smoke.py source/pipeline/state_machine.py source/pipeline/full_physics_pipeline.py scripts/pipeline/run_full_physics_pipeline.py scripts/pipeline/run_full_physics_batch.py",
+          "result": "passed",
+          "note": "新增执行器、pipeline 装配和 CLI 语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/navigation tests/test_planned_trajectories.py tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_full_physics_batch.py tests/test_collision_terrain_wrapper.py tests/test_simulation_viewport.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "244 passed, 1 skipped；覆盖楼梯切向跟踪、横向修正、先对齐后前进、XY+高度成功条件、PCT Float 默认/no-float 显式开关、专用模式提前结束及 A*/DWA 回归。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py --stair-locomotion-smoke --headless --no-record-dataset --output-dir /mnt/sage_data/outputs/arm_vla_pct/stair_locomotion_phase164_headless",
+          "result": "failed",
+          "note": "失败于 build_stage 的 PhysicsScene 创建，PxgCudaDeviceMemoryAllocator 无法分配 256 MiB；没有进入 locomotion 控制，不能评价 policy。诊断保存在对应 output-dir/startup_failure.json。"
+        }
+      ],
+      "next_steps": [
+        "释放其他 Isaac/Kit GPU 会话后运行 --stair-locomotion-smoke，检查机器人是否沿楼梯中心线正向上楼，并据真实轨迹微调速度、横向增益和朝向增益。",
+        "分别运行默认 --pct-multifloor Float 完整 pipeline 与 --pct-multifloor --no-pct-stair-float 完整 no-float pipeline，确认新增默认解析未影响原 Float 状态链。",
+        "只有专用楼梯模式进入控制循环并到达 F2 高度后，才把 stair_locomotion_smoke_real_verified 更新为 true。"
+      ]
     }
   ],
   "open_questions": [
@@ -5453,13 +5895,15 @@
     "是否继续投入原生 3DGS GUI/最终机器人前景与 3DGS 背景逐帧合成；该工作不阻塞 collision 模式下的数据采集 pipeline？"
   ],
   "known_limitations": [
-    "PCT stair-float 是显式启用、默认关闭的临时上楼方案：楼梯段会冻结底盘并沿 path_3d 写入 root pose，因此 phase104/105 的 stable_physics_success=true，但 pure_physics_success=false。",
+    "phase163 已修复 gui_float 日志暴露的楼梯入口漏触发并通过定点重放，但新的 GUI Float 完整 pipeline 尚待实跑复验，因此最终验收状态暂时撤回。",
+    "PCT 稳定预设现在默认启用 stair-float；可用 --no-pct-stair-float 显式运行完整 no-float pipeline。stair-float 楼梯段会冻结底盘并沿 path_3d 写入 root pose，因此 phase161 的 stable_physics_success=true，但 pure_physics_success=false。",
+    "独立 --stair-locomotion-smoke 已在单元测试中验证控制语义，但首次真实 headless 运行被外部 Isaac CUDA 上下文占用显存阻塞，尚未进入控制循环，因此低层 policy 上楼能力仍未实机验收。",
     "当前 pct_multifloor checkpoint 是 12 维 dog-only policy；要获得纯足端动力学的携物上楼能力，仍需训练或接入针对楼梯和机械臂负载的新 locomotion policy。",
     "当前 PCT 全局路径完整保存在 NavPlan.metadata[\"path_3d\"]，普通局部执行仍主要由 DWA 消费 XY waypoints；z/slice 只在 stair-float 等多楼层专用逻辑中使用。",
     "navigation collision 模式为避免 NuRec/PhysX 同进程的 CUDA external semaphore 问题会停用 /World/gauss；原生高质量 3DGS GUI 渲染和最终前景合成视频仍未完成。",
     "Isaac Sim 5.1 的 USD 0.24.5 不包含 ParticleField3DGaussianSplat schema，当前环境不能通过安全启用扩展直接获得原生 3DGS ParticleField。",
     "任务没有可用 flat nav_map 时会显式禁用 PCT 到 A* fallback；PCT server 或资产失败会直接报错，不会静默回退。",
-    "phase104/105 每轮完整录制约占 1.1GB；当前工作盘约剩 6.3GB，继续批量采集前仍应清理历史 outputs。",
-    "phase104/105 启动期间仍有 Go2-X5 rotor visual unresolved-reference 警告，但不影响 collision 模式下的完整状态链、物理验证和 LeRobot 导出。"
+    "开启 overview/front/wrist 三路 25Hz 视频、5Hz 原始图像和 LeRobot 导出的 phase161 约占 1.9GB；后续重型运行应直接写入 /mnt/sage_data/outputs。",
+    "phase161 启动期间仍有 Go2-X5 rotor visual unresolved-reference 警告，但不影响 collision 模式下的完整状态链、物理验证、视频和 LeRobot 导出。"
   ]
 }

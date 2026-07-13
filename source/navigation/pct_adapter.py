@@ -39,13 +39,13 @@ class PCTPlannerConfig:
         (1.5, 5.7, 0.6),
     )
     cross_floor_stair_exit_points: tuple[tuple[float, float, float], ...] = (
-        (2.90, 7.05, 3.0),
+        (2.70, 7.05, 3.0),
     )
     cross_floor_stair_midpoint_points: tuple[tuple[float, float, float], ...] = (
         (1.51822, 6.27683, 0.29486),
-        (2.94512, 9.14634, 1.64666),
+        (2.74512, 9.14634, 1.64666),
         (1.9202, 9.52807, 1.71919),
-        (2.89841, 7.79872, 2.61031),
+        (2.69841, 7.79872, 2.61031),
     )
     cross_floor_gateway_radius_m: float = 0.6
     robot_root_to_floor_m: float = 0.45

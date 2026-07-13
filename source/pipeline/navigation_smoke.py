@@ -15,7 +15,15 @@ from source.manipulation.dry_run import (
     DryRunGripperController,
     DryRunManipulationPlanner,
 )
-from source.navigation import AStarNavPlanner, DwaNavExecutor, PCTNavPlanner, PCTPlannerConfig
+from source.navigation import (
+    AStarNavPlanner,
+    DwaNavExecutor,
+    PCTNavPlanner,
+    PCTPlannerConfig,
+    StairCenterlinePlanner,
+    StairLocomotionExecutor,
+    StairLocomotionExecutorConfig,
+)
 from source.navigation.adapters.yaw_align import TerminalPoseConfig
 from source.navigation.navlib import DWAConfig, OccupancyGridMap
 from source.navigation.pct_local_map import (
@@ -114,6 +122,165 @@ def create_navigation_carry_smoke_pipeline(
     )
 
 
+def create_stair_locomotion_smoke_pipeline(
+    *,
+    config: FullPhysicsConfig,
+    episode_spec: EpisodeSpec,
+    episode_seed: int,
+    episode_dir: str | Path,
+    simulation: IsaacLabNavigationRuntime,
+) -> FullPhysicsPipeline:
+    """只用真实 locomotion policy 沿标定楼梯中心线从 F1 走到 F2。"""
+
+    stair_spec, centerline = _stair_locomotion_smoke_spec(config, episode_spec)
+    stair_config = replace(
+        config,
+        navigation_smoke=False,
+        navigation_carry_smoke=False,
+        stair_locomotion_smoke=True,
+        full_physics=False,
+        navigation=replace(
+            config.navigation,
+            pct_stair_float_enabled=False,
+        ),
+        limits=replace(
+            config.limits,
+            navigation=max(config.limits.navigation, 6000),
+            episode=max(config.limits.episode, 8000),
+        ),
+    )
+    planner = StairCenterlinePlanner(centerline)
+    executor = StairLocomotionExecutor(
+        StairLocomotionExecutorConfig(
+            forward_velocity_mps=config.navigation.pct_carry_max_linear_velocity,
+            max_angular_velocity_rps=max(
+                0.50,
+                config.navigation.pct_carry_max_angular_velocity,
+            ),
+            goal_z_tolerance_m=config.navigation.goal_z_tolerance,
+        )
+    )
+    verifier = NavigationEpisodeVerifier(
+        position_tolerance=0.25,
+        yaw_tolerance=config.navigation.final_yaw_tolerance,
+        linear_velocity_tolerance=config.navigation.stable_linear_velocity,
+        angular_velocity_tolerance=config.navigation.stable_angular_velocity,
+        require_yaw_alignment=False,
+        require_stable_base=False,
+        goal_z_tolerance=config.navigation.goal_z_tolerance,
+    )
+    return _create_navigation_pipeline(
+        config=stair_config,
+        episode_spec=stair_spec,
+        episode_seed=episode_seed,
+        episode_dir=episode_dir,
+        simulation=simulation,
+        components=(planner, executor, verifier),
+    )
+
+
+def _stair_locomotion_smoke_spec(
+    config: FullPhysicsConfig,
+    episode_spec: EpisodeSpec,
+) -> tuple[EpisodeSpec, tuple[tuple[float, float, float], ...]]:
+    """从 PCT 楼梯标定点构造只包含楼梯路段的 episode。"""
+
+    nav = config.navigation
+    if not nav.pct_cross_floor_gateway_points:
+        raise ValueError("stair locomotion smoke requires a PCT stair gateway")
+    if not nav.pct_cross_floor_stair_exit_points:
+        raise ValueError("stair locomotion smoke requires a PCT stair exit")
+    if episode_spec.place_goal is None or episode_spec.place_goal.z is None:
+        raise ValueError("stair locomotion smoke requires an upstairs place goal z")
+
+    raw_points = (
+        nav.pct_cross_floor_gateway_points[0],
+        *nav.pct_cross_floor_stair_midpoint_points,
+        nav.pct_cross_floor_stair_exit_points[0],
+    )
+    if len(raw_points) < 2:
+        raise ValueError("stair locomotion smoke requires at least two centerline points")
+    start_root_z = float(
+        episode_spec.pick_goal.z
+        if episode_spec.pick_goal.z is not None
+        else episode_spec.start.z
+        if episode_spec.start.z is not None
+        else 0.0
+    )
+    end_root_z = float(episode_spec.place_goal.z)
+    raw_start_z = float(raw_points[0][2])
+    raw_end_z = float(raw_points[-1][2])
+    raw_z_span = max(abs(raw_end_z - raw_start_z), 1.0e-6)
+    last_ratio = 0.0
+    centerline: list[tuple[float, float, float]] = []
+    for point in raw_points:
+        ratio = _clamp01((float(point[2]) - raw_start_z) / raw_z_span)
+        last_ratio = max(last_ratio, ratio)
+        centerline.append(
+            (
+                float(point[0]),
+                float(point[1]),
+                start_root_z + last_ratio * (end_root_z - start_root_z),
+            )
+        )
+    centerline[0] = (centerline[0][0], centerline[0][1], start_root_z)
+    centerline[-1] = (centerline[-1][0], centerline[-1][1], end_root_z)
+
+    start_heading = math.atan2(
+        centerline[1][1] - centerline[0][1],
+        centerline[1][0] - centerline[0][0],
+    )
+    end_heading = math.atan2(
+        centerline[-1][1] - centerline[-2][1],
+        centerline[-1][0] - centerline[-2][0],
+    )
+    start = NavGoal(
+        x=centerline[0][0],
+        y=centerline[0][1],
+        z=start_root_z,
+        yaw=start_heading,
+        floor_id=episode_spec.pick_goal.floor_id,
+        slice_id=episode_spec.pick_goal.slice_id,
+    )
+    goal = NavGoal(
+        x=centerline[-1][0],
+        y=centerline[-1][1],
+        z=end_root_z,
+        yaw=end_heading,
+        floor_id=episode_spec.place_goal.floor_id,
+        slice_id=episode_spec.place_goal.slice_id,
+    )
+    raw_task = {
+        **episode_spec.raw_task,
+        "runtime_override": {
+            "mode": "stair_locomotion_smoke",
+            "controller": "stair_heading_tracker",
+            "float_enabled": False,
+            "start_xyz_yaw": [start.x, start.y, start.z, start.yaw],
+            "goal_xyz_yaw": [goal.x, goal.y, goal.z, goal.yaw],
+            "centerline": [list(point) for point in centerline],
+        },
+    }
+    return (
+        replace(
+            episode_spec,
+            instruction="测试低层 locomotion policy 能否沿标定中心线完成上楼。",
+            start=start,
+            pick_goal=goal,
+            place_goal=None,
+            object_prim_path=None,
+            object_initial_pose=None,
+            place_target_pose=None,
+            raw_task=raw_task,
+        ),
+        tuple(centerline),
+    )
+
+
+def _clamp01(value: float) -> float:
+    return min(max(float(value), 0.0), 1.0)
+
+
 def _navigation_carry_smoke_start(episode_spec: EpisodeSpec) -> tuple[NavGoal, str]:
     """读取任务级抓取后底盘位姿，未配置时保持旧的 pick goal 行为。"""
 
@@ -157,11 +324,15 @@ def _create_navigation_pipeline(
     episode_seed: int,
     episode_dir: str | Path,
     simulation: IsaacLabNavigationRuntime,
+    components=None,
 ) -> FullPhysicsPipeline:
-    planner, executor, verifier = create_navigation_components(
-        config=config,
-        episode_spec=episode_spec,
-    )
+    if components is None:
+        planner, executor, verifier = create_navigation_components(
+            config=config,
+            episode_spec=episode_spec,
+        )
+    else:
+        planner, executor, verifier = components
     gripper = DryRunGripperController()
     return FullPhysicsPipeline(
         config=config,
@@ -341,6 +512,29 @@ def create_navigation_components(
             nav.pct_multifloor_route_corridor_radius
             if nav.global_planner == "pct"
             else None
+        ),
+        multifloor_no_float_clearance_radius=(
+            # 无漂移或仅在台阶处漂移时，F1 都按 Go2 落足扫掠范围保留墙柱净距。
+            nav.local_clearance_radius
+            if (
+                nav.global_planner == "pct"
+                and config.locomotion.policy_profile == "pct_multifloor"
+                and (
+                    not nav.pct_stair_float_enabled
+                    or nav.pct_stair_float_approach_distance_m <= 1.0e-6
+                )
+            )
+            else 0.0
+        ),
+        post_stair_clearance_radius=(
+            # float 释放后在目标楼层恢复真实步态，必须按底盘足迹
+            # 优化 PCT 尾段，不能继续使用贴障碍的点机器最短路。
+            nav.local_clearance_radius
+            if (
+                nav.global_planner == "pct"
+                and config.locomotion.policy_profile == "pct_multifloor"
+            )
+            else 0.0
         ),
         carry_max_linear_velocity=(
             nav.pct_carry_max_linear_velocity

@@ -33,6 +33,23 @@ from source.pipeline.isaac_compat import patch_numpy_for_isaacsim  # noqa: E402
 from source.tasks import JsonTaskProvider, prepare_episode_spec  # noqa: E402
 
 
+PCT_MULTIFLOOR_DEFAULT_TASK_JSON = "tasks/nav_pick_place_apple_multifloor_pct.json"
+PCT_MULTIFLOOR_DEFAULT_SERVER_SCRIPT = "scripts/navigation/pct_grid_server.py"
+PCT_MULTIFLOOR_DEFAULT_TOMOGRAM = "source/scene/multifloor/mutifloor.pickle"
+PCT_MULTIFLOOR_DEFAULT_WALKABLE = (
+    "source/scene/multifloor/mutifloor_ply_walkable.npy"
+)
+PCT_MULTIFLOOR_DEFAULT_COLLISION_PLY = (
+    "source/scene/multifloor/ply/3dgs_collision.ply"
+)
+PCT_MULTIFLOOR_DEFAULT_CHECKPOINT = (
+    "checkpoints/go2_x5/pct_multifloor/model_26000.pt"
+)
+PCT_MULTIFLOOR_DEFAULT_CAMERA_SCHEDULE = (
+    "configs/recording/multifloor_overview_camera_schedule.json"
+)
+
+
 def _project_path(raw_path: str | Path) -> Path:
     path = Path(raw_path).expanduser()
     if not path.is_absolute():
@@ -180,7 +197,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="运行单进程、单 World 的纯物理 nav-pick-place pipeline。",
     )
-    parser.add_argument("--task-json", required=True, help="任务 JSON 路径。")
+    parser.add_argument(
+        "--task-json",
+        help="任务 JSON 路径；PCT 多楼层稳定预设会自动使用已验收任务。",
+    )
     parser.add_argument(
         "--output-dir",
         default="outputs/full_physics_pipeline",
@@ -196,8 +216,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--randomize-task",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="按 episode seed 随机采样 pick/place XY；默认开启，可用 --no-randomize-task 关闭。",
+        default=None,
+        help="按 episode seed 随机采样 pick/place XY；A* 默认开启，PCT 稳定预设默认关闭。",
     )
     parser.add_argument(
         "--show-randomization-debug",
@@ -206,14 +226,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--show-planned-trajectories",
-        action="store_true",
-        help="在完整 pipeline 中显示 PCT 路径和 cuRobo TCP 规划轨迹；仅添加非物理 USD guide。",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="显示 PCT 路径和 cuRobo TCP 轨迹；PCT 稳定预设默认开启。",
     )
     parser.add_argument(
         "--randomize-base-goal",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="开启 pick/place 导航交接 base_goal 极坐标随机化；默认开启，可用 --no-randomize-base-goal 关闭。",
+        default=None,
+        help="开启 base_goal 极坐标随机化；A* 默认开启，PCT 稳定预设默认关闭。",
     )
     parser.add_argument(
         "--keep-window-open",
@@ -256,13 +277,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--record-video",
-        action="store_true",
-        help="启用展示用 overview 视频录制；默认关闭。",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="启用视频录制；PCT 稳定完整 pipeline 默认开启，可用 --no-record-video 关闭。",
+    )
+    parser.add_argument(
+        "--record-dataset",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否保存 LeRobot dataset 图像和数据；物理验收可用 --no-record-dataset 节省空间。",
     )
     parser.add_argument(
         "--video-mode",
         choices=("overview", "front", "font", "wrist", "all"),
-        default="overview",
+        default=None,
         help=(
             "录制视频类型：overview 为第三人称展示视角，front/font 为前视 observation "
             "camera，wrist 为腕部 observation camera，all 同时导出 overview/front/wrist。"
@@ -289,6 +317,13 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("auto",),
         default="auto",
         help="overview camera 选择模式；auto 会遍历 USD stage 中已有 Camera 并按任务阶段切换。",
+    )
+    parser.add_argument(
+        "--overview-camera-schedule",
+        default=None,
+        help=(
+            "headless overview Camera0-8 切换规则 JSON；可按 pipeline state 和机器人 XYZ 调整。"
+        ),
     )
     parser.add_argument(
         "--overview-capture-backend",
@@ -338,7 +373,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--global-planner",
         choices=("astar", "pct"),
         default="astar",
-        help="全局导航规划器；默认 astar，pct 使用多楼层 PCT server。",
+        help="全局导航规划器；默认 astar，pct 自动加载稳定多楼层运行预设。",
+    )
+    parser.add_argument(
+        "--pct-multifloor",
+        action="store_const",
+        const="pct",
+        dest="global_planner",
+        help="启用已验收的 PCT 多楼层稳定预设，等价于 --global-planner pct。",
     )
     parser.add_argument("--pct-planner-root", help="兼容旧外部入口的 PCT 根目录；默认不依赖 external/PCT。")
     parser.add_argument("--pct-server-script", help="PCT server 脚本路径；PCT 模式默认使用本仓库本地版本。")
@@ -349,7 +391,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pct-no-fallback",
         action="store_true",
-        help="PCT 规划失败时不回退 A*，直接报错。",
+        default=None,
+        help="PCT 规划失败时不回退 A*；PCT 稳定预设默认启用。",
+    )
+    parser.add_argument(
+        "--pct-fallback-to-astar",
+        action="store_false",
+        dest="pct_no_fallback",
+        help="显式允许 PCT 规划失败时回退 A*。",
     )
     parser.add_argument("--pct-offset-x", type=float, default=0.0, help="PCT 坐标 X 偏移。")
     parser.add_argument("--pct-offset-y", type=float, default=0.0, help="PCT 坐标 Y 偏移。")
@@ -498,8 +547,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--pct-stair-float",
-        action="store_true",
-        help="携物上楼阶段冻结底盘并沿 PCT 3D 楼梯路径小步漂移。",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "携物上楼阶段冻结底盘并沿 PCT 3D 路径漂移；"
+            "PCT 稳定完整 pipeline 默认开启，可用 --no-pct-stair-float 关闭。"
+        ),
     )
     parser.add_argument(
         "--pct-stair-float-speed",
@@ -571,8 +624,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--policy-profile",
         choices=("flat", "pct_multifloor"),
-        default="flat",
-        help="底层 locomotion policy profile；pct_multifloor 要求提供 checkpoint。",
+        default=None,
+        help="底层 locomotion policy profile；PCT 稳定预设自动使用 pct_multifloor。",
     )
     parser.add_argument(
         "--require-locomotion-checkpoint",
@@ -609,6 +662,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="从 pick 导航终点出发，验证导航到 place 时机械臂保持全零 home 且夹爪闭合。",
     )
     mode_group.add_argument(
+        "--stair-locomotion-smoke",
+        action="store_const",
+        const="stair_locomotion_smoke",
+        dest="mode",
+        help=(
+            "从楼梯入口重置并沿 PCT 标定中心线纯物理上楼；"
+            "禁用 Float 和 DWA，到楼梯出口后结束。"
+        ),
+    )
+    mode_group.add_argument(
         "--pct-plan-preview",
         action="store_const",
         const="pct_plan_preview",
@@ -640,8 +703,74 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_runtime_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    """按 planner 选择补齐稳定运行预设，同时保留显式 CLI 覆盖。"""
+
+    if str(args.mode) == "stair_locomotion_smoke":
+        args.global_planner = "pct"
+    pct_multifloor = str(args.global_planner) == "pct"
+    args.runtime_preset = "pct_multifloor_stable" if pct_multifloor else "astar"
+    if args.task_json is None:
+        if not pct_multifloor:
+            raise SystemExit("A* 模式需要显式提供 --task-json。")
+        args.task_json = PCT_MULTIFLOOR_DEFAULT_TASK_JSON
+
+    if pct_multifloor:
+        if args.pct_server_script is None:
+            args.pct_server_script = PCT_MULTIFLOOR_DEFAULT_SERVER_SCRIPT
+        if args.pct_tomogram_path is None:
+            args.pct_tomogram_path = PCT_MULTIFLOOR_DEFAULT_TOMOGRAM
+        if args.pct_walkable_path is None:
+            args.pct_walkable_path = PCT_MULTIFLOOR_DEFAULT_WALKABLE
+        if args.pct_collision_ply_path is None:
+            args.pct_collision_ply_path = PCT_MULTIFLOOR_DEFAULT_COLLISION_PLY
+        if args.policy_profile is None:
+            args.policy_profile = "pct_multifloor"
+        if args.locomotion_task is None:
+            args.locomotion_task = PCT_MULTIFLOOR_LOCOMOTION_TASK
+        if args.locomotion_checkpoint is None:
+            args.locomotion_checkpoint = PCT_MULTIFLOOR_DEFAULT_CHECKPOINT
+        if args.pct_no_fallback is None:
+            args.pct_no_fallback = True
+        if args.randomize_task is None:
+            args.randomize_task = False
+        if args.randomize_base_goal is None:
+            args.randomize_base_goal = False
+        if args.show_planned_trajectories is None:
+            args.show_planned_trajectories = True
+        if args.pct_stair_float is None:
+            args.pct_stair_float = str(args.mode) != "stair_locomotion_smoke"
+        if args.record_video is None:
+            args.record_video = str(args.mode) == "full_physics"
+        if args.video_mode is None:
+            args.video_mode = "all"
+        if args.overview_camera_schedule is None:
+            args.overview_camera_schedule = PCT_MULTIFLOOR_DEFAULT_CAMERA_SCHEDULE
+        if args.navigation_visual_mode == "auto":
+            args.navigation_visual_mode = "collision"
+        return args
+
+    if args.policy_profile is None:
+        args.policy_profile = "flat"
+    if args.pct_no_fallback is None:
+        args.pct_no_fallback = False
+    if args.randomize_task is None:
+        args.randomize_task = True
+    if args.randomize_base_goal is None:
+        args.randomize_base_goal = True
+    if args.show_planned_trajectories is None:
+        args.show_planned_trajectories = False
+    if args.pct_stair_float is None:
+        args.pct_stair_float = False
+    if args.record_video is None:
+        args.record_video = False
+    if args.video_mode is None:
+        args.video_mode = "overview"
+    return args
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    return _build_parser().parse_args(argv)
+    return _resolve_runtime_defaults(_build_parser().parse_args(argv))
 
 
 def _validate_external_plan_paths(config: FullPhysicsConfig) -> None:
@@ -684,6 +813,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mode = str(args.mode)
     dry_run = mode == "dry_run"
     simulation_smoke = mode == "simulation_smoke"
+    stair_locomotion_smoke = mode == "stair_locomotion_smoke"
     navigation_smoke = mode == "navigation_smoke"
     navigation_carry_smoke = mode == "navigation_carry_smoke"
     pct_plan_preview = mode == "pct_plan_preview"
@@ -696,6 +826,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("full-physics / pick-smoke 模式禁止使用离线 plan JSON；pick/place 必须按当前仿真状态在线规划。")
     if args.keep_window_open and args.headless:
         raise SystemExit("--keep-window-open 只能与 --no-headless 一起使用。")
+    if stair_locomotion_smoke and args.pct_stair_float:
+        raise SystemExit("--stair-locomotion-smoke 固定禁用 Float，请不要传 --pct-stair-float。")
     if args.record_video and dry_run:
         raise SystemExit("--record-video 需要真实 Isaac stage / camera images，不能与 --dry-run 一起使用。")
     if args.export_video_camera_trajectory and not args.record_video:
@@ -708,6 +840,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         simulation_smoke
         or navigation_smoke
         or navigation_carry_smoke
+        or stair_locomotion_smoke
         or pct_plan_preview
         or pick_smoke
         or manipulation_apply_smoke
@@ -755,6 +888,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         simulation_smoke=simulation_smoke,
         navigation_smoke=navigation_smoke,
         navigation_carry_smoke=navigation_carry_smoke,
+        stair_locomotion_smoke=stair_locomotion_smoke,
         pct_plan_preview=pct_plan_preview,
         pick_smoke=pick_smoke,
         manipulation_smoke=manipulation_smoke,
@@ -887,6 +1021,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
         ),
         recording=RecordingSettings(
+            enabled=bool(args.record_dataset),
             debug_per_episode_lerobot=(
                 os.environ.get("FULL_PHYSICS_DEFER_LEROBOT_EXPORT") != "1"
             ),
@@ -901,6 +1036,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             mode=str(args.video_mode),
             output_path=_project_path(args.video_out) if args.video_out else None,
             overview_camera_mode=str(args.overview_camera_mode),
+            overview_camera_schedule_path=(
+                _project_path(args.overview_camera_schedule)
+                if args.overview_camera_schedule
+                else None
+            ),
             width=int(args.video_width),
             height=int(args.video_height),
             overview_capture_backend=str(args.overview_capture_backend),
@@ -933,6 +1073,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "created_at": _utc_now_iso(),
         "updated_at": _utc_now_iso(),
         "mode": mode,
+        "runtime_preset": str(args.runtime_preset),
         "task_json": str(config.task_json),
         "output_dir": str(config.output_dir),
         "headless": bool(config.headless),
@@ -989,6 +1130,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             simulation_smoke
             or navigation_smoke
             or navigation_carry_smoke
+            or stair_locomotion_smoke
             or pct_plan_preview
             or pick_smoke
             or manipulation_apply_smoke
@@ -1187,6 +1329,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 config.locomotion.policy_profile,
                                 args.navigation_visual_mode,
                             ),
+                            auto_manage_viewport_camera=bool(config.headless),
                             enable_front_camera=(
                                 (
                                     config.recording.enabled
@@ -1256,21 +1399,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                         ),
                     ),
                 )
-            elif navigation_smoke or navigation_carry_smoke:
+            elif navigation_smoke or navigation_carry_smoke or stair_locomotion_smoke:
                 from source.pipeline.navigation_smoke import (
                     create_navigation_carry_smoke_pipeline,
                     create_navigation_smoke_pipeline,
+                    create_stair_locomotion_smoke_pipeline,
                 )
                 from source.simulation import (
                     IsaacLabNavigationRuntime,
                     IsaacLabNavigationRuntimeConfig,
                 )
 
-                pipeline_factory = (
-                    create_navigation_carry_smoke_pipeline
-                    if navigation_carry_smoke
-                    else create_navigation_smoke_pipeline
-                )
+                if stair_locomotion_smoke:
+                    pipeline_factory = create_stair_locomotion_smoke_pipeline
+                elif navigation_carry_smoke:
+                    pipeline_factory = create_navigation_carry_smoke_pipeline
+                else:
+                    pipeline_factory = create_navigation_smoke_pipeline
                 pipeline = pipeline_factory(
                     config=config,
                     episode_spec=episode_spec,
@@ -1285,6 +1430,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 config.locomotion.policy_profile,
                                 args.navigation_visual_mode,
                             ),
+                            auto_manage_viewport_camera=bool(config.headless),
                             scene_light_mode=config.lighting.scene_light_mode,
                             camera_light_intensity=(
                                 config.lighting.camera_light_intensity

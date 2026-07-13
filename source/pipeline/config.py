@@ -84,13 +84,13 @@ class NavigationSettings:
         (1.5, 5.7, 0.6),
     )
     pct_cross_floor_stair_exit_points: tuple[tuple[float, float, float], ...] = (
-        (2.90, 7.05, 3.0),
+        (2.70, 7.05, 3.0),
     )
     pct_cross_floor_stair_midpoint_points: tuple[tuple[float, float, float], ...] = (
         (1.51822, 6.27683, 0.29486),
-        (2.94512, 9.14634, 1.64666),
+        (2.74512, 9.14634, 1.64666),
         (1.9202, 9.52807, 1.71919),
-        (2.89841, 7.79872, 2.61031),
+        (2.69841, 7.79872, 2.61031),
     )
     pct_cross_floor_gateway_radius_m: float = 0.6
     pct_robot_root_to_floor_m: float = 0.45
@@ -110,16 +110,16 @@ class NavigationSettings:
     pct_carry_max_linear_velocity: float = 0.25
     pct_carry_max_angular_velocity: float = 0.30
     pct_carry_max_linear_accel: float = 1.00
-    pct_carry_path_deviation_limit: float = 0.14
+    pct_carry_path_deviation_limit: float = 0.12
     pct_carry_initial_alignment_path_deviation_limit: float = 0.40
-    pct_carry_path_recovery_deviation_limit: float = 0.50
+    pct_carry_path_recovery_deviation_limit: float = 0.35
     pct_carry_max_infeasible_recomputes: int = 8
     pct_stair_float_enabled: bool = False
     pct_stair_float_speed_mps: float = 0.18
-    pct_stair_float_activation_radius_m: float = 0.45
+    pct_stair_float_activation_radius_m: float = 0.12
     pct_stair_float_completion_radius_m: float = 0.25
     pct_stair_float_min_z_delta_m: float = 0.75
-    pct_stair_float_approach_distance_m: float = 6.00
+    pct_stair_float_approach_distance_m: float = 0.00
     pct_stair_float_exit_distance_m: float = 1.40
     pct_stair_float_settle_time_s: float = 1.20
     pct_stair_float_release_settle_time_s: float = 0.80
@@ -261,7 +261,7 @@ class RecordingSettings:
     image_width: int = 640
     jpeg_quality: int = 90
     chunks_size: int = 1000
-    # front/wrist 由 IsaacLab runtime 直接采集；overview 缺失时只记录 warning。
+    # front/wrist 由 IsaacLab runtime 采集；overview JPEG 由展示录像器单独保存。
     camera_keys: tuple[str, ...] = ("front", "wrist", "overview")
     primary_camera_key: str = "front"
     save_raw_images: bool = True
@@ -288,6 +288,7 @@ class VideoRecordingSettings:
     output_path: Path | None = None
     fps: float = 25.0
     overview_camera_mode: str = "auto"
+    overview_camera_schedule_path: Path | None = None
     width: int = 1280
     height: int = 720
     overview_capture_backend: str = "viewport"
@@ -323,6 +324,7 @@ class FullPhysicsConfig:
     simulation_smoke: bool = False
     navigation_smoke: bool = False
     navigation_carry_smoke: bool = False
+    stair_locomotion_smoke: bool = False
     pct_plan_preview: bool = False
     pick_smoke: bool = False
     manipulation_smoke: bool = False
@@ -695,6 +697,13 @@ class FullPhysicsConfig:
             raise ValueError("video image size must be positive")
         if self.video.overview_camera_mode != "auto":
             raise ValueError("only overview_camera_mode='auto' is currently supported")
+        if (
+            self.video.overview_camera_schedule_path is not None
+            and not self.video.overview_camera_schedule_path.is_file()
+        ):
+            raise ValueError(
+                "overview_camera_schedule_path must point to an existing JSON file"
+            )
         if self.video.overview_capture_backend not in {"viewport", "render_product", "auto"}:
             raise ValueError("video overview_capture_backend must be one of: viewport, render_product, auto")
         if self.video.min_switch_interval_frames < 0:
@@ -710,6 +719,7 @@ class FullPhysicsConfig:
                 self.simulation_smoke,
                 self.navigation_smoke,
                 self.navigation_carry_smoke,
+                self.stair_locomotion_smoke,
                 self.pick_smoke,
                 self.manipulation_smoke,
                 self.manipulation_apply_smoke,

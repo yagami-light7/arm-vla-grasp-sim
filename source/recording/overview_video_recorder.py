@@ -334,6 +334,10 @@ class OverviewVideoRecorder:
         settings: Any,
         episode_dir: str | Path,
         episode_id: int,
+        auto_switch_camera: bool = True,
+        save_overview_images: bool = False,
+        overview_image_fps: float = 5.0,
+        overview_jpeg_quality: int = 90,
         log_prefix: str = "[overview-video]",
     ):
         self.settings = settings
@@ -341,7 +345,17 @@ class OverviewVideoRecorder:
         self.modes = _video_modes(settings)
         self.episode_dir = Path(episode_dir).expanduser().resolve()
         self.episode_id = int(episode_id)
+        self.auto_switch_camera = bool(auto_switch_camera)
+        self.save_overview_images = bool(save_overview_images)
+        self.overview_image_fps = max(1.0e-6, float(overview_image_fps))
+        self.overview_jpeg_quality = max(1, min(100, int(overview_jpeg_quality)))
         self.log_prefix = log_prefix
+        self._camera_schedule_path = getattr(
+            settings,
+            "overview_camera_schedule_path",
+            None,
+        )
+        self._camera_schedule = self._load_camera_schedule()
         self.output_paths = self._resolve_output_paths()
         self.output_path = self.output_paths[self.modes[0]]
         self._writers: dict[str, Any] = {}
@@ -378,6 +392,9 @@ class OverviewVideoRecorder:
         self._camera_trajectory_path = self._resolve_camera_trajectory_path()
         self._camera_trajectory_frame_count = 0
         self._camera_trajectory_error: str | None = None
+        self._overview_image_dir = self.episode_dir / "images" / "overview"
+        self._overview_image_count = 0
+        self._last_overview_image_timestamp: float | None = None
 
     @property
     def _overview_frame_count(self) -> int:
@@ -388,10 +405,14 @@ class OverviewVideoRecorder:
             return
         for output_path in self.output_paths.values():
             output_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.save_overview_images and "overview" in self.modes:
+            self._overview_image_dir.mkdir(parents=True, exist_ok=True)
         print(
             f"{self.log_prefix} enabled=True mode={getattr(self.settings, 'mode', 'overview')} "
             f"streams={self.modes} "
             f"camera_mode={getattr(self.settings, 'overview_camera_mode', 'auto')} "
+            f"camera_control={'auto' if self.auto_switch_camera else 'manual_gui'} "
+            f"camera_schedule={self._camera_schedule_path} "
             f"fps={float(getattr(self.settings, 'fps', 25.0)):.3f} "
             f"overview_size={int(getattr(self.settings, 'width', 1280))}x"
             f"{int(getattr(self.settings, 'height', 720))} "
@@ -415,6 +436,7 @@ class OverviewVideoRecorder:
         timestamp: float,
         step_index: int,
         camera_images: dict[str, Any] | None = None,
+        robot_root_pose: tuple[float, ...] | None = None,
     ) -> None:
         if not self.enabled:
             return
@@ -423,6 +445,7 @@ class OverviewVideoRecorder:
                 state=state,
                 timestamp=timestamp,
                 step_index=step_index,
+                robot_root_pose=robot_root_pose,
             )
         if "front" in self.modes:
             self._add_observation_frame(
@@ -443,12 +466,24 @@ class OverviewVideoRecorder:
         state: str,
         timestamp: float,
         step_index: int,
+        robot_root_pose: tuple[float, ...] | None,
     ) -> None:
         if not self._discovery_done or self._should_rediscover_cameras():
             self._discover_cameras_from_current_stage()
-        camera_path = self.select_camera_for_state(state)
-        if camera_path is not None:
-            self._maybe_switch_camera(camera_path, state=state, step_index=step_index)
+        if self.auto_switch_camera:
+            camera_path = self.select_camera_for_state(
+                state,
+                robot_root_pose=robot_root_pose,
+                step_index=step_index,
+            )
+            if camera_path is not None:
+                self._maybe_switch_camera(camera_path, state=state, step_index=step_index)
+        else:
+            # GUI 视口完全由用户手动控制；录像器只读取当前相机，不写 active camera。
+            manual_camera = self._read_active_viewport_camera_path()
+            if manual_camera:
+                self._active_viewport_camera_path = manual_camera
+                self._current_camera_path = manual_camera
         if not self._should_capture("overview", timestamp):
             return
         try:
@@ -462,6 +497,7 @@ class OverviewVideoRecorder:
             self._mark_dropped("overview")
             return
         written_frame_index = self._write_video_frame(frame, stream="overview")
+        self._maybe_write_overview_image(frame, timestamp=timestamp)
         self._write_camera_trajectory_frame(
             state=state,
             timestamp=timestamp,
@@ -469,6 +505,26 @@ class OverviewVideoRecorder:
             frame_index=written_frame_index,
         )
         self._last_capture_timestamps["overview"] = float(timestamp)
+
+    def _maybe_write_overview_image(self, frame: np.ndarray, *, timestamp: float) -> None:
+        """按数据集频率保存自动切换后的 overview JPEG。"""
+
+        if not self.save_overview_images:
+            return
+        interval = 1.0 / self.overview_image_fps
+        if (
+            self._last_overview_image_timestamp is not None
+            and float(timestamp) - self._last_overview_image_timestamp < interval - 1.0e-9
+        ):
+            return
+        from PIL import Image
+
+        self._overview_image_dir.mkdir(parents=True, exist_ok=True)
+        image_path = self._overview_image_dir / f"overview_{self._overview_image_count:05d}.jpg"
+        image = Image.fromarray(_image_to_rgb_uint8(frame))
+        image.save(image_path, format="JPEG", quality=self.overview_jpeg_quality)
+        self._overview_image_count += 1
+        self._last_overview_image_timestamp = float(timestamp)
 
     def _add_observation_frame(
         self,
@@ -574,12 +630,91 @@ class OverviewVideoRecorder:
             self._warn_once("no USD camera or active viewport camera is available")
         return dict(self._discovery_report)
 
-    def select_camera_for_state(self, state: str) -> str | None:
+    def _load_camera_schedule(self) -> dict[str, Any]:
+        """读取可编辑的 headless overview 相机切换规则。"""
+
+        raw_path = self._camera_schedule_path
+        if raw_path is None:
+            return {}
+        path = Path(raw_path).expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"overview camera schedule does not exist: {path}")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("overview camera schedule must be a JSON object")
+        rules = payload.get("rules", [])
+        if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+            raise ValueError("overview camera schedule rules must be a list of objects")
+        return payload
+
+    def _scheduled_camera(
+        self,
+        state: str,
+        *,
+        robot_root_pose: tuple[float, ...] | None,
+        step_index: int | None,
+    ) -> str | None:
+        """按 state、step 和机器人 XYZ 选择规则中的 Camera0-8。"""
+
+        if not self._camera_schedule:
+            return None
+        lowered_state = str(state).lower().strip()
+        xyz = None
+        if robot_root_pose is not None and len(robot_root_pose) >= 3:
+            xyz = tuple(float(value) for value in robot_root_pose[:3])
+        for rule in self._camera_schedule.get("rules", []):
+            states = rule.get("states")
+            if states is not None:
+                if not isinstance(states, list):
+                    continue
+                normalized_states = {str(value).lower().strip() for value in states}
+                if lowered_state not in normalized_states:
+                    continue
+            if step_index is not None:
+                if "min_step" in rule and int(step_index) < int(rule["min_step"]):
+                    continue
+                if "max_step" in rule and int(step_index) > int(rule["max_step"]):
+                    continue
+            if any(key in rule for key in ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")):
+                if xyz is None:
+                    continue
+                bounds = (
+                    ("x_min", "x_max", xyz[0]),
+                    ("y_min", "y_max", xyz[1]),
+                    ("z_min", "z_max", xyz[2]),
+                )
+                if any(
+                    (lower in rule and value < float(rule[lower]))
+                    or (upper in rule and value > float(rule[upper]))
+                    for lower, upper, value in bounds
+                ):
+                    continue
+            camera = rule.get("camera")
+            if isinstance(camera, str) and camera:
+                return camera
+        default_camera = self._camera_schedule.get("default_camera")
+        return default_camera if isinstance(default_camera, str) else None
+
+    def select_camera_for_state(
+        self,
+        state: str,
+        *,
+        robot_root_pose: tuple[float, ...] | None = None,
+        step_index: int | None = None,
+    ) -> str | None:
         """Pick a stable camera path for the current pipeline state."""
 
         candidates = self._overview_cameras or self._all_cameras
         if not candidates:
             return self._active_viewport_camera_path
+        scheduled_camera = self._scheduled_camera(
+            state,
+            robot_root_pose=robot_root_pose,
+            step_index=step_index,
+        )
+        candidate_paths = {candidate.path for candidate in candidates}
+        if scheduled_camera in candidate_paths:
+            return scheduled_camera
         role = _state_role(str(state), previous_role=self._last_role)
         target_third_person_index = _THIRD_PERSON_ROLE_INDEX.get(role)
         if target_third_person_index is not None:
@@ -670,7 +805,22 @@ class OverviewVideoRecorder:
             "frame_count": int(sum(self._stream_frame_counts.values())),
             "dropped_frame_count": int(self._dropped_frame_count),
             "camera_discovery": dict(self._discovery_report),
+            "camera_control": (
+                "auto_headless" if self.auto_switch_camera else "manual_gui"
+            ),
+            "camera_schedule_path": (
+                None
+                if self._camera_schedule_path is None
+                else str(Path(self._camera_schedule_path).expanduser().resolve())
+            ),
             "camera_switches": list(self._switch_log),
+            "overview_images": {
+                "enabled": bool(self.save_overview_images and "overview" in self.modes),
+                "directory": str(self._overview_image_dir),
+                "frame_count": int(self._overview_image_count),
+                "fps": float(self.overview_image_fps),
+                "jpeg_quality": int(self.overview_jpeg_quality),
+            },
             "capture_backend": self._capture_backend,
             "capture_error": self._capture_error,
             "writer_backends": dict(self._writer_backends),

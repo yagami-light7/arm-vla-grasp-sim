@@ -25,6 +25,7 @@ class _OverviewVideoSettings:
     output_path: Path | None = None
     fps: float = 25.0
     overview_camera_mode: str = "auto"
+    overview_camera_schedule_path: Path | None = None
     width: int = 64
     height: int = 48
     overview_capture_backend: str = "viewport"
@@ -94,6 +95,79 @@ class SimulationViewportTest(unittest.TestCase):
 
         self.assertEqual(recorder.select_camera_for_state("RESET_EPISODE"), "/World/Camera0")
 
+    def test_headless_overview_schedule_selects_camera_by_state_and_position(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            schedule_path = Path(tmp_dir) / "schedule.json"
+            schedule_path.write_text(
+                """{
+  "default_camera": "/World/Camera0",
+  "rules": [
+    {"states": ["exec_nav_to_place"], "z_min": 2.0, "camera": "/World/Camera7"},
+    {"states": ["exec_nav_to_place"], "camera": "/World/Camera3"}
+  ]
+}""",
+                encoding="utf-8",
+            )
+            recorder = OverviewVideoRecorder(
+                settings=_OverviewVideoSettings(
+                    overview_camera_schedule_path=schedule_path
+                ),
+                episode_dir=tmp_dir,
+                episode_id=0,
+                auto_switch_camera=True,
+            )
+            recorder._overview_cameras = tuple(  # noqa: SLF001
+                _CameraCandidate(
+                    path=f"/World/Camera{index}",
+                    name=f"Camera{index}",
+                    normalized_text=f"/world/camera{index} camera{index}",
+                    is_observation=False,
+                    overview_score=100,
+                )
+                for index in range(9)
+            )
+
+            lower = recorder.select_camera_for_state(
+                "exec_nav_to_place",
+                robot_root_pose=(1.0, 5.0, 0.2),
+                step_index=100,
+            )
+            upper = recorder.select_camera_for_state(
+                "exec_nav_to_place",
+                robot_root_pose=(1.0, 5.0, 2.5),
+                step_index=200,
+            )
+
+        self.assertEqual(lower, "/World/Camera3")
+        self.assertEqual(upper, "/World/Camera7")
+
+    def test_gui_overview_reads_manual_camera_without_auto_switch(self) -> None:
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(),
+            episode_dir=".",
+            episode_id=0,
+            auto_switch_camera=False,
+        )
+        recorder._discovery_done = True  # noqa: SLF001
+        with (
+            mock.patch.object(
+                recorder,
+                "_read_active_viewport_camera_path",
+                return_value="/World/Camera5",
+            ),
+            mock.patch.object(recorder, "_maybe_switch_camera") as switch_camera,
+            mock.patch.object(recorder, "_should_capture", return_value=False),
+        ):
+            recorder._add_overview_frame(  # noqa: SLF001
+                state="exec_nav_to_place",
+                timestamp=1.0,
+                step_index=10,
+                robot_root_pose=(1.0, 5.0, 0.2),
+            )
+
+        switch_camera.assert_not_called()
+        self.assertEqual(recorder._current_camera_path, "/World/Camera5")  # noqa: SLF001
+
     def test_camera_font_name_is_supported_for_current_scene(self) -> None:
         candidates = candidate_stage_camera_paths("/World/Camera_font")
 
@@ -148,6 +222,40 @@ class SimulationViewportTest(unittest.TestCase):
                 video_path = output_dir / f"episode_000004_{stream}.mp4"
                 self.assertTrue(video_path.is_file(), stream)
                 self.assertEqual(summary["videos"][stream]["frame_count"], 1)
+
+    def test_overview_recorder_saves_low_frequency_jpeg_frames(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            recorder = OverviewVideoRecorder(
+                settings=_OverviewVideoSettings(),
+                episode_dir=tmp_dir,
+                episode_id=5,
+                save_overview_images=True,
+                overview_image_fps=5.0,
+                overview_jpeg_quality=88,
+            )
+            recorder._discovery_done = True  # noqa: SLF001
+            frame = np.full((48, 64, 3), 96, dtype=np.uint8)
+            with (
+                mock.patch.object(recorder, "_should_capture", return_value=True),
+                mock.patch.object(recorder, "_capture_frame", return_value=frame),
+                mock.patch.object(recorder, "_write_video_frame", return_value=0),
+            ):
+                for timestamp in (0.0, 0.04, 0.20):
+                    recorder._add_overview_frame(  # noqa: SLF001
+                        state="exec_nav_to_place",
+                        timestamp=timestamp,
+                        step_index=int(timestamp * 50),
+                        robot_root_pose=(1.0, 5.0, 0.2),
+                    )
+
+            image_dir = Path(tmp_dir) / "images" / "overview"
+            self.assertEqual(
+                sorted(path.name for path in image_dir.glob("*.jpg")),
+                ["overview_00000.jpg", "overview_00001.jpg"],
+            )
+            summary = recorder.close(status="success")
+            self.assertEqual(summary["overview_images"]["frame_count"], 2)
+            self.assertEqual(summary["overview_images"]["fps"], 5.0)
 
     def test_third_person_cameras_are_selected_by_pipeline_state(self) -> None:
         recorder = OverviewVideoRecorder(
@@ -353,6 +461,8 @@ class SimulationViewportTest(unittest.TestCase):
                 "overview",
                 "--overview-camera-mode",
                 "auto",
+                "--overview-camera-schedule",
+                "configs/recording/multifloor_overview_camera_schedule.json",
                 "--overview-capture-backend",
                 "viewport",
                 "--video-width",
@@ -373,6 +483,10 @@ class SimulationViewportTest(unittest.TestCase):
         self.assertTrue(args.record_video)
         self.assertEqual(args.video_mode, "overview")
         self.assertEqual(args.overview_camera_mode, "auto")
+        self.assertEqual(
+            args.overview_camera_schedule,
+            "configs/recording/multifloor_overview_camera_schedule.json",
+        )
         self.assertEqual(args.overview_capture_backend, "viewport")
         self.assertEqual(args.video_width, 1280)
         self.assertEqual(args.video_height, 720)

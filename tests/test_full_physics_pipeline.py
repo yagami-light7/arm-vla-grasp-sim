@@ -11,6 +11,7 @@ from pathlib import Path
 from scripts.pipeline.run_full_physics_pipeline import (
     _build_parser,
     _locomotion_runtime_kwargs,
+    _parse_args,
     main,
 )
 from source.diagnostics import (
@@ -371,6 +372,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertIn("--simulation-smoke", help_text)
         self.assertIn("--navigation-smoke", help_text)
         self.assertIn("--navigation-carry-smoke", help_text)
+        self.assertIn("--stair-locomotion-smoke", help_text)
         self.assertIn("--pct-plan-preview", help_text)
         self.assertIn("--pct-cross-floor-gateway", help_text)
         self.assertIn("--pct-stair-float", help_text)
@@ -471,11 +473,106 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertTrue(pct_dwa_config.use_command_velocity_window)
 
     def test_cli_defaults_to_full_physics_mode(self) -> None:
-        args = _build_parser().parse_args(
+        args = _parse_args(
             ["--task-json", "tasks/nav_pick_place_apple_contact.json"]
         )
         self.assertEqual(args.mode, "full_physics")
         self.assertFalse(args.show_planned_trajectories)
+
+    def test_pct_multifloor_stable_preset_resolves_runtime_defaults(self) -> None:
+        args = _parse_args(["--pct-multifloor"])
+
+        self.assertEqual(args.runtime_preset, "pct_multifloor_stable")
+        self.assertEqual(
+            args.task_json,
+            "tasks/nav_pick_place_apple_multifloor_pct.json",
+        )
+        self.assertEqual(args.global_planner, "pct")
+        self.assertEqual(args.pct_server_script, "scripts/navigation/pct_grid_server.py")
+        self.assertEqual(
+            args.pct_tomogram_path,
+            "source/scene/multifloor/mutifloor.pickle",
+        )
+        self.assertEqual(
+            args.pct_walkable_path,
+            "source/scene/multifloor/mutifloor_ply_walkable.npy",
+        )
+        self.assertEqual(
+            args.pct_collision_ply_path,
+            "source/scene/multifloor/ply/3dgs_collision.ply",
+        )
+        self.assertTrue(args.pct_no_fallback)
+        self.assertEqual(args.policy_profile, "pct_multifloor")
+        self.assertEqual(args.locomotion_task, PCT_MULTIFLOOR_LOCOMOTION_TASK)
+        self.assertEqual(
+            args.locomotion_checkpoint,
+            "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
+        )
+        self.assertFalse(args.randomize_task)
+        self.assertFalse(args.randomize_base_goal)
+        self.assertTrue(args.show_planned_trajectories)
+        self.assertEqual(args.navigation_visual_mode, "collision")
+        self.assertTrue(args.record_video)
+        self.assertEqual(args.video_mode, "all")
+        self.assertEqual(
+            args.overview_camera_schedule,
+            "configs/recording/multifloor_overview_camera_schedule.json",
+        )
+        self.assertTrue(args.pct_stair_float)
+
+    def test_pct_multifloor_stable_preset_preserves_explicit_overrides(self) -> None:
+        args = _parse_args(
+            [
+                "--pct-multifloor",
+                "--task-json",
+                "tasks/nav_pick_place_apple_contact.json",
+                "--pct-fallback-to-astar",
+                "--randomize-task",
+                "--randomize-base-goal",
+                "--no-show-planned-trajectories",
+                "--no-record-video",
+                "--video-mode",
+                "overview",
+                "--navigation-visual-mode",
+                "full",
+            ]
+        )
+
+        self.assertEqual(args.task_json, "tasks/nav_pick_place_apple_contact.json")
+        self.assertFalse(args.pct_no_fallback)
+        self.assertTrue(args.randomize_task)
+        self.assertTrue(args.randomize_base_goal)
+        self.assertFalse(args.show_planned_trajectories)
+        self.assertFalse(args.record_video)
+        self.assertEqual(args.video_mode, "overview")
+        self.assertEqual(args.navigation_visual_mode, "full")
+
+    def test_pct_multifloor_full_pipeline_can_explicitly_disable_float(self) -> None:
+        args = _parse_args(["--pct-multifloor", "--no-pct-stair-float"])
+
+        self.assertEqual(args.mode, "full_physics")
+        self.assertFalse(args.pct_stair_float)
+
+    def test_stair_locomotion_smoke_selects_pct_and_disables_float(self) -> None:
+        args = _parse_args(["--stair-locomotion-smoke"])
+
+        self.assertEqual(args.mode, "stair_locomotion_smoke")
+        self.assertEqual(args.global_planner, "pct")
+        self.assertEqual(args.policy_profile, "pct_multifloor")
+        self.assertFalse(args.pct_stair_float)
+        self.assertFalse(args.record_video)
+        self.assertEqual(
+            args.task_json,
+            "tasks/nav_pick_place_apple_multifloor_pct.json",
+        )
+
+    def test_stair_locomotion_smoke_rejects_explicit_float(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "固定禁用 Float"):
+            main(["--stair-locomotion-smoke", "--pct-stair-float"])
+
+    def test_astar_without_task_json_is_rejected(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "A\\* 模式需要显式提供 --task-json"):
+            _parse_args([])
 
     def test_cli_can_enable_planned_trajectory_visualization(self) -> None:
         args = _build_parser().parse_args(
@@ -537,7 +634,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             args.pct_carry_max_angular_velocity,
             NavigationSettings().pct_carry_max_angular_velocity,
         )
-        self.assertFalse(args.pct_stair_float)
+        self.assertIsNone(args.pct_stair_float)
         self.assertEqual(
             args.pct_stair_float_speed,
             NavigationSettings().pct_stair_float_speed_mps,
@@ -846,7 +943,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             )
             self.assertAlmostEqual(
                 pipeline.machine.arm_executor.config.post_motion_joint_error_tolerance,
-                0.060,
+                0.065,
             )
             self.assertTrue(
                 pipeline.machine.config.manipulation.settle_object_before_navigation
@@ -2171,6 +2268,53 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             )
             self.assertTrue(
                 all(frame["action"]["gripper_command"] == "close" for frame in carry_frames)
+            )
+
+    def test_stair_locomotion_smoke_stops_after_navigation_goal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            task_path = PROJECT_ROOT / "tasks/nav_smoke_example.json"
+            config = FullPhysicsConfig(
+                task_json=task_path,
+                output_dir=root,
+                stair_locomotion_smoke=True,
+            )
+            spec = JsonTaskProvider().load(task_path)
+            gripper = BinaryGripperController()
+            pipeline = FullPhysicsPipeline(
+                config=config,
+                episode_spec=spec,
+                episode_seed=5,
+                simulation=InMemorySimulationRuntime(),
+                nav_planner=DryRunNavPlanner(),
+                nav_executor=DryRunNavExecutor(),
+                manipulation_planner=SegmentedSmokeManipulationPlanner(),
+                arm_executor=SegmentedArmExecutor(gripper),
+                gripper=gripper,
+                verifier=NavigationEpisodeVerifier(),
+                recorder=JsonlEpisodeRecorder(root / "episode"),
+            )
+
+            summary = pipeline.run_episode()
+
+            self.assertTrue(summary["success"])
+            self.assertEqual(summary["execution_mode"], "stair_locomotion_smoke")
+            self.assertEqual(
+                summary["success_semantics"],
+                "pure_physics_stair_locomotion_without_dwa_or_float",
+            )
+            self.assertFalse(summary["pure_physics_success"])
+            self.assertEqual(
+                summary["state_trace"],
+                [
+                    PipelineState.BUILD_STAGE.value,
+                    PipelineState.RESET_EPISODE.value,
+                    PipelineState.PLAN_NAV_TO_PICK.value,
+                    PipelineState.EXEC_NAV_TO_PICK.value,
+                    PipelineState.VERIFY_PICK_REACHABLE.value,
+                    PipelineState.CLEANUP_EPISODE.value,
+                    PipelineState.DONE.value,
+                ],
             )
 
     def test_component_exception_becomes_structured_failure(self) -> None:

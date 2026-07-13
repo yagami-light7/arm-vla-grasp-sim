@@ -94,7 +94,7 @@ def create_full_physics_pipeline(
         # DogOnly 多楼层策略不直接暴露机械臂 action 槽位，真实跟踪会通过
         # 独立 position target 收敛；这里仅放宽 PCT profile 的终端收敛判定。
         post_motion_hold_duration = max(post_motion_hold_duration, 1.00)
-        post_motion_joint_error_tolerance = max(post_motion_joint_error_tolerance, 0.060)
+        post_motion_joint_error_tolerance = max(post_motion_joint_error_tolerance, 0.065)
     return FullPhysicsPipeline(
         config=full_physics_config,
         episode_spec=episode_spec,

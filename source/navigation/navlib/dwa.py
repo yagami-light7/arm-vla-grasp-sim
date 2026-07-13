@@ -48,6 +48,7 @@ class DWAConfig:
     enforce_path_deviation_limit: bool = False
     initial_alignment_path_deviation_limit: float | None = None
     path_recovery_deviation_limit: float | None = None
+    path_recovery_speed_limit: float | None = None
     near_goal_path_deviation_limit: float | None = None
     near_goal_path_deviation_distance: float | None = None
     preserve_sharp_corners: bool = False
@@ -399,6 +400,19 @@ class DWAController:
         dt = max(self.config.control_dt, 1.0e-3)
         linear_cap = self.config.max_linear_velocity
         min_active_linear_velocity = self.config.min_active_linear_velocity
+        if (
+            self._path_recovery_active
+            and self.config.path_recovery_speed_limit is not None
+        ):
+            # 偏离路径时只允许低速回线，禁止恢复过程中再次加速冲出安全走廊。
+            linear_cap = min(
+                linear_cap,
+                max(0.0, float(self.config.path_recovery_speed_limit)),
+            )
+            min_active_linear_velocity = min(
+                min_active_linear_velocity,
+                linear_cap,
+            )
         if distance_to_goal <= self.config.close_goal_distance:
             linear_cap = min(linear_cap, self.config.close_goal_speed_limit)
             min_active_linear_velocity = min(min_active_linear_velocity, linear_cap)

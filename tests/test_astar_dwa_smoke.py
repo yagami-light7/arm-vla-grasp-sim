@@ -18,8 +18,16 @@ from source.navigation.executor import (
     DwaNavExecutor,
     PCT_STAIR_FLOAT_DOG_JOINT_NAMES,
     PCT_STAIR_FLOAT_DOG_STAND_JOINT_POSITIONS,
+    _plan_clearance_optimized_floor_path,
+    _world_path_is_clear,
 )
-from source.navigation.navlib import AStarPlanner, DWAConfig, DWAController, OccupancyGridMap
+from source.navigation.navlib import (
+    AStarPlanner,
+    DWAConfig,
+    DWAController,
+    DWADebug,
+    OccupancyGridMap,
+)
 
 
 class AStarDwaSmokeTest(unittest.TestCase):
@@ -146,6 +154,28 @@ class AStarDwaSmokeTest(unittest.TestCase):
         linear_values = {vx for vx, _ in samples}
 
         self.assertEqual(linear_values, {0.0})
+
+    def test_dwa_path_recovery_caps_forward_speed(self) -> None:
+        grid = OccupancyGridMap(np.zeros((80, 80), dtype=bool), 0.05, (-1.0, -1.0, 0.0))
+        config = DWAConfig(
+            control_dt=0.02,
+            max_linear_velocity=0.45,
+            min_active_linear_velocity=0.25,
+            max_linear_accel=2.5,
+            path_recovery_speed_limit=0.12,
+        )
+        controller = DWAController([(0.0, 0.0), (1.0, 0.0)], grid, config)
+        controller._path_recovery_active = True
+
+        samples = controller._sample_velocities(
+            current_vx=0.25,
+            current_wz=0.0,
+            distance_to_goal=1.0,
+            heading_error=0.0,
+        )
+
+        self.assertTrue(samples)
+        self.assertTrue(all(vx <= 0.12 + 1.0e-6 for vx, _ in samples))
 
     def test_dwa_dynamic_window_prevents_instant_angular_sign_flip(self) -> None:
         grid = OccupancyGridMap(np.zeros((80, 80), dtype=bool), 0.05, (-1.0, -1.0, 0.0))
@@ -586,6 +616,80 @@ class AStarDwaSmokeTest(unittest.TestCase):
             [[0.0, 0.0], [0.5, 0.0], [0.8, 0.2], [1.0, 0.2]],
         )
 
+    def test_pct_no_float_simplifies_clear_flat_approach_before_stair(self) -> None:
+        occupancy = np.zeros((80, 80), dtype=bool)
+        occupancy[[0, -1], :] = True
+        occupancy[:, [0, -1]] = True
+        single_floor_grid = OccupancyGridMap(
+            occupancy,
+            0.1,
+            (-2.0, -2.0, 0.0),
+        )
+        multifloor_grid = OccupancyGridMap(
+            occupancy.copy(),
+            0.1,
+            (-2.0, -2.0, 0.0),
+        )
+        path_3d = (
+            (0.0, 0.0, 0.0),
+            (0.3, 0.2, 0.0),
+            (0.6, -0.2, 0.0),
+            (0.9, 0.2, 0.0),
+            (1.2, -0.2, 0.0),
+            (1.5, 0.2, 0.0),
+            (2.0, 0.0, 0.0),
+            (2.0, 0.2, 0.3),
+            (2.0, 0.4, 0.6),
+            (2.2, 0.4, 0.6),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=2.2, y=0.4, z=0.6, yaw=0.0),
+            waypoints=tuple((point[0], point[1]) for point in path_3d),
+            metadata={
+                "planner": "pct",
+                "path_3d": path_3d,
+                "slice_start": 2,
+                "slice_end": 4,
+                "execution_phase": "carry_nav_to_place",
+                "stair_centerline_refinement": {
+                    "applied": True,
+                    "approach_start": [2.0, 0.0, 0.0],
+                },
+            },
+        )
+        executor = DwaNavExecutor(
+            grid_map=single_floor_grid,
+            multifloor_grid_map=multifloor_grid,
+            local_clearance_radius=0.0,
+            multifloor_no_float_clearance_radius=0.25,
+            dwa_config=DWAConfig(control_dt=0.05),
+        )
+
+        executor.reset(plan)
+
+        status = executor.status()
+        flat_report = status["local_refinement"]["flat_approach"]
+        self.assertTrue(flat_report["applied"])
+        self.assertEqual(
+            flat_report["reason"],
+            "planner_path_already_clearance_optimized",
+        )
+        planner_optimization = flat_report["planner_optimization"]
+        self.assertEqual(planner_optimization["original_pre_stair_point_count"], 7)
+        self.assertGreaterEqual(planner_optimization["preserve_end_index"], 2)
+        self.assertLess(
+            planner_optimization["maximum_heading_change_after_rad"],
+            planner_optimization["maximum_heading_change_before_rad"],
+        )
+        self.assertAlmostEqual(
+            status["map_selection"]["local_clearance_radius_m"],
+            0.25,
+        )
+        reference_path = executor._controller.reference_path_world.tolist()
+        self.assertEqual(reference_path[0], [0.0, 0.0])
+        self.assertEqual(reference_path[-1], [2.2, 0.4])
+        self.assertGreater(len(reference_path), len(path_3d))
+
     def test_pct_carry_map_keeps_route_corridor_and_blocks_deviations(self) -> None:
         single_floor_grid = OccupancyGridMap(
             np.zeros((60, 60), dtype=bool),
@@ -630,7 +734,7 @@ class AStarDwaSmokeTest(unittest.TestCase):
             carry_max_linear_velocity=0.20,
             carry_max_angular_velocity=0.30,
             carry_max_linear_accel=1.00,
-            carry_path_deviation_limit=0.14,
+            carry_path_deviation_limit=0.12,
             carry_initial_alignment_path_deviation_limit=0.40,
             carry_path_recovery_deviation_limit=0.35,
             carry_max_infeasible_recomputes=8,
@@ -653,7 +757,7 @@ class AStarDwaSmokeTest(unittest.TestCase):
         self.assertAlmostEqual(status["dwa_limits"]["max_linear_velocity"], 0.20)
         self.assertAlmostEqual(status["dwa_limits"]["max_angular_velocity"], 0.30)
         self.assertAlmostEqual(status["dwa_limits"]["max_linear_accel"], 1.00)
-        self.assertAlmostEqual(status["dwa_limits"]["path_deviation_limit"], 0.14)
+        self.assertAlmostEqual(status["dwa_limits"]["path_deviation_limit"], 0.12)
         self.assertTrue(status["dwa_limits"]["enforce_path_deviation_limit"])
         self.assertAlmostEqual(
             status["dwa_limits"]["initial_alignment_path_deviation_limit"],
@@ -663,6 +767,7 @@ class AStarDwaSmokeTest(unittest.TestCase):
             status["dwa_limits"]["path_recovery_deviation_limit"],
             0.30,
         )
+        self.assertIsNone(status["dwa_limits"]["path_recovery_speed_limit"])
         self.assertAlmostEqual(
             status["dwa_limits"]["near_goal_path_deviation_limit"],
             0.75,
@@ -677,7 +782,106 @@ class AStarDwaSmokeTest(unittest.TestCase):
             0.18,
         )
         self.assertAlmostEqual(status["dwa_limits"]["rotate_in_place_angle"], 1.60)
+        self.assertIsNone(status["dwa_limits"]["large_heading_creep_velocity"])
         self.assertEqual(status["dwa_limits"]["max_infeasible_recomputes"], 8)
+
+    def test_pct_physical_pre_stair_carry_avoids_policy_standing_velocity_deadzone(self) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((80, 80), dtype=bool),
+            0.1,
+            (-2.0, -2.0, 0.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=2.0, y=0.0, yaw=0.0),
+            waypoints=((0.0, 0.0), (2.0, 0.0)),
+            metadata={
+                "execution_phase": "carry_nav_to_place",
+            },
+        )
+        dwa_config = DWAConfig(
+            control_dt=0.05,
+            max_linear_velocity=0.25,
+            max_linear_accel=1.0,
+        )
+        state = SimulationState(
+            step_index=0,
+            timestamp=0.0,
+            robot_root_pose=(0.0, 0.0, 0.2, 1.0, 0.0, 0.0, 0.0),
+            robot_root_velocity=(0.0,) * 6,
+        )
+        no_float = DwaNavExecutor(
+            grid_map=grid,
+            multifloor_grid_map=grid,
+            dwa_config=dwa_config,
+            carry_max_linear_velocity=0.25,
+            stair_float_enabled=False,
+        )
+        with_float = DwaNavExecutor(
+            grid_map=grid,
+            multifloor_grid_map=grid,
+            dwa_config=dwa_config,
+            carry_max_linear_velocity=0.25,
+            stair_float_enabled=True,
+            stair_float_activation_radius_m=0.0,
+            stair_float_approach_distance_m=0.0,
+        )
+
+        no_float.reset(plan)
+        with_float.reset(plan)
+        debug = DWADebug(
+            target_index=1,
+            target_point=(1.0, 0.0),
+            distance_to_target=1.0,
+            distance_to_goal=2.0,
+            heading_error=0.0,
+            clearance=1.0,
+            score=1.0,
+            reached_goal=False,
+            near_goal_tracking=False,
+            sampled_candidates=1,
+            feasible_candidates=1,
+            collision_rejections=0,
+            path_deviation_rejections=0,
+            best_linear_velocity=0.05,
+            best_angular_velocity=0.0,
+            path_distance=0.0,
+            path_deviation_limit_used=0.14,
+            initial_alignment_active=False,
+            path_recovery_active=False,
+            window_linear_velocity=0.05,
+            window_angular_velocity=0.0,
+            velocity_window_source="command",
+        )
+
+        class FixedLowSpeedController:
+            def compute_command(self, pose, velocity):
+                del pose, velocity
+                return np.array([0.05, 0.0, 0.0], dtype=np.float32), debug
+
+        no_float._controller = FixedLowSpeedController()
+        with_float._controller = FixedLowSpeedController()
+        no_float_action = no_float.compute_action(state)
+        with_float_action = with_float.compute_action(state)
+
+        self.assertAlmostEqual(no_float_action.base_velocity[0], 0.25)
+        self.assertAlmostEqual(with_float_action.base_velocity[0], 0.25)
+
+        with_float._stair_float_started = True
+        post_float_action = with_float.compute_action(state)
+        self.assertAlmostEqual(post_float_action.base_velocity[0], 0.05)
+
+        class FixedTurningController:
+            def compute_command(self, pose, velocity):
+                del pose, velocity
+                return np.array([0.10, 0.0, 0.30], dtype=np.float32), debug
+
+        no_float._controller = FixedTurningController()
+        turning_action = no_float.compute_action(state)
+        self.assertAlmostEqual(turning_action.base_velocity[0], 0.25)
+        self.assertAlmostEqual(turning_action.base_velocity[2], 0.30)
+        self.assertIsNone(
+            with_float.status()["dwa_limits"]["no_float_carry_gait_activation_vx"]
+        )
 
     def test_pct_carry_stair_float_freezes_base_only_on_stair_segment(self) -> None:
         grid = OccupancyGridMap(
@@ -715,7 +919,7 @@ class AStarDwaSmokeTest(unittest.TestCase):
             ),
             stair_float_enabled=True,
             stair_float_speed_mps=1.0,
-            stair_float_activation_radius_m=0.45,
+            stair_float_activation_radius_m=0.12,
             stair_float_completion_radius_m=0.05,
             stair_float_min_z_delta_m=0.75,
             stair_float_approach_distance_m=0.0,
@@ -723,15 +927,25 @@ class AStarDwaSmokeTest(unittest.TestCase):
             stair_float_settle_time_s=0.0,
         )
         executor.reset(plan)
-        state = SimulationState(
+        pre_stair_state = SimulationState(
             step_index=0,
             timestamp=0.0,
+            robot_root_pose=(0.3, 0.0, 0.30, 1.0, 0.0, 0.0, 0.0),
+            robot_root_velocity=(0.0,) * 6,
+        )
+        state = SimulationState(
+            step_index=1,
+            timestamp=0.1,
             robot_root_pose=(0.5, 0.0, 0.30, 1.0, 0.0, 0.0, 0.0),
             robot_root_velocity=(0.0,) * 6,
         )
 
+        before_stair = executor.compute_action(pre_stair_state)
         first = executor.compute_action(state)
 
+        self.assertEqual(before_stair.source, "navigation_dwa")
+        self.assertNotIn("navigation_base_pose_lock", before_stair.metadata)
+        self.assertFalse(executor.status()["stair_float"]["approach_distance_m"])
         self.assertEqual(first.source, "navigation_stair_float")
         self.assertTrue(first.metadata["navigation_base_pose_lock"])
         self.assertTrue(first.metadata["navigation_support_joint_lock"])
@@ -801,6 +1015,96 @@ class AStarDwaSmokeTest(unittest.TestCase):
                 "navigation_completed",
             },
         )
+
+    def test_pct_carry_stair_float_activates_in_first_segment_corridor(self) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((120, 120), dtype=bool),
+            0.10,
+            (-2.0, -2.0, 0.0),
+        )
+        path_3d = (
+            (1.5, 5.7, 0.0),
+            (1.5060733333333334, 5.892276666666667, 0.09828666666666666),
+            (1.51822, 6.27683, 0.29486),
+            (2.7, 7.05, 3.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=2.7, y=7.05, z=3.0, yaw=0.0),
+            waypoints=tuple((point[0], point[1]) for point in path_3d),
+            metadata={
+                "planner": "pct",
+                "path_3d": path_3d,
+                "slice_start": 8,
+                "slice_end": 14,
+                "execution_phase": "carry_nav_to_place",
+            },
+        )
+        executor = DwaNavExecutor(
+            grid_map=grid,
+            local_clearance_radius=0.0,
+            dwa_config=DWAConfig(control_dt=0.10),
+            stair_float_enabled=True,
+            stair_float_activation_radius_m=0.12,
+            stair_float_min_z_delta_m=0.75,
+            stair_float_approach_distance_m=0.0,
+            stair_float_exit_distance_m=0.0,
+        )
+        executor.reset(plan)
+
+        # 该位姿来自 gui_float 失败日志：距入口点 0.124m，但仍位于首段走廊内。
+        observed_pose = (
+            1.6196765899658203,
+            5.732725143432617,
+            2.0905144677922816,
+        )
+        self.assertGreater(
+            math.hypot(observed_pose[0] - 1.5, observed_pose[1] - 5.7),
+            0.12,
+        )
+        self.assertTrue(executor._stair_float_should_activate(observed_pose))
+        status = executor.status()["stair_float"]
+        self.assertEqual(status["activation_trigger"], "entry_corridor")
+        self.assertLessEqual(status["activation_corridor_distance_m"], 0.12)
+
+    def test_pct_carry_stair_float_corridor_does_not_activate_before_entry(self) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((120, 120), dtype=bool),
+            0.10,
+            (-2.0, -2.0, 0.0),
+        )
+        path_3d = (
+            (1.5, 5.7, 0.0),
+            (1.5060733333333334, 5.892276666666667, 0.09828666666666666),
+            (1.51822, 6.27683, 0.29486),
+            (2.7, 7.05, 3.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=2.7, y=7.05, z=3.0, yaw=0.0),
+            waypoints=tuple((point[0], point[1]) for point in path_3d),
+            metadata={
+                "planner": "pct",
+                "path_3d": path_3d,
+                "slice_start": 8,
+                "slice_end": 14,
+                "execution_phase": "carry_nav_to_place",
+            },
+        )
+        executor = DwaNavExecutor(
+            grid_map=grid,
+            local_clearance_radius=0.0,
+            dwa_config=DWAConfig(control_dt=0.10),
+            stair_float_enabled=True,
+            stair_float_activation_radius_m=0.12,
+            stair_float_min_z_delta_m=0.75,
+            stair_float_approach_distance_m=0.0,
+            stair_float_exit_distance_m=0.0,
+        )
+        executor.reset(plan)
+
+        self.assertFalse(executor._stair_float_should_activate((1.619, 5.55, 2.0)))
+        status = executor.status()["stair_float"]
+        self.assertIsNone(status["activation_trigger"])
+        self.assertIsNone(status["activation_corridor_distance_m"])
 
     def test_pct_carry_stair_float_extends_exit_and_settles_before_release(self) -> None:
         grid = OccupancyGridMap(
@@ -1191,8 +1495,13 @@ class AStarDwaSmokeTest(unittest.TestCase):
         status = executor.status()
         replan = status["stair_float"]["post_stair_floor_replan"]
         self.assertTrue(replan["applied"])
-        self.assertEqual(replan["reason"], "post_stair_single_floor_astar")
+        self.assertEqual(
+            replan["reason"],
+            "post_stair_pct_clearance_optimized",
+        )
+        self.assertTrue(replan["path_optimization"]["applied"])
         self.assertAlmostEqual(replan["max_linear_velocity"], 0.25)
+        self.assertAlmostEqual(replan["max_angular_velocity"], 0.50)
         self.assertAlmostEqual(replan["min_active_linear_velocity"], 0.22)
         self.assertAlmostEqual(
             replan["near_goal_min_active_linear_velocity"],
@@ -1204,8 +1513,10 @@ class AStarDwaSmokeTest(unittest.TestCase):
         )
         self.assertAlmostEqual(replan["path_deviation_limit"], 0.14)
         self.assertAlmostEqual(replan["path_recovery_deviation_limit"], 0.50)
+        self.assertAlmostEqual(replan["path_recovery_speed_limit"], 0.20)
         self.assertAlmostEqual(replan["corner_waypoint_tolerance"], 0.18)
         self.assertGreaterEqual(replan["lookahead_distance"], 0.40)
+        self.assertAlmostEqual(replan["rotate_in_place_angle"], 0.55)
         self.assertEqual(
             status["map_selection"]["active_map"],
             "post_stair_single_floor",
@@ -1226,6 +1537,45 @@ class AStarDwaSmokeTest(unittest.TestCase):
                 for point in executor._controller.path_world
             )
         )
+
+    def test_pct_post_stair_path_uses_footprint_clearance_and_rounds_corners(
+        self,
+    ) -> None:
+        occupancy = np.zeros((100, 100), dtype=bool)
+        raw_map = OccupancyGridMap(
+            occupancy,
+            0.10,
+            (0.0, 0.0, 0.0),
+        )
+        for x in np.arange(4.0, 6.01, 0.10):
+            for y in np.arange(3.0, 7.01, 0.10):
+                occupancy[raw_map.world_to_grid(float(x), float(y))] = True
+        raw_map = OccupancyGridMap(
+            occupancy,
+            0.10,
+            (0.0, 0.0, 0.0),
+        )
+
+        footprint_map, path_world, report = (
+            _plan_clearance_optimized_floor_path(
+                raw_map,
+                (2.0, 5.0),
+                (8.0, 5.0),
+                clearance_radius_m=0.20,
+            )
+        )
+
+        self.assertTrue(report["applied"])
+        self.assertGreaterEqual(report["rounded_corner_count"], 1)
+        self.assertLess(
+            report["maximum_heading_change_after_rad"],
+            report["maximum_heading_change_before_rad"],
+        )
+        self.assertGreaterEqual(
+            report["minimum_raw_map_clearance_m"],
+            0.20,
+        )
+        self.assertTrue(_world_path_is_clear(path_world, footprint_map))
 
     def test_pct_carry_stair_entry_allows_turn_but_rejects_handrail_drift(self) -> None:
         grid = OccupancyGridMap(
@@ -1309,6 +1659,7 @@ class AStarDwaSmokeTest(unittest.TestCase):
         self.assertLessEqual(abs(action.base_velocity[2]), 0.30 + 1.0e-6)
         self.assertGreater(status["dwa"]["feasible_candidates"], 0)
         self.assertGreater(float(action.base_velocity[0]), 0.0)
+        self.assertGreater(abs(float(action.base_velocity[2])), 0.0)
         self.assertTrue(status["dwa"]["path_recovery_active"])
         self.assertAlmostEqual(status["dwa"]["path_deviation_limit_used"], 0.30)
 
@@ -1800,6 +2151,196 @@ class AStarDwaSmokeTest(unittest.TestCase):
         self.assertFalse(status["done"])
         self.assertEqual(status["stall_recovery_count"], 1)
         self.assertEqual(status["stall"]["sample_count"], 0)
+
+    def test_post_stair_float_near_threshold_motion_resets_stall_window(
+        self,
+    ) -> None:
+        grid = OccupancyGridMap(
+            np.ones((40, 40), dtype=bool),
+            0.1,
+            (-1.0, -1.0, 0.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=1.0, y=0.0, yaw=0.0),
+            waypoints=((0.0, 0.0), (1.0, 0.0)),
+            metadata={
+                "planner": "pct",
+                "execution_phase": "carry_nav_to_place",
+            },
+        )
+        executor = DwaNavExecutor(
+            grid_map=grid,
+            dwa_config=DWAConfig(control_dt=0.05),
+            stall_window_steps=4,
+            stall_min_progress_m=0.05,
+            stair_float_enabled=True,
+        )
+        executor.reset(plan)
+        executor._stair_float_done = True
+        executor._last_dwa_debug = DWADebug(
+            target_index=1,
+            target_point=(1.0, 0.0),
+            distance_to_target=1.0,
+            distance_to_goal=1.0,
+            heading_error=0.0,
+            clearance=1.0,
+            score=1.0,
+            reached_goal=False,
+            near_goal_tracking=False,
+            sampled_candidates=21,
+            feasible_candidates=21,
+            collision_rejections=0,
+            path_deviation_rejections=0,
+            best_linear_velocity=0.20,
+            best_angular_velocity=0.0,
+            path_distance=0.0,
+            path_deviation_limit_used=0.14,
+            initial_alignment_active=False,
+            path_recovery_active=False,
+            window_linear_velocity=0.20,
+            window_angular_velocity=0.0,
+            velocity_window_source="command",
+        )
+
+        for x in (0.0, 0.015, 0.030, 0.046):
+            executor._update_stall(
+                (x, 0.0, 0.0),
+                (0.05, 0.0, 0.0),
+                (0.20, 0.0, 0.0),
+            )
+
+        status = executor.status()
+        self.assertFalse(status["done"])
+        self.assertEqual(status["stall_recovery_count"], 1)
+        self.assertEqual(
+            status["last_stall_recovery_reason"],
+            "post_stair_float_near_threshold_motion",
+        )
+        self.assertEqual(status["stall"]["sample_count"], 0)
+
+    def test_no_float_carry_near_threshold_motion_resets_stall_window(self) -> None:
+        grid = OccupancyGridMap(
+            np.ones((40, 40), dtype=bool),
+            0.1,
+            (-1.0, -1.0, 0.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=1.0, y=0.0, yaw=0.0),
+            waypoints=((0.0, 0.0), (1.0, 0.0)),
+            metadata={
+                "planner": "pct",
+                "execution_phase": "carry_nav_to_place",
+            },
+        )
+        executor = DwaNavExecutor(
+            grid_map=grid,
+            dwa_config=DWAConfig(control_dt=0.05),
+            stall_window_steps=4,
+            stall_min_progress_m=0.05,
+            stair_float_enabled=False,
+        )
+        executor.reset(plan)
+        executor._last_dwa_debug = DWADebug(
+            target_index=1,
+            target_point=(1.0, 0.0),
+            distance_to_target=1.0,
+            distance_to_goal=1.0,
+            heading_error=0.0,
+            clearance=1.0,
+            score=1.0,
+            reached_goal=False,
+            near_goal_tracking=False,
+            sampled_candidates=21,
+            feasible_candidates=21,
+            collision_rejections=0,
+            path_deviation_rejections=0,
+            best_linear_velocity=0.20,
+            best_angular_velocity=0.0,
+            path_distance=0.0,
+            path_deviation_limit_used=0.14,
+            initial_alignment_active=False,
+            path_recovery_active=False,
+            window_linear_velocity=0.20,
+            window_angular_velocity=0.0,
+            velocity_window_source="command",
+        )
+
+        for x in (0.0, 0.015, 0.030, 0.046):
+            executor._update_stall(
+                (x, 0.0, 0.0),
+                (0.015, 0.0, 0.0),
+                (0.20, 0.0, 0.0),
+            )
+
+        status = executor.status()
+        self.assertFalse(status["done"])
+        self.assertEqual(status["failure_reason"], "")
+        self.assertEqual(status["stall_recovery_count"], 1)
+        self.assertEqual(
+            status["last_stall_recovery_reason"],
+            "carry_near_threshold_motion",
+        )
+
+    def test_carry_near_threshold_motion_allows_partial_collision_filtering(self) -> None:
+        grid = OccupancyGridMap(
+            np.ones((40, 40), dtype=bool),
+            0.1,
+            (-1.0, -1.0, 0.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=1.0, y=0.0, yaw=0.0),
+            waypoints=((0.0, 0.0), (1.0, 0.0)),
+            metadata={
+                "planner": "pct",
+                "execution_phase": "carry_nav_to_place",
+            },
+        )
+        executor = DwaNavExecutor(
+            grid_map=grid,
+            dwa_config=DWAConfig(control_dt=0.05),
+            stall_window_steps=4,
+            stall_min_progress_m=0.05,
+        )
+        executor.reset(plan)
+        executor._last_dwa_debug = DWADebug(
+            target_index=1,
+            target_point=(1.0, 0.0),
+            distance_to_target=1.0,
+            distance_to_goal=1.0,
+            heading_error=0.0,
+            clearance=0.2,
+            score=1.0,
+            reached_goal=False,
+            near_goal_tracking=False,
+            sampled_candidates=21,
+            feasible_candidates=14,
+            collision_rejections=7,
+            path_deviation_rejections=0,
+            best_linear_velocity=0.06,
+            best_angular_velocity=-0.12,
+            path_distance=0.23,
+            path_deviation_limit_used=0.35,
+            initial_alignment_active=False,
+            path_recovery_active=True,
+            window_linear_velocity=0.06,
+            window_angular_velocity=-0.06,
+            velocity_window_source="command",
+        )
+
+        for x in (0.0, 0.015, 0.030, 0.046):
+            executor._update_stall(
+                (x, 0.0, 0.0),
+                (0.03, 0.02, 0.0),
+                (0.06, 0.0, -0.12),
+            )
+
+        status = executor.status()
+        self.assertFalse(status["done"])
+        self.assertEqual(status["stall_recovery_count"], 1)
+        self.assertEqual(
+            status["last_stall_recovery_reason"],
+            "carry_near_threshold_motion",
+        )
 
     def test_pct_route_corridor_preserves_global_hard_obstacles(self) -> None:
         grid = OccupancyGridMap(
