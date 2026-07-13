@@ -2,8 +2,8 @@
   "project": "arm_vla_pct",
   "branch": "pct",
   "goal": "将 flat A* 全局导航替换为 PCT 多楼层规划器，并接入新的 RL locomotion checkpoint 配置。",
-  "current_phase": "phase_164_pct_float_default_and_stair_locomotion_smoke",
-  "last_updated": "2026-07-13 12:28:04",
+  "current_phase": "phase_167_official_debug_draw_velocity",
+  "last_updated": "2026-07-13 14:42:48",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -316,6 +316,24 @@
     "stair_locomotion_smoke_unit_tested": true,
     "stair_locomotion_smoke_real_verified": false,
     "pct_phase164_real_validation_blocked_by_gpu_memory": true,
+    "stair_surface_centerline_visualization_added": false,
+    "stair_surface_centerline_visualization_real_verified": false,
+    "stair_velocity_command_visualization_added": true,
+    "stair_velocity_command_visualization_updates_per_tick": true,
+    "stair_velocity_command_visualization_real_verified": true,
+    "stair_velocity_command_debug_draw_added": true,
+    "stair_velocity_command_debug_draw_interface_verified": true,
+    "stair_velocity_command_debug_draw_real_pipeline_verified": true,
+    "stair_velocity_command_usd_fallback_tested": true,
+    "stair_locomotion_smoke_real_entered_control": true,
+    "stair_locomotion_smoke_real_stalled_first_segment": true,
+    "stair_locomotion_smoke_uses_pct_online_path": true,
+    "stair_locomotion_smoke_manual_centerline_removed": true,
+    "stair_locomotion_pct_executor_probe_verified": true,
+    "pct_stair_short_approach_hook_fixed": true,
+    "pct_stair_online_path_real_planned_verified": true,
+    "stair_pct_online_path_visualization_real_verified": false,
+    "pct_phase166_real_validation_blocked_by_gpu_memory": true,
     "pct_final_acceptance_complete": false
   },
   "local_assets": {
@@ -5888,6 +5906,195 @@
         "分别运行默认 --pct-multifloor Float 完整 pipeline 与 --pct-multifloor --no-pct-stair-float 完整 no-float pipeline，确认新增默认解析未影响原 Float 状态链。",
         "只有专用楼梯模式进入控制循环并到达 F2 高度后，才把 stair_locomotion_smoke_real_verified 更新为 true。"
       ]
+    },
+    {
+      "time": "2026-07-13 13:52:06",
+      "summary": "完成 phase165：为 stair locomotion smoke 增加独立的楼梯表面中心线和实时速度命令可视化。控制 root 中心线保持不变；显示中心线减去 robot_root_to_floor 并按约 0.12m 稠密插值，以青色 PCT 风格曲线和 waypoint 显示。Isaac runtime 每个控制 tick 将实际进入 policy observation 的 effective (vx, vy, wz) 更新为绿色线速度箭头和橙色角速度圆弧。真实 headless smoke 验证两个 USD guide 均成功创建和更新；任务本身在第一段因 stall 失败，尚未证明 policy 能上楼。",
+      "files_changed": [
+        "source/navigation/stair_locomotion.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/diagnostics/planned_trajectories.py",
+        "source/navigation/adapters/isaaclab_go2_adapter.py",
+        "source/simulation/isaaclab_runtime.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "configs/navigation/pct_multifloor_policy.yaml",
+        "tests/navigation/test_stair_locomotion.py",
+        "tests/navigation/test_planner_selection.py",
+        "tests/test_planned_trajectories.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "loco-smoke 复用了控制 root 的稀疏 path_3d 来画线，轨迹位于机器人 root 高度且锚点过少，不像 PCT 贴近地面的连续路径。",
+          "root_cause": "控制器需要 root 高度用于跨楼层成功判定，而可视化需要楼梯表面高度；此前两种语义共用同一个 path_3d。",
+          "fix": "新增 visualization_path_3d，与控制 path_3d 共享所有 XY 转角，但 z 减去 pct_robot_root_to_floor_m，并按三维弧长每约 0.12m 插值。renderer 优先使用该路径，绘制为青色加粗中心线。",
+          "prevention": "规划数据同时服务控制和显示时，显式区分 control path 与 display path，并测试 XY 一致、表面高度偏移和插值密度。"
+        },
+        {
+          "problem": "此前无法在 GUI 中看到 heading tracker 每拍实际向 locomotion policy 下发的速度。",
+          "root_cause": "RobotAction 虽然记录了 base_velocity，但没有动态 USD guide；静态 planned trajectory renderer 只在 plan 阶段执行一次。",
+          "fix": "新增 draw_velocity_command，在 Isaac runtime apply 完成 policy command 注入后读取 effective command，每个控制 tick 更新机器人上方的绿色线速度箭头和橙色角速度圆弧；数值同时写入 runtime metadata 和 action metadata。",
+          "prevention": "实时控制诊断应直接绑定最终 command 注入边界，并同时保留 requested/effective 两组数值，避免显示 controller 请求而 policy 实际收到零命令。"
+        },
+        {
+          "problem": "phase165 真实 headless loco-smoke 在楼梯第一段触发 stair_locomotion_stalled。",
+          "root_cause": "执行器最大路径进度约 0.315m，随后 6 秒内没有新增 0.05m 进度；headless 数据确认 command guide 正常，但仅凭数值日志尚不能判断是足端接触、policy command 跟踪还是入口几何造成停滞。",
+          "fix": "本轮不凭 headless 数值猜测并修改控制参数；保留 /tmp/stair_locomotion_phase165_visual 日志，下一步使用新增 GUI 中心线和实时命令箭头观察机体、命令与楼梯的相对关系。",
+          "prevention": "将可视化链路成功与 locomotion 成功分开记录；只有结合 GUI 轨迹、command、实测速度和接触状态后再调整 heading/cross-track/stall 参数。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/navigation/stair_locomotion.py source/pipeline/navigation_smoke.py source/diagnostics/planned_trajectories.py source/navigation/adapters/isaaclab_go2_adapter.py source/simulation/isaaclab_runtime.py scripts/pipeline/run_full_physics_pipeline.py tests/navigation/test_stair_locomotion.py tests/navigation/test_planner_selection.py tests/test_planned_trajectories.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "修改模块与测试文件语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/navigation tests/test_planned_trajectories.py tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_full_physics_batch.py tests/test_collision_terrain_wrapper.py tests/test_simulation_viewport.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "247 passed, 1 skipped；覆盖表面路径优先级、body 到 world 命令变换、每 tick runtime 接线及原 PCT/A*/DWA pipeline 回归。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py --stair-locomotion-smoke --headless --no-record-dataset --output-dir /tmp/stair_locomotion_phase165_visual",
+          "result": "failed",
+          "note": "Isaac stage、policy 和控制循环成功启动；中心线 prim available=true、70 点，动态 command prim available=true 且非零 effective command 从第 4 tick 开始逐 tick 更新。任务最终因 stair_locomotion_stalled 失败，best_path_progress_m=0.3146，不是可视化异常。"
+        }
+      ],
+      "next_steps": [
+        "用户运行 GUI stair-locomotion-smoke，查收青色中心线、绿色线速度箭头和橙色角速度圆弧。",
+        "根据 GUI 中机器人停滞时的机体姿态、箭头方向和实测运动，判断第一段 stall 属于入口碰撞、policy 跟踪不足还是 heading/cross-track 参数问题。",
+        "完成诊断前不把 stair_locomotion_smoke_real_verified 设为 true，也不修改稳定 Float 完整 pipeline。"
+      ]
+    },
+    {
+      "time": "2026-07-13 14:21:29",
+      "summary": "完成 phase166：stair locomotion smoke 不再手工拼接楼梯锚点，改为复用完整 pipeline 的 PCTNavPlanner 在线规划并直接消费真实 path_3d；执行端仍由 StairLocomotionExecutor 直接下发 vx/vy/wz，不接入 DWA、不启用 Float。真实 PCT server 返回 39 点中心线，平台锚点顺序正确，规划器与直接控制器联合探针通过。",
+      "files_changed": [
+        "source/navigation/pct_adapter.py",
+        "source/pipeline/navigation_smoke.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "configs/navigation/pct_multifloor_policy.yaml",
+        "tests/navigation/test_pct_adapter.py",
+        "tests/navigation/test_planner_selection.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "loco-smoke 显示的青色楼梯路径出现 V 形折返，并指向错误楼梯区域。",
+          "root_cause": "该模式没有使用 PCT 的 NavPlan，而是按 YAML 原始列表顺序手工串接 gateway、四个 midpoint 和 exit。两个中间平台点在配置中的顺序与真实行走拓扑相反；真实 PCT 会按高度聚类和平台最短拓扑自动重排，但 smoke 绕过了这一步。",
+          "fix": "删除 smoke 的手工中心线、root 高度重映射和独立 visualization_path_3d；抽出完整 pipeline 共用的全局 planner 工厂，让 smoke 强制使用无 A* fallback 的 PCTNavPlanner。可视化和直接控制器现在都读取 PCT 返回并完成楼梯中心线 refinement 的 metadata.path_3d。",
+          "prevention": "任何执行或可视化模式都不得从 PCT 配置锚点重复拼装路线；锚点只作为 PCT refinement 输入，运行路径必须来自 NavPlan.metadata.path_3d，并测试平台锚点的最终顺序。"
+        },
+        {
+          "problem": "从楼梯 gateway 直接出生时，PCT 中心线入口缓弯逻辑可能把 approach_start_index 强制设为 1。",
+          "root_cause": "旧逻辑假定 gateway 前总有一段平层路径，使用 max(1, stair_start_index - 1)，不支持 stair_start_index 为 0 的专用 smoke。",
+          "fix": "入口搜索允许索引 0，并增加 gateway 是首点的回归测试。真实 server 探针确认 raw_start_index=0、approach_start_index=0，中心线 refinement 正常应用。",
+          "prevention": "路径切片与局部 refinement 必须覆盖起点恰好位于功能段边界的情况，不能假设前后一定存在额外 waypoint。"
+        },
+        {
+          "problem": "本轮无法重新运行真实 Isaac GUI/headless locomotion smoke。",
+          "root_cause": "检查时 8 GiB GPU 已使用约 7.6 GiB，只剩约 201 MiB；外部 Isaac Python 进程占用约 5.7 GiB。",
+          "fix": "没有终止用户进程，也没有把离线结果标记为真实上楼成功；本轮只完成真实 PCT server 规划和 executor 联合探针。",
+          "prevention": "启动 Isaac 前先检查可用显存；只有进入物理控制并到达 F2 后才更新 stair_locomotion_smoke_real_verified。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "python -m py_compile source/pipeline/navigation_smoke.py source/navigation/pct_adapter.py source/navigation/stair_locomotion.py",
+          "result": "passed",
+          "note": "修改模块语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/navigation/test_pct_adapter.py tests/navigation/test_planner_selection.py tests/navigation/test_stair_locomotion.py tests/test_planned_trajectories.py -q",
+          "result": "passed",
+          "note": "27 passed；覆盖真实 PCT planner 选型、gateway 首点、平台顺序、直接速度控制和路径显示。"
+        },
+        {
+          "command": "PCTNavPlanner stair gateway-to-exit online probe",
+          "result": "passed",
+          "note": "本地真实 PCT server 返回 planner=pct、cross_floor=true、path_mode=astar_3d_via_gateway_strict_monotonic、39 个 path_3d 点；refinement=calibrated_stair_centerline，平台顺序为 (1.9202,9.52807) -> (2.74512,9.14634)。"
+        },
+        {
+          "command": "PCTNavPlanner + StairLocomotionExecutor joint probe",
+          "result": "passed",
+          "note": "executor 无异常接收全部 39 点，首拍直接命令约为 (0.25, 0.0, 0.0)，controller=stair_heading_tracker。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/navigation tests/test_planned_trajectories.py tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_full_physics_batch.py tests/test_collision_terrain_wrapper.py tests/test_simulation_viewport.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "248 passed, 1 skipped；PCT、A*/DWA、CLI、完整状态机和运行时可视化回归通过，稳定 Float pipeline 的组装逻辑未改。"
+        },
+        {
+          "command": "Isaac stair locomotion smoke",
+          "result": "not_run",
+          "note": "GPU 仅剩约 201 MiB，未干扰用户正在运行的外部 Isaac 进程。"
+        }
+      ],
+      "next_steps": [
+        "释放其他 Isaac/Kit GPU 会话后运行 GUI --stair-locomotion-smoke，确认青色路线为真实 PCT 的 39 点楼梯中心线且平台不再 V 形反接。",
+        "观察绿色线速度箭头和橙色角速度圆弧，重新评估真实 PCT 路径下的低层 policy 进度、姿态和 stall 情况。",
+        "该专用模式继续保持无 DWA；完整 PCT Float/no-float pipeline 仍保留原 DWA executor，后续训练接口另行设计。"
+      ]
+    },
+    {
+      "time": "2026-07-13 14:42:48",
+      "summary": "完成 phase167：stair locomotion smoke 的实时速度可视化改用 Isaac Sim 官方 isaacsim.util.debug_draw。绿色线速度箭头与橙色角速度圆弧每个控制 tick 清除并重画，静态青色 PCT 路径继续使用 USD；官方扩展不可用时自动回退原 USD 动态曲线。真实 Kit 接口探针和两次真实 headless 控制均确认 renderer=isaacsim.util.debug_draw、无回退。验证期间同时修复了 PCT 起点紧邻楼梯 gateway 时的短 Bezier 过冲；低层 policy 仍在相同物理位置触发 stall，尚未通过上楼验收。",
+      "files_changed": [
+        "source/diagnostics/planned_trajectories.py",
+        "source/navigation/pct_adapter.py",
+        "configs/navigation/pct_multifloor_policy.yaml",
+        "tests/test_planned_trajectories.py",
+        "tests/navigation/test_pct_adapter.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "实时速度命令此前通过每 tick 更新 USD BasisCurves 显示，没有使用用户指定的 Isaac Sim 官方 debug-draw 接口。",
+          "root_cause": "phase165 优先复用了仓库已有的 USD planned-trajectory renderer，未单独启用 isaacsim.util.debug_draw 扩展，也没有管理其全局临时线缓冲区。",
+          "fix": "新增按需启用和缓存官方 debug-draw interface 的路径；将线速度箭头和角速度弧线展开成 start/end/color/width 数组，一次 draw_lines 提交，并在每 tick 前 clear_lines。静态 PCT 路径保留为 USD，官方接口异常时回退 USD 并在报告中记录错误。",
+          "prevention": "实时诊断图元优先使用官方瞬时绘制 API，静态规划轨迹使用持久 USD；为扩展启用、数组内容、清除重画和降级路径分别建立测试，并在 runtime metadata 中记录实际 renderer。"
+        },
+        {
+          "problem": "真实 PCT 楼梯路径的起始点先向 x 正方向偏出，再折返 gateway，形成不必要的入口短钩。",
+          "root_cause": "起点距 gateway 仅约 0.048m，但入口 Bezier handle 被强制设为至少 0.25m；起点没有前驱路径点时又默认使用 +X 入射方向，因此控制点越过端点并产生过冲。",
+          "fix": "无前驱点时直接使用 start->gateway 方向；handle 改为不超过短段长度的 40%，移除 0.25m 下限。真实 PCT 探针首点现在从 (1.5215, 5.6564) 单调过渡至 (1.5, 5.7)，不再先偏向 (1.6045, 5.5845)。",
+          "prevention": "局部平滑 handle 必须受实际段长约束，并增加短于默认 handle、功能段恰好从 path[0] 开始的边界测试，检查采样点不越过端点包围盒。"
+        },
+        {
+          "problem": "修正路径并启用官方可视化后，stair locomotion smoke 仍在楼梯第一段触发 stair_locomotion_stalled。",
+          "root_cause": "尚未完成最终归因；两次运行最终位姿均约为 (1.7208, 5.8752, yaw=1.5294)，航向误差仅 0.0098rad，但横向误差约 -0.215m。旧路径的 0.650m 与新路径的 0.434m best progress 差异来自短钩造成的弧长虚增，并非机器人运动退化。",
+          "fix": "本轮只纠正路径几何与诊断口径，没有为了让 smoke 通过而随意修改低层控制参数；保留逐帧 command、measured velocity、姿态和 debug-draw renderer 证据供下一轮 GUI 定位。",
+          "prevention": "比较路径优化前后性能时同时比较世界位姿和路径弧长，不能只看 progress 标量；只有 GUI/接触数据确认横向控制、碰撞或 policy 跟踪中的具体根因后再改控制器。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/diagnostics/planned_trajectories.py source/navigation/pct_adapter.py source/navigation/stair_locomotion.py source/pipeline/navigation_smoke.py source/navigation/adapters/isaaclab_go2_adapter.py source/simulation/isaaclab_runtime.py scripts/pipeline/run_full_physics_pipeline.py tests/test_planned_trajectories.py tests/navigation/test_pct_adapter.py",
+          "result": "passed",
+          "note": "本轮涉及的实现和测试文件语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/navigation tests/test_planned_trajectories.py tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_full_physics_batch.py tests/test_collision_terrain_wrapper.py tests/test_simulation_viewport.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "251 passed, 1 skipped；覆盖官方 draw_lines 数组、每 tick 清除重画、零命令清除、USD fallback、PCT 短入口不过冲，以及 PCT/A*/DWA/Float pipeline 组装回归。"
+        },
+        {
+          "command": "Isaac SimulationApp official debug_draw interface and draw_velocity_command probes",
+          "result": "passed",
+          "note": "本机扩展版本 3.1.0；扩展可由 pipeline 即时启用，官方接口 draw_lines 后 line count=1、clear_lines 后为 0。仓库 draw_velocity_command 实际返回 renderer=isaacsim.util.debug_draw、fallback_used=false、line_count=14。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py --stair-locomotion-smoke --headless --no-record-dataset --no-record-video --output-dir /tmp/stair_locomotion_phase167_debug_draw_no_hook",
+          "result": "failed",
+          "note": "失败原因仍为 stair_locomotion_stalled，不是绘制异常。416 个可视化样本全部使用 isaacsim.util.debug_draw，413 帧含非零线段，最大 14 条，fallback_samples=0；修正后的 PCT 首段单调进入 gateway。"
+        }
+      ],
+      "next_steps": [
+        "用户运行 GUI stair-locomotion-smoke，查收青色真实 PCT 路径、绿色线速度箭头和橙色角速度圆弧。",
+        "利用 GUI 和逐帧日志重点检查约 (1.72, 5.88) 处的横向偏移、机体接触与足端动作，定位真实 stall 根因。",
+        "本轮未修改默认 Float 完整 pipeline 控制链；后续低层 smoke 调参仍须单独回归默认 Float 与显式 no-float 两种完整模式。"
+      ]
     }
   ],
   "open_questions": [
@@ -5897,7 +6104,7 @@
   "known_limitations": [
     "phase163 已修复 gui_float 日志暴露的楼梯入口漏触发并通过定点重放，但新的 GUI Float 完整 pipeline 尚待实跑复验，因此最终验收状态暂时撤回。",
     "PCT 稳定预设现在默认启用 stair-float；可用 --no-pct-stair-float 显式运行完整 no-float pipeline。stair-float 楼梯段会冻结底盘并沿 path_3d 写入 root pose，因此 phase161 的 stable_physics_success=true，但 pure_physics_success=false。",
-    "独立 --stair-locomotion-smoke 已在单元测试中验证控制语义，但首次真实 headless 运行被外部 Isaac CUDA 上下文占用显存阻塞，尚未进入控制循环，因此低层 policy 上楼能力仍未实机验收。",
+    "独立 --stair-locomotion-smoke 在 phase167 已使用真实 PCT 在线 path_3d、直接速度控制和官方 debug-draw 完成真实 headless 运行；入口短 Bezier 过冲已修复，但机器人仍在约 (1.72, 5.88) 处停滞，横向误差约 -0.215m，低层 policy 上楼能力仍未验收。",
     "当前 pct_multifloor checkpoint 是 12 维 dog-only policy；要获得纯足端动力学的携物上楼能力，仍需训练或接入针对楼梯和机械臂负载的新 locomotion policy。",
     "当前 PCT 全局路径完整保存在 NavPlan.metadata[\"path_3d\"]，普通局部执行仍主要由 DWA 消费 XY waypoints；z/slice 只在 stair-float 等多楼层专用逻辑中使用。",
     "navigation collision 模式为避免 NuRec/PhysX 同进程的 CUDA external semaphore 问题会停用 /World/gauss；原生高质量 3DGS GUI 渲染和最终前景合成视频仍未完成。",

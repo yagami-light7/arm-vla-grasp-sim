@@ -26,14 +26,24 @@ stair_locomotion_smoke:
   selector: --stair-locomotion-smoke
   start_source: pct_cross_floor_gateway_points[0]
   goal_source: pct_cross_floor_stair_exit_points[0]
+  global_planner: pct
   controller: stair_heading_tracker
-  global_path: calibrated_pct_stair_centerline
+  global_path: pct_online_path_3d
+  manual_centerline: false
   dwa_enabled: false
   pct_stair_float: false
   base_pose_lock: false
   forward_velocity_mps: 0.25
   max_lateral_velocity_mps: 0.12
   max_angular_velocity_rps: 0.50
+  visualization:
+    pct_path_3d: true
+    centerline_color: cyan
+    command_update: every_control_tick
+    command_renderer: isaacsim.util.debug_draw
+    command_renderer_fallback: usd_basis_curves
+    linear_velocity_color: green
+    angular_velocity_color: orange
 
 environment:
   framework: Isaac Lab

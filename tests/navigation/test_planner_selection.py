@@ -11,7 +11,6 @@ from source.interfaces import NavGoal, SimulationState
 from source.navigation import (
     AStarNavPlanner,
     PCTNavPlanner,
-    StairCenterlinePlanner,
     StairLocomotionExecutor,
 )
 from source.navigation.navlib import OccupancyGridMap
@@ -216,7 +215,7 @@ def test_stair_locomotion_smoke_uses_calibrated_entry_and_exit(tmp_path: Path) -
         NavigationSettings(global_planner="pct", pct_enabled=True),
     )
 
-    stair_spec, centerline = _stair_locomotion_smoke_spec(config, spec)
+    stair_spec = _stair_locomotion_smoke_spec(config, spec)
 
     assert stair_spec.start.x == 1.5
     assert stair_spec.start.y == 5.7
@@ -230,13 +229,15 @@ def test_stair_locomotion_smoke_uses_calibrated_entry_and_exit(tmp_path: Path) -
     assert stair_spec.place_goal is None
     assert stair_spec.object_prim_path is None
     assert stair_spec.raw_task["runtime_override"]["float_enabled"] is False
-    assert all(
-        current[2] <= following[2]
-        for current, following in zip(centerline, centerline[1:])
+    assert stair_spec.raw_task["runtime_override"]["global_planner"] == "pct"
+    assert stair_spec.raw_task["runtime_override"]["global_path"] == (
+        "pct_online_path_3d"
     )
+    assert stair_spec.raw_task["runtime_override"]["manual_centerline"] is False
+    assert "centerline" not in stair_spec.raw_task["runtime_override"]
 
 
-def test_stair_locomotion_smoke_builds_isolated_planner_and_executor(
+def test_stair_locomotion_smoke_uses_pct_planner_and_direct_executor(
     tmp_path: Path,
 ) -> None:
     spec = JsonTaskProvider().load(
@@ -261,9 +262,11 @@ def test_stair_locomotion_smoke_builds_isolated_planner_and_executor(
         simulation=object(),
     )
 
-    assert isinstance(pipeline.nav_planner, StairCenterlinePlanner)
+    assert isinstance(pipeline.nav_planner, PCTNavPlanner)
     assert isinstance(pipeline.machine.nav_executor, StairLocomotionExecutor)
+    assert pipeline.nav_planner.config.fallback_to_astar is False
     assert pipeline.config.navigation.pct_stair_float_enabled is False
+    assert pipeline.config.navigation.global_planner == "pct"
     assert pipeline.config.stair_locomotion_smoke is True
     assert pipeline.episode_spec.raw_task["runtime_override"]["controller"] == (
         "stair_heading_tracker"

@@ -20,7 +20,6 @@ from source.navigation import (
     DwaNavExecutor,
     PCTNavPlanner,
     PCTPlannerConfig,
-    StairCenterlinePlanner,
     StairLocomotionExecutor,
     StairLocomotionExecutorConfig,
 )
@@ -130,9 +129,9 @@ def create_stair_locomotion_smoke_pipeline(
     episode_dir: str | Path,
     simulation: IsaacLabNavigationRuntime,
 ) -> FullPhysicsPipeline:
-    """只用真实 locomotion policy 沿标定楼梯中心线从 F1 走到 F2。"""
+    """用真实 PCT 路径和直接速度命令验证 locomotion policy 上楼。"""
 
-    stair_spec, centerline = _stair_locomotion_smoke_spec(config, episode_spec)
+    stair_spec = _stair_locomotion_smoke_spec(config, episode_spec)
     stair_config = replace(
         config,
         navigation_smoke=False,
@@ -141,6 +140,9 @@ def create_stair_locomotion_smoke_pipeline(
         full_physics=False,
         navigation=replace(
             config.navigation,
+            global_planner="pct",
+            pct_enabled=True,
+            pct_fallback_to_astar=False,
             pct_stair_float_enabled=False,
         ),
         limits=replace(
@@ -149,7 +151,10 @@ def create_stair_locomotion_smoke_pipeline(
             episode=max(config.limits.episode, 8000),
         ),
     )
-    planner = StairCenterlinePlanner(centerline)
+    planner = _create_navigation_planner(
+        config=stair_config,
+        episode_spec=stair_spec,
+    )
     executor = StairLocomotionExecutor(
         StairLocomotionExecutorConfig(
             forward_velocity_mps=config.navigation.pct_carry_max_linear_velocity,
@@ -182,8 +187,8 @@ def create_stair_locomotion_smoke_pipeline(
 def _stair_locomotion_smoke_spec(
     config: FullPhysicsConfig,
     episode_spec: EpisodeSpec,
-) -> tuple[EpisodeSpec, tuple[tuple[float, float, float], ...]]:
-    """从 PCT 楼梯标定点构造只包含楼梯路段的 episode。"""
+) -> EpisodeSpec:
+    """用 PCT 楼梯入口和出口构造只包含楼梯路段的 episode。"""
 
     nav = config.navigation
     if not nav.pct_cross_floor_gateway_points:
@@ -193,13 +198,10 @@ def _stair_locomotion_smoke_spec(
     if episode_spec.place_goal is None or episode_spec.place_goal.z is None:
         raise ValueError("stair locomotion smoke requires an upstairs place goal z")
 
-    raw_points = (
-        nav.pct_cross_floor_gateway_points[0],
-        *nav.pct_cross_floor_stair_midpoint_points,
-        nav.pct_cross_floor_stair_exit_points[0],
-    )
-    if len(raw_points) < 2:
-        raise ValueError("stair locomotion smoke requires at least two centerline points")
+    gateway = nav.pct_cross_floor_gateway_points[0]
+    stair_exit = nav.pct_cross_floor_stair_exit_points[0]
+    if not nav.pct_cross_floor_stair_midpoint_points:
+        raise ValueError("stair locomotion smoke requires PCT stair midpoint points")
     start_root_z = float(
         episode_spec.pick_goal.z
         if episode_spec.pick_goal.z is not None
@@ -208,43 +210,33 @@ def _stair_locomotion_smoke_spec(
         else 0.0
     )
     end_root_z = float(episode_spec.place_goal.z)
-    raw_start_z = float(raw_points[0][2])
-    raw_end_z = float(raw_points[-1][2])
-    raw_z_span = max(abs(raw_end_z - raw_start_z), 1.0e-6)
-    last_ratio = 0.0
-    centerline: list[tuple[float, float, float]] = []
-    for point in raw_points:
-        ratio = _clamp01((float(point[2]) - raw_start_z) / raw_z_span)
-        last_ratio = max(last_ratio, ratio)
-        centerline.append(
-            (
-                float(point[0]),
-                float(point[1]),
-                start_root_z + last_ratio * (end_root_z - start_root_z),
-            )
-        )
-    centerline[0] = (centerline[0][0], centerline[0][1], start_root_z)
-    centerline[-1] = (centerline[-1][0], centerline[-1][1], end_root_z)
-
+    entry_reference = min(
+        nav.pct_cross_floor_stair_midpoint_points,
+        key=lambda point: abs(float(point[2]) - float(gateway[2])),
+    )
+    exit_reference = min(
+        nav.pct_cross_floor_stair_midpoint_points,
+        key=lambda point: abs(float(point[2]) - float(stair_exit[2])),
+    )
     start_heading = math.atan2(
-        centerline[1][1] - centerline[0][1],
-        centerline[1][0] - centerline[0][0],
+        float(entry_reference[1]) - float(gateway[1]),
+        float(entry_reference[0]) - float(gateway[0]),
     )
     end_heading = math.atan2(
-        centerline[-1][1] - centerline[-2][1],
-        centerline[-1][0] - centerline[-2][0],
+        float(stair_exit[1]) - float(exit_reference[1]),
+        float(stair_exit[0]) - float(exit_reference[0]),
     )
     start = NavGoal(
-        x=centerline[0][0],
-        y=centerline[0][1],
+        x=float(gateway[0]),
+        y=float(gateway[1]),
         z=start_root_z,
         yaw=start_heading,
         floor_id=episode_spec.pick_goal.floor_id,
         slice_id=episode_spec.pick_goal.slice_id,
     )
     goal = NavGoal(
-        x=centerline[-1][0],
-        y=centerline[-1][1],
+        x=float(stair_exit[0]),
+        y=float(stair_exit[1]),
         z=end_root_z,
         yaw=end_heading,
         floor_id=episode_spec.place_goal.floor_id,
@@ -255,30 +247,25 @@ def _stair_locomotion_smoke_spec(
         "runtime_override": {
             "mode": "stair_locomotion_smoke",
             "controller": "stair_heading_tracker",
+            "global_planner": "pct",
+            "global_path": "pct_online_path_3d",
+            "manual_centerline": False,
             "float_enabled": False,
             "start_xyz_yaw": [start.x, start.y, start.z, start.yaw],
             "goal_xyz_yaw": [goal.x, goal.y, goal.z, goal.yaw],
-            "centerline": [list(point) for point in centerline],
         },
     }
-    return (
-        replace(
-            episode_spec,
-            instruction="测试低层 locomotion policy 能否沿标定中心线完成上楼。",
-            start=start,
-            pick_goal=goal,
-            place_goal=None,
-            object_prim_path=None,
-            object_initial_pose=None,
-            place_target_pose=None,
-            raw_task=raw_task,
-        ),
-        tuple(centerline),
+    return replace(
+        episode_spec,
+        instruction="测试低层 locomotion policy 能否沿 PCT 在线规划路径完成上楼。",
+        start=start,
+        pick_goal=goal,
+        place_goal=None,
+        object_prim_path=None,
+        object_initial_pose=None,
+        place_target_pose=None,
+        raw_task=raw_task,
     )
-
-
-def _clamp01(value: float) -> float:
-    return min(max(float(value), 0.0), 1.0)
 
 
 def _navigation_carry_smoke_start(episode_spec: EpisodeSpec) -> tuple[NavGoal, str]:
@@ -350,12 +337,12 @@ def _create_navigation_pipeline(
     )
 
 
-def create_navigation_components(
+def _create_navigation_planner(
     *,
     config: FullPhysicsConfig,
     episode_spec: EpisodeSpec,
-):
-    """创建可被独立 smoke 和连续联调共同复用的导航组件。"""
+) -> AStarNavPlanner | PCTNavPlanner:
+    """创建完整 pipeline 与楼梯 smoke 共用的全局规划器。"""
 
     nav = config.navigation
     nav_map = _project_path(episode_spec.nav_map) if episode_spec.nav_map else None
@@ -447,6 +434,23 @@ def create_navigation_components(
         )
     else:
         raise ValueError(f"unsupported global planner: {nav.global_planner}")
+    return planner
+
+
+def create_navigation_components(
+    *,
+    config: FullPhysicsConfig,
+    episode_spec: EpisodeSpec,
+):
+    """创建可被独立 smoke 和连续联调共同复用的导航组件。"""
+
+    nav = config.navigation
+    nav_map = _project_path(episode_spec.nav_map) if episode_spec.nav_map else None
+    nav_map_exists = nav_map is not None and nav_map.is_file()
+    planner = _create_navigation_planner(
+        config=config,
+        episode_spec=episode_spec,
+    )
     dwa_config = _build_dwa_config(
         nav,
         policy_profile=config.locomotion.policy_profile,

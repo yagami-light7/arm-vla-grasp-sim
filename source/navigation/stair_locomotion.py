@@ -28,7 +28,12 @@ def _clamp(value: float, lower: float, upper: float) -> float:
 class StairCenterlinePlanner:
     """返回场景标定的 PCT 楼梯中心线，不引入新的全局搜索变量。"""
 
-    def __init__(self, path_3d: Sequence[Sequence[float]]):
+    def __init__(
+        self,
+        path_3d: Sequence[Sequence[float]],
+        *,
+        visualization_path_3d: Sequence[Sequence[float]] | None = None,
+    ):
         path = tuple(
             (float(point[0]), float(point[1]), float(point[2]))
             for point in path_3d
@@ -36,6 +41,14 @@ class StairCenterlinePlanner:
         if len(path) < 2:
             raise ValueError("楼梯中心线至少需要两个点。")
         self.path_3d = path
+        self.visualization_path_3d = tuple(
+            (float(point[0]), float(point[1]), float(point[2]))
+            for point in (
+                path if visualization_path_3d is None else visualization_path_3d
+            )
+        )
+        if len(self.visualization_path_3d) < 2:
+            raise ValueError("楼梯可视化中心线至少需要两个点。")
 
     def plan(self, state: SimulationState, goal: NavGoal) -> NavPlan:
         path = list(self.path_3d)
@@ -56,6 +69,7 @@ class StairCenterlinePlanner:
             metadata={
                 "planner": "pct_stair_centerline",
                 "path_3d": path_3d,
+                "visualization_path_3d": self.visualization_path_3d,
                 "controller": "stair_heading_tracker",
                 "low_level_policy_isolation": True,
             },
@@ -172,7 +186,10 @@ class StairLocomotionExecutor:
                     if self._done
                     else "stair_locomotion_failed"
                 ),
-                metadata=self._action_metadata(tracking),
+                metadata=self._action_metadata(
+                    tracking,
+                    command=(0.0, 0.0, 0.0),
+                ),
             )
 
         heading_error = float(tracking["heading_error_rad"])
@@ -230,7 +247,7 @@ class StairLocomotionExecutor:
         return RobotAction(
             base_velocity=command,
             source="stair_locomotion_heading_tracker",
-            metadata=self._action_metadata(tracking),
+            metadata=self._action_metadata(tracking, command=command),
         )
 
     def is_done(self, state: SimulationState) -> bool:
@@ -351,6 +368,8 @@ class StairLocomotionExecutor:
     @staticmethod
     def _action_metadata(
         tracking: dict[str, float | int | bool | None],
+        *,
+        command: tuple[float, float, float],
     ) -> dict[str, Any]:
         return {
             "stair_locomotion_smoke": True,
@@ -361,5 +380,8 @@ class StairLocomotionExecutor:
                 "signed_cross_track_error_m"
             ],
             "stair_path_progress_m": tracking["path_progress_m"],
+            "stair_command_body_vx_mps": float(command[0]),
+            "stair_command_body_vy_mps": float(command[1]),
+            "stair_command_body_wz_rps": float(command[2]),
             "navigation_base_pose_lock": False,
         }

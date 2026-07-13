@@ -81,6 +81,7 @@ class IsaacLabNavigationRuntimeConfig:
     world_collision_clip_large_support_obstacles: bool = False
     world_collision_large_obstacle_clip_half_extent_m: float = 0.45
     show_randomization_debug: bool = False
+    show_velocity_command_debug: bool = False
 
 
 def _item(value: Any) -> float:
@@ -689,12 +690,51 @@ class IsaacLabNavigationRuntime:
         else:
             self._adapter.apply_base_command(*action.base_velocity)
         policy_action = self._adapter.compute_policy_action(refresh_observations=True)
+        self._update_velocity_command_visualization(action)
         self._runtime.action_manager.process_action(policy_action.to(self._runtime.device))
         self._last_action = action
         self._metadata["last_arm_action_report"] = arm_report
         self._metadata["last_gripper_action_report"] = gripper_report
         self._record_joint_action_apply(action, arm_report, gripper_report)
         self._action_prepared = True
+
+    def _update_velocity_command_visualization(self, action: RobotAction) -> None:
+        """按控制 tick 绘制实际进入 locomotion policy 的速度命令。"""
+
+        if not self._config.show_velocity_command_debug:
+            return
+        from source.diagnostics.planned_trajectories import draw_velocity_command
+
+        pose = self._adapter.get_base_pose_full()
+        effective_command_getter = getattr(
+            self._adapter,
+            "get_effective_base_command",
+            None,
+        )
+        effective_command = (
+            effective_command_getter()
+            if callable(effective_command_getter)
+            else action.base_velocity
+        )
+        report = draw_velocity_command(
+            robot_root_pose=(
+                float(pose["x"]),
+                float(pose["y"]),
+                float(pose["z"]),
+                *(float(value) for value in pose["quat_wxyz"]),
+            ),
+            base_velocity=effective_command,
+            source=action.source,
+        )
+        self._metadata["velocity_command_visualization"] = {
+            **report,
+            "requested_base_velocity": [
+                float(value) for value in action.base_velocity
+            ],
+            "effective_base_velocity": [
+                float(value) for value in effective_command
+            ],
+        }
 
     def _configure_manipulation_base_lock(self, action: RobotAction) -> None:
         """按状态机请求启停 root/support lock，并记录非纯物理 provenance。"""

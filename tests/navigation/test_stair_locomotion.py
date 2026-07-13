@@ -47,7 +47,16 @@ def _plan() -> NavPlan:
 
 def test_stair_centerline_planner_preserves_calibrated_path() -> None:
     path = ((0.0, 0.0, 0.4), (0.0, 2.0, 1.4), (1.0, 2.0, 2.4))
-    planner = StairCenterlinePlanner(path)
+    visualization_path = (
+        (0.0, 0.0, -0.05),
+        (0.0, 1.0, 0.45),
+        (0.0, 2.0, 0.95),
+        (1.0, 2.0, 1.95),
+    )
+    planner = StairCenterlinePlanner(
+        path,
+        visualization_path_3d=visualization_path,
+    )
 
     plan = planner.plan(
         _state(0.0, 0.0, 0.4, math.pi / 2.0),
@@ -58,6 +67,7 @@ def test_stair_centerline_planner_preserves_calibrated_path() -> None:
     assert plan.metadata["controller"] == "stair_heading_tracker"
     assert plan.metadata["low_level_policy_isolation"] is True
     assert plan.metadata["path_3d"] == path
+    assert plan.metadata["visualization_path_3d"] == visualization_path
 
 
 def test_stair_executor_commands_forward_motion_when_aligned() -> None:
@@ -71,6 +81,9 @@ def test_stair_executor_commands_forward_motion_when_aligned() -> None:
     assert action.base_velocity[1] == pytest.approx(0.0, abs=1.0e-9)
     assert action.base_velocity[2] == pytest.approx(0.0, abs=1.0e-9)
     assert action.metadata["navigation_base_pose_lock"] is False
+    assert action.metadata["stair_command_body_vx_mps"] == pytest.approx(0.25)
+    assert action.metadata["stair_command_body_vy_mps"] == pytest.approx(0.0)
+    assert action.metadata["stair_command_body_wz_rps"] == pytest.approx(0.0)
     assert executor.status()["float_enabled"] is False
 
 

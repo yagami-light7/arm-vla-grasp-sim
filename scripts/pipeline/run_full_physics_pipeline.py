@@ -667,7 +667,7 @@ def _build_parser() -> argparse.ArgumentParser:
         const="stair_locomotion_smoke",
         dest="mode",
         help=(
-            "从楼梯入口重置并沿 PCT 标定中心线纯物理上楼；"
+            "从楼梯入口重置并沿 PCT 在线规划的 path_3d 纯物理上楼；"
             "禁用 Float 和 DWA，到楼梯出口后结束。"
         ),
     )
@@ -1429,6 +1429,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                             **_navigation_visual_runtime_kwargs(
                                 config.locomotion.policy_profile,
                                 args.navigation_visual_mode,
+                            ),
+                            show_velocity_command_debug=bool(
+                                stair_locomotion_smoke
+                                and config.show_planned_trajectories
                             ),
                             auto_manage_viewport_camera=bool(config.headless),
                             scene_light_mode=config.lighting.scene_light_mode,

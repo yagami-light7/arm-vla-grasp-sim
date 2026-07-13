@@ -161,6 +161,8 @@ def test_pct_nav_planner_replaces_stair_zigzag_with_calibrated_centerline() -> N
     ):
         assert actual == pytest.approx(expected)
     anchors = report["centerline_anchors"]
+    assert anchors[2][:2] == pytest.approx((1.9202, 9.52807))
+    assert anchors[3][:2] == pytest.approx((2.74512, 9.14634))
     assert report["approach_start"] == pytest.approx((0.52149, 4.65642, 0.0))
     refined_path = plan.metadata["path_3d"]
     approach_start_index = next(
@@ -198,6 +200,89 @@ def test_pct_nav_planner_replaces_stair_zigzag_with_calibrated_centerline() -> N
     assert all(
         float(next_point[1]) <= float(point[1]) + 1.0e-9
         for point, next_point in zip(upper_flight, upper_flight[1:])
+    )
+
+
+def test_pct_stair_refinement_accepts_gateway_as_first_path_point() -> None:
+    raw_traj_sim = (
+        (1.5, 5.7, 0.0),
+        (1.52, 6.3, 0.3),
+        (1.92, 9.5, 1.7),
+        (2.74, 9.14, 1.7),
+        (2.70, 7.8, 2.6),
+        (2.70, 7.05, 3.0),
+    )
+    planner = PCTNavPlanner(
+        PCTPlannerConfig(enabled=True, fallback_to_astar=False),
+        client=FakePCTClient(
+            {
+                "status": "ok",
+                "cross_floor": True,
+                "traj": [[-x, -y, z] for x, y, z in raw_traj_sim],
+            }
+        ),
+    )
+
+    plan = planner.plan(
+        _state(1.5, 5.7, z=0.36742),
+        NavGoal(x=2.70, y=7.05, z=3.62628, yaw=-math.pi / 2.0),
+    )
+
+    report = plan.metadata["stair_centerline_refinement"]
+    assert report["applied"] is True
+    assert report["raw_start_index"] == 0
+    assert report["approach_start_index"] == 0
+    assert plan.metadata["path_3d"][0] == pytest.approx((1.5, 5.7, 0.0))
+    assert report["centerline_anchors"][2][:2] == pytest.approx(
+        (1.9202, 9.52807)
+    )
+    assert report["centerline_anchors"][3][:2] == pytest.approx(
+        (2.74512, 9.14634)
+    )
+
+
+def test_pct_stair_short_gateway_approach_does_not_overshoot() -> None:
+    snapped_start = (1.5214885711669925, 5.656423950195313, 0.0)
+    gateway = (1.5, 5.7, 0.0)
+    raw_traj_sim = (
+        snapped_start,
+        (1.52, 6.3, 0.3),
+        (1.92, 9.5, 1.7),
+        (2.74, 9.14, 1.7),
+        (2.70, 7.8, 2.6),
+        (2.70, 7.05, 3.0),
+    )
+    planner = PCTNavPlanner(
+        PCTPlannerConfig(enabled=True, fallback_to_astar=False),
+        client=FakePCTClient(
+            {
+                "status": "ok",
+                "cross_floor": True,
+                "traj": [[-x, -y, z] for x, y, z in raw_traj_sim],
+            }
+        ),
+    )
+
+    plan = planner.plan(
+        _state(1.5, 5.7, z=0.36742),
+        NavGoal(x=2.70, y=7.05, z=3.62628, yaw=-math.pi / 2.0),
+    )
+
+    report = plan.metadata["stair_centerline_refinement"]
+    approach = plan.metadata["path_3d"][: report["approach_point_count"]]
+    assert approach[0] == pytest.approx(snapped_start)
+    assert approach[-1] == pytest.approx(gateway)
+    assert all(
+        min(snapped_start[0], gateway[0]) - 1.0e-9
+        <= float(point[0])
+        <= max(snapped_start[0], gateway[0]) + 1.0e-9
+        for point in approach
+    )
+    assert all(
+        min(snapped_start[1], gateway[1]) - 1.0e-9
+        <= float(point[1])
+        <= max(snapped_start[1], gateway[1]) + 1.0e-9
+        for point in approach
     )
 
 
