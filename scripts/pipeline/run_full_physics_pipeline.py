@@ -34,6 +34,8 @@ from source.tasks import JsonTaskProvider, prepare_episode_spec  # noqa: E402
 
 
 PCT_MULTIFLOOR_DEFAULT_TASK_JSON = "tasks/nav_pick_place_apple_multifloor_pct.json"
+DEFAULT_OUTPUT_DIR = "outputs/full_physics_pipeline"
+STAIR_LOCOMOTION_DEFAULT_OUTPUT_DIR = "outputs/stair_locomotion_smoke"
 PCT_MULTIFLOOR_DEFAULT_SERVER_SCRIPT = "scripts/navigation/pct_grid_server.py"
 PCT_MULTIFLOOR_DEFAULT_TOMOGRAM = "source/scene/multifloor/mutifloor.pickle"
 PCT_MULTIFLOOR_DEFAULT_WALKABLE = (
@@ -221,8 +223,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output-dir",
-        default="outputs/full_physics_pipeline",
-        help="episode、事件、帧和 summary 的输出目录。",
+        default=None,
+        help=(
+            "episode、事件、帧和 summary 的输出目录；stair-locomotion-smoke "
+            "默认写入 outputs/stair_locomotion_smoke。"
+        ),
     )
     parser.add_argument("--num-episodes", type=int, default=1, help="运行的 episode 数量。")
     parser.add_argument(
@@ -246,7 +251,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--show-planned-trajectories",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="显示 PCT 路径和 cuRobo TCP 轨迹；PCT 稳定预设默认开启。",
+        help=(
+            "显示 PCT 路径和 cuRobo TCP 轨迹；stair-locomotion-smoke 和 "
+            "PCT preview 默认开启，完整 pipeline 默认关闭。"
+        ),
     )
     parser.add_argument(
         "--randomize-base-goal",
@@ -257,8 +265,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--keep-window-open",
         action=argparse.BooleanOptionalAction,
-        default=False,
-        help="pipeline 结束后保持 GUI 窗口，便于检查场景和调试标记；默认关闭。",
+        default=None,
+        help=(
+            "pipeline 结束后保持 GUI 窗口，便于检查场景和调试标记；"
+            "stair-locomotion-smoke 的 GUI 默认开启。"
+        ),
     )
     parser.add_argument(
         "--headless",
@@ -297,7 +308,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--record-video",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="启用视频录制；PCT 稳定完整 pipeline 默认开启，可用 --no-record-video 关闭。",
+        help=(
+            "启用视频录制；PCT 稳定完整 pipeline 和 stair-locomotion-smoke "
+            "默认开启，可用 --no-record-video 关闭。"
+        ),
     )
     parser.add_argument(
         "--record-dataset",
@@ -686,7 +700,8 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="mode",
         help=(
             "从楼梯入口重置并沿 PCT 在线规划的 path_3d 纯物理上楼；"
-            "禁用 Float 和 DWA，越过楼梯出口并进入 F2 平台后结束。"
+            "禁用 Float 和 DWA，默认开启 GUI、保留窗口并录制 overview 视频和数据集，"
+            "越过楼梯出口并进入 F2 平台后结束。"
         ),
     )
     mode_group.add_argument(
@@ -725,6 +740,14 @@ def _resolve_runtime_defaults(args: argparse.Namespace) -> argparse.Namespace:
     """按 planner 选择补齐稳定运行预设，同时保留显式 CLI 覆盖。"""
 
     stair_locomotion_smoke = str(args.mode) == "stair_locomotion_smoke"
+    if args.output_dir is None:
+        args.output_dir = (
+            STAIR_LOCOMOTION_DEFAULT_OUTPUT_DIR
+            if stair_locomotion_smoke
+            else DEFAULT_OUTPUT_DIR
+        )
+    if args.keep_window_open is None:
+        args.keep_window_open = bool(stair_locomotion_smoke and not args.headless)
     if stair_locomotion_smoke:
         args.global_planner = "pct"
     pct_multifloor = str(args.global_planner) == "pct"
@@ -762,7 +785,9 @@ def _resolve_runtime_defaults(args: argparse.Namespace) -> argparse.Namespace:
         if args.pct_stair_float is None:
             args.pct_stair_float = str(args.mode) != "stair_locomotion_smoke"
         if args.record_video is None:
-            args.record_video = str(args.mode) == "full_physics"
+            args.record_video = bool(
+                str(args.mode) == "full_physics" or stair_locomotion_smoke
+            )
         if args.video_mode is None:
             args.video_mode = "overview" if stair_locomotion_smoke else "all"
         if args.overview_camera_schedule is None:

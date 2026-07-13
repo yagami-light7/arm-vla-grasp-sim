@@ -15,7 +15,7 @@ graph LR
 
 ## 一、环境依赖
 
-### Isaac Sim 5.1 / Isaac Lab 环境
+### Isaac Sim 5.1 / Isaac Lab 基础依赖
 
 
 | Package                  | Version        | 用途                            |
@@ -52,13 +52,52 @@ graph LR
 | `networkx`               | `3.3`          | 图搜索辅助                      |
 | `matplotlib`             | `3.10.3`       | debug 可视化                    |
 
-可以使用以下命令创建一个conda虚拟环境
+运行以下命令安装环境依赖：
 
 ```bash
-conda create -n isaac_locomani python=3.11 -y
-conda activate isaac_locomani
+# 获取本仓库的 PCT 分支
+git clone --branch pct --single-branch \
+  https://github.com/yagami-light7/arm-vla-grasp-sim.git \
+  "$HOME/workspace/arm_vla_pct"
+export REPO_ROOT="$HOME/workspace/arm_vla_pct"
+
+# 获取固定版本的 Isaac Lab，并创建 Isaac Lab conda 环境
+export ISAACLAB_ROOT="$HOME/workspace/IsaacLab"
+git clone https://github.com/isaac-sim/IsaacLab.git "$ISAACLAB_ROOT"
+git -C "$ISAACLAB_ROOT" checkout 2f91d7dd2994246505602526b32ac67ff758d472
+cd "$ISAACLAB_ROOT"
+./isaaclab.sh --install
+
+# 获取固定版本的 cuRobo，并安装到 Isaac Lab 环境
+mkdir -p "$REPO_ROOT/external"
+export CUROBO_ROOT="$REPO_ROOT/external/curobo"
+git clone https://github.com/NVlabs/curobo.git "$CUROBO_ROOT"
+git -C "$CUROBO_ROOT" checkout 87260212b9ad5ebe486427cbf168611145232884
+
+conda activate isaaclab
+python -m pip install -e "$CUROBO_ROOT" --no-build-isolation
+
+# Isaac Lab 2f91d7d 与 Isaac Sim 5.1 的 URDF importer 接口存在兼容差异。
+# 补丁让 URDF 转换兼容当前可用的 importer 扩展版本和可选惯量配置接口。
+# 应用当前 Isaac Sim 5.1 所需的 URDF importer 兼容补丁
+cd "$ISAACLAB_ROOT"
+patch --dry-run -p1 < "$REPO_ROOT/patches/isaaclab_2f91_isaacsim51_urdf.patch"
+patch -p1 < "$REPO_ROOT/patches/isaaclab_2f91_isaacsim51_urdf.patch"
+
+# 安装本仓库的普通依赖和 Go2-X5 task extension
+cd "$REPO_ROOT"
 python -m pip install -r requirements/isaacsim51_runtime.txt
+python -m pip install -e source/robot_lab
 ```
+
+安装完成后可快速检查关键包：
+
+```bash
+conda activate isaaclab
+python -c "import curobo, isaaclab, isaacsim, robot_lab, torch; print('Isaac Sim/Isaac Lab/PCT runtime imports: OK'); print('torch CUDA:', torch.version.cuda)"
+```
+
+#### PCT codebase ：[PCT codebase](https://github.com/BoZhiStudying233/PCT)
 
 ### LeRobot / Rerun 环境
 
@@ -328,103 +367,110 @@ outputs/batch_run_name/
 
 每个 `episode_XXXXXX.parquet` 的列：
 
-| 列 | 类型 | 说明 |
-| --- | --- | --- |
-| `index` | `int64` | 全局帧编号，跨 episode 单调递增。 |
-| `episode_index` | `int64` | episode 编号。 |
-| `frame_index` | `int64` | episode 内帧序号，从 0 开始。 |
-| `timestamp` | `float32` | episode 内时间戳，单位为秒，当前数据集 `fps=5.0`。 |
-| `task_index` | `int64` | 指向 LeRobot `meta/tasks.jsonl` / task metadata 的任务编号。 |
-| `observation.state` | `list[float32] × 17` | 机器人主状态向量，维度顺序见下表。 |
-| `observation.base_velocity` | `list[float32] × 3` | 机体系底盘速度 `[vx_body, vy_body, wz_body]`。 |
-| `observation.object_state` | `list[float32] × 13` | 目标物体 pose 和速度，维度顺序见下表。 |
-| `observation.tcp_pose` | `list[float32] × 7` | TCP 位姿 `[x, y, z, quat_w, quat_x, quat_y, quat_z]`。 |
-| `pipeline_state` | `string` | 当前 full-physics 状态机阶段，例如 `exec_nav_to_pick`、`exec_pick`。 |
-| `action` | `list[float32] × 11` | 控制动作，维度顺序见下表。 |
-| `next.done` | `bool` | episode 末帧为 `True`，其余帧为 `False`。 |
+
+| 列                          | 类型                  | 说明                                                                |
+| --------------------------- | --------------------- | ------------------------------------------------------------------- |
+| `index`                     | `int64`               | 全局帧编号，跨 episode 单调递增。                                   |
+| `episode_index`             | `int64`               | episode 编号。                                                      |
+| `frame_index`               | `int64`               | episode 内帧序号，从 0 开始。                                       |
+| `timestamp`                 | `float32`             | episode 内时间戳，单位为秒，当前数据集`fps=5.0`。                   |
+| `task_index`                | `int64`               | 指向 LeRobot`meta/tasks.jsonl` / task metadata 的任务编号。         |
+| `observation.state`         | `list[float32] × 17` | 机器人主状态向量，维度顺序见下表。                                  |
+| `observation.base_velocity` | `list[float32] × 3`  | 机体系底盘速度`[vx_body, vy_body, wz_body]`。                       |
+| `observation.object_state`  | `list[float32] × 13` | 目标物体 pose 和速度，维度顺序见下表。                              |
+| `observation.tcp_pose`      | `list[float32] × 7`  | TCP 位姿`[x, y, z, quat_w, quat_x, quat_y, quat_z]`。               |
+| `pipeline_state`            | `string`              | 当前 full-physics 状态机阶段，例如`exec_nav_to_pick`、`exec_pick`。 |
+| `action`                    | `list[float32] × 11` | 控制动作，维度顺序见下表。                                          |
+| `next.done`                 | `bool`                | episode 末帧为`True`，其余帧为 `False`。                            |
 
 图像数据不直接写入 parquet 列。LeRobot v2 中图像作为 video feature 存储：
 
-| Feature | 类型 | 文件位置 | 说明 |
-| --- | --- | --- | --- |
+
+| Feature                    | 类型                 | 文件位置                                                       | 说明                |
+| -------------------------- | -------------------- | -------------------------------------------------------------- | ------------------- |
 | `observation.images.front` | `video[480, 640, 3]` | `videos/chunk-000/observation.images.front/episode_XXXXXX.mp4` | 前视相机 RGB 视频。 |
 | `observation.images.wrist` | `video[480, 640, 3]` | `videos/chunk-000/observation.images.wrist/episode_XXXXXX.mp4` | 腕部相机 RGB 视频。 |
 
 `observation.state` 17 维顺序：
 
-| 维度 | 名称 | 说明 |
-| --- | --- | --- |
-| 0 | `base_x` | 底盘世界系 x。 |
-| 1 | `base_y` | 底盘世界系 y。 |
-| 2 | `base_z` | 底盘世界系 z。 |
-| 3 | `base_yaw` | 底盘 yaw。 |
-| 4 | `tcp_x` | TCP 世界系 x。 |
-| 5 | `tcp_y` | TCP 世界系 y。 |
-| 6 | `tcp_z` | TCP 世界系 z。 |
-| 7 | `tcp_roll` | TCP roll。 |
-| 8 | `tcp_pitch` | TCP pitch。 |
-| 9 | `tcp_yaw` | TCP yaw。 |
-| 10 | `arm_joint1` | 机械臂第 1 关节位置。 |
-| 11 | `arm_joint2` | 机械臂第 2 关节位置。 |
-| 12 | `arm_joint3` | 机械臂第 3 关节位置。 |
-| 13 | `arm_joint4` | 机械臂第 4 关节位置。 |
-| 14 | `arm_joint5` | 机械臂第 5 关节位置。 |
-| 15 | `arm_joint6` | 机械臂第 6 关节位置。 |
-| 16 | `gripper_joint7_joint8_mean` | 两个夹爪关节位置均值。 |
+
+| 维度 | 名称                         | 说明                   |
+| ---- | ---------------------------- | ---------------------- |
+| 0    | `base_x`                     | 底盘世界系 x。         |
+| 1    | `base_y`                     | 底盘世界系 y。         |
+| 2    | `base_z`                     | 底盘世界系 z。         |
+| 3    | `base_yaw`                   | 底盘 yaw。             |
+| 4    | `tcp_x`                      | TCP 世界系 x。         |
+| 5    | `tcp_y`                      | TCP 世界系 y。         |
+| 6    | `tcp_z`                      | TCP 世界系 z。         |
+| 7    | `tcp_roll`                   | TCP roll。             |
+| 8    | `tcp_pitch`                  | TCP pitch。            |
+| 9    | `tcp_yaw`                    | TCP yaw。              |
+| 10   | `arm_joint1`                 | 机械臂第 1 关节位置。  |
+| 11   | `arm_joint2`                 | 机械臂第 2 关节位置。  |
+| 12   | `arm_joint3`                 | 机械臂第 3 关节位置。  |
+| 13   | `arm_joint4`                 | 机械臂第 4 关节位置。  |
+| 14   | `arm_joint5`                 | 机械臂第 5 关节位置。  |
+| 15   | `arm_joint6`                 | 机械臂第 6 关节位置。  |
+| 16   | `gripper_joint7_joint8_mean` | 两个夹爪关节位置均值。 |
 
 `observation.base_velocity` 3 维顺序：
 
-| 维度 | 名称 | 说明 |
-| --- | --- | --- |
-| 0 | `vx_body` | 机体系前向线速度。 |
-| 1 | `vy_body` | 机体系横向线速度。 |
-| 2 | `wz_body` | 机体系 yaw 角速度。 |
+
+| 维度 | 名称      | 说明                |
+| ---- | --------- | ------------------- |
+| 0    | `vx_body` | 机体系前向线速度。  |
+| 1    | `vy_body` | 机体系横向线速度。  |
+| 2    | `wz_body` | 机体系 yaw 角速度。 |
 
 `observation.object_state` 13 维顺序：
 
-| 维度 | 名称 | 说明 |
-| --- | --- | --- |
-| 0 | `object_x` | 物体世界系 x。 |
-| 1 | `object_y` | 物体世界系 y。 |
-| 2 | `object_z` | 物体世界系 z。 |
-| 3 | `object_quat_w` | 物体姿态四元数 w。 |
-| 4 | `object_quat_x` | 物体姿态四元数 x。 |
-| 5 | `object_quat_y` | 物体姿态四元数 y。 |
-| 6 | `object_quat_z` | 物体姿态四元数 z。 |
-| 7 | `object_vx` | 物体世界系线速度 x。 |
-| 8 | `object_vy` | 物体世界系线速度 y。 |
-| 9 | `object_vz` | 物体世界系线速度 z。 |
-| 10 | `object_wx` | 物体世界系角速度 x。 |
-| 11 | `object_wy` | 物体世界系角速度 y。 |
-| 12 | `object_wz` | 物体世界系角速度 z。 |
+
+| 维度 | 名称            | 说明                 |
+| ---- | --------------- | -------------------- |
+| 0    | `object_x`      | 物体世界系 x。       |
+| 1    | `object_y`      | 物体世界系 y。       |
+| 2    | `object_z`      | 物体世界系 z。       |
+| 3    | `object_quat_w` | 物体姿态四元数 w。   |
+| 4    | `object_quat_x` | 物体姿态四元数 x。   |
+| 5    | `object_quat_y` | 物体姿态四元数 y。   |
+| 6    | `object_quat_z` | 物体姿态四元数 z。   |
+| 7    | `object_vx`     | 物体世界系线速度 x。 |
+| 8    | `object_vy`     | 物体世界系线速度 y。 |
+| 9    | `object_vz`     | 物体世界系线速度 z。 |
+| 10   | `object_wx`     | 物体世界系角速度 x。 |
+| 11   | `object_wy`     | 物体世界系角速度 y。 |
+| 12   | `object_wz`     | 物体世界系角速度 z。 |
 
 `observation.tcp_pose` 7 维顺序：
 
-| 维度 | 名称 | 说明 |
-| --- | --- | --- |
-| 0 | `tcp_x` | TCP 世界系 x。 |
-| 1 | `tcp_y` | TCP 世界系 y。 |
-| 2 | `tcp_z` | TCP 世界系 z。 |
-| 3 | `tcp_quat_w` | TCP 姿态四元数 w。 |
-| 4 | `tcp_quat_x` | TCP 姿态四元数 x。 |
-| 5 | `tcp_quat_y` | TCP 姿态四元数 y。 |
-| 6 | `tcp_quat_z` | TCP 姿态四元数 z。 |
+
+| 维度 | 名称         | 说明               |
+| ---- | ------------ | ------------------ |
+| 0    | `tcp_x`      | TCP 世界系 x。     |
+| 1    | `tcp_y`      | TCP 世界系 y。     |
+| 2    | `tcp_z`      | TCP 世界系 z。     |
+| 3    | `tcp_quat_w` | TCP 姿态四元数 w。 |
+| 4    | `tcp_quat_x` | TCP 姿态四元数 x。 |
+| 5    | `tcp_quat_y` | TCP 姿态四元数 y。 |
+| 6    | `tcp_quat_z` | TCP 姿态四元数 z。 |
 
 `action` 11 维顺序：
 
-| 维度 | 名称 | 说明 |
-| --- | --- | --- |
-| 0 | `base_cmd_vx` | 底盘前向速度指令。 |
-| 1 | `base_cmd_vy` | 底盘横向速度指令。 |
-| 2 | `base_cmd_wz` | 底盘 yaw 角速度指令。 |
-| 3 | `arm_joint1_target` | 机械臂第 1 关节目标位置。 |
-| 4 | `arm_joint2_target` | 机械臂第 2 关节目标位置。 |
-| 5 | `arm_joint3_target` | 机械臂第 3 关节目标位置。 |
-| 6 | `arm_joint4_target` | 机械臂第 4 关节目标位置。 |
-| 7 | `arm_joint5_target` | 机械臂第 5 关节目标位置。 |
-| 8 | `arm_joint6_target` | 机械臂第 6 关节目标位置。 |
-| 9 | `gripper_joint7_target` | 第 7 夹爪关节目标位置。 |
-| 10 | `gripper_joint8_target` | 第 8 夹爪关节目标位置。 |
+
+| 维度 | 名称                    | 说明                      |
+| ---- | ----------------------- | ------------------------- |
+| 0    | `base_cmd_vx`           | 底盘前向速度指令。        |
+| 1    | `base_cmd_vy`           | 底盘横向速度指令。        |
+| 2    | `base_cmd_wz`           | 底盘 yaw 角速度指令。     |
+| 3    | `arm_joint1_target`     | 机械臂第 1 关节目标位置。 |
+| 4    | `arm_joint2_target`     | 机械臂第 2 关节目标位置。 |
+| 5    | `arm_joint3_target`     | 机械臂第 3 关节目标位置。 |
+| 6    | `arm_joint4_target`     | 机械臂第 4 关节目标位置。 |
+| 7    | `arm_joint5_target`     | 机械臂第 5 关节目标位置。 |
+| 8    | `arm_joint6_target`     | 机械臂第 6 关节目标位置。 |
+| 9    | `gripper_joint7_target` | 第 7 夹爪关节目标位置。   |
+| 10   | `gripper_joint8_target` | 第 8 夹爪关节目标位置。   |
 
 校验单 episode：
 
@@ -565,7 +611,7 @@ PYTHONDONTWRITEBYTECODE=1 python -B \
   --keep-window-open
 ```
 
-```###
+### 校验并转换数据集
 
 ```bash
 conda activate isaac_locomani
@@ -593,69 +639,73 @@ python \
 默认模式是 full-physics。只在需要 smoke/debug 时传模式参数。
 
 
-| 参数                                                 | 类型 / 默认                     | 说明                                                |
-| ---------------------------------------------------- | ------------------------------- | --------------------------------------------------- |
-| `--task-json`                                        | 必填                            | 任务 JSON 路径                                      |
-| `--output-dir`                                       | `outputs/full_physics_pipeline` | 输出目录                                            |
-| `--num-episodes`                                     | `1`                             | episode 数量；真实 Isaac 模式当前只支持 1           |
-| `--seed`                                             | `0`                             | 首个 episode seed                                   |
-| `--randomize-task` / `--no-randomize-task`           | 默认开启                        | 是否随机化 pick/place 目标 XY                       |
-| `--show-randomization-debug`                         | 默认关闭                        | 显示随机区域和采样点 USD guide                      |
-| `--randomize-base-goal` / `--no-randomize-base-goal` | 默认开启                        | 是否随机化 pick/place 导航交接 base_goal            |
-| `--keep-window-open` / `--no-keep-window-open`       | 默认关闭                        | 结束后保留 GUI；必须配合`--no-headless`             |
-| `--headless` / `--no-headless`                       | 默认`--no-headless`             | 是否无界面运行                                      |
-| `--record-video`                                     | 默认关闭                        | 启用 episode 展示/observation MP4 录制；展示视频固定 25fps |
-| `--video-mode`                                       | `overview`                      | `overview` 使用第三人称视角；`front`/`font` 使用前视 observation；`wrist` 使用腕部 observation；`all` 同时导出三路 |
-| `--video-out`                                        | 可选                            | 视频输出目录或单个`.mp4`；多路/多 episode 请传目录  |
-| `--video-width` / `--video-height`                   | `1280` / `720`                  | overview 捕获分辨率；不改变 front/wrist observation |
-| `--overview-camera-mode`                             | `auto`                          | 自动发现 USD Camera；overview 按阶段优先切换`third_person1..4` |
-| `--overview-capture-backend`                         | `viewport`                      | overview 取帧后端；`viewport` 抓最终视口画面最接近 GUI，`render_product` 使用 Replicator RGB，`auto` 先 viewport 后回退 |
-| `--overview-initial-hold-frames`                     | `160`                           | 初始`third_person1`最少保持帧数，避免刚 reset 后立即切到导航镜头 |
-| `--overview-exposure`                                | `0.0`                           | overview 线性 RGB 转视频前曝光补偿，单位 EV stops  |
-| `--overview-gamma`                                   | `2.2`                           | overview 线性 RGB 转 sRGB 的 gamma；设为`1.0`可关闭 gamma 提亮 |
-| `--pick-plan-json`                                   | 可选                            | 仅 manipulation apply smoke 使用；full-physics 禁止 |
-| `--place-plan-json`                                  | 可选                            | 仅 manipulation apply smoke 使用；full-physics 禁止 |
-| `--dry-run`                                          | mode                            | 无 Isaac 内存后端状态机验证                         |
-| `--simulation-smoke`                                 | mode                            | 只验证真实 Isaac stage/reset                        |
-| `--navigation-smoke`                                 | mode                            | 只验证 nav 到 pick                                  |
-| `--navigation-carry-smoke`                           | mode                            | 验证 carry 姿态下 nav 到 place                      |
-| `--manipulation-smoke`                               | mode                            | 使用假后端验证 manipulation action 合同             |
-| `--manipulation-apply-smoke`                         | mode                            | 真实 Isaac 中验证 arm/gripper action 下发           |
+| 参数                                                 | 类型 / 默认         | 说明                                                                                                                    |
+| ---------------------------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `--task-json`                                        | 必填                | 任务 JSON 路径                                                                                                          |
+| `--output-dir`                                       | 按模式选择          | 普通模式为`outputs/full_physics_pipeline`；stair smoke 为 `outputs/stair_locomotion_smoke`                              |
+| `--num-episodes`                                     | `1`                 | episode 数量；真实 Isaac 模式当前只支持 1                                                                               |
+| `--seed`                                             | `0`                 | 首个 episode seed                                                                                                       |
+| `--randomize-task` / `--no-randomize-task`           | 默认开启            | 是否随机化 pick/place 目标 XY                                                                                           |
+| `--show-randomization-debug`                         | 默认关闭            | 显示随机区域和采样点 USD guide                                                                                          |
+| `--show-planned-trajectories`                        | 按模式选择          | stair smoke/PCT preview 默认开启；完整 pipeline 默认关闭                                                                |
+| `--randomize-base-goal` / `--no-randomize-base-goal` | 默认开启            | 是否随机化 pick/place 导航交接 base_goal                                                                                |
+| `--keep-window-open` / `--no-keep-window-open`       | 按模式选择          | stair smoke GUI 默认开启，其他模式默认关闭；不能与`--headless` 同用                                                     |
+| `--headless` / `--no-headless`                       | 默认`--no-headless` | 是否无界面运行                                                                                                          |
+| `--record-video`                                     | 按模式选择          | PCT 完整 pipeline 和 stair smoke 默认开启；可用`--no-record-video` 覆盖                                                 |
+| `--video-mode`                                       | `overview`          | `overview` 使用第三人称视角；`front`/`font` 使用前视 observation；`wrist` 使用腕部 observation；`all` 同时导出三路      |
+| `--video-out`                                        | 可选                | 视频输出目录或单个`.mp4`；多路/多 episode 请传目录                                                                      |
+| `--video-width` / `--video-height`                   | `1280` / `720`      | overview 捕获分辨率；不改变 front/wrist observation                                                                     |
+| `--overview-camera-mode`                             | `auto`              | 自动发现 USD Camera；overview 按阶段优先切换`third_person1..4`                                                          |
+| `--overview-capture-backend`                         | `viewport`          | overview 取帧后端；`viewport` 抓最终视口画面最接近 GUI，`render_product` 使用 Replicator RGB，`auto` 先 viewport 后回退 |
+| `--overview-initial-hold-frames`                     | `160`               | 初始`third_person1`最少保持帧数，避免刚 reset 后立即切到导航镜头                                                        |
+| `--overview-exposure`                                | `0.0`               | overview 线性 RGB 转视频前曝光补偿，单位 EV stops                                                                       |
+| `--overview-gamma`                                   | `2.2`               | overview 线性 RGB 转 sRGB 的 gamma；设为`1.0`可关闭 gamma 提亮                                                          |
+| `--pick-plan-json`                                   | 可选                | 仅 manipulation apply smoke 使用；full-physics 禁止                                                                     |
+| `--place-plan-json`                                  | 可选                | 仅 manipulation apply smoke 使用；full-physics 禁止                                                                     |
+| `--dry-run`                                          | mode                | 无 Isaac 内存后端状态机验证                                                                                             |
+| `--simulation-smoke`                                 | mode                | 只验证真实 Isaac stage/reset                                                                                            |
+| `--navigation-smoke`                                 | mode                | 只验证 nav 到 pick                                                                                                      |
+| `--navigation-carry-smoke`                           | mode                | 验证 carry 姿态下 nav 到 place                                                                                          |
+| `--stair-locomotion-smoke`                           | mode                | 无 DWA/Float 的楼梯低层策略诊断；默认 GUI、保留窗口并录制 overview/dataset                                              |
+| `--pct-plan-preview`                                 | mode                | 只规划并显示 PCT 路径，不执行 DWA/RL/机械臂                                                                             |
+| `--pct-multifloor`                                   | preset              | 选择当前 PCT 多楼层任务、地图、policy 和 Float 默认值                                                                   |
+| `--manipulation-smoke`                               | mode                | 使用假后端验证 manipulation action 合同                                                                                 |
+| `--manipulation-apply-smoke`                         | mode                | 真实 Isaac 中验证 arm/gripper action 下发                                                                               |
 
 ### `scripts/pipeline/run_full_physics_batch.py`
 
 默认模式是 full-physics，默认 headless，默认继续执行失败后的 episode。
 
 
-| 参数                                                 | 类型 / 默认   | 说明                                        |
-| ---------------------------------------------------- | ------------- | ------------------------------------------- |
-| `--task-json`                                        | 必填          | 任务 JSON 路径                              |
-| `--output-dir`                                       | 必填          | batch 输出目录                              |
-| `--num-episodes`                                     | `1`           | episode 数量                                |
-| `--seed`                                             | `0`           | 首个 seed，后续使用`seed + episode_index`   |
-| `--randomize-task` / `--no-randomize-task`           | 默认开启      | 是否随机化 pick/place 目标 XY               |
-| `--show-randomization-debug`                         | 默认关闭      | 显示随机区域；通常只用于 GUI 单 episode     |
-| `--randomize-base-goal` / `--no-randomize-base-goal` | 默认开启      | 是否随机化导航交接 base_goal                |
-| `--headless` / `--no-headless`                       | 默认 headless | batch 是否无界面运行                        |
-| `--continue-on-failure` / `--no-continue-on-failure` | 默认继续      | 单 episode 失败后是否继续                   |
-| `--pick-plan-json`                                   | 可选          | 非 full-physics smoke 可转发离线 pick plan  |
-| `--place-plan-json`                                  | 可选          | 非 full-physics smoke 可转发离线 place plan |
-| `--progress-interval-s`                              | `5.0`         | heartbeat 进度打印间隔                      |
-| `--color` / `--no-color`                             | 默认开启      | 是否使用 ANSI 彩色输出                      |
-| `--record-video`                                     | 默认关闭      | 转发给单 episode pipeline，启用 MP4 录制；展示视频固定 25fps |
-| `--video-mode`                                       | `overview`    | `overview`/`front`/`font`/`wrist`/`all`；`font` 是 `front` 兼容别名 |
-| `--video-out`                                        | 可选          | 视频输出根目录；batch 会写入其下的`episode_XXXXXX/`子目录，不支持单个`.mp4` |
-| `--video-width` / `--video-height`                   | `1280` / `720`| overview 捕获分辨率；不改变 front/wrist observation |
-| `--overview-camera-mode`                             | `auto`        | 自动发现 USD Camera；overview 按阶段优先切换`third_person1..4` |
-| `--overview-capture-backend`                         | `viewport`    | overview 取帧后端；`viewport` 最接近 GUI，`render_product` 用于排查 fallback |
-| `--overview-initial-hold-frames`                     | `160`         | 初始`third_person1`最少保持帧数              |
-| `--overview-exposure`                                | `0.0`         | overview 曝光补偿，单位 EV stops            |
-| `--overview-gamma`                                   | `2.2`         | overview 线性 RGB 转 sRGB gamma             |
-| `--dry-run`                                          | mode          | 子进程 dry-run                              |
-| `--simulation-smoke`                                 | mode          | 子进程 simulation smoke                     |
-| `--navigation-smoke`                                 | mode          | 子进程 navigation smoke                     |
-| `--navigation-carry-smoke`                           | mode          | 子进程 navigation carry smoke               |
-| `--manipulation-apply-smoke`                         | mode          | 子进程 manipulation apply smoke             |
+| 参数                                                 | 类型 / 默认    | 说明                                                                         |
+| ---------------------------------------------------- | -------------- | ---------------------------------------------------------------------------- |
+| `--task-json`                                        | 必填           | 任务 JSON 路径                                                               |
+| `--output-dir`                                       | 必填           | batch 输出目录                                                               |
+| `--num-episodes`                                     | `1`            | episode 数量                                                                 |
+| `--seed`                                             | `0`            | 首个 seed，后续使用`seed + episode_index`                                    |
+| `--randomize-task` / `--no-randomize-task`           | 默认开启       | 是否随机化 pick/place 目标 XY                                                |
+| `--show-randomization-debug`                         | 默认关闭       | 显示随机区域；通常只用于 GUI 单 episode                                      |
+| `--randomize-base-goal` / `--no-randomize-base-goal` | 默认开启       | 是否随机化导航交接 base_goal                                                 |
+| `--headless` / `--no-headless`                       | 默认 headless  | batch 是否无界面运行                                                         |
+| `--continue-on-failure` / `--no-continue-on-failure` | 默认继续       | 单 episode 失败后是否继续                                                    |
+| `--pick-plan-json`                                   | 可选           | 非 full-physics smoke 可转发离线 pick plan                                   |
+| `--place-plan-json`                                  | 可选           | 非 full-physics smoke 可转发离线 place plan                                  |
+| `--progress-interval-s`                              | `5.0`          | heartbeat 进度打印间隔                                                       |
+| `--color` / `--no-color`                             | 默认开启       | 是否使用 ANSI 彩色输出                                                       |
+| `--record-video`                                     | 默认关闭       | 转发给单 episode pipeline，启用 MP4 录制；展示视频固定 25fps                 |
+| `--video-mode`                                       | `overview`     | `overview`/`front`/`font`/`wrist`/`all`；`font` 是 `front` 兼容别名          |
+| `--video-out`                                        | 可选           | 视频输出根目录；batch 会写入其下的`episode_XXXXXX/`子目录，不支持单个`.mp4`  |
+| `--video-width` / `--video-height`                   | `1280` / `720` | overview 捕获分辨率；不改变 front/wrist observation                          |
+| `--overview-camera-mode`                             | `auto`         | 自动发现 USD Camera；overview 按阶段优先切换`third_person1..4`               |
+| `--overview-capture-backend`                         | `viewport`     | overview 取帧后端；`viewport` 最接近 GUI，`render_product` 用于排查 fallback |
+| `--overview-initial-hold-frames`                     | `160`          | 初始`third_person1`最少保持帧数                                              |
+| `--overview-exposure`                                | `0.0`          | overview 曝光补偿，单位 EV stops                                             |
+| `--overview-gamma`                                   | `2.2`          | overview 线性 RGB 转 sRGB gamma                                              |
+| `--dry-run`                                          | mode           | 子进程 dry-run                                                               |
+| `--simulation-smoke`                                 | mode           | 子进程 simulation smoke                                                      |
+| `--navigation-smoke`                                 | mode           | 子进程 navigation smoke                                                      |
+| `--navigation-carry-smoke`                           | mode           | 子进程 navigation carry smoke                                                |
+| `--manipulation-apply-smoke`                         | mode           | 子进程 manipulation apply smoke                                              |
 
 ### `tools/lerobot_to_rerun.py`
 

@@ -54,6 +54,10 @@ class DWAConfig:
     preserve_sharp_corners: bool = False
     corner_angle_threshold: float = 0.45
     corner_waypoint_tolerance: float = 0.08
+    lateral_velocity_compensation_gain: float = 0.0
+    max_lateral_velocity_command: float = 0.0
+    max_lateral_velocity_accel: float = 0.0
+    allow_inflated_occupied_start_escape: bool = False
 
 
 @dataclass(frozen=True)
@@ -80,18 +84,27 @@ class DWADebug:
     window_linear_velocity: float
     window_angular_velocity: float
     velocity_window_source: str
+    occupied_start_escape_active: bool = False
+    occupied_start_escape_candidates: int = 0
 
 
 class DWAController:
     """Local planner that samples dynamically feasible vx + wz commands."""
 
-    def __init__(self, path_world: list[tuple[float, float]], grid_map: OccupancyGridMap, config: DWAConfig):
+    def __init__(
+        self,
+        path_world: list[tuple[float, float]],
+        grid_map: OccupancyGridMap,
+        config: DWAConfig,
+        raw_grid_map: OccupancyGridMap | None = None,
+    ):
         if len(path_world) < 2:
             raise ValueError("DWA requires at least two world-frame waypoints.")
         self.reference_path_world = np.asarray(path_world, dtype=np.float64)
         sample_spacing = max(grid_map.resolution, min(config.path_sample_spacing, max(config.lookahead_distance * 0.5, grid_map.resolution)))
         self.path_world = _densify_path(self.reference_path_world, sample_spacing=sample_spacing)
         self.grid_map = grid_map
+        self.raw_grid_map = raw_grid_map
         self.config = config
         self.target_index = 1
         self._command_window_velocity: tuple[float, float] | None = None
@@ -113,10 +126,16 @@ class DWAController:
     def compute_command(
         self,
         pose_xyyaw: tuple[float, float, float],
-        current_velocity: tuple[float, float],
+        current_velocity: tuple[float, float] | tuple[float, float, float],
     ) -> tuple[np.ndarray, DWADebug]:
         x, y, yaw = pose_xyyaw
-        current_vx, current_wz = current_velocity
+        if len(current_velocity) == 2:
+            current_vx, current_wz = current_velocity
+            current_vy = 0.0
+        elif len(current_velocity) == 3:
+            current_vx, current_vy, current_wz = current_velocity
+        else:
+            raise ValueError("DWA 当前速度必须是 (vx, wz) 或 (vx, vy, wz)。")
         if self.config.use_command_velocity_window:
             # RL policy 对微小速度命令存在响应死区；用上一条高层命令推进窗口，
             # 避免实测速度尚未响应时每次都把加速过程重置到零附近。
@@ -169,6 +188,8 @@ class DWAController:
                 velocity_window_source=(
                     "command" if self.config.use_command_velocity_window else "measured"
                 ),
+                occupied_start_escape_active=False,
+                occupied_start_escape_candidates=0,
             )
             self._command_window_velocity = (0.0, 0.0)
             return np.zeros(3, dtype=np.float32), debug
@@ -241,6 +262,19 @@ class DWAController:
         feasible_candidates = 0
         collision_rejections = 0
         path_deviation_rejections = 0
+        occupied_start_escape_candidates = 0
+        occupied_start_escape_active = self._can_escape_inflated_occupied_start(
+            x,
+            y,
+        )
+        lateral_command = self._lateral_compensation_command(current_vy)
+        lateral_feedback_enabled = (
+            self.config.lateral_velocity_compensation_gain > 0.0
+            and self.config.max_lateral_velocity_command > 0.0
+        )
+        predicted_lateral_velocity = (
+            float(current_vy) if lateral_feedback_enabled else 0.0
+        )
 
         for linear_velocity, angular_velocity in self._sample_velocities(
             current_vx=current_vx,
@@ -255,16 +289,35 @@ class DWAController:
                 yaw=yaw,
                 linear_velocity=linear_velocity,
                 angular_velocity=angular_velocity,
+                lateral_velocity=predicted_lateral_velocity,
+                lateral_velocity_target=(
+                    lateral_command if lateral_feedback_enabled else 0.0
+                ),
+                max_lateral_accel=(
+                    self.config.max_lateral_velocity_accel
+                    if lateral_feedback_enabled
+                    else 0.0
+                ),
                 stop_xy=self.path_world[-1],
                 stop_tolerance=self.config.goal_tolerance,
             )
             if trajectory.size == 0:
                 continue
 
-            clearance = self._trajectory_clearance(trajectory)
+            clearance = self._trajectory_clearance(
+                trajectory,
+                occupied_start_escape_target=(
+                    target if occupied_start_escape_active else None
+                ),
+                occupied_start_position=(
+                    position if occupied_start_escape_active else None
+                ),
+            )
             if clearance <= 0.0:
                 collision_rejections += 1
                 continue
+            if occupied_start_escape_active:
+                occupied_start_escape_candidates += 1
 
             end_pose = trajectory[-1]
             score, details = self._score_trajectory(
@@ -287,7 +340,10 @@ class DWAController:
                 best_score = score
                 best_clearance = clearance
                 best_path_distance = float(details["mean_path_distance"])
-                best_command = np.array([linear_velocity, 0.0, angular_velocity], dtype=np.float32)
+                best_command = np.array(
+                    [linear_velocity, lateral_command, angular_velocity],
+                    dtype=np.float32,
+                )
 
         if not np.isfinite(best_score):
             dt = max(self.config.control_dt, 1.0e-3)
@@ -338,8 +394,33 @@ class DWAController:
             velocity_window_source=(
                 "command" if self.config.use_command_velocity_window else "measured"
             ),
+            occupied_start_escape_active=occupied_start_escape_active,
+            occupied_start_escape_candidates=occupied_start_escape_candidates,
         )
         return best_command, debug
+
+    def _lateral_compensation_command(self, current_vy: float) -> float:
+        """用受限横向命令抵消低层策略的实测侧滑。"""
+
+        limit = max(0.0, float(self.config.max_lateral_velocity_command))
+        gain = max(0.0, float(self.config.lateral_velocity_compensation_gain))
+        if limit <= 0.0 or gain <= 0.0:
+            return 0.0
+        return float(np.clip(-gain * float(current_vy), -limit, limit))
+
+    def _can_escape_inflated_occupied_start(self, x: float, y: float) -> bool:
+        """仅允许从原图自由、足迹膨胀后占用的起点向外恢复。"""
+
+        if (
+            not self.config.allow_inflated_occupied_start_escape
+            or self.raw_grid_map is None
+        ):
+            return False
+        row, col = self.grid_map.world_to_grid(x, y)
+        if not self.grid_map.is_occupied(row, col):
+            return False
+        raw_row, raw_col = self.raw_grid_map.world_to_grid(x, y)
+        return not self.raw_grid_map.is_occupied(raw_row, raw_col)
 
     def _advance_target(self, position: np.ndarray):
         next_corner = self._next_unpassed_corner()
@@ -531,6 +612,9 @@ class DWAController:
         yaw: float,
         linear_velocity: float,
         angular_velocity: float,
+        lateral_velocity: float = 0.0,
+        lateral_velocity_target: float | None = None,
+        max_lateral_accel: float = 0.0,
         stop_xy: np.ndarray | None = None,
         stop_tolerance: float = 0.0,
     ) -> np.ndarray:
@@ -550,23 +634,104 @@ class DWAController:
         sim_x = x
         sim_y = y
         sim_yaw = yaw
+        sim_lateral_velocity = float(lateral_velocity)
         for i in range(steps):
-            sim_x += linear_velocity * math.cos(sim_yaw) * dt
-            sim_y += linear_velocity * math.sin(sim_yaw) * dt
+            if lateral_velocity_target is not None:
+                lateral_step = max(0.0, float(max_lateral_accel)) * dt
+                sim_lateral_velocity += float(
+                    np.clip(
+                        float(lateral_velocity_target) - sim_lateral_velocity,
+                        -lateral_step,
+                        lateral_step,
+                    )
+                )
+            sim_x += (
+                linear_velocity * math.cos(sim_yaw)
+                - sim_lateral_velocity * math.sin(sim_yaw)
+            ) * dt
+            sim_y += (
+                linear_velocity * math.sin(sim_yaw)
+                + sim_lateral_velocity * math.cos(sim_yaw)
+            ) * dt
             sim_yaw = _wrap_angle(sim_yaw + angular_velocity * dt)
             trajectory[i] = (sim_x, sim_y, sim_yaw)
             if stop_xy is not None and math.hypot(sim_x - float(stop_xy[0]), sim_y - float(stop_xy[1])) <= stop_tolerance:
                 return trajectory[: i + 1]
         return trajectory
 
-    def _trajectory_clearance(self, trajectory: np.ndarray) -> float:
+    def _trajectory_clearance(
+        self,
+        trajectory: np.ndarray,
+        *,
+        occupied_start_escape_target: np.ndarray | None = None,
+        occupied_start_position: np.ndarray | None = None,
+    ) -> float:
         min_clearance = self.config.obstacle_distance_cap
+        escaping_occupied_start = occupied_start_escape_target is not None
+        escaped_inflated_cell = not escaping_occupied_start
+        previous_escape_distance = (
+            float(
+                np.linalg.norm(
+                    occupied_start_escape_target - occupied_start_position
+                )
+            )
+            if escaping_occupied_start and occupied_start_position is not None
+            else math.inf
+        )
+        previous_raw_clearance = None
+        if escaping_occupied_start and occupied_start_position is not None:
+            previous_raw_clearance = self._raw_map_clearance_at(
+                float(occupied_start_position[0]),
+                float(occupied_start_position[1]),
+            )
         for point in trajectory:
             clearance = self._clearance_at(point[0], point[1])
             if clearance <= 0.0:
-                return 0.0
+                if not escaping_occupied_start or escaped_inflated_cell:
+                    return 0.0
+                if self.raw_grid_map is None:
+                    return 0.0
+                raw_row, raw_col = self.raw_grid_map.world_to_grid(
+                    float(point[0]),
+                    float(point[1]),
+                )
+                if self.raw_grid_map.is_occupied(raw_row, raw_col):
+                    return 0.0
+                raw_clearance = self._raw_map_clearance_at(
+                    float(point[0]),
+                    float(point[1]),
+                )
+                if (
+                    previous_raw_clearance is not None
+                    and raw_clearance is not None
+                    and raw_clearance + 1.0e-6 < previous_raw_clearance
+                ):
+                    return 0.0
+                if raw_clearance is not None:
+                    previous_raw_clearance = raw_clearance
+                escape_distance = float(
+                    np.linalg.norm(
+                        occupied_start_escape_target - point[:2]
+                    )
+                )
+                if escape_distance > previous_escape_distance + 1.0e-6:
+                    return 0.0
+                previous_escape_distance = escape_distance
+                continue
+            escaped_inflated_cell = True
             min_clearance = min(min_clearance, clearance)
-        return min_clearance
+        return min_clearance if escaped_inflated_cell else 0.0
+
+    def _raw_map_clearance_at(self, x: float, y: float) -> float | None:
+        """读取未膨胀地图净空，供占用起点恢复校验。"""
+
+        if self.raw_grid_map is None:
+            return None
+        return _point_to_occupied_cell_edge_clearance(
+            x,
+            y,
+            self.raw_grid_map,
+        )
 
     def _clearance_at(self, x: float, y: float) -> float:
         row, col = self.grid_map.world_to_grid(x, y)
@@ -697,6 +862,58 @@ def _bounded_dynamic_interval(
         return lower, upper
     saturated = float(np.clip(current_value, minimum_value, maximum_value))
     return saturated, saturated
+
+
+def _point_to_occupied_cell_edge_clearance(
+    x: float,
+    y: float,
+    grid_map: OccupancyGridMap,
+) -> float:
+    """计算世界坐标点到原始占用格矩形边缘的连续净空。"""
+
+    delta_x = float(x) - float(grid_map.origin[0])
+    delta_y = float(y) - float(grid_map.origin[1])
+    cos_yaw = math.cos(float(grid_map.origin[2]))
+    sin_yaw = math.sin(float(grid_map.origin[2]))
+    local_x = cos_yaw * delta_x + sin_yaw * delta_y
+    local_y = -sin_yaw * delta_x + cos_yaw * delta_y
+    resolution = float(grid_map.resolution)
+    map_width = float(grid_map.width) * resolution
+    map_height = float(grid_map.height) * resolution
+    if not (0.0 <= local_x <= map_width and 0.0 <= local_y <= map_height):
+        return 0.0
+
+    row, col = grid_map.world_to_grid(float(x), float(y))
+    minimum_clearance = min(
+        local_x,
+        map_width - local_x,
+        local_y,
+        map_height - local_y,
+    )
+    for obstacle_row in range(row - 3, row + 4):
+        for obstacle_col in range(col - 3, col + 4):
+            if not grid_map.is_occupied(obstacle_row, obstacle_col):
+                continue
+            cell_x_min = float(obstacle_col) * resolution
+            cell_x_max = cell_x_min + resolution
+            row_from_bottom = grid_map.height - 1 - obstacle_row
+            cell_y_min = float(row_from_bottom) * resolution
+            cell_y_max = cell_y_min + resolution
+            distance_x = max(
+                cell_x_min - local_x,
+                0.0,
+                local_x - cell_x_max,
+            )
+            distance_y = max(
+                cell_y_min - local_y,
+                0.0,
+                local_y - cell_y_max,
+            )
+            minimum_clearance = min(
+                minimum_clearance,
+                math.hypot(distance_x, distance_y),
+            )
+    return minimum_clearance
 
 
 def _densify_path(path_world: np.ndarray, sample_spacing: float) -> np.ndarray:

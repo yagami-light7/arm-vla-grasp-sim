@@ -24,6 +24,14 @@ runtime_stable_pipeline:
 
 stair_locomotion_smoke:
   selector: --stair-locomotion-smoke
+  shortest_command: python scripts/pipeline/run_full_physics_pipeline.py --stair-locomotion-smoke
+  defaults:
+    headless: false
+    keep_window_open: true
+    record_video: true
+    video_mode: overview
+    record_dataset: true
+    output_dir: outputs/stair_locomotion_smoke
   start_source: pct_cross_floor_gateway_points[0]
   goal_source: pct_cross_floor_stair_exit_points[0] + exit_extension_m
   exit_extension_m: 1.0

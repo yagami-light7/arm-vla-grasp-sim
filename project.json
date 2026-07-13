@@ -2,9 +2,17 @@
   "project": "arm_vla_pct",
   "branch": "pct",
   "goal": "将 flat A* 全局导航替换为 PCT 多楼层规划器，并接入新的 RL locomotion checkpoint 配置。",
-  "current_phase": "phase_168_stair_exit_camera35_defaults",
-  "last_updated": "2026-07-13 15:56:13",
+  "current_phase": "phase_174_curobo_path_module_relocation",
+  "last_updated": "2026-07-13 21:41:06",
   "status": {
+    "portable_script_paths_updated": true,
+    "curobo_runtime_path_resolution_added": true,
+    "pct_collision_ply_default_disabled": true,
+    "multifloor_runtime_assets_git_lfs_enabled": true,
+    "multifloor_ply_assets_excluded": true,
+    "multifloor_usda_references_relative": true,
+    "curobo_path_module_relocated": true,
+    "isaaclab_urdf_patch_documented": true,
     "astar_default_preserved": true,
     "pct_adapter_added": true,
     "pct_pipeline_switch_added": true,
@@ -343,6 +351,22 @@
     "stair_locomotion_trajectory_visualization_default_enabled": true,
     "stair_pct_online_path_visualization_real_verified": false,
     "pct_phase166_real_validation_blocked_by_gpu_memory": true,
+    "readme_reproduction_quickstart_added": true,
+    "readme_pct_environment_updated": true,
+    "isaaclab_urdf_compat_patch_added": true,
+    "stair_locomotion_single_flag_preset_added": true,
+    "stair_locomotion_cli_explicit_overrides_tested": true,
+    "pct_float_overview_camera_schedule_diagnosed": true,
+    "pct_float_overview_camera_manual_tuning_pending": true,
+    "pct_float_camera1_to_camera2_delayed": true,
+    "pct_float_camera2_to_camera3_delayed": true,
+    "pct_float_camera5_to_camera6_delayed": true,
+    "pct_float_camera6_camera7_camera8_order_fixed": true,
+    "pct_float_camera_schedule_offline_full_route_verified": true,
+    "pct_float_camera_schedule_full_real_reverification_pending": true,
+    "pct_float_pipeline_stably_reproducible": false,
+    "pct_latest_full_rerun_failed_on_f2_dwa_collision": true,
+    "pct_local_gauss_loading_deferred_to_server": true,
     "pct_final_acceptance_complete": false
   },
   "local_assets": {
@@ -6178,19 +6202,433 @@
         "低层 policy 能到达 root z>=1.8m 后，真实验证自动切换 Camera5 的上段图像与视频；当前只通过确定性 schedule 测试。",
         "继续基于 Camera3 的速度箭头、机体姿态和接触状态诊断约 (1.72,5.88) 处的低层 stall。"
       ]
+    },
+    {
+      "time": "2026-07-13 16:27:30",
+      "summary": "完成 phase169：将 stair locomotion smoke 的 GUI、保留窗口、overview 视频、dataset 记录、Camera3/Camera5 调度、PCT 轨迹与实时速度显示整合为单参数 preset，现在只需运行 --stair-locomotion-smoke。README 新增从 clone pct 分支到 Conda、Isaac Sim 5.1、固定 revision 的 Isaac Lab/cuRobo、robot_lab extension、外部运行资产和无 GUI 自检的完整快速复现流程；同时将本机 Isaac Lab URDF importer 兼容修改固化为仓库补丁。",
+      "files_changed": [
+        "README.md",
+        "patches/isaaclab_2f91_isaacsim51_urdf.patch",
+        "configs/navigation/pct_multifloor_policy.yaml",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_full_physics_randomization.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "stair-locomotion-smoke 的常用命令需要重复指定 GUI、窗口保留、视频模式、dataset 和输出目录，难以记忆且容易漏参数。",
+          "root_cause": "这些行为此前作为通用 CLI 的独立 opt-in 实现，runtime default resolver 只区分 PCT/非 PCT，没有把专用楼梯诊断模式视为完整的运行 preset。",
+          "fix": "为 stair-locomotion-smoke 增加 mode-aware 默认值：GUI、保留窗口、overview 视频、dataset 和仓库相对输出目录；保留 --headless、--no-record-video、--no-record-dataset、--output-dir 等显式覆盖。完整 Float/no-float pipeline 的默认值保持不变。",
+          "prevention": "新增模式时用 resolved CLI 参数表固定其默认契约，并同时测试单参数入口、显式覆盖和既有模式不回归。"
+        },
+        {
+          "problem": "旧 README 只列普通 Python requirements，无法让新协作者从空环境复现当前运行组合。",
+          "root_cause": "Isaac Sim、Isaac Lab、cuRobo、本地 robot_lab extension、精确源码 revision、URDF importer 兼容修改和被 Git 忽略的大型资产分散在本机环境与历史记录中。",
+          "fix": "README 新增端到端安装步骤、精确 revision、版本检查、资产 manifest、无 GUI 验证和当前能力边界；将 Isaac Lab 本地兼容修改导出为可 dry-run/apply 的补丁。",
+          "prevention": "框架 revision、外部补丁或运行资产布局发生变化时，同步更新 README 和 project.json，并保留可机器检查的版本与资产命令。"
+        },
+        {
+          "problem": "CLI 默认值回归测试直接调用 argparse raw parser，在 mode-aware 默认值增加后读到 None，而不是 pipeline 实际使用的解析结果。",
+          "root_cause": "测试绕过了 _parse_args 中的 _resolve_runtime_defaults，因此测试对象与真实入口不一致。",
+          "fix": "测试改用 _parse_args，并增加 stair preset 的默认值与显式覆盖断言。",
+          "prevention": "验证运行默认值时统一调用生产入口的 resolved parser；只在专门测试 argparse 原始结构时直接使用 _build_parser。"
+        },
+        {
+          "problem": "README 中已有一个 markdown code fence 与后续三级标题写在同一行，新增大段快速复现章节后 fence 数量检查为奇数。",
+          "root_cause": "原文使用了 ```###，渲染器会把标题当作 fence info string，导致后续文档结构不稳定。",
+          "fix": "拆分并恢复为正常三级标题，最终 README fence 数量为偶数且 git diff whitespace 检查通过。",
+          "prevention": "文档大改后执行 code fence 计数和 git diff --check，并人工查看新增章节边界。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile scripts/pipeline/run_full_physics_pipeline.py tests/test_full_physics_pipeline.py tests/test_full_physics_randomization.py source/pipeline/config.py source/pipeline/navigation_smoke.py source/navigation/stair_locomotion.py",
+          "result": "passed",
+          "note": "CLI preset 及其直接依赖语法检查通过。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/test_full_physics_pipeline.py tests/test_full_physics_randomization.py tests/navigation/test_stair_locomotion.py",
+          "result": "passed",
+          "note": "69 passed；覆盖 stair 单参数默认值、显式关闭录制/切换 headless/自定义输出目录和既有 pipeline 默认值。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/navigation tests/test_planned_trajectories.py tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_full_physics_batch.py tests/test_full_physics_randomization.py tests/test_collision_terrain_wrapper.py tests/test_simulation_viewport.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "265 passed, 1 skipped；覆盖 PCT、A*/DWA、Float/no-float 组装、stair 直接控制、录制和 viewport 回归。"
+        },
+        {
+          "command": "patch --dry-run -p1 < patches/isaaclab_2f91_isaacsim51_urdf.patch",
+          "result": "passed",
+          "note": "补丁对 Isaac Lab commit 2f91d7dd2994246505602526b32ac67ff758d472 的干净 urdf_converter.py 可应用；YAML、README fence 和 git diff --check 同时通过。"
+        },
+        {
+          "command": "Isaac GUI stair locomotion smoke",
+          "result": "not_run",
+          "note": "本轮修改只涉及 preset、测试和复现文档；检查时 nvidia-smi 无法与驱动通信，因此没有启动真实 Isaac Sim。低层 policy 第一段楼梯 stall 状态保持未验收。"
+        }
+      ],
+      "next_steps": [
+        "驱动恢复后运行 python scripts/pipeline/run_full_physics_pipeline.py --stair-locomotion-smoke，确认单参数入口、Camera3 GUI、视频和 dataset 输出。",
+        "在一台干净机器按 README 执行 clone、Conda 安装和资产检查，记录首个与文档不一致的步骤并修正文档或依赖锁定。",
+        "preset 验收后继续诊断约 (1.72,5.88) 的低层 stair stall；本轮没有把 stair_locomotion_smoke_real_verified 改为 true。"
+      ]
+    },
+    {
+      "time": "2026-07-13 16:39:44",
+      "summary": "完成 phase170 诊断：读取用户最新 float_camera_test 的 overview summary 与 frames，确认 headless Float 使用 multifloor_overview_camera_schedule.json 自动切换，十次切换均由 state/机器人 root XYZ 阈值首次命中触发。整理了规则优先级、可用字段、GUI/headless 差异、初始 160 帧保持机制及按视频时间反查 step/XYZ 的手调方法；按用户要求本轮不修改相机规则。",
+      "files_changed": [
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "Float overview 中若干相机切换时机与期望构图不一致。",
+          "root_cause": "当前规则按数组顺序首次命中，并以 pipeline state、全局 step 和机器人 root XYZ 为触发量。float_camera_test 中 Camera3/4/5/7/6 分别在 x=0.4006、z=0.8145 且 y=7.0031、z=1.8014、z=2.2012、y=2.1978 时切换，正好对应现有边界，不是随机或漏帧。",
+          "fix": "本轮不替用户改阈值；明确应直接编辑 multifloor_overview_camera_schedule.json，调整 x/y/z min/max、state 或 min_step/max_step，并通过 summary.overview_video.camera_switches 与 frames.jsonl 复核。",
+          "prevention": "相机调度改动后逐项记录预期切换位置，避免只按视频时间猜测；把更具体规则放在宽泛规则之前，并检查规则是否被前项遮蔽。"
+        },
+        {
+          "problem": "GUI Float 与 headless Float 的相机控制方式容易混淆。",
+          "root_cause": "完整 Float GUI 默认 camera_control=manual_gui，overview 跟随当前 viewport，不执行 JSON 调度；headless 才默认 auto_headless。stair-locomotion-smoke 是允许 GUI 自动调度的专用例外。",
+          "fix": "手动实时取景时在 GUI viewport 选择 Camera0-8；验证 JSON 自动规则时使用 headless Float，并从 summary 确认 camera_control=auto_headless 和 camera_schedule_path。",
+          "prevention": "验收视频时先检查 summary 中的 camera_control、camera_schedule_path 和 camera_switches，避免把 GUI 手动切换误判为 schedule 行为。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "jq '.overview_video | {fps, camera_control, camera_schedule_path, overview_initial_hold_frames, camera_switches}' /mnt/sage_data/outputs/arm_vla_pct/float_camera_test/episode_000000/summary.json",
+          "result": "passed",
+          "note": "确认 fps=25、camera_control=auto_headless、调度文件路径正确，并取得完整十次切换记录。"
+        },
+        {
+          "command": "jq select switch step indices from float_camera_test/episode_000000/frames.jsonl",
+          "result": "passed",
+          "note": "逐项取得切换时的 timestamp、pipeline_state 与 post-step robot root XYZ；位置均与 JSON 阈值一致。"
+        },
+        {
+          "command": "Python/Isaac regression tests",
+          "result": "not_run",
+          "note": "本轮没有修改实现、配置或测试，仅分析现有输出并更新进度记录。"
+        }
+      ],
+      "next_steps": [
+        "用户按目标构图调整 configs/recording/multifloor_overview_camera_schedule.json 中对应规则的边界和顺序。",
+        "使用 headless overview-only Float 命令复跑，并比较 summary 中新旧 camera_switches 的 time、step 与 camera。",
+        "阈值确定后再运行一次完整录制验收；GUI 手调则继续由 viewport 主动选择 Camera0-8。"
+      ]
+    },
+    {
+      "time": "2026-07-13 18:59:47",
+      "summary": "完成 phase171：按用户构图反馈延后 Camera1->2、Camera2->3 和 Camera5->6，修正上层 Camera6->7->8 的单向顺序；真实复跑验证到 Camera6 后，pipeline 在 F2 DWA 段触发 nav_collision。对比 phase161 成功轨迹后确认先前完整成功只是单次能力证明，当前尚未达到稳定复现；本机 8GB GPU 不再尝试加载 1676 万 Gaussian，后续转到服务器渲染。",
+      "files_changed": [
+        "configs/recording/multifloor_overview_camera_schedule.json",
+        "tests/test_simulation_viewport.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "Camera1 在完成 pick 后立即切到 Camera2，导致 Camera2 过早接管且一段时间看不到机器人。",
+          "root_cause": "旧规则只按 exec_nav_to_place 状态选择 Camera2，没有为离开 pick 区域设置位置边界。",
+          "fix": "新增 post_pick_departure 优先规则，在机器人 x<=-2.6 时继续使用 Camera1；本轮真实复跑中 Camera1->2 从旧视频约 20.16s 延后到约 39.32s。",
+          "prevention": "状态切换跨度较大的镜头必须同时设置空间边界，并在测试中固定边界两侧的相机选择。"
+        },
+        {
+          "problem": "Camera5->6 仍过早，且旧上层规则实际形成 Camera5->7->6->8，与用户要求的 6->7->8 相反。",
+          "root_cause": "Camera7 使用较宽的 z 条件先命中，Camera6 又以更晚的 y 条件覆盖；首版调整把 Camera6 设为 y<=5.5，真实画面显示仍过早。",
+          "fix": "按规则优先级改为 Camera6 在 z>=2.2 且 y<=4.3 时接管、Camera7 在 y<=2.2 时接管、place 状态使用 Camera8。首轮 y<=5.5 的复跑在用户反馈后中止，最终复跑 Camera5->6 发生在 step=6713、约 134.3s。",
+          "prevention": "把整条成功轨迹离线回放到 schedule resolver，断言相机序列而不只断言单个采样点；阈值修改后同时检查真实切换前后帧。"
+        },
+        {
+          "problem": "逐帧检查发现 Camera2->3 后约一秒只有楼梯，机器人尚未进入 Camera3 画面。",
+          "root_cause": "Camera3 的 x_min=0.4 正好在机器人经过入口外沿时触发；录像显示机器人到 x 约 0.72 后才从 Camera3 画面边缘出现。",
+          "fix": "把 Camera3 的 x_min 延后到 0.75，并新增 x=0.70 仍选 Camera2、x=0.80 选择 Camera3 的回归断言；phase161 完整成功轨迹离线回放的新切换点为 x=0.78。",
+          "prevention": "除稀疏时间采样外，所有切换边界至少检查切换前、切换帧和切换后连续帧。"
+        },
+        {
+          "problem": "先前 phase161 完整成功，但本轮相同默认 Float 命令在 F2 再次 nav_collision。",
+          "root_cause": "phase161 在同一路段位姿约为 (0.038,3.748)，DWA clearance=0.20 且 21/21 候选可行；本轮向墙侧多漂约 3cm 到 (0.009,3.771)，跨入膨胀障碍格后 clearance=0 且 24/24 候选被拒绝。当前 F2 路径与障碍边界的裕量不足，携物 RL/PhysX 的厘米级执行差异会被离散栅格放大；单次 phase161 成功不能证明稳定性。",
+          "fix": "本轮未修改导航算法；撤回稳定复现结论，保留失败产物和精确对比证据。后续需先让 F2 路径远离障碍并为 occupied-start 增加不穿墙的受约束恢复，再做连续多轮验收。",
+          "prevention": "完整 pipeline 只有在当前代码、当前默认参数下连续至少三轮成功后才能标记 stable；必须同时记录最小路径净空、实际横向误差和 DWA 可行候选数。"
+        },
+        {
+          "problem": "当前本机是否应重新加载完整 Gauss 视觉层。",
+          "root_cause": "collision pipeline 运行时显存约 5.77/8.19GB，完整场景含约 1676 万 Gaussian；历史上 NuRec /World/gauss 与 RTX、PhysX、RSL-RL CUDA 同进程已触发 external semaphore/CUDA 700。",
+          "fix": "按用户决定，本地继续使用 collision 视觉，不再运行 Gauss 探针；高质量大规模仿真与渲染后续部署到更大显存服务器。",
+          "prevention": "视觉层与物理 pipeline 分开验收；服务器上线前先做显存基线和单帧 Gauss smoke，再扩大到批量渲染。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/test_simulation_viewport.py tests/test_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "73 passed, 9 subtests passed；覆盖新的 Camera1/2/3/5/6/7/8 阈值与顺序。"
+        },
+        {
+          "command": "python scripts/pipeline/run_full_physics_pipeline.py --headless --pct-multifloor --output-dir /mnt/sage_data/outputs/arm_vla_pct/float_camera_test（首版 Camera6 y<=5.5）",
+          "result": "not_run",
+          "note": "运行到 Camera6 后收到用户反馈 5->6 仍过早，主动中止并将阈值改为 y<=4.3；该轮不作为成功或失败验收。"
+        },
+        {
+          "command": "python scripts/pipeline/run_full_physics_pipeline.py --headless --pct-multifloor --output-dir /mnt/sage_data/outputs/arm_vla_pct/float_camera_test（最终 Camera6 y<=4.3）",
+          "result": "failed",
+          "note": "Camera0->1->2->3->4->5->6 均 applied，Camera5->6 在 step=6713；overview 成功写入 3427 帧、丢 1 帧，并导出 686 张 5Hz JPEG。pipeline 在 F2 (0.009,3.771) 触发 nav_collision，未到 Camera7/8。"
+        },
+        {
+          "command": "ffmpeg 5Hz 全帧 montage、全部已发生切换边界检查及 phase161 成功轨迹 schedule replay",
+          "result": "passed",
+          "note": "检查本轮 686 个 5Hz 采样和所有真实切换边界；发现并修正 Camera2->3 空窗。phase161 轨迹按最终规则得到 Camera0->1->2->3->4->5->6->7->8，成功录像确认 Camera7 在 y约2.2 和 Camera8 place 视角均能看到机器人；这仍不替代最终规则的完整真实复跑。"
+        },
+        {
+          "command": "本机完整 Gauss + physics pipeline probe",
+          "result": "not_run",
+          "note": "按用户决定放弃本地 Gauss 加载，避免在 8GB GPU 上重复已知的显存与 CUDA 互操作风险。"
+        }
+      ],
+      "next_steps": [
+        "先修复 F2 路径净空不足和 DWA occupied-start 无恢复动作的问题，避免为相机验收反复运行已知会失败的完整 pipeline。",
+        "导航修复后用最终 schedule 连续完整运行至少三轮；逐轮确认 Camera0->1->2->3->4->5->6->7->8、所有切换边界和视频中机器人持续可见。",
+        "服务器部署阶段再启用完整 Gauss，先做单帧显存/渲染 smoke，再进行大规模仿真渲染。"
+      ]
+    },
+    {
+      "time": "2026-07-13 20:28:23",
+      "summary": "按用户要求补充 README 的 PCT 多楼层部署说明，将原单楼层环境依赖扩展为可快速复现的 Isaac Sim/Isaac Lab、cuRobo、PCT 建图环境、运行资产、坐标约定和离线自检流程。",
+      "files_changed": [
+        "README.md",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "旧 README 只列普通 Python 包，部署者无法从文档判断 PCT server、tomogram、walkable map、多楼层场景和 locomotion checkpoint 的准备顺序。",
+          "root_cause": "PCT 运行依赖分散在 Isaac Lab 框架、外部 PCT 参考仓库、本仓库本地 server 和 Git 忽略的大型资产中；原文仍沿用单楼层环境命名。",
+          "fix": "新增固定 revision、主环境安装、可选 sage 建图环境、外部 PCT 边界、资产清单、PCT 坐标转换、地图生成、probe 和 headless smoke 命令，并统一标准 Isaac Lab 环境名。",
+          "prevention": "框架 revision、PCT server、资产默认路径或 checkpoint 发生变化时，同步更新 README 的部署命令和资产清单，并保留可执行的离线 probe。"
+        },
+        {
+          "problem": "安装步骤创建的是 Isaac Lab 默认的 `isaaclab` 环境，初版离线 probe 命令使用了 `pct` 环境名。",
+          "root_cause": "文档同时参考了原 PCT README 的环境命名和 Isaac Lab 官方安装默认值，命令之间没有统一。",
+          "fix": "将主安装、自检和依赖安装命令统一为 `conda activate isaaclab`，并说明改名为 `pct` 时需要同步替换。",
+          "prevention": "文档中的环境名以实际创建命令为准，安装段和验证段完成后执行一次命令引用一致性检查。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "git diff --check -- README.md",
+          "result": "passed",
+          "note": "README 无空白错误。"
+        },
+        {
+          "command": "README fence/content structure check",
+          "result": "passed",
+          "note": "代码 fence 数量为偶数，PCT 部署关键路径均存在，环境依赖章节未使用用户禁止的表达。"
+        },
+        {
+          "command": "PCT runtime asset check",
+          "result": "passed",
+          "note": "当前本地 task、server、场景、PCT 地图和 checkpoint 均存在。"
+        },
+        {
+          "command": "/data/conda_envs/sage/bin/python scripts/navigation/probe_pct_plan.py --dry-run --task-json tasks/nav_pick_place_apple_multifloor_pct.json --pct-server-script scripts/navigation/pct_grid_server.py --pct-tomogram-path source/scene/multifloor/mutifloor.pickle --pct-walkable-path source/scene/multifloor/mutifloor_ply_walkable.npy --output-json /tmp/readme_pct_plan_probe_dry_run.json",
+          "result": "passed",
+          "note": "输入检查通过，server、tomogram、walkable 和 task 均可解析。"
+        },
+        {
+          "command": "/data/conda_envs/sage/bin/python scripts/navigation/probe_pct_plan.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --pct-server-script scripts/navigation/pct_grid_server.py --pct-tomogram-path source/scene/multifloor/mutifloor.pickle --pct-walkable-path source/scene/multifloor/mutifloor_ply_walkable.npy --output-json /tmp/readme_pct_plan_probe.json",
+          "result": "passed",
+          "note": "离线 PCT probe 返回 start_to_pick 和 pick_to_place 两段路径，跨楼层 slice 从 9 到 15。"
+        },
+        {
+          "command": "Isaac Sim full smoke",
+          "result": "not_run",
+          "note": "本轮只修改 README 和 project.json；真实 full-physics smoke 仍受当前 GPU/显存与多楼层 policy 稳定性限制。"
+        }
+      ],
+      "next_steps": [
+        "在干净机器按 README 执行 clone、Isaac Lab/cuRobo 安装和资产检查，记录首个环境差异。",
+        "部署者准备资产包时同时提供 multifloor USDA/USDZ、collision USD/PLY、PCT 地图和 model_26000.pt。",
+        "GPU 环境稳定后，再用 README 中的 headless smoke 做真实 Isaac Sim 验收。"
+      ]
+    },
+    {
+      "time": "2026-07-13 21:23:07",
+      "summary": "完成项目路径可移植化和多楼层运行资产入库准备：移除项目脚本、cuRobo 配置及 multifloor USDA 中的个人绝对路径；PCT 默认运行改为只依赖仓库内 tomogram/walkable map；指定场景、地图和 checkpoint 取消 ignore 并配置 Git LFS，PLY 按用户要求继续排除。",
+      "files_changed": [
+        ".gitignore",
+        ".gitattributes",
+        "README.md",
+        "checkpoints/go2_x5/pct_multifloor/README.md",
+        "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
+        "source/curobo_paths.py",
+        "source/manipulation/grasp_pipeline.py",
+        "source/manipulation/planner_server_process.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/robot/go2_x5/curobo/go2_x5_arm.yml",
+        "source/scene/multifloor/usda/multifloor.usda",
+        "source/scene/multifloor/nav_map/README.md",
+        "source/simulation/isaaclab_runtime.py",
+        "scripts/curobo/03_plan_grasp_trajectory.py",
+        "scripts/curobo/grasp_planner_server.py",
+        "scripts/dev_tools/curobo/build_go2_x5_curobo_model.py",
+        "scripts/dev_tools/curobo/check_go2_x5_curobo_model.py",
+        "scripts/dev_tools/curobo/check_isaac_curobo_fk.py",
+        "scripts/dev_tools/curobo/demo_plan_to_pose.py",
+        "scripts/dev_tools/curobo/make_go2_x5_arm_urdf.py",
+        "scripts/navigation/pct_grid_server.py",
+        "scripts/navigation/probe_pct_plan.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "configs/navigation/pct_multifloor_policy.yaml",
+        "tests/test_full_physics_pipeline.py",
+        "source/scene/multifloor/usd/multifloor_collision.usd",
+        "source/scene/multifloor/usdz/multifloor.usdz",
+        "source/scene/multifloor/mutifloor.pickle",
+        "source/scene/multifloor/mutifloor_ply_walkable.npy"
+      ],
+      "problems": [
+        {
+          "problem": "多个 cuRobo 脚本、配置和场景 USDA 固定引用旧工作站路径，换机器后需要手工改文件。",
+          "root_cause": "旧流程把仓库根目录、cuRobo 源码目录和场景对象路径直接写入脚本或生成资产。",
+          "fix": "脚本默认根据 __file__ 推导仓库根目录，外部依赖通过 GO2_X5_WORKSPACE、GO2_X5_CUROBO_SOURCE_ROOT 和 GO2_X5_FLAT_CHECKPOINT 覆盖；cuRobo YAML 运行时按配置文件位置解析，USDA 改为相对引用。",
+          "prevention": "提交前对 scripts、source/robot 和运行场景执行绝对路径扫描，并为外部依赖保留环境变量入口。"
+        },
+        {
+          "problem": "PCT server 和跨楼层局部地图默认依赖 collision PLY，删除 PLY 后会阻断已生成地图的直接运行。",
+          "root_cause": "collision PLY 障碍体积曾被当作默认硬障碍增强层，和 tomogram/walkable 基础输入耦合。",
+          "fix": "将 collision PLY 改为可选增强输入；没有 PCT_COLLISION_PLY_PATH 时使用 walkable map，pipeline 和配置不再注入默认 PLY 路径。",
+          "prevention": "将大型原始建图输入与已生成运行资产分开，默认 smoke 只依赖部署清单中的 tomogram、walkable map、场景和 checkpoint。"
+        },
+        {
+          "problem": "指定多楼层资产被通配规则忽略，且 multifloor.usdz 约 1.9 GiB，不能作为普通 Git blob 上传。",
+          "root_cause": ".gitignore 统一忽略 USD、PCT 地图和 checkpoint 扩展名；GitHub 普通 Git 对大文件有限制。",
+          "fix": "为已确认资产增加精确 unignore 规则，并在 .gitattributes 中启用 Git LFS；PLY 保持 ignored，符合用户后续删除安排。",
+          "prevention": "提交前执行 git check-attr 和 git lfs status，确认大文件走 LFS、原始 PLY 不进入暂存区。"
+        },
+        {
+          "problem": "首次语法检查把 YAML 文件误传给 py_compile，得到 SyntaxError。",
+          "root_cause": "语法检查命令未区分 Python 源文件和 YAML 配置文件。",
+          "fix": "重新仅对 Python 文件执行 py_compile，并单独用 PyYAML 解析 cuRobo YAML；代码本身未发现语法错误。",
+          "prevention": "按文件类型拆分语法检查命令，配置文件使用对应解析器验证。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/arm_vla_pct_pycache python -m py_compile <changed Python files>",
+          "result": "passed",
+          "note": "项目路径、cuRobo、PCT server、pipeline 脚本语法检查通过。"
+        },
+        {
+          "command": "PyYAML parse source/robot/go2_x5/curobo/go2_x5_arm.yml plus load_project_robot_config assertion",
+          "result": "passed",
+          "note": "YAML 可解析，运行时 asset_root_path 和 urdf_path 按仓库位置正确解析。"
+        },
+        {
+          "command": "PCT server _load_state without PCT_COLLISION_PLY_PATH",
+          "result": "passed",
+          "note": "tomogram/walkable 可独立加载，硬障碍增强层为空，不阻断 server。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/navigation/test_pct_grid_server.py tests/navigation/test_pct_local_map.py tests/test_full_physics_pipeline.py tests/test_full_physics_manipulation.py",
+          "result": "passed",
+          "note": "115 passed。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/test_isaaclab_navigation_runtime.py tests/test_episode_schema.py tests/test_full_physics_manipulation.py",
+          "result": "passed",
+          "note": "70 passed, 1 skipped。"
+        },
+        {
+          "command": "/data/conda_envs/sage/bin/python scripts/navigation/probe_pct_plan.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --pct-server-script scripts/navigation/pct_grid_server.py --pct-tomogram-path source/scene/multifloor/mutifloor.pickle --pct-walkable-path source/scene/multifloor/mutifloor_ply_walkable.npy --output-json /tmp/readme_pct_plan_probe_no_ply.json",
+          "result": "passed",
+          "note": "start_to_pick 与跨楼层 pick_to_place 均规划成功，slice 9 到 15。"
+        },
+        {
+          "command": "git check-attr filter diff merge -- <versioned runtime assets>",
+          "result": "passed",
+          "note": "场景、PCT 地图和 checkpoint 均解析为 Git LFS 属性；collision/visual PLY 仍被忽略。"
+        },
+        {
+          "command": "git diff --check; README fence/content check; rg absolute paths in scripts/source runtime files",
+          "result": "passed",
+          "note": "文档无空白错误，README fence 成对，目标脚本和运行配置无固定 /home 路径。"
+        },
+        {
+          "command": "Isaac Sim full-physics smoke",
+          "result": "not_run",
+          "note": "本轮聚焦路径和资产可移植性；真实 GUI/full-physics 仍受当前 GPU/显存与既有多楼层稳定性限制。"
+        }
+      ],
+      "next_steps": [
+        "用户执行 git lfs install、git add 后检查 git lfs status，再手动 commit/push；不要把 PLY 加入暂存区。",
+        "用户后续删除本地 PLY 后，使用 README 的 PCT probe 复核 tomogram/walkable-only 链路。",
+        "部署到新机器后先执行 README 资产检查和离线 PCT probe，再决定是否启动 Isaac Sim full smoke。"
+      ]
+    },
+    {
+      "time": "2026-07-13 21:41:06",
+      "summary": "解释 Isaac Sim 5.1 URDF importer 兼容补丁的必要性，并将 cuRobo 路径解析工具归档到 source/manipulation/，同步更新所有脚本引用。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "source/manipulation/curobo_paths.py",
+        "source/curobo_paths.py",
+        "scripts/curobo/03_plan_grasp_trajectory.py",
+        "scripts/dev_tools/curobo/check_isaac_curobo_fk.py",
+        "scripts/dev_tools/curobo/demo_plan_to_pose.py",
+        "scripts/dev_tools/curobo/check_go2_x5_curobo_model.py"
+      ],
+      "problems": [
+        {
+          "problem": "URDF importer 补丁的用途容易被误解为 PCT 运行依赖。",
+          "root_cause": "补丁文件位于仓库 patches/，但原安装说明只写了应用命令，未说明它修复的是 Isaac Lab 与 Isaac Sim 5.1 的 URDF 转换接口差异。",
+          "fix": "在 README 安装步骤中说明补丁只服务于 URDF 转换，并概括扩展加载和可选惯量接口的兼容处理。",
+          "prevention": "后续更换 Isaac Lab 或 Isaac Sim 版本时，先检查补丁对应的 commit 和 importer API，再决定是否应用。"
+        },
+        {
+          "problem": "路径工具放在 source/ 根目录，和具体的 cuRobo 操作职责不匹配。",
+          "root_cause": "首次实现时按通用项目工具处理，未归入 manipulation/cuRobo 模块。",
+          "fix": "将模块移动到 source/manipulation/curobo_paths.py，并把四个 cuRobo 脚本的导入路径统一更新；根目录推导层级同步调整为 parents[2]。",
+          "prevention": "新增工具先按被服务的领域模块归档，并在移动后执行导入、语法和路径解析验证。"
+        },
+        {
+          "problem": "首次路径解析验证的断言按带 robot_cfg 的 YAML 结构读取。",
+          "root_cause": "当前 Go2-X5 cuRobo YAML 使用顶层 kinematics，测试断言没有复用 helper 对两种顶层结构的兼容逻辑。",
+          "fix": "修正验证断言为读取 config.get('robot_cfg', config)，随后路径解析检查通过；实现无需修改。",
+          "prevention": "测试配置解析时使用和生产代码一致的结构兼容入口，并覆盖当前真实 YAML。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/arm_vla_pct_pycache python -m py_compile source/manipulation/curobo_paths.py scripts/curobo/03_plan_grasp_trajectory.py scripts/dev_tools/curobo/check_isaac_curobo_fk.py scripts/dev_tools/curobo/demo_plan_to_pose.py scripts/dev_tools/curobo/check_go2_x5_curobo_model.py",
+          "result": "passed",
+          "note": "路径工具及四个引用脚本语法检查通过。"
+        },
+        {
+          "command": "Python import/load_project_robot_config relocation assertion",
+          "result": "passed",
+          "note": "可从 source.manipulation.curobo_paths 导入；仓库根目录、asset_root_path 和 urdf_path 均解析正确。"
+        },
+        {
+          "command": "Isaac Sim URDF conversion smoke",
+          "result": "not_run",
+          "note": "本轮未启动 Isaac Sim，只验证补丁内容和 Python 路径工具；真实 URDF 转换需在对应 Isaac Lab/Isaac Sim 环境中执行。"
+        }
+      ],
+      "next_steps": [
+        "部署时在固定 Isaac Lab commit 的外部目录先执行 patch --dry-run，再应用 URDF importer 补丁。",
+        "用户手动 git add 时确认新增 source/manipulation/curobo_paths.py，且不要把旧 source/curobo_paths.py 重新加入。"
+      ]
     }
   ],
   "open_questions": [
-    "是否将当前 --pct-stair-float 稳定版定义为阶段性交付，还是继续以 pure_physics_success=true 为目标训练新的携物上楼 locomotion policy？",
-    "是否继续投入原生 3DGS GUI/最终机器人前景与 3DGS 背景逐帧合成；该工作不阻塞 collision 模式下的数据采集 pipeline？"
+    "是否将当前 --pct-stair-float 作为能力已验证但尚未稳定复现的阶段版本，还是先完成 F2 净空/DWA 修复和连续三轮验收后再交付？"
   ],
   "known_limitations": [
-    "phase163 已修复 gui_float 日志暴露的楼梯入口漏触发并通过定点重放，但新的 GUI Float 完整 pipeline 尚待实跑复验，因此最终验收状态暂时撤回。",
+    "phase161 是完整 Float pipeline 的单次成功记录，不是稳定性证明；phase171 的同默认命令在 F2 因约 3cm 墙侧漂移跨入膨胀障碍格并触发 nav_collision，当前必须保持 pct_float_pipeline_stably_reproducible=false。",
+    "最终 Camera0-8 schedule 已通过完整成功轨迹离线回放，且真实复跑验证到 Camera6；由于本轮 F2 导航提前失败，Camera7/8 尚未在最终规则下完成同一次真实全链路验收。",
     "PCT 稳定预设现在默认启用 stair-float；可用 --no-pct-stair-float 显式运行完整 no-float pipeline。stair-float 楼梯段会冻结底盘并沿 path_3d 写入 root pose，因此 phase161 的 stable_physics_success=true，但 pure_physics_success=false。",
     "独立 --stair-locomotion-smoke 在 phase168 已补齐出口后的 F2 收尾段并真实导出 Camera3 图像/视频，但机器人仍在约 (1.72,5.88) 处停滞，低层 policy 上楼能力仍未验收；Camera5 自动切换仅通过 z>=1.8m 调度测试，尚未由真实上段运动触发。",
     "当前 pct_multifloor checkpoint 是 12 维 dog-only policy；要获得纯足端动力学的携物上楼能力，仍需训练或接入针对楼梯和机械臂负载的新 locomotion policy。",
     "当前 PCT 全局路径完整保存在 NavPlan.metadata[\"path_3d\"]，普通局部执行仍主要由 DWA 消费 XY waypoints；z/slice 只在 stair-float 等多楼层专用逻辑中使用。",
-    "navigation collision 模式为避免 NuRec/PhysX 同进程的 CUDA external semaphore 问题会停用 /World/gauss；原生高质量 3DGS GUI 渲染和最终前景合成视频仍未完成。",
+    "navigation collision 模式为避免 NuRec/PhysX 同进程的 CUDA external semaphore 问题会停用 /World/gauss；用户已决定本地 8GB GPU 不再尝试 Gauss，原生高质量 3DGS 和大规模渲染后续迁移到服务器。",
     "Isaac Sim 5.1 的 USD 0.24.5 不包含 ParticleField3DGaussianSplat schema，当前环境不能通过安全启用扩展直接获得原生 3DGS ParticleField。",
     "任务没有可用 flat nav_map 时会显式禁用 PCT 到 A* fallback；PCT server 或资产失败会直接报错，不会静默回退。",
     "开启 overview/front/wrist 三路 25Hz 视频、5Hz 原始图像和 LeRobot 导出的 phase161 约占 1.9GB；后续重型运行应直接写入 /mnt/sage_data/outputs。",

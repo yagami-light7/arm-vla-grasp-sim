@@ -141,6 +141,51 @@ class SimulationViewportTest(unittest.TestCase):
         self.assertEqual(lower, "/World/Camera3")
         self.assertEqual(upper, "/World/Camera7")
 
+    def test_multifloor_schedule_keeps_ordered_camera_transitions(self) -> None:
+        schedule_path = (
+            Path(__file__).resolve().parents[1]
+            / "configs/recording/multifloor_overview_camera_schedule.json"
+        )
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(
+                overview_camera_schedule_path=schedule_path,
+            ),
+            episode_dir=".",
+            episode_id=0,
+            auto_switch_camera=True,
+        )
+        recorder._overview_cameras = tuple(  # noqa: SLF001 - 单元测试仅验证相机选择。
+            _CameraCandidate(
+                path=f"/World/Camera{index}",
+                name=f"Camera{index}",
+                normalized_text=f"/world/camera{index} camera{index}",
+                is_observation=False,
+                overview_score=100,
+            )
+            for index in range(9)
+        )
+
+        samples = (
+            ("exec_nav_to_place", (-3.5, 6.6, 0.2), "/World/Camera1"),
+            ("exec_nav_to_place", (-2.5, 4.9, 0.2), "/World/Camera2"),
+            ("exec_nav_to_place", (0.7, 4.7, 0.2), "/World/Camera2"),
+            ("exec_nav_to_place", (0.8, 4.7, 0.2), "/World/Camera3"),
+            ("exec_nav_to_place", (2.7, 8.8, 2.3), "/World/Camera5"),
+            ("exec_nav_to_place", (2.7, 5.4, 3.4), "/World/Camera5"),
+            ("exec_nav_to_place", (2.7, 4.2, 3.4), "/World/Camera6"),
+            ("exec_nav_to_place", (0.2, 2.1, 3.4), "/World/Camera7"),
+            ("plan_place", (0.35, 0.1, 3.4), "/World/Camera8"),
+        )
+        for state, root_pose, expected_camera in samples:
+            with self.subTest(state=state, root_pose=root_pose):
+                self.assertEqual(
+                    recorder.select_camera_for_state(
+                        state,
+                        robot_root_pose=root_pose,
+                    ),
+                    expected_camera,
+                )
+
     def test_stair_locomotion_schedule_uses_camera3_then_camera5(self) -> None:
         schedule_path = (
             Path(__file__).resolve().parents[1]

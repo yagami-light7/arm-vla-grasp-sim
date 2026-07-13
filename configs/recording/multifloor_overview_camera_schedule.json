@@ -14,17 +14,24 @@
       "camera": "/World/Camera1"
     },
     {
+      "name": "post_pick_departure",
+      "states": ["exec_nav_to_place"],
+      "x_max": -2.6,
+      "camera": "/World/Camera1"
+    },
+    {
       "name": "upper_place_approach",
       "states": ["exec_nav_to_place", "verify_place_reachable"],
       "z_min": 2.2,
       "y_max": 2.2,
-      "camera": "/World/Camera6"
+      "camera": "/World/Camera7"
     },
     {
       "name": "upper_floor_navigation",
       "states": ["exec_nav_to_place", "verify_place_reachable"],
       "z_min": 2.2,
-      "camera": "/World/Camera7"
+      "y_max": 4.3,
+      "camera": "/World/Camera6"
     },
     {
       "name": "second_stair_flight",
@@ -42,7 +49,7 @@
     {
       "name": "stair_entrance_and_first_flight",
       "states": ["exec_nav_to_place"],
-      "x_min": 0.4,
+      "x_min": 0.75,
       "y_min": 4.3,
       "camera": "/World/Camera3"
     },

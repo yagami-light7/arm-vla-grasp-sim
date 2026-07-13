@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -3228,10 +3229,17 @@ class IsaacLabNavigationRuntime:
         candidates.extend(
             [
                 self._project_root / "checkpoints/go2_x5/flat/model_8500.pt",
-                Path("/home/light/workspace/arm_vla/checkpoints/go2_x5/flat/model_8500.pt"),
-                Path("/home/light/workspace/DWA/flat/model_8500.pt"),
             ]
         )
+        external_checkpoint = os.environ.get("GO2_X5_FLAT_CHECKPOINT")
+        if external_checkpoint:
+            external_path = Path(external_checkpoint).expanduser()
+            candidates.insert(
+                1,
+                external_path
+                if external_path.is_absolute()
+                else self._project_root / external_path,
+            )
         for candidate in candidates:
             path = Path(candidate).expanduser().resolve()
             if path.is_file():

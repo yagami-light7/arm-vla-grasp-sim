@@ -60,6 +60,135 @@ class AStarDwaSmokeTest(unittest.TestCase):
                 break
         self.assertTrue(reached)
 
+    def test_dwa_compensates_measured_lateral_slip_when_enabled(self) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((40, 40), dtype=bool),
+            0.10,
+            (0.0, 0.0, 0.0),
+        )
+        controller = DWAController(
+            [(0.5, 2.0), (3.0, 2.0)],
+            grid,
+            DWAConfig(
+                control_dt=0.10,
+                max_linear_accel=10.0,
+                lateral_velocity_compensation_gain=1.0,
+                max_lateral_velocity_command=0.12,
+            ),
+        )
+
+        command, debug = controller.compute_command(
+            (0.5, 2.0, 0.0),
+            (0.20, -0.10, 0.0),
+        )
+
+        self.assertGreater(debug.feasible_candidates, 0)
+        self.assertAlmostEqual(float(command[1]), 0.10, places=5)
+
+    def test_dwa_lateral_rollout_respects_acceleration_limited_response(
+        self,
+    ) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((20, 20), dtype=bool),
+            0.10,
+            (0.0, 0.0, 0.0),
+        )
+        controller = DWAController(
+            [(0.5, 1.0), (1.5, 1.0)],
+            grid,
+            DWAConfig(control_dt=0.10, integration_dt=0.10),
+        )
+
+        trajectory = controller._rollout(
+            x=0.5,
+            y=1.0,
+            yaw=0.0,
+            linear_velocity=0.20,
+            angular_velocity=0.0,
+            lateral_velocity=-0.10,
+            lateral_velocity_target=0.10,
+            max_lateral_accel=0.50,
+        )
+
+        self.assertLess(float(trajectory[0][1]), 1.0)
+        self.assertGreater(float(trajectory[-1][1]), float(trajectory[0][1]))
+
+    def test_dwa_occupied_start_escape_only_leaves_footprint_inflation(self) -> None:
+        occupancy = np.zeros((20, 20), dtype=bool)
+        occupancy[:, 4] = True
+        raw_map = OccupancyGridMap(occupancy, 0.10, (0.0, 0.0, 0.0))
+        footprint_map = raw_map.inflate(0.20)
+        start = raw_map.grid_to_world(10, 6)
+        goal = raw_map.grid_to_world(10, 14)
+        controller = DWAController(
+            [start, goal],
+            footprint_map,
+            DWAConfig(
+                control_dt=0.10,
+                prediction_horizon=0.80,
+                integration_dt=0.10,
+                max_linear_accel=10.0,
+                allow_inflated_occupied_start_escape=True,
+            ),
+            raw_grid_map=raw_map,
+        )
+
+        command, debug = controller.compute_command(
+            (start[0], start[1], 0.0),
+            (0.0, 0.0, 0.0),
+        )
+
+        self.assertTrue(footprint_map.is_occupied(*footprint_map.world_to_grid(*start)))
+        self.assertFalse(raw_map.is_occupied(*raw_map.world_to_grid(*start)))
+        self.assertTrue(debug.occupied_start_escape_active)
+        self.assertGreater(debug.occupied_start_escape_candidates, 0)
+        self.assertGreater(float(command[0]), 0.0)
+
+    def test_dwa_occupied_start_escape_rejects_raw_obstacle(self) -> None:
+        occupancy = np.zeros((20, 20), dtype=bool)
+        occupancy[:, 4] = True
+        raw_map = OccupancyGridMap(occupancy, 0.10, (0.0, 0.0, 0.0))
+        footprint_map = raw_map.inflate(0.20)
+        start = raw_map.grid_to_world(10, 4)
+        goal = raw_map.grid_to_world(10, 14)
+        controller = DWAController(
+            [start, goal],
+            footprint_map,
+            DWAConfig(
+                control_dt=0.10,
+                max_linear_accel=10.0,
+                allow_inflated_occupied_start_escape=True,
+            ),
+            raw_grid_map=raw_map,
+        )
+
+        command, debug = controller.compute_command(
+            (start[0], start[1], 0.0),
+            (0.0, 0.0, 0.0),
+        )
+
+        self.assertFalse(debug.occupied_start_escape_active)
+        self.assertEqual(debug.feasible_candidates, 0)
+        self.assertAlmostEqual(float(command[0]), 0.0)
+
+    def test_dwa_raw_clearance_changes_continuously_inside_one_cell(self) -> None:
+        occupancy = np.zeros((20, 20), dtype=bool)
+        occupancy[:, 4] = True
+        raw_map = OccupancyGridMap(occupancy, 0.10, (0.0, 0.0, 0.0))
+        controller = DWAController(
+            [(0.65, 1.0), (1.5, 1.0)],
+            raw_map.inflate(0.20),
+            DWAConfig(control_dt=0.10),
+            raw_grid_map=raw_map,
+        )
+
+        near_wall = controller._raw_map_clearance_at(0.61, 1.0)
+        far_from_wall = controller._raw_map_clearance_at(0.69, 1.0)
+
+        self.assertIsNotNone(near_wall)
+        self.assertIsNotNone(far_from_wall)
+        self.assertLess(float(near_wall), float(far_from_wall))
+
     def test_dwa_accepts_approach_command_when_obstacle_is_behind_goal(self) -> None:
         occupancy = np.zeros((80, 80), dtype=bool)
         grid = OccupancyGridMap(occupancy, 0.05, (-1.0, -1.0, 0.0))
@@ -1538,6 +1667,43 @@ class AStarDwaSmokeTest(unittest.TestCase):
             )
         )
 
+    def test_post_stair_release_bridge_keeps_footprint_inflation(self) -> None:
+        occupancy = np.zeros((20, 20), dtype=bool)
+        occupancy[:, 4] = True
+        raw_map = OccupancyGridMap(occupancy, 0.10, (0.0, 0.0, 0.0))
+        start = raw_map.grid_to_world(10, 6)
+        reference = raw_map.grid_to_world(10, 7)
+        goal = raw_map.grid_to_world(10, 14)
+        executor = DwaNavExecutor(
+            grid_map=raw_map,
+            post_stair_grid_map=raw_map,
+            post_stair_clearance_radius=0.20,
+            dwa_config=DWAConfig(control_dt=0.05),
+        )
+        executor.plan = NavPlan(
+            goal=NavGoal(x=goal[0], y=goal[1], z=1.0, yaw=0.0),
+            waypoints=(start, reference, goal),
+            metadata={"planner": "pct", "execution_phase": "carry_nav_to_place"},
+        )
+        executor._post_stair_reference_path = (reference, goal)
+        executor._post_stair_path_optimization_report = {"applied": True}
+
+        applied = executor._replan_controller_on_post_stair_floor(
+            (start[0], start[1], 1.0),
+        )
+        report = executor.status()["stair_float"]["post_stair_floor_replan"]
+
+        self.assertTrue(applied)
+        self.assertIsNotNone(executor.local_map)
+        self.assertTrue(
+            executor.local_map.is_occupied(
+                *executor.local_map.world_to_grid(*start)
+            )
+        )
+        bridge = report["path_optimization"]["release_bridge"]
+        self.assertEqual(bridge["mode"], "occupied_start_escape")
+        self.assertEqual(bridge["reopened_cells"], 0)
+
     def test_pct_post_stair_path_uses_footprint_clearance_and_rounds_corners(
         self,
     ) -> None:
@@ -1576,6 +1742,41 @@ class AStarDwaSmokeTest(unittest.TestCase):
             0.20,
         )
         self.assertTrue(_world_path_is_clear(path_world, footprint_map))
+
+    def test_pct_post_stair_path_preserves_single_cell_corridor_centers(
+        self,
+    ) -> None:
+        occupancy = np.ones((20, 20), dtype=bool)
+        occupancy[1:19, 7:10] = False
+        raw_map = OccupancyGridMap(
+            occupancy,
+            0.20,
+            (0.0, 0.0, 0.0),
+        )
+        start = raw_map.grid_to_world(16, 8)
+        goal = raw_map.grid_to_world(3, 8)
+
+        footprint_map, path_world, report = (
+            _plan_clearance_optimized_floor_path(
+                raw_map,
+                start,
+                goal,
+                clearance_radius_m=0.20,
+            )
+        )
+
+        self.assertGreaterEqual(report["narrow_corridor_anchor_count"], 10)
+        self.assertAlmostEqual(report["optimization_edge_margin_m"], 0.02)
+        for row in range(4, 16):
+            center = footprint_map.grid_to_world(row, 8)
+            self.assertTrue(
+                any(
+                    math.hypot(point[0] - center[0], point[1] - center[1])
+                    <= 1.0e-8
+                    for point in path_world
+                ),
+                msg=f"缺少单格通道中心锚点 row={row}",
+            )
 
     def test_pct_carry_stair_entry_allows_turn_but_rejects_handrail_drift(self) -> None:
         grid = OccupancyGridMap(

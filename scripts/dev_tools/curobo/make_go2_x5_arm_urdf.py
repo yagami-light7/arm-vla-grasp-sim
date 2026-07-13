@@ -31,11 +31,15 @@ from __future__ import annotations
 import argparse
 import copy
 import math
+import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
-WORKSPACE = Path("/home/light/workspace/arm_vla")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+WORKSPACE = Path(
+    os.environ.get("GO2_X5_WORKSPACE", str(PROJECT_ROOT))
+).expanduser().resolve()
 
 DEFAULT_SOURCE_URDF = WORKSPACE / "source/robot/go2_x5/urdf/go2_x5.urdf"
 DEFAULT_OUTPUT_URDF = WORKSPACE / "source/robot/go2_x5/curobo/go2_x5_arm.urdf"

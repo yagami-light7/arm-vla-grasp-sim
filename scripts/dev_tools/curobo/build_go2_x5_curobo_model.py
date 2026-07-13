@@ -31,10 +31,11 @@
     source/robot/go2_x5/curobo/go2_x5_arm.xrdf
 
 运行：
-    cd /home/light/workspace/arm_vla
+    cd /path/to/arm_vla_pct
 
-    PYTHONPATH=/home/light/workspace/curobo:${PYTHONPATH:-} \
-    /data/conda_envs/isaacsim51_3dgs_grasp/bin/python \
+    export CUROBO_ROOT="${GO2_X5_CUROBO_SOURCE_ROOT:-$PWD/external/curobo}"
+    PYTHONPATH="$CUROBO_ROOT:${PYTHONPATH:-}" \
+    python \
     scripts/dev_tools/curobo/build_go2_x5_curobo_model.py
 """
 
@@ -48,8 +49,16 @@ from pathlib import Path
 import yaml
 
 
-WORKSPACE = Path("/home/light/workspace/arm_vla")
-CUROBO_SOURCE_ROOT = Path("/home/light/workspace/curobo")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+WORKSPACE = Path(
+    os.environ.get("GO2_X5_WORKSPACE", str(PROJECT_ROOT))
+).expanduser().resolve()
+CUROBO_SOURCE_ROOT = Path(
+    os.environ.get(
+        "GO2_X5_CUROBO_SOURCE_ROOT",
+        str(WORKSPACE / "external/curobo"),
+    )
+).expanduser().resolve()
 
 DEFAULT_ARM_URDF = WORKSPACE / "source/robot/go2_x5/curobo/go2_x5_arm.urdf"
 DEFAULT_ASSET_PATH = WORKSPACE / "source/robot/go2_x5"
@@ -117,7 +126,7 @@ def build_subprocess_env() -> dict[str, str]:
     """
     构造子进程环境变量。
 
-    重点是把 /home/light/workspace/curobo 放到 PYTHONPATH 前面，
+    重点是把当前 cuRobo 源码目录放到 PYTHONPATH 前面，
     让官方 CLI 使用当前本地 cuRobo 源码。
     """
     env = os.environ.copy()

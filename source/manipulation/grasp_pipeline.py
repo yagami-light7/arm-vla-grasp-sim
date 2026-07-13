@@ -67,9 +67,12 @@ class GraspPipelineConfig:
     workspace: Path = PROJECT_ROOT
     curobo_python: str = os.environ.get(
         "GO2_X5_CUROBO_PYTHON",
-        "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python",
+        sys.executable,
     )
-    curobo_source_root: str = os.environ.get("GO2_X5_CUROBO_SOURCE_ROOT", "/home/light/workspace/curobo")
+    curobo_source_root: str = os.environ.get(
+        "GO2_X5_CUROBO_SOURCE_ROOT",
+        str(PROJECT_ROOT / "external/curobo"),
+    )
     planner_host: str = "127.0.0.1"
     planner_port: int = 8765
     planner_timeout_s: float = 30.0

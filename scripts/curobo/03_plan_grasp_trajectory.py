@@ -41,8 +41,19 @@ import numpy as np
 import torch
 
 
-WORKSPACE = Path(os.environ.get("GO2_X5_WORKSPACE", "/home/light/workspace/arm_vla"))
-CUROBO_SOURCE_ROOT = Path(os.environ.get("GO2_X5_CUROBO_SOURCE_ROOT", "/home/light/workspace/curobo"))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from source.manipulation.curobo_paths import (
+    curobo_source_root_from_env,
+    load_project_robot_config,
+    project_root_from_env,
+)
+
+
+WORKSPACE = project_root_from_env(PROJECT_ROOT)
+CUROBO_SOURCE_ROOT = curobo_source_root_from_env(WORKSPACE)
 
 STATE_JSON = Path(os.environ.get("GO2_X5_STATE_JSON", "/tmp/go2_x5_isaac_state.json"))
 TARGET_JSON = Path(os.environ.get("GO2_X5_TARGET_JSON", "/tmp/go2_x5_target_tcp_pose.json"))
@@ -418,7 +429,7 @@ def create_planner() -> MotionPlanner:
 
     with profile_block("MotionPlannerCfg.create"):
         cfg = MotionPlannerCfg.create(
-            robot=str(ROBOT_YAML),
+            robot=load_project_robot_config(ROBOT_YAML),
             scene_model=None,
             collision_cache=WORLD_COLLISION_CACHE if WORLD_COLLISION_ENABLED else None,
             self_collision_check=True,

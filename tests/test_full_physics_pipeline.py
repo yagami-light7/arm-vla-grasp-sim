@@ -513,6 +513,9 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertFalse(args.randomize_task)
         self.assertFalse(args.randomize_base_goal)
         self.assertFalse(args.show_planned_trajectories)
+        self.assertFalse(args.headless)
+        self.assertFalse(args.keep_window_open)
+        self.assertEqual(args.output_dir, "outputs/full_physics_pipeline")
         self.assertEqual(args.navigation_visual_mode, "collision")
         self.assertTrue(args.record_video)
         self.assertEqual(args.video_mode, "all")
@@ -564,8 +567,12 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertEqual(args.policy_profile, "pct_multifloor")
         self.assertFalse(args.pct_stair_float)
         self.assertTrue(args.show_planned_trajectories)
-        self.assertFalse(args.record_video)
+        self.assertFalse(args.headless)
+        self.assertTrue(args.keep_window_open)
+        self.assertTrue(args.record_video)
+        self.assertTrue(args.record_dataset)
         self.assertEqual(args.video_mode, "overview")
+        self.assertEqual(args.output_dir, "outputs/stair_locomotion_smoke")
         self.assertEqual(
             args.overview_camera_schedule,
             "configs/recording/stair_locomotion_camera_schedule.json",
@@ -574,6 +581,24 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             args.task_json,
             "tasks/nav_pick_place_apple_multifloor_pct.json",
         )
+
+    def test_stair_locomotion_smoke_preserves_explicit_runtime_overrides(self) -> None:
+        args = _parse_args(
+            [
+                "--stair-locomotion-smoke",
+                "--headless",
+                "--no-record-video",
+                "--no-record-dataset",
+                "--output-dir",
+                "/tmp/stair_override",
+            ]
+        )
+
+        self.assertTrue(args.headless)
+        self.assertFalse(args.keep_window_open)
+        self.assertFalse(args.record_video)
+        self.assertFalse(args.record_dataset)
+        self.assertEqual(args.output_dir, "/tmp/stair_override")
 
     def test_stair_locomotion_smoke_manages_gui_camera3(self) -> None:
         stair = _navigation_smoke_viewport_runtime_kwargs(

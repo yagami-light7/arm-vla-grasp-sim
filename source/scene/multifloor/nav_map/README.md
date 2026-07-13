@@ -11,9 +11,8 @@ occupancy map。
 
 本目录当前不提交占位 `map.json`，避免误把不真实的 2D map 当作可用地图。
 
-PLY 转 USD 只解决 Isaac Sim 场景加载问题，不会生成 PCT 需要的 tomogram。
-请先用 `tools/scene/rebuild_multifloor_sage_assets.sh` 生成主场景 USDA，再用外部 PCT
-建图脚本基于 `source/scene/multifloor/ply/3dgs_collision.ply` 生成 PCT 地图资产。
+当前仓库已提供 PCT 地图资产，运行 pipeline 不依赖 PLY 文件。重新建图属于离线维护流程，
+不纳入默认部署步骤。
 
 推荐 PCT 输出路径：
 

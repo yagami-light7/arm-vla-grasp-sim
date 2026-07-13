@@ -37,5 +37,10 @@ checkpoints/go2_x5/pct_multifloor/training/
 events.out.tfevents*
 source/scene/multifloor/yinluyuan/*_build_report.json
 source/scene/multifloor/yinluyuan/*_visual_points_report.json
+
+# 已确认随仓库发布的 PCT 运行资产；大文件由 .gitattributes 交给 Git LFS。
+!source/scene/multifloor/mutifloor.pickle
+!source/scene/multifloor/mutifloor_ply_walkable.npy
+!checkpoints/go2_x5/pct_multifloor/model_26000.pt
 __pycache__/
 *.py[cod]

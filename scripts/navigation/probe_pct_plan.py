@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -359,7 +360,7 @@ def _collect_missing_inputs(
         if missing_pct_assets:
             warnings.append(f"external/PCT mutifloor/ 缺少 README 资产: {', '.join(missing_pct_assets)}")
         if checks["pct_server_has_home_y_paths"]:
-            warnings.append("外部 pct_server.py 含 /home/y 硬编码；请先迁移到本仓库本地脚本后再运行")
+            warnings.append("外部 pct_server.py 含个人绝对路径；请先迁移到本仓库本地脚本后再运行")
         if not checks["planner_wrapper_available_under_pct_root"]:
             warnings.append("外部 pct_planner_root 下没有找到 planner_wrapper backend")
     return missing
@@ -377,7 +378,8 @@ def _server_has_home_y_paths(server_script: Path | None) -> bool:
     if server_script is None or not server_script.is_file():
         return False
     try:
-        return "/home/y/" in server_script.read_text(encoding="utf-8")
+        content = server_script.read_text(encoding="utf-8")
+        return bool(re.search(r"(?m)[\"']/(?:[^/\"']+/){2,}", content))
     except UnicodeDecodeError:
         return False
 

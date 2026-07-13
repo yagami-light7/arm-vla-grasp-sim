@@ -377,6 +377,7 @@ class DwaNavExecutor:
             path_world=path_world,
             grid_map=self.local_map,
             config=self._active_dwa_config,
+            raw_grid_map=self._raw_map,
         )
         self.stall_detector.reset()
         self._phase = "dwa"
@@ -454,7 +455,7 @@ class DwaNavExecutor:
                 started_at = time.perf_counter()
                 raw_command, self._last_dwa_debug = self._controller.compute_command(
                     pose,
-                    (body_velocity[0], body_velocity[2]),
+                    (body_velocity[0], body_velocity[1], body_velocity[2]),
                 )
                 elapsed = time.perf_counter() - started_at
                 self._last_dwa_compute_duration_s = elapsed
@@ -1522,6 +1523,18 @@ class DwaNavExecutor:
                 self._consecutive_infeasible_recomputes
             ),
             "max_infeasible_recomputes": self.carry_max_infeasible_recomputes,
+            "lateral_velocity_compensation_gain": float(
+                self._active_dwa_config.lateral_velocity_compensation_gain
+            ),
+            "max_lateral_velocity_command": float(
+                self._active_dwa_config.max_lateral_velocity_command
+            ),
+            "max_lateral_velocity_accel": float(
+                self._active_dwa_config.max_lateral_velocity_accel
+            ),
+            "allow_inflated_occupied_start_escape": bool(
+                self._active_dwa_config.allow_inflated_occupied_start_escape
+            ),
         }
 
     def _stair_float_status(self) -> dict[str, Any]:
@@ -2304,40 +2317,67 @@ class DwaNavExecutor:
                 self._post_stair_reference_path[reference_nearest_index][1]
                 - start_xy[1],
             )
+        if reference_nearest_distance > 0.50:
+            reference_nearest_index = None
         if (
             reference_nearest_index is not None
-            and reference_nearest_distance <= 0.50
         ):
             floor_map = floor_raw_map.inflate(self.post_stair_clearance_radius)
             reference_tail = list(
                 self._post_stair_reference_path[reference_nearest_index:]
             )
             release_bridge = [start_xy, reference_tail[0]]
-            bridge_corridor_radius = max(
-                0.10,
-                float(self.post_stair_clearance_radius),
+            start_row, start_col = floor_map.world_to_grid(*start_xy)
+            raw_start_row, raw_start_col = floor_raw_map.world_to_grid(*start_xy)
+            start_in_inflated_obstacle = floor_map.is_occupied(
+                start_row,
+                start_col,
             )
-            floor_map, bridge_reopened_cells, _ = _clear_grid_path_corridor(
+            start_in_raw_obstacle = floor_raw_map.is_occupied(
+                raw_start_row,
+                raw_start_col,
+            )
+            bridge_is_clear, bridge_clearance = _world_segment_clearance(
+                release_bridge[0],
+                release_bridge[1],
                 floor_map,
-                release_bridge,
-                radius_m=bridge_corridor_radius,
             )
-            path_world = (
-                [start_xy, *reference_tail[1:]]
-                if reference_nearest_distance <= 1.0e-6
-                else [start_xy, *reference_tail]
-            )
-            path_report = dict(self._post_stair_path_optimization_report)
-            path_report["release_bridge"] = {
-                "applied": True,
-                "start_xy": list(start_xy),
-                "reference_index": int(reference_nearest_index),
-                "reference_xy": list(reference_tail[0]),
-                "reference_distance_m": float(reference_nearest_distance),
-                "corridor_radius_m": float(bridge_corridor_radius),
-                "reopened_cells": int(bridge_reopened_cells),
-            }
-        else:
+            if start_in_raw_obstacle:
+                report.update(
+                    {
+                        "reason": "post_stair_release_in_raw_obstacle",
+                        "start_xy": list(start_xy),
+                        "goal_xy": list(goal_xy),
+                    }
+                )
+                self._stair_float_report["post_stair_floor_replan"] = report
+                return False
+            if not start_in_inflated_obstacle and not bridge_is_clear:
+                reference_nearest_index = None
+            else:
+                path_world = (
+                    [start_xy, *reference_tail[1:]]
+                    if reference_nearest_distance <= 1.0e-6
+                    else [start_xy, *reference_tail]
+                )
+                path_report = dict(self._post_stair_path_optimization_report)
+                path_report["release_bridge"] = {
+                    "applied": True,
+                    "mode": (
+                        "occupied_start_escape"
+                        if start_in_inflated_obstacle
+                        else "collision_checked_direct"
+                    ),
+                    "start_xy": list(start_xy),
+                    "reference_index": int(reference_nearest_index),
+                    "reference_xy": list(reference_tail[0]),
+                    "reference_distance_m": float(reference_nearest_distance),
+                    "bridge_is_clear": bool(bridge_is_clear),
+                    "bridge_clearance_m": bridge_clearance,
+                    "reopened_cells": 0,
+                    "protected_obstacle_cells": 0,
+                }
+        if reference_nearest_index is None:
             try:
                 floor_map, path_world, path_report = (
                     _plan_clearance_optimized_floor_path(
@@ -2377,6 +2417,7 @@ class DwaNavExecutor:
             path_world=path_world,
             grid_map=floor_map,
             config=post_stair_dwa_config,
+            raw_grid_map=floor_raw_map,
         )
         self._consecutive_infeasible_recomputes = 0
         self.stall_detector.reset()
@@ -2490,6 +2531,10 @@ class DwaNavExecutor:
                 2.40,
             ),
             path_recovery_speed_limit=0.20,
+            lateral_velocity_compensation_gain=1.0,
+            max_lateral_velocity_command=0.12,
+            max_lateral_velocity_accel=0.80,
+            allow_inflated_occupied_start_escape=True,
             # 朝向误差较大时先逐步降速再转向，避免机器人横穿中心线后继续外漂。
             rotate_in_place_angle=min(
                 float(config.rotate_in_place_angle),
@@ -3232,13 +3277,21 @@ def _plan_clearance_optimized_floor_path(
         max_snap_distance_m=max(0.50, clearance_radius + 0.50),
     )
     path_world = [start_xy]
-    for point in result.path_world:
-        xy = (float(point[0]), float(point[1]))
+    raw_grid_path_indices: list[int] = []
+    for row, col in result.raw_path_grid:
+        xy = floor_map.grid_to_world(int(row), int(col))
         if math.hypot(
             xy[0] - path_world[-1][0],
             xy[1] - path_world[-1][1],
         ) > 1.0e-5:
             path_world.append(xy)
+        raw_grid_path_indices.append(len(path_world) - 1)
+
+    mandatory_path_indices = _narrow_corridor_path_indices(
+        result.raw_path_grid,
+        raw_grid_path_indices,
+        floor_map,
+    )
 
     goal_segment_free, _goal_clearance = _world_segment_clearance(
         path_world[-1],
@@ -3254,22 +3307,44 @@ def _plan_clearance_optimized_floor_path(
     ):
         path_world.append(goal_xy)
 
+    edge_margin = 0.10 * float(floor_map.resolution)
     shortcut = _shortcut_path_with_clearance(
         path_world,
         floor_map,
         clearance_required_m=0.0,
+        mandatory_indices=mandatory_path_indices,
+        edge_margin_m=edge_margin,
     )
+    mandatory_points = {
+        path_world[index]
+        for index in mandatory_path_indices
+        if 0 <= index < len(path_world)
+    }
     rounded, rounded_corner_count = _round_path_corners_with_clearance(
         shortcut,
         floor_map,
         clearance_required_m=0.0,
         trim_distance_m=0.24,
         sample_spacing_m=0.08,
+        preserve_points=mandatory_points,
+        edge_margin_m=edge_margin,
     )
-    if not _world_path_is_clear(rounded, floor_map):
+    if not _world_path_is_clear(rounded, floor_map) or not _world_path_has_edge_margin(
+        rounded,
+        floor_map,
+        edge_margin_m=edge_margin,
+    ):
         rounded = shortcut
         rounded_corner_count = 0
-    if len(rounded) < 2 or not _world_path_is_clear(rounded, floor_map):
+    if (
+        len(rounded) < 2
+        or not _world_path_is_clear(rounded, floor_map)
+        or not _world_path_has_edge_margin(
+            rounded,
+            floor_map,
+            edge_margin_m=edge_margin,
+        )
+    ):
         raise RuntimeError("目标楼层路径优化后未通过净空校验。")
 
     report = {
@@ -3282,6 +3357,8 @@ def _plan_clearance_optimized_floor_path(
         "shortcut_waypoint_count": len(shortcut),
         "rounded_waypoint_count": len(rounded),
         "rounded_corner_count": int(rounded_corner_count),
+        "narrow_corridor_anchor_count": len(mandatory_points),
+        "optimization_edge_margin_m": edge_margin,
         "minimum_raw_map_clearance_m": _world_path_minimum_clearance(
             rounded,
             raw_map,
@@ -3312,6 +3389,8 @@ def _round_path_corners_with_clearance(
     clearance_required_m: float,
     trim_distance_m: float,
     sample_spacing_m: float,
+    preserve_points: set[tuple[float, float]] | None = None,
+    edge_margin_m: float = 0.0,
 ) -> tuple[list[tuple[float, float]], int]:
     """用二次贝塞尔圆角替换折点，并逐段校验障碍净空。"""
 
@@ -3320,10 +3399,14 @@ def _round_path_corners_with_clearance(
     output: list[tuple[float, float]] = [path_world[0]]
     rounded_count = 0
     required = max(0.0, float(clearance_required_m))
+    preserved = preserve_points or set()
     for index in range(1, len(path_world) - 1):
         previous = path_world[index - 1]
         vertex = path_world[index]
         following = path_world[index + 1]
+        if vertex in preserved:
+            output.append(vertex)
+            continue
         incoming = (vertex[0] - previous[0], vertex[1] - previous[1])
         outgoing = (following[0] - vertex[0], following[1] - vertex[1])
         incoming_length = math.hypot(*incoming)
@@ -3382,6 +3465,10 @@ def _round_path_corners_with_clearance(
             candidate,
             grid_map,
             clearance_required_m=required,
+        ) or not _world_path_has_edge_margin(
+            candidate,
+            grid_map,
+            edge_margin_m=edge_margin_m,
         ):
             output.append(vertex)
             continue
@@ -3393,6 +3480,10 @@ def _round_path_corners_with_clearance(
         output,
         grid_map,
         clearance_required_m=required,
+    ) or not _world_path_has_edge_margin(
+        output,
+        grid_map,
+        edge_margin_m=edge_margin_m,
     ):
         return list(path_world), 0
     return output, rounded_count
@@ -3494,17 +3585,28 @@ def _shortcut_path_with_clearance(
     grid_map: OccupancyGridMap,
     *,
     clearance_required_m: float,
+    mandatory_indices: set[int] | None = None,
+    edge_margin_m: float = 0.0,
 ) -> list[tuple[float, float]]:
     """贪心保留满足净距的最远点，减少短折线导致的连续反向转向。"""
 
     if len(path_world) < 3:
         return list(path_world)
     required = max(0.0, float(clearance_required_m))
+    mandatory = sorted(
+        index
+        for index in (mandatory_indices or set())
+        if 0 < index < len(path_world)
+    )
     output = [path_world[0]]
     current_index = 0
     while current_index < len(path_world) - 1:
         selected_index = current_index + 1
-        for candidate_index in range(len(path_world) - 1, current_index, -1):
+        next_mandatory = next(
+            (index for index in mandatory if index > current_index),
+            len(path_world) - 1,
+        )
+        for candidate_index in range(next_mandatory, current_index, -1):
             segment_free, clearance = _world_segment_clearance(
                 path_world[current_index],
                 path_world[candidate_index],
@@ -3514,11 +3616,139 @@ def _shortcut_path_with_clearance(
                 continue
             if clearance is not None and clearance + 1.0e-6 < required:
                 continue
+            if not _world_path_has_edge_margin(
+                [path_world[current_index], path_world[candidate_index]],
+                grid_map,
+                edge_margin_m=edge_margin_m,
+            ):
+                continue
             selected_index = candidate_index
             break
         output.append(path_world[selected_index])
         current_index = selected_index
     return output
+
+
+def _narrow_corridor_path_indices(
+    raw_path_grid: tuple[tuple[int, int], ...] | list[tuple[int, int]],
+    path_indices: list[int],
+    grid_map: OccupancyGridMap,
+) -> set[int]:
+    """保留狭窄通道自由格中心及其入口、出口，禁止捷径擦边。"""
+
+    narrow_raw_indices: set[int] = set()
+    for index, (row, col) in enumerate(raw_path_grid):
+        horizontal_narrow = grid_map.is_occupied(row, col - 1) and grid_map.is_occupied(
+            row,
+            col + 1,
+        )
+        vertical_narrow = grid_map.is_occupied(row - 1, col) and grid_map.is_occupied(
+            row + 1,
+            col,
+        )
+        if horizontal_narrow or vertical_narrow:
+            narrow_raw_indices.add(index)
+    protected_raw_indices = {
+        neighbor
+        for index in narrow_raw_indices
+        for neighbor in (index - 2, index - 1, index, index + 1, index + 2)
+        if 0 <= neighbor < len(path_indices)
+    }
+    return {path_indices[index] for index in protected_raw_indices}
+
+
+def _world_path_has_edge_margin(
+    path_world: list[tuple[float, float]],
+    grid_map: OccupancyGridMap,
+    *,
+    edge_margin_m: float,
+) -> bool:
+    """校验折线与占用格真实边缘之间的连续净距。"""
+
+    margin = max(0.0, float(edge_margin_m))
+    if margin <= 0.0:
+        return True
+    return all(
+        _world_segment_edge_clearance(start, end, grid_map) + 1.0e-6 >= margin
+        for start, end in zip(path_world, path_world[1:])
+    )
+
+
+def _world_segment_edge_clearance(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    grid_map: OccupancyGridMap,
+) -> float:
+    """按连续坐标估计线段到最近占用格矩形边缘的净距。"""
+
+    segment_length = math.hypot(end[0] - start[0], end[1] - start[1])
+    sample_spacing = max(0.005, 0.10 * float(grid_map.resolution))
+    sample_count = max(1, int(math.ceil(segment_length / sample_spacing)))
+    minimum_clearance = float("inf")
+    for sample_index in range(sample_count + 1):
+        alpha = sample_index / sample_count
+        x = start[0] + alpha * (end[0] - start[0])
+        y = start[1] + alpha * (end[1] - start[1])
+        minimum_clearance = min(
+            minimum_clearance,
+            _world_point_obstacle_edge_clearance(x, y, grid_map),
+        )
+        if minimum_clearance <= 0.0:
+            return 0.0
+    return minimum_clearance
+
+
+def _world_point_obstacle_edge_clearance(
+    x: float,
+    y: float,
+    grid_map: OccupancyGridMap,
+) -> float:
+    """返回世界坐标点到邻近占用格矩形的最短距离。"""
+
+    delta_x = float(x) - float(grid_map.origin[0])
+    delta_y = float(y) - float(grid_map.origin[1])
+    cos_yaw = math.cos(float(grid_map.origin[2]))
+    sin_yaw = math.sin(float(grid_map.origin[2]))
+    local_x = cos_yaw * delta_x + sin_yaw * delta_y
+    local_y = -sin_yaw * delta_x + cos_yaw * delta_y
+    resolution = float(grid_map.resolution)
+    map_width = float(grid_map.width) * resolution
+    map_height = float(grid_map.height) * resolution
+    if not (0.0 <= local_x <= map_width and 0.0 <= local_y <= map_height):
+        return 0.0
+
+    row, col = grid_map.world_to_grid(float(x), float(y))
+    search_radius = 2
+    minimum_clearance = min(
+        local_x,
+        map_width - local_x,
+        local_y,
+        map_height - local_y,
+    )
+    for obstacle_row in range(row - search_radius, row + search_radius + 1):
+        for obstacle_col in range(col - search_radius, col + search_radius + 1):
+            if not grid_map.is_occupied(obstacle_row, obstacle_col):
+                continue
+            cell_x_min = float(obstacle_col) * resolution
+            cell_x_max = cell_x_min + resolution
+            row_from_bottom = grid_map.height - 1 - obstacle_row
+            cell_y_min = float(row_from_bottom) * resolution
+            cell_y_max = cell_y_min + resolution
+            distance_x = max(
+                cell_x_min - local_x,
+                0.0,
+                local_x - cell_x_max,
+            )
+            distance_y = max(
+                cell_y_min - local_y,
+                0.0,
+                local_y - cell_y_max,
+            )
+            minimum_clearance = min(
+                minimum_clearance,
+                math.hypot(distance_x, distance_y),
+            )
+    return minimum_clearance
 
 
 def _smooth_clearance_shortcut_corners(
