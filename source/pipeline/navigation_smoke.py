@@ -226,6 +226,9 @@ def _stair_locomotion_smoke_spec(
         float(stair_exit[1]) - float(exit_reference[1]),
         float(stair_exit[0]) - float(exit_reference[0]),
     )
+    exit_extension_m = float(nav.pct_stair_locomotion_exit_extension_m)
+    terminal_x = float(stair_exit[0]) + exit_extension_m * math.cos(end_heading)
+    terminal_y = float(stair_exit[1]) + exit_extension_m * math.sin(end_heading)
     start = NavGoal(
         x=float(gateway[0]),
         y=float(gateway[1]),
@@ -235,8 +238,8 @@ def _stair_locomotion_smoke_spec(
         slice_id=episode_spec.pick_goal.slice_id,
     )
     goal = NavGoal(
-        x=float(stair_exit[0]),
-        y=float(stair_exit[1]),
+        x=terminal_x,
+        y=terminal_y,
         z=end_root_z,
         yaw=end_heading,
         floor_id=episode_spec.place_goal.floor_id,
@@ -251,6 +254,12 @@ def _stair_locomotion_smoke_spec(
             "global_path": "pct_online_path_3d",
             "manual_centerline": False,
             "float_enabled": False,
+            "stair_exit_xyz": [
+                float(stair_exit[0]),
+                float(stair_exit[1]),
+                float(stair_exit[2]),
+            ],
+            "exit_extension_m": exit_extension_m,
             "start_xyz_yaw": [start.x, start.y, start.z, start.yaw],
             "goal_xyz_yaw": [goal.x, goal.y, goal.z, goal.yaw],
         },

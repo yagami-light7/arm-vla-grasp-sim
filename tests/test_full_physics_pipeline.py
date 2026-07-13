@@ -11,6 +11,7 @@ from pathlib import Path
 from scripts.pipeline.run_full_physics_pipeline import (
     _build_parser,
     _locomotion_runtime_kwargs,
+    _navigation_smoke_viewport_runtime_kwargs,
     _parse_args,
     main,
 )
@@ -41,6 +42,7 @@ from source.pipeline import (
 from source.pipeline.dry_run import create_dry_run_pipeline
 from source.pipeline.isaac_compat import patch_numpy_for_isaacsim
 from source.pipeline.factory import create_full_physics_pipeline
+from source.pipeline.full_physics_pipeline import _should_auto_switch_overview_camera
 from source.pipeline.manipulation_apply_smoke import create_manipulation_apply_smoke_pipeline
 from source.pipeline.manipulation_smoke import create_manipulation_smoke_pipeline
 from source.pipeline.navigation_smoke import _build_dwa_config
@@ -510,7 +512,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         )
         self.assertFalse(args.randomize_task)
         self.assertFalse(args.randomize_base_goal)
-        self.assertTrue(args.show_planned_trajectories)
+        self.assertFalse(args.show_planned_trajectories)
         self.assertEqual(args.navigation_visual_mode, "collision")
         self.assertTrue(args.record_video)
         self.assertEqual(args.video_mode, "all")
@@ -529,7 +531,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 "--pct-fallback-to-astar",
                 "--randomize-task",
                 "--randomize-base-goal",
-                "--no-show-planned-trajectories",
+                "--show-planned-trajectories",
                 "--no-record-video",
                 "--video-mode",
                 "overview",
@@ -542,7 +544,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertFalse(args.pct_no_fallback)
         self.assertTrue(args.randomize_task)
         self.assertTrue(args.randomize_base_goal)
-        self.assertFalse(args.show_planned_trajectories)
+        self.assertTrue(args.show_planned_trajectories)
         self.assertFalse(args.record_video)
         self.assertEqual(args.video_mode, "overview")
         self.assertEqual(args.navigation_visual_mode, "full")
@@ -552,6 +554,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
 
         self.assertEqual(args.mode, "full_physics")
         self.assertFalse(args.pct_stair_float)
+        self.assertFalse(args.show_planned_trajectories)
 
     def test_stair_locomotion_smoke_selects_pct_and_disables_float(self) -> None:
         args = _parse_args(["--stair-locomotion-smoke"])
@@ -560,11 +563,43 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertEqual(args.global_planner, "pct")
         self.assertEqual(args.policy_profile, "pct_multifloor")
         self.assertFalse(args.pct_stair_float)
+        self.assertTrue(args.show_planned_trajectories)
         self.assertFalse(args.record_video)
+        self.assertEqual(args.video_mode, "overview")
+        self.assertEqual(
+            args.overview_camera_schedule,
+            "configs/recording/stair_locomotion_camera_schedule.json",
+        )
         self.assertEqual(
             args.task_json,
             "tasks/nav_pick_place_apple_multifloor_pct.json",
         )
+
+    def test_stair_locomotion_smoke_manages_gui_camera3(self) -> None:
+        stair = _navigation_smoke_viewport_runtime_kwargs(
+            headless=False,
+            stair_locomotion_smoke=True,
+        )
+        regular_gui = _navigation_smoke_viewport_runtime_kwargs(
+            headless=False,
+            stair_locomotion_smoke=False,
+        )
+
+        self.assertEqual(stair["viewport_camera_prim_path"], "/World/Camera3")
+        self.assertTrue(stair["auto_manage_viewport_camera"])
+        self.assertFalse(regular_gui["auto_manage_viewport_camera"])
+
+    def test_stair_locomotion_video_schedule_auto_switches_in_gui(self) -> None:
+        stair_config = FullPhysicsConfig(
+            task_json=PROJECT_ROOT / "tasks/nav_pick_place_apple_multifloor_pct.json",
+            output_dir=PROJECT_ROOT / "outputs/test",
+            headless=False,
+            stair_locomotion_smoke=True,
+        )
+        regular_gui_config = replace(stair_config, stair_locomotion_smoke=False)
+
+        self.assertTrue(_should_auto_switch_overview_camera(stair_config))
+        self.assertFalse(_should_auto_switch_overview_camera(regular_gui_config))
 
     def test_stair_locomotion_smoke_rejects_explicit_float(self) -> None:
         with self.assertRaisesRegex(SystemExit, "固定禁用 Float"):

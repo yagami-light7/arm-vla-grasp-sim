@@ -92,6 +92,7 @@ class NavigationSettings:
         (1.9202, 9.52807, 1.71919),
         (2.69841, 7.79872, 2.61031),
     )
+    pct_stair_locomotion_exit_extension_m: float = 1.0
     pct_cross_floor_gateway_radius_m: float = 0.6
     pct_robot_root_to_floor_m: float = 0.45
     pct_body_obstacle_min_height_m: float = 0.30
@@ -383,6 +384,10 @@ class FullPhysicsConfig:
                 raise ValueError(
                     "pct_cross_floor_stair_midpoint_points entries must be xyz triples"
                 )
+        if self.navigation.pct_stair_locomotion_exit_extension_m < 0.0:
+            raise ValueError(
+                "pct_stair_locomotion_exit_extension_m must be non-negative"
+            )
         if self.navigation.pct_robot_root_to_floor_m < 0.0:
             raise ValueError("pct_robot_root_to_floor_m must be non-negative")
         if self.navigation.pct_stair_float_speed_mps <= 0.0:

@@ -286,6 +286,43 @@ def test_pct_stair_short_gateway_approach_does_not_overshoot() -> None:
     )
 
 
+def test_pct_stair_refinement_preserves_post_exit_extension() -> None:
+    stair_exit = (2.70, 7.05, 3.0)
+    terminal = (2.702, 6.05, 3.0)
+    raw_traj_sim = (
+        (1.5, 5.7, 0.0),
+        (1.52, 6.3, 0.3),
+        (1.92, 9.5, 1.7),
+        (2.74, 9.14, 1.7),
+        (2.70, 7.8, 2.6),
+        stair_exit,
+        terminal,
+    )
+    planner = PCTNavPlanner(
+        PCTPlannerConfig(enabled=True, fallback_to_astar=False),
+        client=FakePCTClient(
+            {
+                "status": "ok",
+                "cross_floor": True,
+                "traj": [[-x, -y, z] for x, y, z in raw_traj_sim],
+            }
+        ),
+    )
+
+    plan = planner.plan(
+        _state(1.5, 5.7, z=0.36742),
+        NavGoal(x=terminal[0], y=terminal[1], z=3.62628, yaw=-math.pi / 2.0),
+    )
+
+    path = plan.metadata["path_3d"]
+    exit_index = next(
+        index for index, point in enumerate(path) if point == pytest.approx(stair_exit)
+    )
+    assert exit_index < len(path) - 1
+    assert path[-1] == pytest.approx(terminal)
+    assert float(path[-1][1]) < float(path[exit_index][1])
+
+
 def test_pct_nav_planner_raises_clear_error_without_fallback() -> None:
     class FailingClient:
         def plan(self, *, start, end):

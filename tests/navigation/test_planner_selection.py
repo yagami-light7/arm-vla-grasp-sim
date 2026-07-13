@@ -206,7 +206,9 @@ def test_pct_navigation_carry_smoke_uses_multifloor_step_budget(
     assert carry_config.limits.episode >= 15000
 
 
-def test_stair_locomotion_smoke_uses_calibrated_entry_and_exit(tmp_path: Path) -> None:
+def test_stair_locomotion_smoke_extends_goal_beyond_calibrated_exit(
+    tmp_path: Path,
+) -> None:
     spec = JsonTaskProvider().load(
         PROJECT_ROOT / "tasks/nav_pick_place_apple_multifloor_pct.json"
     )
@@ -223,8 +225,9 @@ def test_stair_locomotion_smoke_uses_calibrated_entry_and_exit(tmp_path: Path) -
     assert stair_spec.start.yaw == pytest.approx(
         math.atan2(6.27683 - 5.7, 1.51822 - 1.5)
     )
-    assert stair_spec.pick_goal.x == 2.70
-    assert stair_spec.pick_goal.y == 7.05
+    exit_heading = math.atan2(7.05 - 7.79872, 2.70 - 2.69841)
+    assert stair_spec.pick_goal.x == pytest.approx(2.70 + math.cos(exit_heading))
+    assert stair_spec.pick_goal.y == pytest.approx(7.05 + math.sin(exit_heading))
     assert stair_spec.pick_goal.z == 3.62628
     assert stair_spec.place_goal is None
     assert stair_spec.object_prim_path is None
@@ -234,6 +237,12 @@ def test_stair_locomotion_smoke_uses_calibrated_entry_and_exit(tmp_path: Path) -
         "pct_online_path_3d"
     )
     assert stair_spec.raw_task["runtime_override"]["manual_centerline"] is False
+    assert stair_spec.raw_task["runtime_override"]["stair_exit_xyz"] == [
+        2.70,
+        7.05,
+        3.0,
+    ]
+    assert stair_spec.raw_task["runtime_override"]["exit_extension_m"] == 1.0
     assert "centerline" not in stair_spec.raw_task["runtime_override"]
 
 

@@ -141,6 +141,44 @@ class SimulationViewportTest(unittest.TestCase):
         self.assertEqual(lower, "/World/Camera3")
         self.assertEqual(upper, "/World/Camera7")
 
+    def test_stair_locomotion_schedule_uses_camera3_then_camera5(self) -> None:
+        schedule_path = (
+            Path(__file__).resolve().parents[1]
+            / "configs/recording/stair_locomotion_camera_schedule.json"
+        )
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(
+                overview_camera_schedule_path=schedule_path,
+            ),
+            episode_dir=".",
+            episode_id=0,
+            auto_switch_camera=True,
+        )
+        recorder._overview_cameras = tuple(  # noqa: SLF001
+            _CameraCandidate(
+                path=f"/World/Camera{index}",
+                name=f"Camera{index}",
+                normalized_text=f"/world/camera{index} camera{index}",
+                is_observation=False,
+                overview_score=100,
+            )
+            for index in range(9)
+        )
+
+        lower = recorder.select_camera_for_state(
+            "exec_nav_to_pick",
+            robot_root_pose=(1.5, 7.0, 1.2),
+            step_index=100,
+        )
+        upper = recorder.select_camera_for_state(
+            "exec_nav_to_pick",
+            robot_root_pose=(2.7, 8.0, 2.0),
+            step_index=200,
+        )
+
+        self.assertEqual(lower, "/World/Camera3")
+        self.assertEqual(upper, "/World/Camera5")
+
     def test_gui_overview_reads_manual_camera_without_auto_switch(self) -> None:
         recorder = OverviewVideoRecorder(
             settings=_OverviewVideoSettings(),

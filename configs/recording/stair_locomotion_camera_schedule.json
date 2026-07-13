@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "description": "stair-locomotion smoke 专用录制视角：下段使用 Camera3，上段使用 Camera5。",
+  "default_camera": "/World/Camera3",
+  "rules": [
+    {
+      "name": "upper_stair",
+      "z_min": 1.8,
+      "camera": "/World/Camera5"
+    },
+    {
+      "name": "lower_stair",
+      "camera": "/World/Camera3"
+    }
+  ]
+}

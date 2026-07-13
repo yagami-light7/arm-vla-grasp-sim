@@ -48,6 +48,9 @@ PCT_MULTIFLOOR_DEFAULT_CHECKPOINT = (
 PCT_MULTIFLOOR_DEFAULT_CAMERA_SCHEDULE = (
     "configs/recording/multifloor_overview_camera_schedule.json"
 )
+STAIR_LOCOMOTION_DEFAULT_CAMERA_SCHEDULE = (
+    "configs/recording/stair_locomotion_camera_schedule.json"
+)
 
 
 def _project_path(raw_path: str | Path) -> Path:
@@ -191,6 +194,21 @@ def _navigation_visual_runtime_kwargs(
         "hide_navigation_collision_visual": mode != "collision",
         "hide_object_collision_visual": policy_profile != "pct_multifloor",
     }
+
+
+def _navigation_smoke_viewport_runtime_kwargs(
+    *,
+    headless: bool,
+    stair_locomotion_smoke: bool,
+) -> dict[str, object]:
+    """让楼梯专用模式从 Camera3 启动，同时保留其他 GUI 的手动视角。"""
+
+    if stair_locomotion_smoke:
+        return {
+            "viewport_camera_prim_path": "/World/Camera3",
+            "auto_manage_viewport_camera": True,
+        }
+    return {"auto_manage_viewport_camera": bool(headless)}
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -668,7 +686,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="mode",
         help=(
             "从楼梯入口重置并沿 PCT 在线规划的 path_3d 纯物理上楼；"
-            "禁用 Float 和 DWA，到楼梯出口后结束。"
+            "禁用 Float 和 DWA，越过楼梯出口并进入 F2 平台后结束。"
         ),
     )
     mode_group.add_argument(
@@ -706,7 +724,8 @@ def _build_parser() -> argparse.ArgumentParser:
 def _resolve_runtime_defaults(args: argparse.Namespace) -> argparse.Namespace:
     """按 planner 选择补齐稳定运行预设，同时保留显式 CLI 覆盖。"""
 
-    if str(args.mode) == "stair_locomotion_smoke":
+    stair_locomotion_smoke = str(args.mode) == "stair_locomotion_smoke"
+    if stair_locomotion_smoke:
         args.global_planner = "pct"
     pct_multifloor = str(args.global_planner) == "pct"
     args.runtime_preset = "pct_multifloor_stable" if pct_multifloor else "astar"
@@ -737,15 +756,21 @@ def _resolve_runtime_defaults(args: argparse.Namespace) -> argparse.Namespace:
         if args.randomize_base_goal is None:
             args.randomize_base_goal = False
         if args.show_planned_trajectories is None:
-            args.show_planned_trajectories = True
+            args.show_planned_trajectories = bool(
+                stair_locomotion_smoke or str(args.mode) == "pct_plan_preview"
+            )
         if args.pct_stair_float is None:
             args.pct_stair_float = str(args.mode) != "stair_locomotion_smoke"
         if args.record_video is None:
             args.record_video = str(args.mode) == "full_physics"
         if args.video_mode is None:
-            args.video_mode = "all"
+            args.video_mode = "overview" if stair_locomotion_smoke else "all"
         if args.overview_camera_schedule is None:
-            args.overview_camera_schedule = PCT_MULTIFLOOR_DEFAULT_CAMERA_SCHEDULE
+            args.overview_camera_schedule = (
+                STAIR_LOCOMOTION_DEFAULT_CAMERA_SCHEDULE
+                if stair_locomotion_smoke
+                else PCT_MULTIFLOOR_DEFAULT_CAMERA_SCHEDULE
+            )
         if args.navigation_visual_mode == "auto":
             args.navigation_visual_mode = "collision"
         return args
@@ -1430,11 +1455,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 config.locomotion.policy_profile,
                                 args.navigation_visual_mode,
                             ),
+                            **_navigation_smoke_viewport_runtime_kwargs(
+                                headless=config.headless,
+                                stair_locomotion_smoke=stair_locomotion_smoke,
+                            ),
                             show_velocity_command_debug=bool(
                                 stair_locomotion_smoke
                                 and config.show_planned_trajectories
                             ),
-                            auto_manage_viewport_camera=bool(config.headless),
                             scene_light_mode=config.lighting.scene_light_mode,
                             camera_light_intensity=(
                                 config.lighting.camera_light_intensity

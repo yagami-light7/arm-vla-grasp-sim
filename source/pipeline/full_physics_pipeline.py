@@ -24,6 +24,12 @@ from .config import FullPhysicsConfig
 from .state_machine import FullPhysicsStateMachine
 
 
+def _should_auto_switch_overview_camera(config: FullPhysicsConfig) -> bool:
+    """headless 与楼梯专用模式按调度自动切换 overview 相机。"""
+
+    return bool(config.headless or config.stair_locomotion_smoke)
+
+
 class FullPhysicsPipeline:
     """Own the only simulation step loop and coordinate one episode."""
 
@@ -71,7 +77,7 @@ class FullPhysicsPipeline:
                 settings=self.config.video,
                 episode_dir=self.recorder.output_dir,
                 episode_id=self.episode_spec.episode_id,
-                auto_switch_camera=bool(self.config.headless),
+                auto_switch_camera=_should_auto_switch_overview_camera(self.config),
                 save_overview_images=bool(
                     self.config.recording.enabled
                     and self.config.recording.save_raw_images

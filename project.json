@@ -2,8 +2,8 @@
   "project": "arm_vla_pct",
   "branch": "pct",
   "goal": "将 flat A* 全局导航替换为 PCT 多楼层规划器，并接入新的 RL locomotion checkpoint 配置。",
-  "current_phase": "phase_167_official_debug_draw_velocity",
-  "last_updated": "2026-07-13 14:42:48",
+  "current_phase": "phase_168_stair_exit_camera35_defaults",
+  "last_updated": "2026-07-13 15:56:13",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -332,6 +332,15 @@
     "stair_locomotion_pct_executor_probe_verified": true,
     "pct_stair_short_approach_hook_fixed": true,
     "pct_stair_online_path_real_planned_verified": true,
+    "stair_locomotion_exit_extension_added": true,
+    "stair_locomotion_exit_extension_real_pct_verified": true,
+    "stair_locomotion_camera3_camera5_schedule_added": true,
+    "stair_locomotion_gui_camera3_default_added": true,
+    "stair_locomotion_camera3_recording_real_verified": true,
+    "stair_locomotion_camera5_schedule_unit_verified": true,
+    "stair_locomotion_camera5_recording_real_verified": false,
+    "pct_full_pipeline_trajectory_visualization_default_disabled": true,
+    "stair_locomotion_trajectory_visualization_default_enabled": true,
     "stair_pct_online_path_visualization_real_verified": false,
     "pct_phase166_real_validation_blocked_by_gpu_memory": true,
     "pct_final_acceptance_complete": false
@@ -6095,6 +6104,80 @@
         "利用 GUI 和逐帧日志重点检查约 (1.72, 5.88) 处的横向偏移、机体接触与足端动作，定位真实 stall 根因。",
         "本轮未修改默认 Float 完整 pipeline 控制链；后续低层 smoke 调参仍须单独回归默认 Float 与显式 no-float 两种完整模式。"
       ]
+    },
+    {
+      "time": "2026-07-13 15:56:13",
+      "summary": "完成 phase168：stair locomotion smoke 的 PCT 目标从楼梯标定出口沿最终航向延伸 1.0m，真实 PCT 路径由 39 点增至 40 点，补上 (2.70,7.05,3.0) 到 (2.7215,6.0564,3.0) 的 F2 收尾段。新增 Camera3/Camera5 专用录制调度，GUI 默认主动应用 Camera3，root z>=1.8m 后切 Camera5；真实 headless 生成 42 张 Camera3 JPEG 和 210 帧 H.264 视频。按用户最新要求，完整 Float 和 no-float pipeline 默认不再显示导航与机械臂规划轨迹，stair-loco 与 PCT preview 继续默认显示。",
+      "files_changed": [
+        "source/pipeline/config.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/pipeline/full_physics_pipeline.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "configs/navigation/pct_multifloor_policy.yaml",
+        "configs/recording/stair_locomotion_camera_schedule.json",
+        "tests/navigation/test_planner_selection.py",
+        "tests/navigation/test_pct_adapter.py",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_simulation_viewport.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "stair-loco 可视化在第二段楼梯末端提前结束，缺少完全离开最后一级台阶的 waypoint 段。",
+          "root_cause": "专用 episode 直接把 pct_cross_floor_stair_exit_points[0]=(2.70,7.05,3.0) 当作导航目标；该点是中心线 refinement 的标定出口，不是完整 PCT 路线中的 F2 安全收尾点，因此 raw path 到此终止，adapter 没有可保留的 post-exit suffix。",
+          "fix": "新增 pct_stair_locomotion_exit_extension_m=1.0，沿最后一个 midpoint 到 stair exit 的航向构造专用目标约 (2.7021,6.0500,3.62628)。楼梯出口锚点保持不变，PCT 在线规划自然返回出口后的首个 F2 点 (2.7215,6.0564,3.0)，refinement 保留该 suffix。",
+          "prevention": "功能段标定锚点与 episode 成功终点必须分开表达；回归测试固定 stair exit 之后至少还有一个 waypoint，并用真实 PCT server 检查 path tail。"
+        },
+        {
+          "problem": "stair-loco 导出的 overview image/video 使用通用默认视角，GUI 也不会主动切到用户指定的 Camera3。",
+          "root_cause": "通用多楼层 schedule 的楼梯规则只匹配 exec_nav_to_place，而 stair-loco 状态是 exec_nav_to_pick；GUI 下 recorder 默认禁止自动切相机，runtime 也使用 manual Camera0 语义。",
+          "fix": "新增 stair_locomotion_camera_schedule.json，下段/默认使用 Camera3，root z>=1.8m 后使用 Camera5；stair-loco runtime 无论 headless/GUI 都从 Camera3 启动，stair-loco recorder 在 GUI 中也按专用 schedule 自动切换。其他 pipeline 的 GUI 手动相机行为不变。",
+          "prevention": "每个专用 smoke 的录制规则应按其真实状态机命名测试；同时检查 schedule 选择、runtime requested camera、真实 camera switch log、JPEG 和 MP4。"
+        },
+        {
+          "problem": "PCT 稳定预设此前让 Float、no-float、stair-loco 和 preview 共用 show_planned_trajectories=true。",
+          "root_cause": "默认值只按 global_planner=pct 分支解析，没有区分完整采集 pipeline 与诊断/预览模式。",
+          "fix": "完整 --pct-multifloor 默认设为 false，因此 Float 与 --no-pct-stair-float 都不创建导航和机械臂 guide；stair-loco 与 pct-plan-preview 默认保持 true，显式 --show-planned-trajectories 仍可覆盖。",
+          "prevention": "CLI 默认行为同时按 planner 和 execution mode 建表测试，分别固定 Float、no-float、stair smoke、preview 及显式 override。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m py_compile source/pipeline/config.py source/pipeline/navigation_smoke.py source/pipeline/full_physics_pipeline.py scripts/pipeline/run_full_physics_pipeline.py tests/navigation/test_planner_selection.py tests/navigation/test_pct_adapter.py tests/test_full_physics_pipeline.py tests/test_simulation_viewport.py",
+          "result": "passed",
+          "note": "本轮修改模块和测试文件语法检查通过；专用相机 schedule 也通过 jq empty。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/navigation/test_planner_selection.py tests/navigation/test_pct_adapter.py tests/test_full_physics_pipeline.py tests/test_simulation_viewport.py",
+          "result": "passed",
+          "note": "89 passed；覆盖出口延伸、post-exit suffix、Camera3/Camera5 调度、GUI Camera3、录像自动切换和各模式轨迹显示默认值。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/navigation tests/test_planned_trajectories.py tests/test_astar_dwa_smoke.py tests/test_full_physics_pipeline.py tests/test_full_physics_batch.py tests/test_collision_terrain_wrapper.py tests/test_simulation_viewport.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "255 passed, 1 skipped；PCT、A*/DWA、Float/no-float 装配、完整状态机、录制与 runtime 回归通过。"
+        },
+        {
+          "command": "real PCT gateway-to-extended-goal online probe",
+          "result": "passed",
+          "note": "真实 server 返回 40 点；末端依次为 (2.70,7.05,3.0) 和 (2.7214886,6.0564240,3.0)，stair_centerline_refinement.refined_point_count=40。"
+        },
+        {
+          "command": "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/pipeline/run_full_physics_pipeline.py --stair-locomotion-smoke --headless --record-video --video-mode overview --record-dataset --output-dir /tmp/stair_locomotion_phase168_camera35",
+          "result": "failed",
+          "note": "任务仍因 stair_locomotion_stalled 失败，但路径 tail 为新增 40 点结果；runtime requested/selected Camera3 且 camera_applied=true，导出 42 张 5Hz overview JPEG 和 210 帧 1280x720 H.264 MP4，1 帧 dropped。机器人未达到 z=1.8m，因此真实运行未触发 Camera5。"
+        },
+        {
+          "command": "GUI stair locomotion smoke manual acceptance",
+          "result": "not_run",
+          "note": "未自动启动 GUI；Camera3 的同一 runtime 应用链已在真实 headless 验证，最终可视化构图由用户按下方命令查收。"
+        }
+      ],
+      "next_steps": [
+        "用户运行 GUI stair-locomotion-smoke，确认末端新增 F2 收尾段和默认 Camera3 构图。",
+        "低层 policy 能到达 root z>=1.8m 后，真实验证自动切换 Camera5 的上段图像与视频；当前只通过确定性 schedule 测试。",
+        "继续基于 Camera3 的速度箭头、机体姿态和接触状态诊断约 (1.72,5.88) 处的低层 stall。"
+      ]
     }
   ],
   "open_questions": [
@@ -6104,7 +6187,7 @@
   "known_limitations": [
     "phase163 已修复 gui_float 日志暴露的楼梯入口漏触发并通过定点重放，但新的 GUI Float 完整 pipeline 尚待实跑复验，因此最终验收状态暂时撤回。",
     "PCT 稳定预设现在默认启用 stair-float；可用 --no-pct-stair-float 显式运行完整 no-float pipeline。stair-float 楼梯段会冻结底盘并沿 path_3d 写入 root pose，因此 phase161 的 stable_physics_success=true，但 pure_physics_success=false。",
-    "独立 --stair-locomotion-smoke 在 phase167 已使用真实 PCT 在线 path_3d、直接速度控制和官方 debug-draw 完成真实 headless 运行；入口短 Bezier 过冲已修复，但机器人仍在约 (1.72, 5.88) 处停滞，横向误差约 -0.215m，低层 policy 上楼能力仍未验收。",
+    "独立 --stair-locomotion-smoke 在 phase168 已补齐出口后的 F2 收尾段并真实导出 Camera3 图像/视频，但机器人仍在约 (1.72,5.88) 处停滞，低层 policy 上楼能力仍未验收；Camera5 自动切换仅通过 z>=1.8m 调度测试，尚未由真实上段运动触发。",
     "当前 pct_multifloor checkpoint 是 12 维 dog-only policy；要获得纯足端动力学的携物上楼能力，仍需训练或接入针对楼梯和机械臂负载的新 locomotion policy。",
     "当前 PCT 全局路径完整保存在 NavPlan.metadata[\"path_3d\"]，普通局部执行仍主要由 DWA 消费 XY waypoints；z/slice 只在 stair-float 等多楼层专用逻辑中使用。",
     "navigation collision 模式为避免 NuRec/PhysX 同进程的 CUDA external semaphore 问题会停用 /World/gauss；原生高质量 3DGS GUI 渲染和最终前景合成视频仍未完成。",
