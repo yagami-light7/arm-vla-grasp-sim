@@ -173,6 +173,25 @@ class InMemorySimulationRuntime:
         self._metadata["object_prepare_for_pick_report"] = report
         return report
 
+    def begin_object_settle(self, episode_spec: EpisodeSpec) -> dict[str, Any]:
+        del episode_spec
+        report = {
+            "applied": self._object_pose is not None,
+            "baseline_source": "in_memory_runtime",
+        }
+        self._metadata["object_settle_begin_report"] = report
+        return report
+
+    def finalize_object_settle(self, episode_spec: EpisodeSpec) -> dict[str, Any]:
+        del episode_spec
+        report = {
+            "applied": self._object_pose is not None,
+            "settled_pose": self._object_pose,
+            "baseline_source": "in_memory_runtime",
+        }
+        self._metadata["object_settle_final_report"] = report
+        return report
+
     def read_object_bbox_world(self) -> dict[str, Any]:
         if self._object_pose is None:
             raise RuntimeError("object pose is unavailable")

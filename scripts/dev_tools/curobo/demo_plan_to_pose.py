@@ -18,14 +18,23 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import os
 import sys
 import xml.etree.ElementTree as ET
 
 import numpy as np
 import torch
 
-WORKSPACE = Path("/home/light/workspace/arm_vla")
-CUROBO_SOURCE_ROOT = Path("/home/light/workspace/curobo")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+WORKSPACE = Path(
+    os.environ.get("GO2_X5_WORKSPACE", str(PROJECT_ROOT))
+).expanduser().resolve()
+CUROBO_SOURCE_ROOT = Path(
+    os.environ.get(
+        "GO2_X5_CUROBO_SOURCE_ROOT",
+        str(WORKSPACE / "external/curobo"),
+    )
+).expanduser().resolve()
 
 STATE_JSON = Path("/tmp/go2_x5_isaac_state.json")   # curobo 读取当前isaacsim导出的机器人状态，用作规划
 ROBOT_YAML = WORKSPACE / "source/robot/go2_x5/curobo/go2_x5_arm.yml"
@@ -57,6 +66,8 @@ if CUROBO_SOURCE_ROOT.exists():
     sys.path.insert(0, str(CUROBO_SOURCE_ROOT))
 if str(WORKSPACE) not in sys.path:
     sys.path.insert(0, str(WORKSPACE))
+
+from source.manipulation.curobo_paths import load_project_robot_config
 
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
 from curobo.types import JointState, Pose, GoalToolPose
@@ -167,7 +178,7 @@ def create_planner() -> MotionPlanner:
         raise RuntimeError("CUDA不可用,cuRobo Planner无法运行")
     
     cfg = MotionPlannerCfg.create(
-        robot = str(ROBOT_YAML),
+        robot = load_project_robot_config(ROBOT_YAML),
         scene_model = None,
         self_collision_check = True,
         use_cuda_graph = False,

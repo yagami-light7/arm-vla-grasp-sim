@@ -19,8 +19,8 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MAX_PREFLIGHT_GRASP_XY_RADIUS_M = 1.00
-MAX_PREFLIGHT_PREGRASP_RADIUS_3D_M = 1.20
+MAX_PREFLIGHT_GRASP_XY_RADIUS_M = 0.68
+MAX_PREFLIGHT_PREGRASP_RADIUS_3D_M = 0.75
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -67,9 +67,12 @@ class GraspPipelineConfig:
     workspace: Path = PROJECT_ROOT
     curobo_python: str = os.environ.get(
         "GO2_X5_CUROBO_PYTHON",
-        "/data/conda_envs/isaacsim51_3dgs_grasp/bin/python",
+        sys.executable,
     )
-    curobo_source_root: str = os.environ.get("GO2_X5_CUROBO_SOURCE_ROOT", "/home/light/workspace/curobo")
+    curobo_source_root: str = os.environ.get(
+        "GO2_X5_CUROBO_SOURCE_ROOT",
+        str(PROJECT_ROOT / "external/curobo"),
+    )
     planner_host: str = "127.0.0.1"
     planner_port: int = 8765
     planner_timeout_s: float = 30.0
@@ -116,6 +119,9 @@ class GraspPipeline:
 
         Path(task.plan_json).unlink(missing_ok=True)
         task_mode = (task.curobo_task_mode or "grasp").strip().lower()
+        if task_mode == "grasp":
+            # 在启动耗时规划前拦截错误的 nav-to-pick 交接位姿。
+            self._validate_target_workspace(self._read_json(task.target_json))
         if task.use_planner_server and self._try_server(task):
             return self._read_json(task.plan_json)
         return self._run_one_shot_planner(task, task_mode=task_mode or "grasp")
@@ -229,7 +235,7 @@ class GraspPipeline:
 
     @staticmethod
     def _validate_target_workspace(target: dict[str, Any]) -> None:
-        """Reject obviously mismatched nav-to-pick handoffs before invoking cuRobo."""
+        """在调用 cuRobo 前拒绝明显错误的 nav-to-pick 交接位姿。"""
 
         workspace = target.get("diagnostics", {}).get("target_workspace_base", {})
         grasp = workspace.get("grasp", {})
@@ -238,8 +244,11 @@ class GraspPipeline:
         pregrasp_radius = float(pregrasp.get("radius_3d_m", 0.0))
         if grasp_xy > MAX_PREFLIGHT_GRASP_XY_RADIUS_M or pregrasp_radius > MAX_PREFLIGHT_PREGRASP_RADIUS_3D_M:
             raise RuntimeError(
-                "grasp_target_unreachable: navigation base pose is not near the selected object: "
-                f"grasp_xy_radius={grasp_xy:.3f} m, pregrasp_radius_3d={pregrasp_radius:.3f} m"
+                "grasp_target_unreachable: 导航交接位姿超出机械臂工作空间: "
+                f"grasp_xy_radius={grasp_xy:.3f} m "
+                f"(limit={MAX_PREFLIGHT_GRASP_XY_RADIUS_M:.3f} m), "
+                f"pregrasp_radius_3d={pregrasp_radius:.3f} m "
+                f"(limit={MAX_PREFLIGHT_PREGRASP_RADIUS_3D_M:.3f} m)"
             )
 
     @staticmethod

@@ -774,8 +774,7 @@ def _validate_scene_collision(scene_usd: Path, prim_path: str) -> None:
     if mesh_count == 0:
         raise RuntimeError(
             f"Scene collision prim {prim_path} has no mesh geometry. "
-            "Check that external USD payloads are mounted, especially "
-            "/mnt/sage_data/sage3d/single_scene/839920/collision/839920/839920_collision.usd."
+            "请检查 task 的 scene_usd 是否指向当前仓库内的场景，并确认 collision USD payload 可打开。"
         )
 
 

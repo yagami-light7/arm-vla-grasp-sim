@@ -24,6 +24,9 @@ class SegmentedArmExecutorConfig:
     settle_to_segment_start_skip_error_tolerance: float = 0.0
     post_motion_hold_duration: float = 1.50
     post_motion_joint_error_tolerance: float = 0.030
+    place_release_joint_error_tolerance: float = 0.025
+    place_release_joint_velocity_tolerance: float = 0.03
+    place_release_stability_window_duration: float = 0.30
     fail_on_strict_post_motion_timeout: bool = True
     fail_on_strict_post_motion_state_unavailable: bool = False
     strict_post_motion_hold_segments: tuple[str, ...] = (
@@ -35,6 +38,9 @@ class SegmentedArmExecutorConfig:
         "approach_to_place",
         "retreat_place",
         "return_home_after_place",
+    )
+    unskippable_post_motion_hold_segments: tuple[str, ...] = (
+        "approach_to_place",
     )
     pre_close_arm_hold_duration: float = 0.10
     min_close_progress_for_motion: float = 0.05
@@ -70,6 +76,12 @@ class SegmentedArmExecutorConfig:
             raise ValueError("post_motion_hold_duration must be non-negative")
         if self.post_motion_joint_error_tolerance < 0.0:
             raise ValueError("post_motion_joint_error_tolerance must be non-negative")
+        if self.place_release_joint_error_tolerance < 0.0:
+            raise ValueError("place_release_joint_error_tolerance must be non-negative")
+        if self.place_release_joint_velocity_tolerance < 0.0:
+            raise ValueError("place_release_joint_velocity_tolerance must be non-negative")
+        if self.place_release_stability_window_duration <= 0.0:
+            raise ValueError("place_release_stability_window_duration must be positive")
         if self.pre_close_arm_hold_duration < 0.0:
             raise ValueError("pre_close_arm_hold_duration must be non-negative")
         if not 0.0 <= self.min_close_progress_for_motion <= 1.0:
@@ -109,6 +121,9 @@ class SegmentedArmExecutor:
         self._settle_context: dict[tuple[Any, ...], tuple[float, ...]] = {}
         self._gripper_context: dict[tuple[Any, ...], tuple[float, ...]] = {}
         self._gripper_arm_hold_context: dict[tuple[Any, ...], tuple[float, ...]] = {}
+        self._post_motion_hold_position_history: dict[
+            tuple[Any, ...], list[tuple[float, ...]]
+        ] = {}
         self._pending_post_motion_hold_step: _ActionStep | None = None
         self._pending_close_validation: dict[str, Any] | None = None
         self._close_progress_report: dict[str, Any] = {}
@@ -125,6 +140,7 @@ class SegmentedArmExecutor:
         self._settle_context = {}
         self._gripper_context = {}
         self._gripper_arm_hold_context = {}
+        self._post_motion_hold_position_history = {}
         self._pending_post_motion_hold_step = None
         self._pending_close_validation = None
         self._close_progress_report = {}
@@ -192,6 +208,8 @@ class SegmentedArmExecutor:
     ) -> RobotAction:
         if step.segment_type == "gripper":
             return self._materialize_gripper_step(step, state)
+        if step.segment_type == "post_motion_hold":
+            self._record_post_motion_hold_position(state, step)
         if step.segment_type != "settle_to_segment_start":
             return step.action
         metadata = dict(step.action.metadata)
@@ -342,22 +360,39 @@ class SegmentedArmExecutor:
         if step is None or self._failed:
             return
         self._pending_post_motion_hold_step = None
+        self._record_post_motion_hold_position(state, step)
         error = self._post_motion_hold_error(state, step)
-        if error is None:
+        position_tolerance = self._post_motion_position_tolerance(step)
+        velocity_tolerance = self._post_motion_velocity_tolerance(step)
+        stability_report = (
+            self._post_motion_hold_stability(state, step)
+            if velocity_tolerance is not None
+            else {}
+        )
+        velocity = stability_report.get("post_motion_hold_position_derived_velocity")
+        state_available = error is not None and (
+            velocity_tolerance is None or velocity is not None
+        )
+        if not state_available:
             report = {
                 "segment_name": step.segment_name,
                 "post_motion_hold_converged": False,
-                "post_motion_hold_final_error": None,
+                "post_motion_hold_final_error": error,
+                "post_motion_hold_final_velocity": velocity,
                 "post_motion_hold_state_available": False,
-                "post_motion_joint_error_tolerance": (
-                    self.config.post_motion_joint_error_tolerance
-                ),
+                "post_motion_joint_error_tolerance": position_tolerance,
+                "post_motion_joint_velocity_tolerance": velocity_tolerance,
+                **stability_report,
             }
             self._strict_post_motion_wait_reports.append(report)
             self._latest_metadata = {**dict(step.action.metadata), **report}
             if self.config.fail_on_strict_post_motion_state_unavailable:
                 self._failed = True
-                self._failure_reason = "arm_post_motion_state_unavailable"
+                self._failure_reason = (
+                    "arm_place_release_not_stable"
+                    if step.segment_name == "approach_to_place"
+                    else "arm_post_motion_state_unavailable"
+                )
                 self._failure_metadata = {
                     **report,
                     "segment_type": step.segment_type,
@@ -366,17 +401,23 @@ class SegmentedArmExecutor:
             return
         metadata = dict(step.action.metadata)
         metadata["post_motion_hold_final_error"] = error
-        if error <= self.config.post_motion_joint_error_tolerance:
+        metadata["post_motion_hold_final_velocity"] = velocity
+        metadata.update(stability_report)
+        converged = error <= position_tolerance and (
+            velocity_tolerance is None or float(velocity) <= velocity_tolerance
+        )
+        if converged:
             metadata["post_motion_hold_converged"] = True
             self._strict_post_motion_wait_reports.append(
                 {
                     "segment_name": step.segment_name,
                     "post_motion_hold_converged": True,
                     "post_motion_hold_final_error": error,
+                    "post_motion_hold_final_velocity": velocity,
                     "post_motion_hold_state_available": True,
-                    "post_motion_joint_error_tolerance": (
-                        self.config.post_motion_joint_error_tolerance
-                    ),
+                    "post_motion_joint_error_tolerance": position_tolerance,
+                    "post_motion_joint_velocity_tolerance": velocity_tolerance,
+                    **stability_report,
                 }
             )
             self._latest_metadata = metadata
@@ -388,22 +429,30 @@ class SegmentedArmExecutor:
                 "segment_name": step.segment_name,
                 "post_motion_hold_converged": False,
                 "post_motion_hold_final_error": error,
+                "post_motion_hold_final_velocity": velocity,
                 "post_motion_hold_state_available": True,
                 "post_motion_hold_timeout": True,
-                "post_motion_joint_error_tolerance": (
-                    self.config.post_motion_joint_error_tolerance
-                ),
+                "post_motion_joint_error_tolerance": position_tolerance,
+                "post_motion_joint_velocity_tolerance": velocity_tolerance,
+                **stability_report,
             }
         )
         self._latest_metadata = metadata
         if self.config.fail_on_strict_post_motion_timeout:
             self._failed = True
-            self._failure_reason = "arm_post_motion_convergence_timeout"
+            self._failure_reason = (
+                "arm_place_release_not_stable"
+                if step.segment_name == "approach_to_place"
+                else "arm_post_motion_convergence_timeout"
+            )
             self._failure_metadata = {
                 "segment_name": step.segment_name,
                 "segment_type": step.segment_type,
                 "final_error": error,
-                "tolerance": self.config.post_motion_joint_error_tolerance,
+                "final_velocity": velocity,
+                "tolerance": position_tolerance,
+                "velocity_tolerance": velocity_tolerance,
+                **stability_report,
                 "timeout_s": self.config.post_motion_hold_duration,
                 "operation": self.plan.operation if self.plan is not None else None,
             }
@@ -530,8 +579,11 @@ class SegmentedArmExecutor:
     def _skip_converged_post_motion_holds(self, state: SimulationState) -> None:
         while self._tick_index < len(self._steps):
             step = self._steps[self._tick_index]
+            if step.segment_name in self.config.unskippable_post_motion_hold_segments:
+                return
             error = self._post_motion_hold_error(state, step)
-            if error is None or error > self.config.post_motion_joint_error_tolerance:
+            position_tolerance = self._post_motion_position_tolerance(step)
+            if error is None or error > position_tolerance:
                 return
             metadata = dict(step.action.metadata)
             metadata.update(
@@ -548,7 +600,7 @@ class SegmentedArmExecutor:
                     "post_motion_hold_state_available": True,
                     "post_motion_hold_skipped_on_tolerance": True,
                     "post_motion_joint_error_tolerance": (
-                        self.config.post_motion_joint_error_tolerance
+                        position_tolerance
                     ),
                 }
             )
@@ -580,6 +632,132 @@ class SegmentedArmExecutor:
             actual_positions,
             tuple(float(value) for value in step.action.arm_joint_positions),
         )
+
+    def _post_motion_hold_velocity(
+        self,
+        state: SimulationState,
+        step: _ActionStep,
+    ) -> float | None:
+        if step.segment_type != "post_motion_hold":
+            return None
+        target_joint_names = tuple(
+            str(name) for name in step.action.metadata.get("arm_joint_names", ())
+        )
+        if not target_joint_names:
+            return None
+        velocities, _mapping_report = _actual_arm_velocities(state, target_joint_names)
+        if velocities is None:
+            return None
+        return max((abs(value) for value in velocities), default=0.0)
+
+    def _record_post_motion_hold_position(
+        self,
+        state: SimulationState,
+        step: _ActionStep,
+    ) -> None:
+        """记录保持窗口内的真实关节位置，避开 PhysX 接触态速度噪声。"""
+
+        target_joint_names = tuple(
+            str(name) for name in step.action.metadata.get("arm_joint_names", ())
+        )
+        positions, _mapping_report = _actual_arm_positions(state, target_joint_names)
+        if positions is None:
+            return
+        key = self._post_motion_hold_history_key(step)
+        history = self._post_motion_hold_position_history.setdefault(key, [])
+        history.append(positions)
+        max_samples = max(
+            2,
+            int(
+                math.ceil(
+                    self.config.place_release_stability_window_duration
+                    / self.config.sim_dt
+                )
+            )
+            + 1,
+        )
+        if len(history) > max_samples:
+            del history[:-max_samples]
+
+    def _post_motion_hold_stability(
+        self,
+        state: SimulationState,
+        step: _ActionStep,
+    ) -> dict[str, Any]:
+        """用位置窗口估计真实运动速度，并保留原始速度作为诊断值。"""
+
+        key = self._post_motion_hold_history_key(step)
+        history = self._post_motion_hold_position_history.get(key, [])
+        raw_velocity = self._post_motion_hold_velocity(state, step)
+        if len(history) < 2:
+            return {
+                "post_motion_hold_velocity_source": "joint_state_velocity_fallback",
+                "post_motion_hold_reported_state_velocity": raw_velocity,
+                "post_motion_hold_position_derived_velocity": raw_velocity,
+                "post_motion_hold_position_drift": None,
+                "post_motion_hold_stability_samples": len(history),
+                "post_motion_hold_stability_window_s": 0.0,
+                "post_motion_hold_required_stability_window_s": (
+                    self.config.place_release_stability_window_duration
+                ),
+                "post_motion_hold_stability_window_complete": False,
+            }
+        sample_count = len(history)
+        elapsed = (sample_count - 1) * self.config.sim_dt
+        drift = max(
+            (
+                max(sample[joint_index] for sample in history)
+                - min(sample[joint_index] for sample in history)
+                for joint_index in range(len(history[0]))
+            ),
+            default=0.0,
+        )
+        peak_step_delta = max(
+            (
+                abs(current[joint_index] - previous[joint_index])
+                for previous, current in zip(history, history[1:])
+                for joint_index in range(len(history[0]))
+            ),
+            default=0.0,
+        )
+        window_complete = (
+            elapsed + self.config.sim_dt * 1.0e-6
+            >= self.config.place_release_stability_window_duration
+        )
+        position_derived_velocity = (
+            peak_step_delta / self.config.sim_dt if window_complete else None
+        )
+        return {
+            "post_motion_hold_velocity_source": "joint_position_window_peak_delta",
+            "post_motion_hold_reported_state_velocity": raw_velocity,
+            "post_motion_hold_position_derived_velocity": position_derived_velocity,
+            "post_motion_hold_position_drift": drift,
+            "post_motion_hold_peak_step_delta": peak_step_delta,
+            "post_motion_hold_stability_samples": sample_count,
+            "post_motion_hold_stability_window_s": elapsed,
+            "post_motion_hold_required_stability_window_s": (
+                self.config.place_release_stability_window_duration
+            ),
+            "post_motion_hold_stability_window_complete": window_complete,
+        }
+
+    def _post_motion_hold_history_key(self, step: _ActionStep) -> tuple[Any, ...]:
+        metadata = step.action.metadata
+        return (
+            metadata.get("operation"),
+            metadata.get("segment_index"),
+            step.segment_name,
+        )
+
+    def _post_motion_position_tolerance(self, step: _ActionStep) -> float:
+        if step.segment_name == "approach_to_place":
+            return self.config.place_release_joint_error_tolerance
+        return self.config.post_motion_joint_error_tolerance
+
+    def _post_motion_velocity_tolerance(self, step: _ActionStep) -> float | None:
+        if step.segment_name == "approach_to_place":
+            return self.config.place_release_joint_velocity_tolerance
+        return None
 
     def _skip_remaining_matching_hold(self, step: _ActionStep) -> None:
         segment_name = step.segment_name
@@ -690,6 +868,21 @@ class SegmentedArmExecutor:
 
         if str(plan.operation).lower() != "place":
             return None, ()
+        verified_hold = plan.metadata.get("place_closed_gripper_hold")
+        if isinstance(verified_hold, dict):
+            joint_names = tuple(
+                str(name) for name in verified_hold.get("gripper_joint_names", ())
+            )
+            positions = tuple(
+                float(value)
+                for value in verified_hold.get("gripper_joint_positions", ())
+            )
+            if (
+                joint_names
+                and len(positions) == len(joint_names)
+                and all(math.isfinite(value) for value in positions)
+            ):
+                return positions, joint_names
         for segment in segments:
             if not isinstance(segment, dict) or str(segment.get("type")) != "gripper":
                 continue
@@ -739,6 +932,12 @@ class SegmentedArmExecutor:
                 self.config.place_move_to_pre_place_motion_time_scale,
             )
         if name == "retreat_place":
+            motion_time_scale = max(
+                motion_time_scale,
+                self.config.place_retreat_motion_time_scale,
+            )
+        if name == "return_home_after_place":
+            # 手写回位段至少使用 place retreat 的保守倍率，不能被全局 2 倍速压缩。
             motion_time_scale = max(
                 motion_time_scale,
                 self.config.place_retreat_motion_time_scale,
@@ -1105,7 +1304,7 @@ class SegmentedArmExecutor:
                 )
             )
         if is_open and last_arm_target is not None:
-            settle_steps = max(
+            configured_settle_steps = max(
                 0,
                 int(
                     math.ceil(
@@ -1113,6 +1312,11 @@ class SegmentedArmExecutor:
                     )
                 ),
             )
+            task_settle_steps = max(
+                0,
+                int(plan.metadata.get("place_release_settle_steps", 0) or 0),
+            )
+            settle_steps = max(configured_settle_steps, task_settle_steps)
             for step_index in range(settle_steps):
                 steps.append(
                     _ActionStep(
@@ -1133,8 +1337,10 @@ class SegmentedArmExecutor:
                                 "gripper_joint_names": joint_names,
                                 "gripper_joint_positions": target_position,
                                 "post_open_release_settle_duration_s": (
-                                    self.config.post_open_release_settle_duration
+                                    settle_steps * self.config.sim_dt
                                 ),
+                                "configured_release_settle_steps": configured_settle_steps,
+                                "task_release_settle_steps": task_settle_steps,
                                 # baseline 在退臂前保持释放位姿，避免尚未脱离的苹果被再次抬起。
                                 "baseline_release_settle": True,
                                 "world_step_owned_by_pipeline": True,
@@ -1277,6 +1483,38 @@ def _actual_arm_positions(
             "joint_position_count": len(state.joint_positions),
         }
     return tuple(float(state.joint_positions[index]) for index in indices), {
+        "available": True,
+        "joint_indices": indices,
+    }
+
+
+def _actual_arm_velocities(
+    state: SimulationState,
+    joint_names: tuple[str, ...],
+) -> tuple[tuple[float, ...] | None, dict[str, Any]]:
+    runtime_joint_names = tuple(str(name) for name in state.metadata.get("joint_names", ()))
+    if not runtime_joint_names or not state.joint_velocities:
+        return None, {
+            "available": False,
+            "reason": "joint_names_or_velocities_unavailable",
+        }
+    index_by_name = {name: index for index, name in enumerate(runtime_joint_names)}
+    missing = [name for name in joint_names if name not in index_by_name]
+    if missing:
+        return None, {
+            "available": False,
+            "reason": "joint_names_missing",
+            "missing_joint_names": missing,
+        }
+    indices = tuple(index_by_name[name] for name in joint_names)
+    if any(index >= len(state.joint_velocities) for index in indices):
+        return None, {
+            "available": False,
+            "reason": "joint_velocity_index_out_of_range",
+            "joint_indices": indices,
+            "joint_velocity_count": len(state.joint_velocities),
+        }
+    return tuple(float(state.joint_velocities[index]) for index in indices), {
         "available": True,
         "joint_indices": indices,
     }

@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from source.interfaces import EpisodeSpec, RobotAction, SimulationState
 from source.simulation.action_applier import NamedJointActionApplier
 

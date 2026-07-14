@@ -27,6 +27,7 @@ _REAL_MODES = {
     "simulation_smoke": "--simulation-smoke",
     "navigation_smoke": "--navigation-smoke",
     "navigation_carry_smoke": "--navigation-carry-smoke",
+    "stair_locomotion_smoke": "--stair-locomotion-smoke",
     "manipulation_apply_smoke": "--manipulation-apply-smoke",
 }
 
@@ -212,6 +213,11 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("auto",),
         default="auto",
         help="转发给单 episode pipeline：overview camera 自动发现/切换模式。",
+    )
+    parser.add_argument(
+        "--overview-camera-schedule",
+        default=None,
+        help="转发给单 episode pipeline：headless Camera0-8 切换规则 JSON。",
     )
     parser.add_argument(
         "--overview-capture-backend",
@@ -709,6 +715,13 @@ def _build_child_command(
         command.extend(["--video-width", str(int(args.video_width))])
         command.extend(["--video-height", str(int(args.video_height))])
         command.extend(["--overview-camera-mode", str(args.overview_camera_mode)])
+        if args.overview_camera_schedule:
+            command.extend(
+                [
+                    "--overview-camera-schedule",
+                    str(_project_path(args.overview_camera_schedule)),
+                ]
+            )
         command.extend(["--overview-capture-backend", str(args.overview_capture_backend)])
         command.extend(
             [

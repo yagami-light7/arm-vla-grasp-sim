@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import traceback
 from typing import Any
 
 from source.interfaces import (
@@ -21,6 +22,12 @@ from source.recording.overview_video_recorder import OverviewVideoRecorder
 
 from .config import FullPhysicsConfig
 from .state_machine import FullPhysicsStateMachine
+
+
+def _should_auto_switch_overview_camera(config: FullPhysicsConfig) -> bool:
+    """headless 与楼梯专用模式按调度自动切换 overview 相机。"""
+
+    return bool(config.headless or config.stair_locomotion_smoke)
 
 
 class FullPhysicsPipeline:
@@ -45,6 +52,7 @@ class FullPhysicsPipeline:
         self.episode_spec = episode_spec
         self.episode_seed = episode_seed
         self.simulation = simulation
+        self.nav_planner = nav_planner
         self.recorder = recorder
         self.machine = FullPhysicsStateMachine(
             config=config,
@@ -69,11 +77,19 @@ class FullPhysicsPipeline:
                 settings=self.config.video,
                 episode_dir=self.recorder.output_dir,
                 episode_id=self.episode_spec.episode_id,
+                auto_switch_camera=_should_auto_switch_overview_camera(self.config),
+                save_overview_images=bool(
+                    self.config.recording.enabled
+                    and self.config.recording.save_raw_images
+                ),
+                overview_image_fps=float(self.config.recording.dataset_fps),
+                overview_jpeg_quality=int(self.config.recording.jpeg_quality),
             )
             if self.config.video.enabled
             else None
         )
         video_closed = False
+        current_operation = "pipeline_start"
 
         def _close_video(status: str) -> dict[str, Any] | None:
             nonlocal video_closed
@@ -86,25 +102,35 @@ class FullPhysicsPipeline:
         self.recorder.mark_training_eligible(False, reason="episode_not_verified_yet")
         try:
             if video_recorder is not None:
+                current_operation = "video_start_episode"
                 video_recorder.start_episode()
             while True:
+                current_operation = "simulation_read_before_tick"
                 observation = self.simulation.read()
+                current_operation = "state_machine_tick"
                 decision = self.machine.tick(observation)
+                current_operation = "simulation_apply"
                 self.simulation.apply(decision.action)
+                current_operation = "record_pipeline_events"
                 for event in decision.events:
                     self.recorder.record_event(event.to_dict())
 
                 skip_physics_step = bool(decision.action.metadata.get("skip_physics_step"))
                 if not skip_physics_step:
+                    current_operation = "simulation_step"
                     self.simulation.step(render=self.config.render)
+                current_operation = "simulation_read_after_step"
                 post_step = self.simulation.read()
                 if video_recorder is not None and not skip_physics_step:
+                    current_operation = "video_add_frame"
                     video_recorder.add_frame(
                         state=decision.state.value,
                         timestamp=post_step.timestamp,
                         step_index=duration_steps,
                         camera_images=post_step.camera_images,
+                        robot_root_pose=post_step.robot_root_pose,
                     )
+                current_operation = "record_step"
                 self.recorder.record_step(
                     StepRecord(
                         step_index=duration_steps,
@@ -129,9 +155,12 @@ class FullPhysicsPipeline:
                     break
 
             if self.config.keep_window_open:
+                current_operation = "simulation_pause"
                 self.simulation.pause()
                 if hasattr(self.simulation, "refresh_viewport"):
+                    current_operation = "simulation_refresh_viewport"
                     self.simulation.refresh_viewport(reason="keep_window_open")
+            current_operation = "simulation_read_final"
             final_state = self.simulation.read()
             summary = self._build_summary(
                 started_at=started_at,
@@ -145,12 +174,109 @@ class FullPhysicsPipeline:
             self.recorder.close(summary)
             return summary
         except BaseException as exc:
-            _close_video("interrupted" if isinstance(exc, KeyboardInterrupt) else "failed")
+            interrupted = isinstance(exc, KeyboardInterrupt)
+            video_summary = _close_video("interrupted" if interrupted else "failed")
+            failure_reason = "pipeline_interrupted" if interrupted else "pipeline_runtime_exception"
+            exception_report = {
+                "operation": current_operation,
+                "pipeline_state": self.machine.state.value,
+                "exception_type": type(exc).__name__,
+                "message": str(exc),
+                "traceback": "".join(
+                    traceback.format_exception(type(exc), exc, exc.__traceback__)
+                ),
+            }
+            try:
+                self.recorder.record_event(
+                    {
+                        "name": failure_reason,
+                        "pipeline_state": self.machine.state.value,
+                        "step_index": duration_steps,
+                        "timestamp": time.time(),
+                        "metadata": exception_report,
+                    }
+                )
+                failure_summary = self._build_runtime_failure_summary(
+                    started_at=started_at,
+                    duration_steps=duration_steps,
+                    failure_reason=failure_reason,
+                    exception_report=exception_report,
+                    video_summary=video_summary,
+                )
+                self.recorder.close(failure_summary)
+            except Exception as recorder_exc:
+                print(
+                    "[full-physics] 写入运行时失败报告时再次失败："
+                    f"{type(recorder_exc).__name__}: {recorder_exc}",
+                    flush=True,
+                )
+            print(
+                "[full-physics] pipeline 未完成："
+                f"state={self.machine.state.value} operation={current_operation} "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
             raise
         finally:
             _close_video("closed_without_summary")
+            close_nav_planner = getattr(self.nav_planner, "close", None)
+            if callable(close_nav_planner):
+                close_nav_planner()
             if not self.config.keep_window_open:
                 self.simulation.close()
+
+    def _build_runtime_failure_summary(
+        self,
+        *,
+        started_at: float,
+        duration_steps: int,
+        failure_reason: str,
+        exception_report: dict[str, Any],
+        video_summary: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """构造异常退出摘要，避免真实仿真只留下过期的 summary。"""
+
+        machine_fields = self.machine.summary_fields()
+        if self.config.dry_run:
+            execution_mode = "dry_run"
+        elif self.config.simulation_smoke:
+            execution_mode = "simulation_smoke"
+        elif self.config.stair_locomotion_smoke:
+            execution_mode = "stair_locomotion_smoke"
+        elif self.config.navigation_smoke:
+            execution_mode = "navigation_smoke"
+        elif self.config.navigation_carry_smoke:
+            execution_mode = "navigation_carry_smoke"
+        elif self.config.pick_smoke:
+            execution_mode = "pick_smoke"
+        elif self.config.manipulation_smoke:
+            execution_mode = "manipulation_smoke"
+        elif self.config.manipulation_apply_smoke:
+            execution_mode = "manipulation_apply_smoke"
+        else:
+            execution_mode = "full_physics"
+        summary = {
+            "episode_id": self.episode_spec.episode_id,
+            "task_id": self.episode_spec.task_id,
+            "seed": self.episode_seed,
+            "success": False,
+            "pure_physics_success": False,
+            "stable_physics_success": False,
+            "physical_navigation_success": False,
+            "physical_manipulation_success": False,
+            "execution_mode": execution_mode,
+            "failure_reason": failure_reason,
+            "duration_steps": duration_steps,
+            "duration_seconds": time.time() - started_at,
+            "runtime_exception": exception_report,
+            **machine_fields,
+        }
+        # 运行时异常优先于状态机尚未设置的 failure_reason。
+        summary["success"] = False
+        summary["failure_reason"] = failure_reason
+        if video_summary is not None:
+            summary["overview_video"] = video_summary
+        return summary
 
     def _build_summary(
         self,
@@ -166,6 +292,8 @@ class FullPhysicsPipeline:
         simulation_smoke = bool(self.config.simulation_smoke)
         navigation_smoke = bool(self.config.navigation_smoke)
         navigation_carry_smoke = bool(self.config.navigation_carry_smoke)
+        stair_locomotion_smoke = bool(self.config.stair_locomotion_smoke)
+        pick_smoke = bool(self.config.pick_smoke)
         manipulation_smoke = bool(self.config.manipulation_smoke)
         manipulation_apply_smoke = bool(self.config.manipulation_apply_smoke)
         full_physics = bool(self.config.full_physics)
@@ -193,6 +321,8 @@ class FullPhysicsPipeline:
             and not simulation_smoke
             and not navigation_smoke
             and not navigation_carry_smoke
+            and not stair_locomotion_smoke
+            and not pick_smoke
             and not manipulation_smoke
             and not manipulation_apply_smoke
             and provenance_verified
@@ -253,6 +383,8 @@ class FullPhysicsPipeline:
                 "manipulation_support_joint_lock_apply_count",
                 "last_manipulation_support_joint_lock_report",
                 "object_reset_for_navigation_report",
+                "object_settle_begin_report",
+                "object_settle_final_report",
                 "object_prepare_for_pick_report",
                 "terminal_hold_report",
             )
@@ -264,12 +396,18 @@ class FullPhysicsPipeline:
         elif simulation_smoke:
             execution_mode = "simulation_smoke"
             success_semantics = "stage_build_and_reset_only"
+        elif stair_locomotion_smoke:
+            execution_mode = "stair_locomotion_smoke"
+            success_semantics = "pure_physics_stair_locomotion_without_dwa_or_float"
         elif navigation_smoke:
             execution_mode = "navigation_smoke"
             success_semantics = "physical_nav_to_pick_only"
         elif navigation_carry_smoke:
             execution_mode = "navigation_carry_smoke"
             success_semantics = "physical_nav_to_place_with_arm_gripper_hold"
+        elif pick_smoke:
+            execution_mode = "pick_smoke"
+            success_semantics = "physical_nav_to_pick_and_pick_only"
         elif manipulation_smoke:
             execution_mode = "manipulation_smoke"
             success_semantics = "segmented_manipulation_contract_only"
@@ -290,8 +428,15 @@ class FullPhysicsPipeline:
             execution_mode = "full_physics"
             success_semantics = "physical_execution"
         navigation_acceptance = None
-        if navigation_smoke or navigation_carry_smoke or full_physics:
+        if (
+            navigation_smoke
+            or navigation_carry_smoke
+            or stair_locomotion_smoke
+            or pick_smoke
+            or full_physics
+        ):
             navigation_acceptance = {
+                "global_planner": self.config.navigation.global_planner,
                 "mode": (
                     "xy_yaw_stable"
                     if self.config.navigation.require_yaw_alignment
@@ -299,6 +444,7 @@ class FullPhysicsPipeline:
                     else "xy_only"
                 ),
                 "position_tolerance": self.config.navigation.final_position_tolerance,
+                "goal_z_tolerance": self.config.navigation.goal_z_tolerance,
                 "yaw_alignment_required": self.config.navigation.require_yaw_alignment,
                 "base_stability_required": self.config.navigation.require_stable_base,
                 "yaw_tolerance": self.config.navigation.final_yaw_tolerance,
@@ -364,16 +510,25 @@ class FullPhysicsPipeline:
             "stable_physics_success": stable_physics_success,
             "physical_navigation_success": bool(
                 success
-                and (navigation_smoke or navigation_carry_smoke or full_physics)
+                and (
+                    navigation_smoke
+                    or navigation_carry_smoke
+                    or stair_locomotion_smoke
+                    or pick_smoke
+                    or full_physics
+                )
                 and provenance_verified
+            ),
+            "low_level_stair_locomotion_success": bool(
+                success and stair_locomotion_smoke and provenance_verified
             ),
             "carry_control_success": bool(
                 success and (navigation_carry_smoke or full_physics)
             ),
             "object_carry_verified": bool(success and full_physics),
-            "physical_manipulation_success": bool(success and full_physics),
+            "physical_manipulation_success": bool(success and (pick_smoke or full_physics)),
             "manipulation_apply_success": bool(
-                success and (manipulation_apply_smoke or full_physics)
+                success and (manipulation_apply_smoke or pick_smoke or full_physics)
             ),
             "manipulation_base_lock_requested": bool(
                 self.config.manipulation.lock_base_during_manipulation

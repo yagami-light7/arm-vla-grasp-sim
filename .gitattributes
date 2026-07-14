@@ -1,2 +1,8 @@
-# Large scene assets must use Git LFS. GitHub rejects regular Git blobs >100 MB.
+# 多楼层场景、PCT 地图和 locomotion checkpoint 使用 Git LFS 管理。
 source/scene/839920_assets/** filter=lfs diff=lfs merge=lfs -text
+source/scene/multifloor/usda/multifloor.usda filter=lfs diff=lfs merge=lfs -text
+source/scene/multifloor/usd/multifloor_collision.usd filter=lfs diff=lfs merge=lfs -text
+source/scene/multifloor/usdz/multifloor.usdz filter=lfs diff=lfs merge=lfs -text
+source/scene/multifloor/mutifloor.pickle filter=lfs diff=lfs merge=lfs -text
+source/scene/multifloor/mutifloor_ply_walkable.npy filter=lfs diff=lfs merge=lfs -text
+checkpoints/go2_x5/pct_multifloor/model_26000.pt filter=lfs diff=lfs merge=lfs -text

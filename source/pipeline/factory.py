@@ -36,11 +36,29 @@ def create_full_physics_pipeline(
         raise ValueError("full-physics 模式禁止使用离线 pick/place plan JSON。")
     # 完整 pipeline 在 pick 后必须先回到抓取起始姿态，才能释放 root/support lock
     # 并进入 carry nav。这里使用规划 motion 的反向轨迹，不生成无避障 all-zero 直连。
+    pct_multifloor = config.locomotion.policy_profile == "pct_multifloor"
     full_physics_config = replace(
         config,
+        limits=(
+            replace(
+                config.limits,
+                navigation=max(config.limits.navigation, 12000),
+                episode=max(config.limits.episode, 24000),
+            )
+            if pct_multifloor
+            else config.limits
+        ),
         manipulation=replace(
             config.manipulation,
             return_home_after_pick=True,
+            settle_object_before_navigation=(
+                config.manipulation.settle_object_before_navigation
+                or pct_multifloor
+            ),
+            settle_base_before_navigation=(
+                config.manipulation.settle_base_before_navigation
+                or pct_multifloor
+            ),
         ),
     )
     manipulation_planner = CurrentStateCuroboPlanner(
@@ -66,6 +84,17 @@ def create_full_physics_pipeline(
         episode_spec=episode_spec,
     )
     gripper = BinaryGripperController()
+    post_motion_hold_duration = (
+        full_physics_config.manipulation.arm_post_motion_hold_duration_s
+    )
+    post_motion_joint_error_tolerance = (
+        full_physics_config.manipulation.arm_post_motion_joint_error_tolerance
+    )
+    if full_physics_config.locomotion.policy_profile == "pct_multifloor":
+        # DogOnly 多楼层策略不直接暴露机械臂 action 槽位，真实跟踪会通过
+        # 独立 position target 收敛；这里仅放宽 PCT profile 的终端收敛判定。
+        post_motion_hold_duration = max(post_motion_hold_duration, 1.00)
+        post_motion_joint_error_tolerance = max(post_motion_joint_error_tolerance, 0.065)
     return FullPhysicsPipeline(
         config=full_physics_config,
         episode_spec=episode_spec,
@@ -96,10 +125,17 @@ def create_full_physics_pipeline(
                 # 相邻切片来自同一条 baseline 轨迹；实际已到切分点时跳过重复 settle，
                 # 只有 tracking 落后时才由严格 post-motion hold 等待到位。
                 settle_to_segment_start_skip_error_tolerance=0.005,
-                post_motion_hold_duration=(
-                    full_physics_config.manipulation.arm_post_motion_hold_duration_s
+                post_motion_hold_duration=post_motion_hold_duration,
+                post_motion_joint_error_tolerance=post_motion_joint_error_tolerance,
+                place_release_joint_error_tolerance=(
+                    full_physics_config.manipulation.place_release_joint_error_tolerance
                 ),
-                post_motion_joint_error_tolerance=0.030,
+                place_release_joint_velocity_tolerance=(
+                    full_physics_config.manipulation.place_release_joint_velocity_tolerance
+                ),
+                place_release_stability_window_duration=(
+                    full_physics_config.manipulation.place_release_stability_window_duration_s
+                ),
                 fail_on_strict_post_motion_state_unavailable=True,
                 require_close_progress_for_motion=True,
                 post_open_release_settle_duration=(

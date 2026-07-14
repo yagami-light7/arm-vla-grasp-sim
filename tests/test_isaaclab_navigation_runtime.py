@@ -22,6 +22,8 @@ from source.simulation.isaaclab_runtime import (
     _dedupe_root_paths,
     _path_is_excluded_by_roots,
     _prim_keyword_match_text,
+    _retarget_height_scanners,
+    _resolve_rigid_body_prim_path,
 )
 from source.simulation.collision_patch import (
     gripper_collision_patch_report,
@@ -69,34 +71,48 @@ class FakeRuntime:
 class FakeAdapter:
     def __init__(self):
         self.arm_joint_ids = (0, 1, 2, 3, 4, 5)
+        self.arm_action_indices_for_report = [12, 13, 14, 15, 16, 17]
+        self.arm_action_term_available = True
         self.base_commands: list[tuple[float, float, float]] = []
         self.arm_targets: list[tuple[float, ...]] = []
+        self.arm_velocity_hold_flags: list[bool] = []
         self.arm_override_flags: list[bool] = []
         self.gripper_targets: list[tuple[float, ...]] = []
         self.base_pose_lock_flags: list[bool] = []
+        self.base_pose_lock_targets: list[tuple[float, float, float, float] | None] = []
         self.support_joint_lock_flags: list[bool] = []
+        self.support_joint_lock_dog_targets: list[tuple[float, ...] | None] = []
+        self.navigation_joint_pose_lock_flags: list[bool] = []
+        self.navigation_joint_pose_lock_arm_targets: list[tuple[float, ...] | None] = []
+        self.navigation_joint_pose_lock_dog_targets: list[tuple[float, ...] | None] = []
         self.base_pose_lock_apply_count = 0
         self.support_joint_lock_apply_count = 0
+        self.navigation_joint_pose_lock_apply_count = 0
         self.arm_position_target_apply_count = 0
         self.gripper_position_target_apply_count = 0
+        self.policy_warmup_reset_count = 0
         self.refresh_flags: list[bool] = []
         self.policy_action = FakePolicyAction()
 
     def apply_base_command(self, vx: float, vy: float, wz: float) -> None:
         self.base_commands.append((float(vx), float(vy), float(wz)))
 
+    def reset_policy_warmup(self) -> None:
+        self.policy_warmup_reset_count += 1
+
     def set_gripper_joint_target(self, target) -> None:
         self.gripper_targets.append(tuple(float(value) for value in target))
 
-    def set_arm_joint_target(self, target) -> None:
+    def set_arm_joint_target(self, target, *, hold_velocity: bool = False) -> None:
         self.arm_targets.append(tuple(float(value) for value in target))
+        self.arm_velocity_hold_flags.append(bool(hold_velocity))
 
     def set_direct_arm_action_override(self, enabled: bool = True) -> dict:
         self.arm_override_flags.append(bool(enabled))
         return {
             "enabled": bool(enabled),
-            "action_term_available": True,
-            "arm_action_indices": [12, 13, 14, 15, 16, 17],
+            "action_term_available": self.arm_action_term_available,
+            "arm_action_indices": list(self.arm_action_indices_for_report),
             "arm_joint_names": [
                 "arm_joint1",
                 "arm_joint2",
@@ -107,13 +123,20 @@ class FakeAdapter:
             ],
         }
 
-    def set_base_pose_lock(self, enabled: bool = True, pose_xyyaw=None) -> dict:
+    def set_base_pose_lock(self, enabled: bool = True, pose_xyyaw=None, pose_xyzyaw=None) -> dict:
         del pose_xyyaw
         self.base_pose_lock_flags.append(bool(enabled))
+        target = (
+            None
+            if pose_xyzyaw is None
+            else tuple(float(value) for value in pose_xyzyaw)
+        )
+        self.base_pose_lock_targets.append(target)
+        pose_xyzyaw_report = list(target) if target is not None else [1.0, 2.0, 0.35, 0.5]
         return {
             "enabled": bool(enabled),
-            "pose_xyzyaw": [1.0, 2.0, 0.35, 0.5] if enabled else None,
-            "pose_xyyaw": [1.0, 2.0, 0.5] if enabled else None,
+            "pose_xyzyaw": pose_xyzyaw_report if enabled else None,
+            "pose_xyyaw": [pose_xyzyaw_report[0], pose_xyzyaw_report[1], pose_xyzyaw_report[3]] if enabled else None,
         }
 
     def apply_base_pose_lock(self) -> dict:
@@ -124,13 +147,27 @@ class FakeAdapter:
             "uses_direct_root_state": True,
         }
 
-    def set_support_joint_lock(self, enabled: bool = True) -> dict:
+    def set_support_joint_lock(
+        self,
+        enabled: bool = True,
+        *,
+        dog_joint_target=None,
+        dog_joint_names=None,
+    ) -> dict:
+        del dog_joint_names
         self.support_joint_lock_flags.append(bool(enabled))
+        target = (
+            None
+            if dog_joint_target is None
+            else tuple(float(value) for value in dog_joint_target)
+        )
+        self.support_joint_lock_dog_targets.append(target)
         return {
             "enabled": bool(enabled),
             "joint_names": [f"dog_joint{index}" for index in range(12)] if enabled else [],
             "joint_ids": list(range(12)) if enabled else [],
             "action_indices": list(range(12)),
+            "target_positions": list(target or []) if enabled else [],
         }
 
     def apply_support_joint_lock(self) -> dict:
@@ -142,6 +179,48 @@ class FakeAdapter:
             "action_indices": list(range(12)),
             "uses_direct_joint_state": False,
             "lock_mode": "position_velocity_target_only",
+        }
+
+    def set_navigation_joint_pose_lock(
+        self,
+        enabled: bool = True,
+        *,
+        arm_joint_target=None,
+        dog_joint_target=None,
+        dog_joint_names=None,
+    ) -> dict:
+        del dog_joint_names
+        self.navigation_joint_pose_lock_flags.append(bool(enabled))
+        target = (
+            None
+            if arm_joint_target is None
+            else tuple(float(value) for value in arm_joint_target)
+        )
+        dog_target = (
+            None
+            if dog_joint_target is None
+            else tuple(float(value) for value in dog_joint_target)
+        )
+        self.navigation_joint_pose_lock_arm_targets.append(target)
+        self.navigation_joint_pose_lock_dog_targets.append(dog_target)
+        return {
+            "enabled": bool(enabled),
+            "joint_names": [f"joint{index}" for index in range(20)] if enabled else [],
+            "joint_ids": list(range(20)) if enabled else [],
+            "target_positions": [0.0] * 20 if enabled else [],
+            "uses_direct_joint_state": bool(enabled),
+            "lock_mode": "stair_float_full_body_pose" if enabled else None,
+        }
+
+    def apply_navigation_joint_pose_lock(self) -> dict:
+        self.navigation_joint_pose_lock_apply_count += 1
+        return {
+            "applied": True,
+            "joint_names": [f"joint{index}" for index in range(20)],
+            "joint_ids": list(range(20)),
+            "target_positions": [0.0] * 20,
+            "uses_direct_joint_state": True,
+            "lock_mode": "stair_float_full_body_pose",
         }
 
     def apply_arm_joint_target(self) -> dict:
@@ -205,6 +284,9 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         self.assertEqual(config.apple_collision_contact_offset, 0.001)
         self.assertEqual(config.apple_collision_rest_offset, 0.0)
         self.assertTrue(config.hide_object_collision_visual)
+        self.assertEqual(config.standing_command_threshold, 0.0)
+        self.assertEqual(config.policy_action_warmup_steps, 0)
+        self.assertFalse(config.show_velocity_command_debug)
         self.assertEqual(config.object_collision_visual_root_path, "/World")
         self.assertEqual(
             config.object_collision_visual_hide_keywords,
@@ -472,8 +554,61 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
     def test_runtime_defaults_to_current_scene_camera(self) -> None:
         config = IsaacLabNavigationRuntimeConfig()
 
-        self.assertEqual(config.viewport_camera_prim_path, "/World/Camera1")
+        self.assertEqual(config.viewport_camera_prim_path, "/World/Camera0")
         self.assertTrue(config.hide_navigation_collision_visual)
+        self.assertEqual(config.scene_light_mode, "camera")
+        self.assertGreater(config.camera_light_intensity, 0.0)
+
+    def test_height_scanners_follow_runtime_navigation_terrain(self) -> None:
+        scanner = type("ScannerCfg", (), {"mesh_prim_paths": ["/World/ground"]})()
+        scanner_base = type("ScannerCfg", (), {"mesh_prim_paths": ["/World/ground"]})()
+        scene_cfg = type(
+            "SceneCfg",
+            (),
+            {
+                "height_scanner": scanner,
+                "height_scanner_base": scanner_base,
+            },
+        )()
+
+        updated = _retarget_height_scanners(scene_cfg, "/World/nav_collision")
+
+        self.assertEqual(updated, ("height_scanner", "height_scanner_base"))
+        self.assertEqual(scanner.mesh_prim_paths, ["/World/nav_collision"])
+        self.assertEqual(scanner_base.mesh_prim_paths, ["/World/nav_collision"])
+
+    def test_height_scanner_retarget_skips_disabled_sensor(self) -> None:
+        scene_cfg = type(
+            "SceneCfg",
+            (),
+            {
+                "height_scanner": None,
+                "height_scanner_base": None,
+            },
+        )()
+
+        updated = _retarget_height_scanners(scene_cfg, "/World/nav_collision")
+
+        self.assertEqual(updated, ())
+
+    def test_object_reader_resolves_inner_rigid_body_prim(self) -> None:
+        try:
+            from pxr import Usd, UsdPhysics
+        except ImportError:
+            self.skipTest("当前 Python 环境没有 OpenUSD pxr")
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.DefinePrim("/World", "Xform")
+        stage.DefinePrim("/World/apple", "Xform")
+        body = stage.DefinePrim("/World/apple/body", "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(body)
+
+        resolved = _resolve_rigid_body_prim_path(stage, "/World/apple")
+
+        self.assertEqual(resolved, "/World/apple/body")
+        self.assertFalse(
+            stage.GetPrimAtPath("/World/apple").HasAPI(UsdPhysics.RigidBodyAPI)
+        )
 
     def test_object_collision_visual_hide_runs_after_task_object_visibility(self) -> None:
         source_text = inspect.getsource(IsaacLabNavigationRuntime._load_visual_scene)
@@ -485,9 +620,37 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         self.assertIn("object_collision_visual_hide_report", source_text)
         builder_source = inspect.getsource(IsaacLabNavigationRuntime._build_environment)
         self.assertLess(
+            builder_source.index("object_visibility_after_spawn_report"),
+            builder_source.index("object_collision_visual_hide_after_spawn_report"),
+        )
+        self.assertLess(
             builder_source.index("object_collision_visual_hide_after_spawn_report"),
             builder_source.index("wrapped = RslRlVecEnvWrapper"),
         )
+
+    def test_show_only_task_object_deactivates_physical_distractors(self) -> None:
+        try:
+            from pxr import Usd
+        except ImportError:
+            self.skipTest("当前 Python 环境没有 OpenUSD pxr")
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.DefinePrim("/World", "Xform")
+        distractor = stage.DefinePrim("/World/apple", "Xform")
+        task_object = stage.DefinePrim("/World/apple_01", "Xform")
+        runtime = object.__new__(IsaacLabNavigationRuntime)
+        runtime._hidden_distractor_root_paths = ()
+        episode = type("Episode", (), {"object_prim_path": "/World/apple_01"})()
+
+        first_report = runtime._show_only_task_object(stage, episode)
+        second_report = runtime._show_only_task_object(stage, episode)
+
+        self.assertFalse(distractor.IsActive())
+        self.assertTrue(task_object.IsActive())
+        self.assertEqual(first_report["deactivated_root_paths"], ["/World/apple"])
+        self.assertEqual(second_report["deactivated_root_paths"], ["/World/apple"])
+        self.assertTrue(second_report["distractor_physics_disabled"])
+        self.assertEqual(runtime._hidden_distractor_root_paths, ("/World/apple",))
 
     def test_runtime_reads_front_and_wrist_camera_images(self) -> None:
         class FakeSensor:
@@ -619,7 +782,13 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         adapter.gripper_joint_ids = ()
         adapter._base_pose_lock_xyzyaw = None
         adapter._dog_joint_lock_target = None
-        adapter._command = (0.0, 0.0, 0.0)
+        adapter.standing_command_threshold = 0.08
+        adapter.policy_action_warmup_steps = 2
+        adapter._policy_action_step = 0
+        adapter._policy_action_warmup_scale = 1.0
+        adapter._command = (0.04, 0.0, 0.02)
+        adapter._effective_command = (0.0, 0.0, 0.0)
+        adapter._command_is_standing = True
         adapter._arm_joint_target = (1.0, -1.0, 0.5, 0.0, 0.2, -0.3)
         adapter._gripper_joint_target = None
         adapter._last_actions = None
@@ -627,7 +796,15 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         actions = adapter.compute_policy_action(refresh_observations=True)
 
         # locomotion policy 仍受 clip_actions 约束；机械臂直接目标必须绕过该裁剪。
-        self.assertAlmostEqual(float(actions[0, 0]), 1.0)
+        self.assertAlmostEqual(float(actions[0, 0]), 0.5)
+        self.assertAlmostEqual(adapter._policy_action_warmup_scale, 0.5)
+        self.assertEqual(adapter._policy_action_step, 1)
+        self.assertEqual(adapter._effective_command, (0.0, 0.0, 0.0))
+        self.assertTrue(adapter._command_is_standing)
+        self.assertEqual(
+            tuple(float(value) for value in adapter.base_cmd_term.vel_command_b[0]),
+            (0.0, 0.0, 0.0),
+        )
         self.assertEqual(
             [round(float(value), 4) for value in actions[0, 12:18]],
             [10.0, -10.0, 5.0, 0.0, 2.0, -3.0],
@@ -758,6 +935,39 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
             },
         )
 
+    def test_apply_updates_velocity_command_guide_every_control_tick(self) -> None:
+        runtime, adapter, _fake_runtime_obj = _fake_runtime()
+        runtime._config = IsaacLabNavigationRuntimeConfig(  # type: ignore[attr-defined]
+            show_velocity_command_debug=True,
+        )
+        adapter.get_base_pose_full = lambda: {
+            "x": 1.0,
+            "y": 2.0,
+            "z": 0.4,
+            "yaw": 0.0,
+            "quat_wxyz": (1.0, 0.0, 0.0, 0.0),
+        }
+        adapter.get_effective_base_command = lambda: (0.20, 0.05, 0.40)
+        action = RobotAction(
+            base_velocity=(0.25, 0.05, 0.50),
+            source="stair_locomotion_heading_tracker",
+        )
+
+        with patch(
+            "source.diagnostics.planned_trajectories.draw_velocity_command",
+            return_value={"available": True, "updated_per_control_tick": True},
+        ) as draw_command:
+            runtime.apply(action)
+
+        draw_command.assert_called_once_with(
+            robot_root_pose=(1.0, 2.0, 0.4, 1.0, 0.0, 0.0, 0.0),
+            base_velocity=(0.20, 0.05, 0.40),
+            source="stair_locomotion_heading_tracker",
+        )
+        report = runtime._metadata["velocity_command_visualization"]  # type: ignore[attr-defined]
+        self.assertEqual(report["requested_base_velocity"], [0.25, 0.05, 0.50])
+        self.assertEqual(report["effective_base_velocity"], [0.20, 0.05, 0.40])
+
     def test_apply_accepts_explicit_gripper_hold_target(self) -> None:
         runtime, adapter, _fake_runtime_obj = _fake_runtime()
         action = RobotAction(
@@ -832,8 +1042,10 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
                     "arm_joint6",
                 ),
                 "arm_joint_positions": (0.0,) * 6,
+                "arm_control_mode": "policy_action_override",
                 "direct_arm_action_override": True,
                 "arm_action_indices": (12, 13, 14, 15, 16, 17),
+                "arm_velocity_hold": False,
                 "uses_direct_joint_state": False,
                 "world_step_owned_by_pipeline": True,
             },
@@ -846,6 +1058,70 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         self.assertEqual(
             runtime._metadata["last_joint_action_report"]["source"],  # type: ignore[attr-defined]
             "nav_carry_home",
+        )
+
+    def test_apply_accepts_dog_only_arm_target_without_policy_action_slots(self) -> None:
+        runtime, adapter, fake_runtime = _fake_runtime()
+        adapter.arm_action_indices_for_report = []
+        action = RobotAction(
+            base_velocity=(0.1, 0.0, 0.2),
+            arm_joint_positions=(0.2, -0.1, 0.3, -0.2, 0.1, 0.0),
+            gripper_command="hold",
+            source="arm_pick",
+            metadata={
+                "arm_joint_names": tuple(ARM_JOINT_NAMES),
+            },
+        )
+
+        runtime.apply(action)
+
+        self.assertEqual(adapter.arm_targets, [(0.2, -0.1, 0.3, -0.2, 0.1, 0.0)])
+        self.assertEqual(adapter.arm_override_flags, [True, False])
+        self.assertEqual(fake_runtime.action_manager.processed_actions, [adapter.policy_action])
+        self.assertEqual(
+            runtime._metadata["last_arm_action_report"],  # type: ignore[attr-defined]
+            {
+                "target_staged": True,
+                "arm_joint_names": tuple(ARM_JOINT_NAMES),
+                "arm_joint_positions": (0.2, -0.1, 0.3, -0.2, 0.1, 0.0),
+                "arm_control_mode": "independent_position_target",
+                "direct_arm_action_override": False,
+                "arm_action_indices": (),
+                "arm_velocity_hold": False,
+                "uses_direct_joint_state": False,
+                "world_step_owned_by_pipeline": True,
+            },
+        )
+        self.assertEqual(
+            runtime._metadata["last_direct_arm_action_override_disable_report"],  # type: ignore[attr-defined]
+            {
+                "enabled": False,
+                "action_term_available": True,
+                "arm_action_indices": [],
+                "arm_joint_names": list(ARM_JOINT_NAMES),
+            },
+        )
+        self.assertEqual(runtime._metadata["arm_joint_action_apply_count"], 1)  # type: ignore[attr-defined]
+
+    def test_post_motion_hold_arm_target_requests_velocity_hold(self) -> None:
+        runtime, adapter, _fake_runtime_obj = _fake_runtime()
+        adapter.arm_action_indices_for_report = []
+        action = RobotAction(
+            arm_joint_positions=(0.2, -0.1, 0.3, -0.2, 0.1, 0.0),
+            gripper_command="hold",
+            source="arm_place",
+            metadata={
+                "arm_joint_names": tuple(ARM_JOINT_NAMES),
+                "segment_type": "post_motion_hold",
+                "segment_name": "move_to_pre_place",
+            },
+        )
+
+        runtime.apply(action)
+
+        self.assertEqual(adapter.arm_velocity_hold_flags, [True])
+        self.assertTrue(
+            runtime._metadata["last_arm_action_report"]["arm_velocity_hold"]  # type: ignore[attr-defined]
         )
 
     def test_refreshes_direct_joint_targets_after_action_manager(self) -> None:
@@ -963,6 +1239,210 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
             runtime._metadata["last_manipulation_support_joint_lock_report"]["transition"],  # type: ignore[attr-defined]
             "disabled",
         )
+
+    def test_navigation_stair_float_updates_root_lock_target(self) -> None:
+        runtime, adapter, _fake_runtime_obj = _fake_runtime()
+        arm_target = (0.1, 0.2, 0.3, -0.1, -0.2, -0.3)
+        dog_target = (
+            0.1,
+            0.8,
+            -1.5,
+            -0.1,
+            0.8,
+            -1.5,
+            0.1,
+            1.0,
+            -1.5,
+            -0.1,
+            1.0,
+            -1.5,
+        )
+
+        runtime.apply(
+            RobotAction(
+                base_velocity=(0.0, 0.0, 0.0),
+                source="navigation_stair_float",
+                arm_joint_positions=arm_target,
+                metadata={
+                    "navigation_base_pose_lock": True,
+                    "navigation_base_pose_lock_phase": "pct_stair_float",
+                    "navigation_base_pose_lock_xyzyaw": (1.2, 6.3, 1.4, 1.57),
+                    "navigation_support_joint_lock": True,
+                    "navigation_support_joint_lock_phase": "pct_stair_float",
+                    "navigation_full_body_joint_lock": True,
+                    "navigation_full_body_joint_lock_phase": "pct_stair_float",
+                    "navigation_dog_joint_names": (
+                        "FR_hip_joint",
+                        "FR_thigh_joint",
+                        "FR_calf_joint",
+                        "FL_hip_joint",
+                        "FL_thigh_joint",
+                        "FL_calf_joint",
+                        "RR_hip_joint",
+                        "RR_thigh_joint",
+                        "RR_calf_joint",
+                        "RL_hip_joint",
+                        "RL_thigh_joint",
+                        "RL_calf_joint",
+                    ),
+                    "navigation_dog_joint_positions": dog_target,
+                },
+            )
+        )
+
+        self.assertEqual(adapter.base_pose_lock_flags, [True])
+        self.assertEqual(adapter.base_pose_lock_targets, [(1.2, 6.3, 1.4, 1.57)])
+        self.assertEqual(adapter.support_joint_lock_flags, [True])
+        self.assertEqual(adapter.support_joint_lock_dog_targets, [dog_target])
+        self.assertEqual(adapter.navigation_joint_pose_lock_flags, [True])
+        self.assertEqual(adapter.navigation_joint_pose_lock_arm_targets, [arm_target])
+        self.assertEqual(adapter.navigation_joint_pose_lock_dog_targets, [dog_target])
+        self.assertTrue(runtime._metadata["used_navigation_base_lock"])  # type: ignore[attr-defined]
+        self.assertTrue(runtime._metadata["used_navigation_support_joint_lock"])  # type: ignore[attr-defined]
+        self.assertTrue(runtime._metadata["used_navigation_joint_pose_lock"])  # type: ignore[attr-defined]
+        self.assertTrue(runtime._metadata["used_direct_joint_state"])  # type: ignore[attr-defined]
+        self.assertEqual(
+            runtime._metadata["last_navigation_base_lock_report"]["source"],  # type: ignore[attr-defined]
+            "navigation",
+        )
+        self.assertEqual(
+            runtime._metadata["last_navigation_base_lock_report"]["transition"],  # type: ignore[attr-defined]
+            "enabled",
+        )
+
+        runtime.apply(
+            RobotAction(
+                base_velocity=(0.1, 0.0, 0.0),
+                source="navigation_dwa",
+                metadata={},
+            )
+        )
+
+        self.assertEqual(adapter.base_pose_lock_flags, [True, False])
+        self.assertEqual(adapter.support_joint_lock_flags, [True, False])
+        self.assertEqual(adapter.navigation_joint_pose_lock_flags, [True, False])
+        self.assertEqual(adapter.policy_warmup_reset_count, 1)
+        self.assertFalse(runtime._metadata["manipulation_base_lock_active"])  # type: ignore[attr-defined]
+        self.assertFalse(runtime._metadata["manipulation_support_joint_lock_active"])  # type: ignore[attr-defined]
+        self.assertFalse(runtime._metadata["navigation_joint_pose_lock_active"])  # type: ignore[attr-defined]
+        self.assertTrue(
+            runtime._metadata["last_navigation_joint_pose_lock_report"][  # type: ignore[attr-defined]
+                "policy_warmup_reset"
+            ]
+        )
+
+    def test_navigation_stair_float_moves_carried_object_with_root_target(self) -> None:
+        runtime, adapter, _fake_runtime_obj = _fake_runtime()
+
+        class FakeRigidView:
+            def __init__(self, owner):
+                self.owner = owner
+                self.velocities = []
+
+            def set_world_poses(self, *, positions, orientations) -> None:
+                self.owner.position = np.asarray(
+                    positions.detach().cpu().tolist()[0],
+                    dtype=np.float64,
+                )
+                self.owner.orientation = np.asarray(
+                    orientations.detach().cpu().tolist()[0],
+                    dtype=np.float64,
+                )
+
+            def set_velocities(self, velocities) -> None:
+                self.velocities.append(velocities.detach().cpu().tolist())
+
+        class FakeObject:
+            def __init__(self):
+                self.position = np.asarray((0.3, 0.0, 0.5), dtype=np.float64)
+                self.orientation = np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float64)
+                self._rigid_prim_view = FakeRigidView(self)
+
+            def get_world_pose(self):
+                return self.position.copy(), self.orientation.copy()
+
+        adapter.robot = type(
+            "FakeRobot",
+            (),
+            {
+                "data": type(
+                    "FakeRobotData",
+                    (),
+                    {
+                        "root_pos_w": np.asarray(((0.0, 0.0, 0.2),)),
+                        "root_quat_w": np.asarray(((1.0, 0.0, 0.0, 0.0),)),
+                    },
+                )()
+            },
+        )()
+        fake_object = FakeObject()
+        runtime._object = fake_object  # type: ignore[attr-defined]
+        runtime._read_tcp_pose = lambda: (  # type: ignore[method-assign]
+            0.28,
+            0.0,
+            0.5,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+        )
+        sleep_calls = []
+
+        def _set_sleeping(*, enabled: bool) -> dict:
+            sleep_calls.append(bool(enabled))
+            return {"applied": True, "enabled": bool(enabled)}
+
+        runtime._set_object_sleeping = _set_sleeping  # type: ignore[method-assign]
+        runtime.apply(
+            RobotAction(
+                source="navigation_stair_float",
+                metadata={
+                    "navigation_base_pose_lock": True,
+                    "navigation_base_pose_lock_phase": "pct_stair_float",
+                    "navigation_base_pose_lock_xyzyaw": (
+                        1.0,
+                        2.0,
+                        0.2,
+                        np.pi / 2.0,
+                    ),
+                    "navigation_support_joint_lock": True,
+                    "navigation_carry_object_follow": True,
+                },
+            )
+        )
+        runtime._apply_active_manipulation_base_lock(timing="unit_test")  # type: ignore[attr-defined]
+
+        np.testing.assert_allclose(
+            fake_object.position,
+            np.asarray((1.0, 2.3, 0.5)),
+            atol=1.0e-6,
+        )
+        self.assertTrue(runtime._metadata["used_kinematic_object_follow"])  # type: ignore[attr-defined]
+        self.assertTrue(runtime._metadata["used_object_teleport"])  # type: ignore[attr-defined]
+        self.assertTrue(runtime._metadata["navigation_object_follow_active"])  # type: ignore[attr-defined]
+
+        runtime.apply(RobotAction(source="navigation_dwa"))
+
+        self.assertEqual(sleep_calls, [True, False])
+        self.assertFalse(runtime._metadata["navigation_object_follow_active"])  # type: ignore[attr-defined]
+        self.assertEqual(
+            runtime._metadata["last_navigation_object_follow_report"]["transition"],  # type: ignore[attr-defined]
+            "disabled",
+        )
+
+    def test_navigation_base_lock_requires_xyzyaw_target(self) -> None:
+        runtime, _adapter, _fake_runtime_obj = _fake_runtime()
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "navigation_base_pose_lock_xyzyaw",
+        ):
+            runtime.apply(
+                RobotAction(
+                    source="navigation_stair_float",
+                    metadata={"navigation_base_pose_lock": True},
+                )
+            )
 
     def test_apply_rejects_unexpected_arm_joint_order(self) -> None:
         runtime, adapter, fake_runtime = _fake_runtime()
@@ -1123,17 +1603,36 @@ def _fake_runtime() -> tuple[IsaacLabNavigationRuntime, FakeAdapter, FakeRuntime
     runtime._pending_arm_tracking_target = None
     runtime._manipulation_base_lock_active = False
     runtime._manipulation_support_joint_lock_active = False
+    runtime._navigation_joint_pose_lock_active = False
+    runtime._navigation_object_follow_active = False
+    runtime._navigation_object_relative_pose = None
+    runtime._navigation_object_follow_root_target = None
+    runtime._navigation_object_follow_target_pose = None
+    runtime._object = None
     runtime._metadata = {
         "used_base_teleport": False,
         "used_direct_joint_state": False,
+        "used_object_teleport": False,
+        "used_kinematic_object_follow": False,
         "used_manipulation_base_lock": False,
         "used_manipulation_support_joint_lock": False,
+        "used_navigation_base_lock": False,
+        "used_navigation_support_joint_lock": False,
+        "used_navigation_joint_pose_lock": False,
+        "navigation_object_follow_active": False,
+        "navigation_object_follow_apply_count": 0,
+        "last_navigation_object_follow_report": None,
         "manipulation_base_lock_active": False,
         "manipulation_base_lock_apply_count": 0,
         "last_manipulation_base_lock_report": None,
+        "last_navigation_base_lock_report": None,
         "manipulation_support_joint_lock_active": False,
         "manipulation_support_joint_lock_apply_count": 0,
         "last_manipulation_support_joint_lock_report": None,
+        "last_navigation_support_joint_lock_report": None,
+        "navigation_joint_pose_lock_active": False,
+        "navigation_joint_pose_lock_apply_count": 0,
+        "last_navigation_joint_pose_lock_report": None,
         "arm_joint_position_target_apply_count": 0,
         "last_arm_joint_position_target_report": None,
         "gripper_joint_position_target_apply_count": 0,

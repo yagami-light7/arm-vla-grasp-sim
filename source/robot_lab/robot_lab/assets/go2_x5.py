@@ -94,5 +94,75 @@ GO2_X5_CFG = ArticulationCfg(
         ),
     },
 )
+
+
+# 该配置只服务 pct_multifloor checkpoint；机器人资产继续复用 URDF，避免 stale USD 覆盖材质和关节结构。
+GO2_X5_PCT_DOG_ONLY_CFG = GO2_X5_CFG.replace(
+    init_state=ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 0.30),
+        joint_pos={
+            "FR_hip_joint": 0.1,
+            "FR_thigh_joint": 0.8,
+            "FR_calf_joint": -1.5,
+            "FL_hip_joint": -0.1,
+            "FL_thigh_joint": 0.8,
+            "FL_calf_joint": -1.5,
+            "RR_hip_joint": 0.1,
+            "RR_thigh_joint": 1.0,
+            "RR_calf_joint": -1.5,
+            "RL_hip_joint": -0.1,
+            "RL_thigh_joint": 1.0,
+            "RL_calf_joint": -1.5,
+            "arm_joint1": 0.0,
+            "arm_joint2": 0.3,
+            "arm_joint3": 0.5,
+            "arm_joint4": 0.0,
+            "arm_joint5": 0.0,
+            "arm_joint6": 0.0,
+        },
+        joint_vel={".*": 0.0},
+    ),
+    actuators={
+        "legs_hip_thigh": DCMotorCfg(
+            joint_names_expr=[".*_hip_joint", ".*_thigh_joint"],
+            effort_limit=35.278,
+            saturation_effort=35.278,
+            velocity_limit=30.0,
+            stiffness=40.0,
+            damping=1.0,
+            friction=0.0,
+        ),
+        "legs_calf": DCMotorCfg(
+            joint_names_expr=[".*_calf_joint"],
+            effort_limit=44.4,
+            saturation_effort=44.4,
+            velocity_limit=30.0,
+            stiffness=40.0,
+            damping=1.0,
+            friction=0.0,
+        ),
+        # DogOnly 策略没有机械臂 action 槽位，因此机械臂仍走 pipeline
+        # 独立 position target；这里必须复用 baseline 的 implicit drive，
+        # 避免 DCMotor 速度/力矩曲线让 arm_joint4 等腕部关节滞后。
+        "arm": ImplicitActuatorCfg(
+            joint_names_expr=["arm_joint[1-6]"],
+            effort_limit_sim=100.0,
+            velocity_limit_sim=10.0,
+            stiffness=1000.0,
+            damping=50.0,
+            friction=0.0,
+        ),
+        # 主 pipeline 后续仍要抓取，保留本地两指夹爪 actuator。
+        "gripper": DCMotorCfg(
+            joint_names_expr=["arm_joint[7-8]"],
+            effort_limit=20.0,
+            saturation_effort=20.0,
+            velocity_limit=1.0,
+            stiffness=1000.0,
+            damping=50.0,
+            friction=0.0,
+        ),
+    },
+)
 """Configuration of Unitree Go2 using DC motor.
 """

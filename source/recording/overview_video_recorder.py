@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import inspect
+import json
 import math
 import re
 from dataclasses import dataclass
@@ -47,6 +48,7 @@ _PHASE_TOKENS = {
         "third_person",
         "thirdperson",
         "main",
+        "camera0",
         "camera1",
         "camera",
     ),
@@ -298,6 +300,31 @@ def _image_to_rgb_uint8(
     return np.ascontiguousarray(array)
 
 
+def _capture_buffer_bytes(buffer: Any, buffer_size: int) -> bytes:
+    """把 Kit viewport 回调缓冲复制为独立字节串。"""
+
+    if buffer_size <= 0:
+        raise ValueError(f"viewport capture buffer_size must be positive, got {buffer_size}")
+    try:
+        return memoryview(buffer).cast("B")[:buffer_size].tobytes()
+    except (TypeError, ValueError):
+        pass
+
+    buffer_type = type(buffer)
+    if buffer_type.__module__ == "builtins" and buffer_type.__name__ == "PyCapsule":
+        get_pointer = ctypes.pythonapi.PyCapsule_GetPointer
+        get_pointer.argtypes = [ctypes.py_object, ctypes.c_char_p]
+        get_pointer.restype = ctypes.c_void_p
+        address = get_pointer(buffer, None)
+    elif isinstance(buffer, ctypes.c_void_p):
+        address = buffer.value
+    else:
+        address = int(buffer)
+    if not address:
+        raise ValueError("viewport capture buffer pointer is null")
+    return ctypes.string_at(address, buffer_size)
+
+
 class OverviewVideoRecorder:
     """Record an MP4 from existing USD overview cameras without touching observation cameras."""
 
@@ -307,6 +334,10 @@ class OverviewVideoRecorder:
         settings: Any,
         episode_dir: str | Path,
         episode_id: int,
+        auto_switch_camera: bool = True,
+        save_overview_images: bool = False,
+        overview_image_fps: float = 5.0,
+        overview_jpeg_quality: int = 90,
         log_prefix: str = "[overview-video]",
     ):
         self.settings = settings
@@ -314,7 +345,17 @@ class OverviewVideoRecorder:
         self.modes = _video_modes(settings)
         self.episode_dir = Path(episode_dir).expanduser().resolve()
         self.episode_id = int(episode_id)
+        self.auto_switch_camera = bool(auto_switch_camera)
+        self.save_overview_images = bool(save_overview_images)
+        self.overview_image_fps = max(1.0e-6, float(overview_image_fps))
+        self.overview_jpeg_quality = max(1, min(100, int(overview_jpeg_quality)))
         self.log_prefix = log_prefix
+        self._camera_schedule_path = getattr(
+            settings,
+            "overview_camera_schedule_path",
+            None,
+        )
+        self._camera_schedule = self._load_camera_schedule()
         self.output_paths = self._resolve_output_paths()
         self.output_path = self.output_paths[self.modes[0]]
         self._writers: dict[str, Any] = {}
@@ -348,6 +389,12 @@ class OverviewVideoRecorder:
         self._rep_render_product_path: str | None = None
         self._render_camera_paths: dict[str, str] = {}
         self._last_warning: str | None = None
+        self._camera_trajectory_path = self._resolve_camera_trajectory_path()
+        self._camera_trajectory_frame_count = 0
+        self._camera_trajectory_error: str | None = None
+        self._overview_image_dir = self.episode_dir / "images" / "overview"
+        self._overview_image_count = 0
+        self._last_overview_image_timestamp: float | None = None
 
     @property
     def _overview_frame_count(self) -> int:
@@ -358,10 +405,14 @@ class OverviewVideoRecorder:
             return
         for output_path in self.output_paths.values():
             output_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.save_overview_images and "overview" in self.modes:
+            self._overview_image_dir.mkdir(parents=True, exist_ok=True)
         print(
             f"{self.log_prefix} enabled=True mode={getattr(self.settings, 'mode', 'overview')} "
             f"streams={self.modes} "
             f"camera_mode={getattr(self.settings, 'overview_camera_mode', 'auto')} "
+            f"camera_control={'auto' if self.auto_switch_camera else 'manual_gui'} "
+            f"camera_schedule={self._camera_schedule_path} "
             f"fps={float(getattr(self.settings, 'fps', 25.0)):.3f} "
             f"overview_size={int(getattr(self.settings, 'width', 1280))}x"
             f"{int(getattr(self.settings, 'height', 720))} "
@@ -374,6 +425,9 @@ class OverviewVideoRecorder:
         )
         if "overview" in self.modes:
             self._discover_cameras_from_current_stage()
+        if self._camera_trajectory_enabled():
+            self._camera_trajectory_path.parent.mkdir(parents=True, exist_ok=True)
+            self._camera_trajectory_path.write_text("", encoding="utf-8")
 
     def add_frame(
         self,
@@ -382,6 +436,7 @@ class OverviewVideoRecorder:
         timestamp: float,
         step_index: int,
         camera_images: dict[str, Any] | None = None,
+        robot_root_pose: tuple[float, ...] | None = None,
     ) -> None:
         if not self.enabled:
             return
@@ -390,6 +445,7 @@ class OverviewVideoRecorder:
                 state=state,
                 timestamp=timestamp,
                 step_index=step_index,
+                robot_root_pose=robot_root_pose,
             )
         if "front" in self.modes:
             self._add_observation_frame(
@@ -410,12 +466,24 @@ class OverviewVideoRecorder:
         state: str,
         timestamp: float,
         step_index: int,
+        robot_root_pose: tuple[float, ...] | None,
     ) -> None:
         if not self._discovery_done or self._should_rediscover_cameras():
             self._discover_cameras_from_current_stage()
-        camera_path = self.select_camera_for_state(state)
-        if camera_path is not None:
-            self._maybe_switch_camera(camera_path, state=state, step_index=step_index)
+        if self.auto_switch_camera:
+            camera_path = self.select_camera_for_state(
+                state,
+                robot_root_pose=robot_root_pose,
+                step_index=step_index,
+            )
+            if camera_path is not None:
+                self._maybe_switch_camera(camera_path, state=state, step_index=step_index)
+        else:
+            # GUI 视口完全由用户手动控制；录像器只读取当前相机，不写 active camera。
+            manual_camera = self._read_active_viewport_camera_path()
+            if manual_camera:
+                self._active_viewport_camera_path = manual_camera
+                self._current_camera_path = manual_camera
         if not self._should_capture("overview", timestamp):
             return
         try:
@@ -428,8 +496,35 @@ class OverviewVideoRecorder:
         if frame is None:
             self._mark_dropped("overview")
             return
-        self._write_video_frame(frame, stream="overview")
+        written_frame_index = self._write_video_frame(frame, stream="overview")
+        self._maybe_write_overview_image(frame, timestamp=timestamp)
+        self._write_camera_trajectory_frame(
+            state=state,
+            timestamp=timestamp,
+            step_index=step_index,
+            frame_index=written_frame_index,
+        )
         self._last_capture_timestamps["overview"] = float(timestamp)
+
+    def _maybe_write_overview_image(self, frame: np.ndarray, *, timestamp: float) -> None:
+        """按数据集频率保存自动切换后的 overview JPEG。"""
+
+        if not self.save_overview_images:
+            return
+        interval = 1.0 / self.overview_image_fps
+        if (
+            self._last_overview_image_timestamp is not None
+            and float(timestamp) - self._last_overview_image_timestamp < interval - 1.0e-9
+        ):
+            return
+        from PIL import Image
+
+        self._overview_image_dir.mkdir(parents=True, exist_ok=True)
+        image_path = self._overview_image_dir / f"overview_{self._overview_image_count:05d}.jpg"
+        image = Image.fromarray(_image_to_rgb_uint8(frame))
+        image.save(image_path, format="JPEG", quality=self.overview_jpeg_quality)
+        self._overview_image_count += 1
+        self._last_overview_image_timestamp = float(timestamp)
 
     def _add_observation_frame(
         self,
@@ -535,12 +630,91 @@ class OverviewVideoRecorder:
             self._warn_once("no USD camera or active viewport camera is available")
         return dict(self._discovery_report)
 
-    def select_camera_for_state(self, state: str) -> str | None:
+    def _load_camera_schedule(self) -> dict[str, Any]:
+        """读取可编辑的 headless overview 相机切换规则。"""
+
+        raw_path = self._camera_schedule_path
+        if raw_path is None:
+            return {}
+        path = Path(raw_path).expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"overview camera schedule does not exist: {path}")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("overview camera schedule must be a JSON object")
+        rules = payload.get("rules", [])
+        if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+            raise ValueError("overview camera schedule rules must be a list of objects")
+        return payload
+
+    def _scheduled_camera(
+        self,
+        state: str,
+        *,
+        robot_root_pose: tuple[float, ...] | None,
+        step_index: int | None,
+    ) -> str | None:
+        """按 state、step 和机器人 XYZ 选择规则中的 Camera0-8。"""
+
+        if not self._camera_schedule:
+            return None
+        lowered_state = str(state).lower().strip()
+        xyz = None
+        if robot_root_pose is not None and len(robot_root_pose) >= 3:
+            xyz = tuple(float(value) for value in robot_root_pose[:3])
+        for rule in self._camera_schedule.get("rules", []):
+            states = rule.get("states")
+            if states is not None:
+                if not isinstance(states, list):
+                    continue
+                normalized_states = {str(value).lower().strip() for value in states}
+                if lowered_state not in normalized_states:
+                    continue
+            if step_index is not None:
+                if "min_step" in rule and int(step_index) < int(rule["min_step"]):
+                    continue
+                if "max_step" in rule and int(step_index) > int(rule["max_step"]):
+                    continue
+            if any(key in rule for key in ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")):
+                if xyz is None:
+                    continue
+                bounds = (
+                    ("x_min", "x_max", xyz[0]),
+                    ("y_min", "y_max", xyz[1]),
+                    ("z_min", "z_max", xyz[2]),
+                )
+                if any(
+                    (lower in rule and value < float(rule[lower]))
+                    or (upper in rule and value > float(rule[upper]))
+                    for lower, upper, value in bounds
+                ):
+                    continue
+            camera = rule.get("camera")
+            if isinstance(camera, str) and camera:
+                return camera
+        default_camera = self._camera_schedule.get("default_camera")
+        return default_camera if isinstance(default_camera, str) else None
+
+    def select_camera_for_state(
+        self,
+        state: str,
+        *,
+        robot_root_pose: tuple[float, ...] | None = None,
+        step_index: int | None = None,
+    ) -> str | None:
         """Pick a stable camera path for the current pipeline state."""
 
         candidates = self._overview_cameras or self._all_cameras
         if not candidates:
             return self._active_viewport_camera_path
+        scheduled_camera = self._scheduled_camera(
+            state,
+            robot_root_pose=robot_root_pose,
+            step_index=step_index,
+        )
+        candidate_paths = {candidate.path for candidate in candidates}
+        if scheduled_camera in candidate_paths:
+            return scheduled_camera
         role = _state_role(str(state), previous_role=self._last_role)
         target_third_person_index = _THIRD_PERSON_ROLE_INDEX.get(role)
         if target_third_person_index is not None:
@@ -631,11 +805,33 @@ class OverviewVideoRecorder:
             "frame_count": int(sum(self._stream_frame_counts.values())),
             "dropped_frame_count": int(self._dropped_frame_count),
             "camera_discovery": dict(self._discovery_report),
+            "camera_control": (
+                "auto_headless" if self.auto_switch_camera else "manual_gui"
+            ),
+            "camera_schedule_path": (
+                None
+                if self._camera_schedule_path is None
+                else str(Path(self._camera_schedule_path).expanduser().resolve())
+            ),
             "camera_switches": list(self._switch_log),
+            "overview_images": {
+                "enabled": bool(self.save_overview_images and "overview" in self.modes),
+                "directory": str(self._overview_image_dir),
+                "frame_count": int(self._overview_image_count),
+                "fps": float(self.overview_image_fps),
+                "jpeg_quality": int(self.overview_jpeg_quality),
+            },
             "capture_backend": self._capture_backend,
             "capture_error": self._capture_error,
             "writer_backends": dict(self._writer_backends),
         }
+        if self._camera_trajectory_enabled():
+            summary["camera_trajectory"] = {
+                "enabled": True,
+                "path": str(self._camera_trajectory_path),
+                "frame_count": int(self._camera_trajectory_frame_count),
+                "error": self._camera_trajectory_error,
+            }
         print(
             f"{self.log_prefix} closed status={status} success={success} "
             f"frames={summary['frame_count']} dropped={self._dropped_frame_count} "
@@ -659,6 +855,16 @@ class OverviewVideoRecorder:
             stream: output_path / f"episode_{self.episode_id:06d}_{stream}.mp4"
             for stream in self.modes
         }
+
+    def _resolve_camera_trajectory_path(self) -> Path:
+        raw_path = getattr(self.settings, "camera_trajectory_path", None)
+        if raw_path is not None:
+            return Path(raw_path).expanduser().resolve()
+        overview_path = self.output_paths.get("overview", self.output_path)
+        return overview_path.with_suffix(".camera_trajectory.jsonl")
+
+    def _camera_trajectory_enabled(self) -> bool:
+        return bool(getattr(self.settings, "export_camera_trajectory", False)) and "overview" in self.modes
 
     def _discover_cameras_from_current_stage(self) -> None:
         try:
@@ -1165,13 +1371,19 @@ class OverviewVideoRecorder:
         captured: dict[str, Any] = {}
 
         def _callback(buffer: Any, buffer_size: int, width: int, height: int, byte_format: Any) -> None:
-            captured["frame"] = self._buffer_to_image(
-                buffer,
-                buffer_size=int(buffer_size),
-                width=int(width),
-                height=int(height),
-                byte_format=str(byte_format),
-            )
+            try:
+                captured["frame"] = self._buffer_to_image(
+                    buffer,
+                    buffer_size=int(buffer_size),
+                    width=int(width),
+                    height=int(height),
+                    byte_format=str(byte_format),
+                )
+            except Exception as exc:
+                self._capture_error = (
+                    f"viewport_buffer_conversion_failed: {type(exc).__name__}: {exc}"
+                )
+                captured["error"] = self._capture_error
 
         self._configure_capture_viewport(viewport)
         capture = capture_viewport_to_buffer(viewport, _callback)
@@ -1205,20 +1417,194 @@ class OverviewVideoRecorder:
         height: int,
         byte_format: str,
     ) -> np.ndarray:
-        try:
-            raw = np.frombuffer(buffer, dtype=np.uint8, count=buffer_size)
-        except TypeError:
-            raw = np.frombuffer(
-                ctypes.string_at(int(buffer), buffer_size),
-                dtype=np.uint8,
+        if width <= 0 or height <= 0:
+            raise ValueError(f"viewport capture dimensions must be positive, got {width}x{height}")
+        pixel_count = width * height
+        if buffer_size % pixel_count != 0:
+            raise ValueError(
+                f"viewport capture buffer size {buffer_size} does not match {width}x{height}"
             )
-        channels = max(1, buffer_size // max(1, width * height))
+        channels = buffer_size // pixel_count
+        if channels <= 0:
+            raise ValueError(
+                f"viewport capture channel count must be positive, got {channels}"
+            )
+        raw = np.frombuffer(
+            _capture_buffer_bytes(buffer, buffer_size),
+            dtype=np.uint8,
+            count=buffer_size,
+        )
         raw = raw.reshape((height, width, channels))
         return _image_to_rgb_uint8(raw)
 
-    def _write_video_frame(self, image: np.ndarray, *, stream: str = "overview") -> None:
+    def _write_camera_trajectory_frame(
+        self,
+        *,
+        state: str,
+        timestamp: float,
+        step_index: int,
+        frame_index: int,
+    ) -> None:
+        """写出与 overview 视频帧对齐的相机位姿。"""
+
+        if not self._camera_trajectory_enabled():
+            return
+        payload = self._camera_trajectory_payload(
+            state=state,
+            timestamp=timestamp,
+            step_index=step_index,
+            frame_index=frame_index,
+        )
+        try:
+            with self._camera_trajectory_path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+                stream.write("\n")
+        except Exception as exc:
+            self._camera_trajectory_error = f"{type(exc).__name__}: {exc}"
+            self._warn_once(f"camera trajectory write failed: {self._camera_trajectory_error}")
+            return
+        self._camera_trajectory_frame_count += 1
+
+    def _camera_trajectory_payload(
+        self,
+        *,
+        state: str,
+        timestamp: float,
+        step_index: int,
+        frame_index: int,
+    ) -> dict[str, Any]:
+        """从当前 USD camera 读取 3DGS 离线渲染需要的相机参数。"""
+
+        camera_path = self._current_camera_path
+        render_camera_path = self._renderable_camera_path(camera_path) if camera_path else None
+        payload: dict[str, Any] = {
+            "schema": "arm_vla_pct.overview_camera_trajectory.v1",
+            "frame_index": int(frame_index),
+            "step_index": int(step_index),
+            "timestamp": float(timestamp),
+            "pipeline_state": str(state),
+            "camera_prim_path": camera_path,
+            "render_camera_prim_path": render_camera_path,
+            "video": {
+                "width": int(getattr(self.settings, "width", 1280)),
+                "height": int(getattr(self.settings, "height", 720)),
+                "fps": float(getattr(self.settings, "fps", 25.0)),
+            },
+        }
+        if not render_camera_path:
+            payload["camera"] = {
+                "available": False,
+                "reason": "no_active_overview_camera",
+            }
+            return payload
+        camera_payload = self._read_usd_camera_payload(render_camera_path)
+        payload["camera"] = camera_payload
+        return payload
+
+    def _read_usd_camera_payload(self, camera_path: str) -> dict[str, Any]:
+        """读取 USD camera 的世界位姿、视场角和裁剪面。"""
+
+        try:
+            import omni.usd
+            from pxr import Gf, Usd, UsdGeom
+        except ImportError as exc:
+            return {
+                "available": False,
+                "reason": "usd_camera_dependencies_unavailable",
+                "error": str(exc),
+            }
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            return {
+                "available": False,
+                "reason": "stage_unavailable",
+            }
+        prim = stage.GetPrimAtPath(camera_path)
+        if not prim.IsValid() or not prim.IsA(UsdGeom.Camera):
+            return {
+                "available": False,
+                "reason": "camera_prim_unavailable",
+                "camera_prim_path": camera_path,
+                "prim_valid": bool(prim.IsValid()),
+            }
+        try:
+            camera = UsdGeom.Camera(prim)
+            matrix = UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(prim)
+            eye_vec = matrix.ExtractTranslation()
+            forward_vec = matrix.TransformDir(Gf.Vec3d(0.0, 0.0, -1.0))
+            if forward_vec.GetLength() <= 1.0e-9:
+                forward_vec = Gf.Vec3d(1.0, 0.0, 0.0)
+            forward_vec.Normalize()
+            up_vec = matrix.TransformDir(Gf.Vec3d(0.0, 1.0, 0.0))
+            if up_vec.GetLength() <= 1.0e-9:
+                up_vec = Gf.Vec3d(0.0, 0.0, 1.0)
+            up_vec.Normalize()
+            focus_distance = self._camera_float_attr(camera.GetFocusDistanceAttr(), default=3.0)
+            if not math.isfinite(focus_distance) or focus_distance <= 0.1:
+                focus_distance = 3.0
+            target_vec = eye_vec + forward_vec * focus_distance
+            vertical_fov_deg = self._camera_vertical_fov_deg(camera)
+            near_plane, far_plane = self._camera_clipping_range(camera)
+            return {
+                "available": True,
+                "camera_prim_path": camera_path,
+                "eye": [float(eye_vec[0]), float(eye_vec[1]), float(eye_vec[2])],
+                "target": [
+                    float(target_vec[0]),
+                    float(target_vec[1]),
+                    float(target_vec[2]),
+                ],
+                "up": [float(up_vec[0]), float(up_vec[1]), float(up_vec[2])],
+                "forward": [
+                    float(forward_vec[0]),
+                    float(forward_vec[1]),
+                    float(forward_vec[2]),
+                ],
+                "vertical_fov_deg": float(vertical_fov_deg),
+                "near_plane": float(near_plane),
+                "far_plane": float(far_plane),
+                "focus_distance": float(focus_distance),
+            }
+        except Exception as exc:  # pragma: no cover - depends on live USD runtime.
+            return {
+                "available": False,
+                "reason": "camera_payload_failed",
+                "camera_prim_path": camera_path,
+                "error": str(exc),
+            }
+
+    def _camera_float_attr(self, attr: Any, *, default: float) -> float:
+        value = attr.Get() if attr is not None else None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _camera_vertical_fov_deg(self, camera: Any) -> float:
+        focal_length = self._camera_float_attr(camera.GetFocalLengthAttr(), default=24.0)
+        vertical_aperture = self._camera_float_attr(camera.GetVerticalApertureAttr(), default=20.955)
+        if focal_length <= 0.0 or vertical_aperture <= 0.0:
+            return 58.0
+        return math.degrees(2.0 * math.atan(vertical_aperture / (2.0 * focal_length)))
+
+    def _camera_clipping_range(self, camera: Any) -> tuple[float, float]:
+        clipping = camera.GetClippingRangeAttr().Get()
+        try:
+            near_plane = float(clipping[0])
+            far_plane = float(clipping[1])
+        except Exception:
+            near_plane = 0.01
+            far_plane = 100000.0
+        if not math.isfinite(near_plane) or near_plane <= 0.0:
+            near_plane = 0.01
+        if not math.isfinite(far_plane) or far_plane <= near_plane:
+            far_plane = 100000.0
+        return near_plane, far_plane
+
+    def _write_video_frame(self, image: np.ndarray, *, stream: str = "overview") -> int:
         if stream not in self.output_paths:
             raise ValueError(f"unknown video stream: {stream}")
+        frame_index = int(self._stream_frame_counts.get(stream, 0))
         frame = _image_to_rgb_uint8(image)
         writer = self._writers.get(stream)
         if writer is None:
@@ -1246,6 +1632,7 @@ class OverviewVideoRecorder:
             frame = cv2.resize(frame, writer_size, interpolation=cv2.INTER_AREA)
         writer.write(frame)
         self._stream_frame_counts[stream] = self._stream_frame_counts.get(stream, 0) + 1
+        return frame_index
 
     def _warn_once(self, message: str) -> None:
         if message == self._last_warning:

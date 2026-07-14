@@ -23,6 +23,7 @@ class NavigationEpisodeVerifier:
         angular_velocity_tolerance: float = 0.20,
         require_yaw_alignment: bool = False,
         require_stable_base: bool = False,
+        goal_z_tolerance: float = 0.35,
     ):
         self.position_tolerance = float(position_tolerance)
         self.yaw_tolerance = float(yaw_tolerance)
@@ -30,6 +31,7 @@ class NavigationEpisodeVerifier:
         self.angular_velocity_tolerance = float(angular_velocity_tolerance)
         self.require_yaw_alignment = bool(require_yaw_alignment)
         self.require_stable_base = bool(require_stable_base)
+        self.goal_z_tolerance = float(goal_z_tolerance)
 
     def verify_pick_reachable(
         self,
@@ -40,6 +42,7 @@ class NavigationEpisodeVerifier:
             state,
             goal_x=episode_spec.pick_goal.x,
             goal_y=episode_spec.pick_goal.y,
+            goal_z=episode_spec.pick_goal.z,
             goal_yaw=episode_spec.pick_goal.yaw,
             failure_reason="pick_target_unreachable",
         )
@@ -55,6 +58,7 @@ class NavigationEpisodeVerifier:
             state,
             goal_x=episode_spec.place_goal.x,
             goal_y=episode_spec.place_goal.y,
+            goal_z=episode_spec.place_goal.z,
             goal_yaw=episode_spec.place_goal.yaw,
             failure_reason="place_target_unreachable",
         )
@@ -81,12 +85,14 @@ class NavigationEpisodeVerifier:
         *,
         goal_x: float,
         goal_y: float,
+        goal_z: float | None,
         goal_yaw: float,
         failure_reason: str,
     ) -> VerificationResult:
         pose = state.robot_root_pose
         yaw = self._yaw_from_quaternion(pose[3:])
         distance = math.hypot(pose[0] - goal_x, pose[1] - goal_y)
+        z_error = None if goal_z is None else abs(float(pose[2]) - float(goal_z))
         yaw_error = abs(_wrap_angle(yaw - goal_yaw))
         body_velocity = state.metadata.get("body_velocity")
         if body_velocity is None:
@@ -99,6 +105,7 @@ class NavigationEpisodeVerifier:
             linear_speed = math.hypot(float(body_velocity[0]), float(body_velocity[1]))
             angular_speed = abs(float(body_velocity[2]))
         position_reached = distance <= self.position_tolerance
+        z_reached = True if z_error is None else z_error <= self.goal_z_tolerance
         yaw_aligned = yaw_error <= self.yaw_tolerance
         base_stable = (
             linear_speed <= self.linear_velocity_tolerance
@@ -108,6 +115,7 @@ class NavigationEpisodeVerifier:
         # yaw 后续由机械臂工作空间和抓取规划吸收，速度稳定性保留为诊断字段。
         success = (
             position_reached
+            and z_reached
             and (yaw_aligned or not self.require_yaw_alignment)
             and (base_stable or not self.require_stable_base)
         )
@@ -116,20 +124,30 @@ class NavigationEpisodeVerifier:
             failure_reason="" if success else failure_reason,
             metadata={
                 "goal_distance": distance,
+                "goal_z_error": z_error,
                 "yaw_error": yaw_error,
                 "linear_speed": linear_speed,
                 "angular_speed": angular_speed,
                 "position_tolerance": self.position_tolerance,
+                "goal_z_tolerance": self.goal_z_tolerance,
                 "yaw_tolerance": self.yaw_tolerance,
                 "linear_velocity_tolerance": self.linear_velocity_tolerance,
                 "angular_velocity_tolerance": self.angular_velocity_tolerance,
                 "position_reached": position_reached,
+                "z_check_enabled": goal_z is not None,
+                "z_reached": z_reached,
                 "yaw_aligned": yaw_aligned,
                 "base_stable": base_stable,
                 "yaw_alignment_required": self.require_yaw_alignment,
                 "base_stability_required": self.require_stable_base,
                 "acceptance_mode": (
-                    "xy_yaw_stable"
+                    "xyz_yaw_stable"
+                    if goal_z is not None
+                    and self.require_yaw_alignment
+                    and self.require_stable_base
+                    else "xyz_only"
+                    if goal_z is not None
+                    else "xy_yaw_stable"
                     if self.require_yaw_alignment and self.require_stable_base
                     else "xy_only"
                 ),

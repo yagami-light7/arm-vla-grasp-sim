@@ -2,8 +2,8 @@
   "task_id": 2,
   "episode_id": 1,
   "instruction": "Walk briskly from a far start pose to the apple pick base pose.",
-  "scene_usd": "source/scene/839920_go2_x5.usd",
-  "nav_map": "source/scene/nav_maps/839920/map.json",
+  "scene_usd": "source/scene/839920/839920_go2_x5.usd",
+  "nav_map": "source/scene/839920/nav_map/map.json",
   "start": {
     "x": -5.0,
     "y": 0.0,

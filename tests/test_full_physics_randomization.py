@@ -7,7 +7,7 @@ import math
 import unittest
 from pathlib import Path
 
-from scripts.pipeline.run_full_physics_pipeline import _build_parser, _keep_gui_open
+from scripts.pipeline.run_full_physics_pipeline import _keep_gui_open, _parse_args
 from source.diagnostics import randomization_debug_spec
 from source.pipeline import (
     BaseGoalRandomizationSettings,
@@ -23,9 +23,7 @@ TASK_PATH = PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json"
 
 class FullPhysicsRandomizationTest(unittest.TestCase):
     def test_cli_randomization_and_visualization_defaults(self) -> None:
-        args = _build_parser().parse_args(
-            ["--task-json", str(TASK_PATH), "--dry-run"]
-        )
+        args = _parse_args(["--task-json", str(TASK_PATH), "--dry-run"])
 
         self.assertTrue(args.randomize_task)
         self.assertTrue(args.randomize_base_goal)

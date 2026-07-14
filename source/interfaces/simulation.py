@@ -65,6 +65,16 @@ class SimulationRuntime(Protocol):
 
         ...
 
+    def begin_object_settle(self, episode_spec: "EpisodeSpec") -> dict[str, Any]:
+        """允许动态物体在 episode 开始前自然沉降。"""
+
+        ...
+
+    def finalize_object_settle(self, episode_spec: "EpisodeSpec") -> dict[str, Any]:
+        """保存并冻结动态物体的稳定 PhysX 位姿。"""
+
+        ...
+
     def read_object_bbox_world(self) -> dict[str, Any]:
         """只读返回当前任务物体 bbox，用于规划后执行前漂移诊断。"""
 

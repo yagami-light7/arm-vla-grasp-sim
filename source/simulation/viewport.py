@@ -13,12 +13,14 @@ def candidate_stage_camera_paths(camera_prim_path: str) -> tuple[str, ...]:
         candidates.append("/World/Camera_main")
     if camera_prim_path == "/World/Camera_main":
         candidates.append("/World/camera_main")
-    # 当前 USD 使用 camera1/2/3；Camera_font 仅作为历史命名 fallback。
+    # 当前多楼层 USD 使用 Camera0-8；旧场景 camera1/2/3 继续作为 fallback。
     candidates.extend(
         (
+            "/World/camera0",
             "/World/camera1",
             "/World/camera2",
             "/World/camera3",
+            "/World/Camera0",
             "/World/Camera1",
             "/World/Camera2",
             "/World/Camera3",
@@ -37,9 +39,11 @@ def candidate_stage_camera_paths(camera_prim_path: str) -> tuple[str, ...]:
             )
         )
     for camera_name in (
+        "Camera0",
         "Camera1",
         "Camera2",
         "Camera3",
+        "camera0",
         "camera1",
         "camera2",
         "camera3",
@@ -69,6 +73,9 @@ def _discover_camera_paths(stage: Any, requested_path: str) -> tuple[str, ...]:
     requested_name = requested_path.rsplit("/", 1)[-1].lower()
     preferred_tokens = (
         requested_name,
+        "camera0",
+        "camera_0",
+        "camera 0",
         "camera1",
         "camera_1",
         "camera 1",
@@ -284,8 +291,9 @@ def _candidate_viewports() -> tuple[tuple[str, Any], ...]:
 
 def configure_navigation_viewport(
     *,
-    camera_prim_path: str = "/World/Camera1",
+    camera_prim_path: str = "/World/Camera0",
     hide_collision_visual: bool = True,
+    apply_camera: bool = True,
 ) -> dict[str, Any]:
     """配置导航 GUI；只修改可见性与 viewport，不改动物理属性。"""
 
@@ -334,9 +342,11 @@ def configure_navigation_viewport(
         dict.fromkeys(
             (
                 camera_prim_path,
+                "/World/camera0",
                 "/World/camera1",
                 "/World/camera2",
                 "/World/camera3",
+                "/World/Camera0",
                 "/World/Camera1",
                 "/World/Camera2",
                 "/World/Camera3",
@@ -367,6 +377,14 @@ def configure_navigation_viewport(
         "display_only": True,
         "physics_unchanged": True,
     }
+    if not apply_camera:
+        report.update(
+            {
+                "camera_applied": False,
+                "reason": "manual_gui_camera_control",
+            }
+        )
+        return report
     if selected_path is None:
         report.update(
             {

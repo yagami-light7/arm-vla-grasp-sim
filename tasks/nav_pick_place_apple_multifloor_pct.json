@@ -1,0 +1,100 @@
+{
+  "task_id": 1002,
+  "episode_id": 1,
+  "instruction": "Template: use PCT multi-floor navigation to reach the apple, pick it, carry it to the upstairs place goal, and release it.",
+  "scene_usd": "source/scene/multifloor/usda/multifloor.usda",
+  "nav_map": "source/scene/multifloor/nav_map/map.json",
+  "start": {
+    "x": -4.2,
+    "y": 1.60,
+    "z": 0.36742,
+    "yaw": 1.5855269056817287,
+    "floor_id": "F1",
+    "slice_id": null
+  },
+  "pick": {
+    "base_goal": {
+      "x": -3.50493,
+      "y": 6.7491,
+      "z": 0.36742,
+      "yaw": 1.5707963267948966,
+      "floor_id": "F1",
+      "slice_id": null
+    },
+    "object_prim_path": "/World/apple_01",
+    "object_pose_world": {
+      "x": -3.5059430599212646,
+      "y": 7.245284080505371,
+      "z": 0.5628772974014282,
+      "yaw": -0.010068430908084697,
+      "roll": 0.033854853713603555,
+      "pitch": -0.019953342379394102
+    },
+    "grasp_mode": "auto"
+  },
+  "place": {
+    "enabled": true,
+    "base_goal": {
+      "x": 0.40,
+      "y": -0.10,
+      "z": 3.62628,
+      "yaw": -1.5707963267948966,
+      "floor_id": "F2",
+      "slice_id": null
+    },
+    "place_pose_world": {
+      "x": 0.36482,
+      "y": -0.64061,
+      "z": 3.82064,
+      "yaw": -0.009209615327406552,
+      "roll": -0.07970294816967886,
+      "pitch": 0.008772134465564053
+    },
+    "release_height": 0.04,
+    "retreat_height": 0.12,
+    "settle_steps": 120,
+    "place_xy_tolerance": 0.10,
+    "place_z_tolerance": 0.08
+  },
+  "carry": {
+    "mode": "contact",
+    "arm_posture": "carry_high",
+    "gripper_hold_command": "close",
+    "smoke_start": {
+      "x": -3.48391,
+      "y": 6.57414,
+      "z": 0.36742,
+      "yaw": 1.67247,
+      "floor_id": "F1",
+      "slice_id": null
+    },
+    "max_slip_distance": 0.08,
+    "min_lift_height": 0.05,
+    "object_drop_height_threshold": 0.05,
+    "verify_grasp_steps": 60,
+    "verify_carry_every_steps": 10
+  },
+  "loop": {
+    "enabled": false,
+    "num_cycles": 1
+  },
+  "recording": {
+    "dataset_dir": "episodes",
+    "front_camera": true,
+    "wrist_camera": false,
+    "save_every_n_steps": 10
+  },
+  "notes": {
+    "template": true,
+    "requires_user_assets": [
+      "source/scene/multifloor/usda/multifloor.usda",
+      "PCT tomogram pickle",
+      "PCT walkable map",
+      "Go2-X5 pct_multifloor locomotion checkpoint"
+    ],
+    "asset_manifest": "source/scene/multifloor",
+    "local_policy_checkpoint": "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
+    "navigation_note": "当前 nav_map 是占位路径；PCT smoke 会从 PCT walkable slice 生成 DWA 局部避障地图。start 坐标来自机器狗起点 Transform，pick/place pose_world 坐标来自苹果 pick/place Transform，base_goal 是机器人底盘站位而不是苹果中心点。",
+    "visual_note": "source/scene/multifloor/usda/multifloor.usda 是当前唯一保留的高质量 NuRec 主场景，/World/gauss 为 clean 3DGS visual，/World/scene_collision 为隐藏 collision mesh，两者均按 Z 轴 180 度旋转对齐。"
+  }
+}

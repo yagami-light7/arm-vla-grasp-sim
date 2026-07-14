@@ -10,15 +10,25 @@ from typing import Any
 
 @dataclass(frozen=True)
 class Pose2D:
-    """Planar world-frame pose."""
+    """Navigation goal pose; legacy tasks may only provide planar fields."""
 
     x: float
     y: float
     yaw: float = 0.0
+    z: float | None = None
+    floor_id: str | None = None
+    slice_id: int | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Pose2D":
-        return cls(x=float(data["x"]), y=float(data["y"]), yaw=float(data.get("yaw", 0.0)))
+        return cls(
+            x=float(data["x"]),
+            y=float(data["y"]),
+            yaw=float(data.get("yaw", 0.0)),
+            z=None if data.get("z") is None else float(data["z"]),
+            floor_id=None if data.get("floor_id") is None else str(data["floor_id"]),
+            slice_id=None if data.get("slice_id") is None else int(data["slice_id"]),
+        )
 
     def to_list(self) -> list[float]:
         return [self.x, self.y, self.yaw]
