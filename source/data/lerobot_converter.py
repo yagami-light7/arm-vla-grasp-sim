@@ -67,6 +67,11 @@ def main() -> None:
         default=None,
         help="覆盖数据集采样帧率；默认从 episode manifest 读取，旧数据回退为 5 Hz。",
     )
+    parser.add_argument(
+        "--allow-unverified-success",
+        action="store_true",
+        help="仅用于旧数据诊断：允许转换没有最终物理来源门禁的 success episode。",
+    )
     args = parser.parse_args()
     if args.episodes_root:
         episodes_root = Path(args.episodes_root).expanduser().resolve()
@@ -75,7 +80,11 @@ def main() -> None:
             if args.output_root
             else episodes_root / "lerobot_dataset"
         )
-        episode_dirs = discover_recorded_episodes(episodes_root, require_success=True)
+        episode_dirs = discover_recorded_episodes(
+            episodes_root,
+            require_success=True,
+            require_training_quality=not args.allow_unverified_success,
+        )
         manifest = materialize_lerobot_dataset(
             episode_dirs,
             output_root,

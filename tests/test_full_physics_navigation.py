@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
+from source.diagnostics import NavigationEpisodeVerifier
 from source.interfaces.navigation import NavGoal, NavPlan
 from source.interfaces.simulation import SimulationState
 from source.navigation.executor import DwaNavExecutor
@@ -194,6 +195,164 @@ class FullPhysicsNavigationTest(unittest.TestCase):
         self.assertEqual(stopped.base_velocity, (0.0, 0.0, 0.0))
         self.assertTrue(executor.status()["success"])
         self.assertEqual(executor.status()["phase"], "completed")
+
+    def test_carry_terminal_latches_forward_translation_after_final_yaw(self) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((40, 40), dtype=bool),
+            0.05,
+            (-1.0, -1.0, 0.0),
+        )
+        state = _state(x=0.0, y=0.0, yaw=0.0)
+        plan = NavPlan(
+            goal=NavGoal(x=0.031, y=0.099, yaw=0.148),
+            waypoints=((0.0, 0.0), (0.031, 0.099)),
+            metadata={
+                "execution_phase": "carry_nav_to_place",
+                "require_yaw_alignment": True,
+                "yaw_tolerance": 0.15,
+            },
+        )
+        executor = DwaNavExecutor(
+            grid_map=grid,
+            dwa_config=DWAConfig(control_dt=0.02, goal_tolerance=0.05),
+            terminal_start_distance=0.18,
+            position_tolerance=0.05,
+            yaw_tolerance=0.15,
+            carry_max_linear_velocity=0.25,
+            carry_max_angular_velocity=0.30,
+        )
+        executor.reset(plan)
+
+        action = executor.compute_action(state)
+
+        self.assertEqual(action.source, "navigation_terminal_pose")
+        self.assertEqual(action.base_velocity, (0.0, 0.0, 0.50))
+        self.assertEqual(
+            action.metadata["terminal_control_mode"],
+            "carry_forward_translation",
+        )
+        self.assertAlmostEqual(
+            action.metadata["terminal_translation_heading_error"],
+            math.atan2(0.099, 0.031),
+        )
+        self.assertTrue(action.metadata["carry_forward_translation_active"])
+        self.assertEqual(
+            action.metadata["carry_forward_translation_activation_reason"],
+            "final_yaw_aligned_with_xy_residual",
+        )
+
+        # Turning toward the XY residual intentionally moves away from final yaw
+        # and can briefly increase distance.  Stay in terminal control instead
+        # of falling back to DWA and its occupied-cell rejection loop.
+        action = executor.compute_action(_state(x=0.0, y=-0.10, yaw=0.40))
+        self.assertEqual(action.source, "navigation_terminal_pose")
+        self.assertEqual(
+            action.metadata["terminal_control_mode"],
+            "carry_forward_translation",
+        )
+        self.assertTrue(action.metadata["carry_forward_translation_active"])
+
+    def test_carry_terminal_keeps_proven_holonomic_alignment_before_final_yaw(self) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((40, 40), dtype=bool),
+            0.05,
+            (-1.0, -1.0, 0.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=0.088, y=0.148, yaw=1.25),
+            waypoints=((0.0, 0.0), (0.088, 0.148)),
+            metadata={
+                "execution_phase": "carry_nav_to_place",
+                "require_yaw_alignment": True,
+                "yaw_tolerance": 0.15,
+            },
+        )
+        executor = DwaNavExecutor(
+            grid_map=grid,
+            dwa_config=DWAConfig(control_dt=0.02, goal_tolerance=0.05),
+            terminal_start_distance=0.18,
+            position_tolerance=0.05,
+            yaw_tolerance=0.15,
+            carry_max_linear_velocity=0.25,
+            carry_max_angular_velocity=0.30,
+        )
+        executor.reset(plan)
+
+        action = executor.compute_action(_state(x=0.0, y=0.0, yaw=0.0))
+
+        self.assertEqual(action.source, "navigation_terminal_pose")
+        self.assertEqual(action.metadata["terminal_control_mode"], "final_pose")
+        self.assertFalse(action.metadata["carry_forward_translation_active"])
+        self.assertGreater(action.base_velocity[0], 0.0)
+        self.assertGreater(action.base_velocity[1], 0.0)
+        self.assertGreater(action.base_velocity[2], 0.30)
+
+    def test_carry_place_tolerance_holds_zero_until_base_is_stable(self) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((40, 40), dtype=bool),
+            0.05,
+            (-1.0, -1.0, 0.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=0.10, y=0.0, yaw=0.0),
+            waypoints=((0.0, 0.0), (0.10, 0.0)),
+            metadata={
+                "execution_phase": "carry_nav_to_place",
+                "require_yaw_alignment": True,
+                "yaw_tolerance": 0.15,
+            },
+        )
+        executor = DwaNavExecutor(
+            grid_map=grid,
+            terminal_start_distance=0.18,
+            position_tolerance=0.05,
+            carry_position_tolerance=0.12,
+            completion_linear_velocity_tolerance=0.06,
+            completion_angular_velocity_tolerance=0.20,
+        )
+        executor.reset(plan)
+
+        moving = _state(
+            x=0.0,
+            y=0.0,
+            yaw=0.0,
+            velocity=(0.20, 0.0, 0.0, 0.0, 0.0, 0.0),
+        )
+        settling = executor.compute_action(moving)
+
+        self.assertEqual(settling.source, "navigation_settling")
+        self.assertEqual(settling.base_velocity, (0.0, 0.0, 0.0))
+        self.assertEqual(executor.status()["phase"], "settling")
+        self.assertEqual(executor.status()["position_tolerance"], 0.12)
+
+        stopped = executor.compute_action(_state(x=0.0, y=0.0, yaw=0.0))
+        self.assertEqual(stopped.base_velocity, (0.0, 0.0, 0.0))
+        self.assertTrue(executor.status()["success"])
+
+    def test_navigation_verifier_uses_place_only_position_tolerance(self) -> None:
+        spec = JsonTaskProvider().load(
+            PROJECT_ROOT / "tasks/nav_pick_place_cola_liangzhu_pct.json"
+        )
+        self.assertIsNotNone(spec.place_goal)
+        verifier = NavigationEpisodeVerifier(
+            position_tolerance=0.05,
+            place_position_tolerance=0.12,
+            yaw_tolerance=0.15,
+            require_yaw_alignment=True,
+        )
+        state = _state(
+            x=spec.place_goal.x + 0.10,
+            y=spec.place_goal.y,
+            yaw=spec.place_goal.yaw,
+        )
+
+        place_result = verifier.verify_place_reachable(state, spec)
+        pick_result = verifier.verify_pick_reachable(state, spec)
+
+        self.assertTrue(place_result.success)
+        self.assertEqual(place_result.metadata["position_tolerance"], 0.12)
+        self.assertFalse(pick_result.success)
+        self.assertEqual(pick_result.metadata["position_tolerance"], 0.05)
 
     def test_executor_can_accept_xy_without_yaw_alignment(self) -> None:
         grid = OccupancyGridMap(

@@ -108,9 +108,11 @@ class FullPhysicsPipelineTest(unittest.TestCase):
 
             self.assertTrue(summary["success"])
             self.assertFalse(summary["pure_physics_success"])
+            self.assertFalse(summary["lerobot_training_eligible"])
             self.assertFalse(summary["execution_provenance_verified"])
             self.assertEqual(summary["success_semantics"], "control_flow_only")
             self.assertEqual(summary["state_trace"], expected_trace)
+            self.assertTrue(summary["place_verification_result"]["success"])
             self.assertGreater(summary["duration_steps"], len(expected_trace))
             self.assertEqual(pipeline.simulation.apply_calls, summary["duration_steps"])
 
@@ -125,6 +127,20 @@ class FullPhysicsPipelineTest(unittest.TestCase):
 
             manifest = json.loads((output_dir / "lerobot_manifest.json").read_text(encoding="utf-8"))
             self.assertFalse(manifest["lerobot_exported"])
+            self.assertFalse(manifest["training_eligible"])
+            self.assertFalse(manifest["episode_success_verified"])
+            self.assertEqual(
+                manifest["reason"],
+                "execution_mode_is_not_full_physics",
+            )
+            self.assertEqual(manifest["control_action_dimension"], 11)
+            self.assertEqual(
+                manifest["vla_training_action_schema"],
+                "base_xyyaw_tcp_base_rpy_gripper_v1",
+            )
+            self.assertEqual(manifest["vla_training_action_dimension"], 10)
+            self.assertFalse(manifest["vla_training_action_available"])
+            self.assertFalse(manifest["vla_training_eligible"])
             event_names = [
                 json.loads(line)["name"]
                 for line in (output_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
@@ -373,6 +389,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertIn("--navigation-carry-smoke", help_text)
         self.assertIn("--pct-plan-preview", help_text)
         self.assertIn("--pct-cross-floor-gateway", help_text)
+        self.assertIn("--pct-coord-mode", help_text)
         self.assertIn("--pct-stair-float", help_text)
         self.assertIn("--pct-stair-float-exit-distance", help_text)
         self.assertIn("--pct-stair-float-settle-time", help_text)
@@ -516,6 +533,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             args.pct_global_vertical_obstacle_min_slices,
             NavigationSettings().pct_global_vertical_obstacle_min_slices,
         )
+        self.assertEqual(args.pct_coord_mode, NavigationSettings().pct_coord_mode)
         self.assertEqual(
             args.pct_cross_floor_vertical_obstacle_min_slices,
             NavigationSettings().pct_cross_floor_vertical_obstacle_min_slices,
@@ -570,6 +588,23 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             args.pct_stair_float_release_root_z_offset,
             NavigationSettings().pct_stair_float_release_root_z_offset_m,
         )
+
+    def test_cli_accepts_liangzhu_identity_pct_frame(self) -> None:
+        """良渚 PLY 与 Isaac 同坐标时必须能显式关闭旧场景的 X/Y 取反。"""
+
+        args = _build_parser().parse_args(
+            [
+                "--task-json",
+                "tasks/nav_pick_place_apple_contact.json",
+                "--global-planner",
+                "pct",
+                "--pct-coord-mode",
+                "identity",
+            ]
+        )
+
+        self.assertEqual(args.global_planner, "pct")
+        self.assertEqual(args.pct_coord_mode, "identity")
 
     def test_cli_accepts_pct_stair_float_overrides(self) -> None:
         args = _build_parser().parse_args(
@@ -1114,6 +1149,87 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         no_retreat = verifier.verify_pick_success(no_retreat_state, spec)
         self.assertFalse(no_retreat.success)
         self.assertEqual(no_retreat.failure_reason, "object_not_retreated")
+
+    def test_place_verifier_uses_task_tolerance_and_safe_region(self) -> None:
+        """小型垫子任务不能继续使用宽松的全局默认容差。"""
+
+        base_spec = JsonTaskProvider().load(
+            PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json"
+        )
+        target_pose = (1.0, 2.0, 0.10, 0.0, 0.0, 0.0)
+        raw_task = {
+            **base_spec.raw_task,
+            "place": {
+                **dict(base_spec.raw_task.get("place") or {}),
+                "place_xy_tolerance": 0.025,
+                "place_z_tolerance": 0.02,
+                "placement_region": {
+                    "frame": "world",
+                    "x_min": 0.96,
+                    "x_max": 1.04,
+                    "y_min": 1.96,
+                    "y_max": 2.04,
+                },
+            },
+        }
+        spec = replace(
+            base_spec,
+            place_target_pose=target_pose,
+            raw_task=raw_task,
+        )
+        verifier = FullPhysicsVerifier(NavigationEpisodeVerifier())
+        base_state = SimulationState(
+            step_index=1,
+            timestamp=0.0,
+            robot_root_pose=(0.0, 0.0, 0.35, 1.0, 0.0, 0.0, 0.0),
+            robot_root_velocity=(0.0,) * 6,
+            object_pose=(1.0, 2.0, 0.10, 1.0, 0.0, 0.0, 0.0),
+            object_velocity=(0.0,) * 6,
+            metadata={"gripper_open_apply_count": 1},
+        )
+
+        accepted = verifier.verify_place_success(base_state, spec)
+        self.assertTrue(accepted.success)
+        self.assertEqual(
+            accepted.metadata["validation_mode"],
+            "object_final_pose_region_and_stability",
+        )
+        self.assertEqual(accepted.metadata["place_xy_tolerance_m"], 0.025)
+        self.assertTrue(
+            accepted.metadata["placement_region_contains_object_center"]
+        )
+
+        outside_task_tolerance = verifier.verify_place_success(
+            replace(base_state, object_pose=(1.05, 2.0, 0.10, 1.0, 0.0, 0.0, 0.0)),
+            spec,
+        )
+        self.assertFalse(outside_task_tolerance.success)
+
+        region_limited_spec = replace(
+            spec,
+            raw_task={
+                **raw_task,
+                "place": {
+                    **raw_task["place"],
+                    "place_xy_tolerance": 0.10,
+                    "placement_region": {
+                        "frame": "world",
+                        "x_min": 0.98,
+                        "x_max": 1.02,
+                        "y_min": 1.98,
+                        "y_max": 2.02,
+                    },
+                },
+            },
+        )
+        outside_region = verifier.verify_place_success(
+            replace(base_state, object_pose=(1.05, 2.0, 0.10, 1.0, 0.0, 0.0, 0.0)),
+            region_limited_spec,
+        )
+        self.assertFalse(outside_region.success)
+        self.assertFalse(
+            outside_region.metadata["placement_region_contains_object_center"]
+        )
 
     def test_full_physics_mode_reports_stable_success_with_lock_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

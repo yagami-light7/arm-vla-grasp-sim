@@ -10,6 +10,12 @@ from typing import Any
 
 from source.interfaces import EpisodeSpec, RobotAction, SimulationState
 
+from .receptacle_support import (
+    inspect_task_receptacle_support_stage,
+    inspect_task_receptacle_support_usd,
+)
+from .scene_runtime import resolve_scene_runtime_settings
+
 
 @dataclass(frozen=True)
 class IsaacLabNavigationRuntimeConfig:
@@ -24,8 +30,8 @@ class IsaacLabNavigationRuntimeConfig:
     terrain_prim_path: str = "/World/scene_collision"
     collision_floor_proxy_profile: str | None = None
     visual_prim_path: str = "/World/gauss"
-    enable_scene_visual: bool = True
-    viewport_camera_prim_path: str = "/World/Camera0"
+    enable_scene_visual: bool = False
+    viewport_camera_prim_path: str = "/World/overview"
     hide_navigation_collision_visual: bool = True
     scene_light_mode: str = "camera"
     camera_light_intensity: float = 3500.0
@@ -39,6 +45,11 @@ class IsaacLabNavigationRuntimeConfig:
     enable_wrist_camera: bool = False
     wrist_camera_height: int = 480
     wrist_camera_width: int = 640
+    # 绑定场景中已标定的 overview Camera，不生成或改写相机位姿。
+    enable_overview_camera: bool = False
+    overview_camera_prim_path: str = "/World/overview"
+    overview_camera_height: int = 480
+    overview_camera_width: int = 640
     patch_gripper_collision: bool = True
     gripper_collision_robot_root: str = "/World/go2_x5"
     gripper_collision_links: tuple[str, str] = ("arm_link7", "arm_link8")
@@ -175,6 +186,129 @@ def _quat_rotate_vector_wxyz(
         _quat_conjugate_wxyz(normalized),
     )
     return (rotated[1], rotated[2], rotated[3])
+
+
+def _transform_authored_aabb_to_live_rigid_pose(
+    *,
+    authored_bbox_min: Any,
+    authored_bbox_max: Any,
+    authored_rigid_position: Any,
+    authored_rigid_quaternion_wxyz: Any,
+    live_rigid_position: Any,
+    live_rigid_quaternion_wxyz: Any,
+) -> dict[str, Any]:
+    """把 authored world AABB 先还原到刚体局部系，再映射到 live PhysX pose。
+
+    这样不会假设刚体原点恰好等于 Mesh bbox 中心。输入 AABB 是保守包围盒；
+    物体旋转后输出仍是该包围盒刚性变换后的 world AABB。
+    """
+
+    import itertools
+    import numpy as np
+
+    def _vector(value: Any, *, field_name: str, length: int) -> np.ndarray:
+        vector = np.asarray(value, dtype=float)
+        if vector.shape != (length,) or not bool(np.all(np.isfinite(vector))):
+            raise RuntimeError(f"{field_name} 必须是 {length} 个有限数值")
+        return vector
+
+    bbox_min = _vector(authored_bbox_min, field_name="authored_bbox_min", length=3)
+    bbox_max = _vector(authored_bbox_max, field_name="authored_bbox_max", length=3)
+    if bool(np.any(bbox_max <= bbox_min)):
+        raise RuntimeError("authored object bbox 必须具有正尺寸")
+    authored_position = _vector(
+        authored_rigid_position,
+        field_name="authored_rigid_position",
+        length=3,
+    )
+    live_position = _vector(
+        live_rigid_position,
+        field_name="live_rigid_position",
+        length=3,
+    )
+    authored_quaternion = tuple(
+        _vector(
+            authored_rigid_quaternion_wxyz,
+            field_name="authored_rigid_quaternion_wxyz",
+            length=4,
+        ).tolist()
+    )
+    live_quaternion = tuple(
+        _vector(
+            live_rigid_quaternion_wxyz,
+            field_name="live_rigid_quaternion_wxyz",
+            length=4,
+        ).tolist()
+    )
+    authored_quaternion = _quat_normalize_wxyz(authored_quaternion)  # type: ignore[arg-type]
+    live_quaternion = _quat_normalize_wxyz(live_quaternion)  # type: ignore[arg-type]
+    world_to_authored_rigid = _quat_conjugate_wxyz(authored_quaternion)
+
+    authored_corners = [
+        np.asarray(corner, dtype=float)
+        for corner in itertools.product(
+            (bbox_min[0], bbox_max[0]),
+            (bbox_min[1], bbox_max[1]),
+            (bbox_min[2], bbox_max[2]),
+        )
+    ]
+    rigid_local_corners = [
+        np.asarray(
+            _quat_rotate_vector_wxyz(
+                world_to_authored_rigid,
+                tuple((corner - authored_position).tolist()),
+            ),
+            dtype=float,
+        )
+        for corner in authored_corners
+    ]
+    live_world_corners = np.stack(
+        [
+            live_position
+            + np.asarray(
+                _quat_rotate_vector_wxyz(
+                    live_quaternion,
+                    tuple(local_corner.tolist()),
+                ),
+                dtype=float,
+            )
+            for local_corner in rigid_local_corners
+        ],
+        axis=0,
+    )
+    live_bbox_min = np.min(live_world_corners, axis=0)
+    live_bbox_max = np.max(live_world_corners, axis=0)
+    live_bbox_center = 0.5 * (live_bbox_min + live_bbox_max)
+    authored_bbox_center = 0.5 * (bbox_min + bbox_max)
+    center_offset_rigid = np.asarray(
+        _quat_rotate_vector_wxyz(
+            world_to_authored_rigid,
+            tuple((authored_bbox_center - authored_position).tolist()),
+        ),
+        dtype=float,
+    )
+    expected_live_center = live_position + np.asarray(
+        _quat_rotate_vector_wxyz(
+            live_quaternion,
+            tuple(center_offset_rigid.tolist()),
+        ),
+        dtype=float,
+    )
+    if not bool(np.allclose(live_bbox_center, expected_live_center, atol=1.0e-9)):
+        raise RuntimeError("live bbox center 与刚体局部中心偏移变换不一致")
+    return {
+        "min_xyz": live_bbox_min.tolist(),
+        "max_xyz": live_bbox_max.tolist(),
+        "center_xyz": live_bbox_center.tolist(),
+        "size_xyz": (live_bbox_max - live_bbox_min).tolist(),
+        "authored_bbox_center_xyz": authored_bbox_center.tolist(),
+        "authored_rigid_position_xyz": authored_position.tolist(),
+        "authored_rigid_quaternion_wxyz": list(authored_quaternion),
+        "bbox_center_offset_rigid_xyz": center_offset_rigid.tolist(),
+        "live_rigid_position_xyz": live_position.tolist(),
+        "live_rigid_quaternion_wxyz": list(live_quaternion),
+        "transform_mode": "authored_world_aabb_via_live_rigid_pose",
+    }
 
 
 def _as_tuple(values: Any) -> tuple[float, ...]:
@@ -325,6 +459,330 @@ def _distance_point_to_aabb_xy(point_xy: Any, bbox_min: Any, bbox_max: Any) -> f
     return float(np.linalg.norm(delta))
 
 
+def _derive_mesh_truth_place_pose(
+    *,
+    raw_place: dict[str, Any],
+    receptacle_support_report: dict[str, Any] | None,
+    pick_object_bbox: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """由运行时支撑 Mesh 与抓取前物体 bbox 推导最终物体中心。
+
+    ``place_pose_world`` 仍作为 Phase-0 人工标注的一致性基准，但启用该模式后
+    不再直接作为运行时 XYZ 来源。任何支撑几何、物体尺寸或标注点漂移都会显式
+    失败，避免 CuRobo 静默使用过期目标。
+    """
+
+    mesh_config = raw_place.get("mesh_truth_target")
+    if mesh_config is None:
+        return None
+    if not isinstance(mesh_config, dict):
+        raise RuntimeError("task.place.mesh_truth_target 必须是对象")
+    if not bool(mesh_config.get("enabled", False)):
+        return None
+
+    expected_sources = {
+        "target_xy_source": "runtime_placement_region_center",
+        "support_surface_source": "runtime_target_support_bbox_top",
+        "object_support_extent_source": (
+            "pick_live_object_bbox_center_to_min_z"
+        ),
+    }
+    for field_name, expected_value in expected_sources.items():
+        if mesh_config.get(field_name) != expected_value:
+            raise RuntimeError(
+                "task.place.mesh_truth_target source contract mismatch: "
+                f"{field_name}={mesh_config.get(field_name)!r}, "
+                f"expected={expected_value!r}"
+            )
+    if mesh_config.get("visual_localization_required") is not False:
+        raise RuntimeError(
+            "Mesh-truth place target 必须显式配置 visual_localization_required=false"
+        )
+
+    if not isinstance(receptacle_support_report, dict):
+        raise RuntimeError("Mesh-truth place target 缺少运行时 receptacle support 报告")
+    if receptacle_support_report.get("configured") is not True:
+        raise RuntimeError("Mesh-truth place target 的 receptacle support 未配置")
+    if receptacle_support_report.get("geometry_verified") is not True:
+        raise RuntimeError("Mesh-truth place target 的运行时 support geometry 未验证")
+    region_report = receptacle_support_report.get("placement_region_report")
+    if not isinstance(region_report, dict) or region_report.get("verified") is not True:
+        raise RuntimeError("Mesh-truth place target 的 placement region 未验证")
+
+    placement_region = receptacle_support_report.get("placement_region")
+    if not isinstance(placement_region, dict):
+        raise RuntimeError("运行时 support 报告缺少 placement_region")
+    if placement_region.get("frame") != "world":
+        raise RuntimeError("Mesh-truth placement_region.frame 必须是 world")
+
+    def _finite_float(value: Any, *, field_name: str) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"{field_name} 必须是有限数值") from exc
+        if not math.isfinite(parsed):
+            raise RuntimeError(f"{field_name} 必须是有限数值")
+        return parsed
+
+    def _finite_xyz(value: Any, *, field_name: str) -> tuple[float, float, float]:
+        if not isinstance(value, (list, tuple)) or len(value) != 3:
+            raise RuntimeError(f"{field_name} 必须包含三个有限数值")
+        return tuple(
+            _finite_float(item, field_name=f"{field_name}[{index}]")
+            for index, item in enumerate(value)
+        )
+
+    x_min = _finite_float(placement_region.get("x_min"), field_name="placement_region.x_min")
+    x_max = _finite_float(placement_region.get("x_max"), field_name="placement_region.x_max")
+    y_min = _finite_float(placement_region.get("y_min"), field_name="placement_region.y_min")
+    y_max = _finite_float(placement_region.get("y_max"), field_name="placement_region.y_max")
+    region_surface_z = _finite_float(
+        placement_region.get("z_surface"),
+        field_name="placement_region.z_surface",
+    )
+    if not x_min < x_max or not y_min < y_max:
+        raise RuntimeError("Mesh-truth placement region 边界顺序无效")
+
+    support_bbox_min = _finite_xyz(
+        receptacle_support_report.get("world_bbox_min_xyz"),
+        field_name="support_report.world_bbox_min_xyz",
+    )
+    support_bbox_max = _finite_xyz(
+        receptacle_support_report.get("world_bbox_max_xyz"),
+        field_name="support_report.world_bbox_max_xyz",
+    )
+    support_surface_z = _finite_float(
+        receptacle_support_report.get("support_surface_z"),
+        field_name="support_report.support_surface_z",
+    )
+    geometry_tolerance_m = _finite_float(
+        mesh_config.get("configured_pose_consistency_tolerance_m", 1.0e-6),
+        field_name=(
+            "task.place.mesh_truth_target."
+            "configured_pose_consistency_tolerance_m"
+        ),
+    )
+    if geometry_tolerance_m < 0.0:
+        raise RuntimeError("Mesh-truth geometry tolerance 不能为负数")
+    if abs(support_surface_z - support_bbox_max[2]) > geometry_tolerance_m:
+        raise RuntimeError("运行时 support_surface_z 与 support bbox 顶面不一致")
+    if abs(region_surface_z - support_surface_z) > geometry_tolerance_m:
+        raise RuntimeError("运行时 placement region 与 support bbox 顶面不一致")
+
+    if not isinstance(pick_object_bbox, dict):
+        raise RuntimeError("Mesh-truth place target 缺少抓取前实时物体 bbox")
+    if pick_object_bbox.get("center_source") != "live_physx_object_pose":
+        raise RuntimeError(
+            "Mesh-truth place target 要求抓取前 bbox center 来自 live PhysX pose"
+        )
+    pick_bbox_min = _finite_xyz(
+        pick_object_bbox.get("min_xyz"),
+        field_name="pick_object_bbox.min_xyz",
+    )
+    pick_bbox_max = _finite_xyz(
+        pick_object_bbox.get("max_xyz"),
+        field_name="pick_object_bbox.max_xyz",
+    )
+    pick_bbox_center = _finite_xyz(
+        pick_object_bbox.get("center_xyz"),
+        field_name="pick_object_bbox.center_xyz",
+    )
+    object_bbox_center_to_min_z_m = pick_bbox_center[2] - pick_bbox_min[2]
+    if object_bbox_center_to_min_z_m <= 0.0:
+        raise RuntimeError("抓取前物体 bbox 的 center-to-min-z 必须为正数")
+    expected_extent_field = "expected_object_bbox_center_to_min_z_m"
+    if expected_extent_field in mesh_config:
+        expected_extent_raw = mesh_config.get(expected_extent_field)
+    else:
+        # 兼容早期任务配置；新任务应使用准确表达 bbox 几何的字段名。
+        expected_extent_field = "expected_object_center_to_support_m"
+        expected_extent_raw = mesh_config.get(expected_extent_field)
+    expected_extent_m = _finite_float(
+        expected_extent_raw,
+        field_name=f"task.place.mesh_truth_target.{expected_extent_field}",
+    )
+    extent_tolerance_m = _finite_float(
+        mesh_config.get("object_extent_tolerance_m"),
+        field_name="task.place.mesh_truth_target.object_extent_tolerance_m",
+    )
+    if extent_tolerance_m < 0.0:
+        raise RuntimeError("Mesh-truth object extent tolerance 不能为负数")
+    extent_error_m = abs(object_bbox_center_to_min_z_m - expected_extent_m)
+    if extent_error_m > extent_tolerance_m:
+        raise RuntimeError(
+            "抓取前物体 Mesh extent 与任务标定不一致: "
+            f"error_m={extent_error_m}, tolerance_m={extent_tolerance_m}"
+        )
+
+    configured_pose = raw_place.get("place_pose_world")
+    if not isinstance(configured_pose, dict):
+        raise RuntimeError("Mesh-truth place target 要求 place_pose_world 作为审计基准")
+    configured_xyz = tuple(
+        _finite_float(configured_pose.get(axis), field_name=f"place_pose_world.{axis}")
+        for axis in ("x", "y", "z")
+    )
+    calibrated_xyz = (
+        0.5 * (x_min + x_max),
+        0.5 * (y_min + y_max),
+        support_surface_z + expected_extent_m,
+    )
+    configured_pose_errors_m = {
+        axis: abs(calibrated_xyz[index] - configured_xyz[index])
+        for index, axis in enumerate(("x", "y", "z"))
+    }
+    configured_pose_max_abs_error_m = max(configured_pose_errors_m.values())
+    if configured_pose_max_abs_error_m > geometry_tolerance_m:
+        raise RuntimeError(
+            "Mesh-derived place pose 与 configured place pose drifted: "
+            f"max_abs_error_m={configured_pose_max_abs_error_m}, "
+            f"tolerance_m={geometry_tolerance_m}"
+        )
+
+    # 运行目标使用本 episode 抓取前的 live bbox；静态标注只与离线标定半高比较。
+    # 因此 PhysX settle 引起、且仍在 object_extent_tolerance_m 内的微小变化不会被
+    # 更严格的静态标注漂移门禁误拒绝。
+    derived_xyz = (
+        calibrated_xyz[0],
+        calibrated_xyz[1],
+        support_surface_z + object_bbox_center_to_min_z_m,
+    )
+    runtime_to_configured_errors_m = {
+        axis: abs(derived_xyz[index] - configured_xyz[index])
+        for index, axis in enumerate(("x", "y", "z"))
+    }
+
+    payload = dict(configured_pose)
+    payload.update(
+        {
+            "x": derived_xyz[0],
+            "y": derived_xyz[1],
+            "z": derived_xyz[2],
+        }
+    )
+    report = {
+        "configured": True,
+        "enabled": True,
+        "verified": True,
+        "visual_localization_required": False,
+        "visual_localization_used": False,
+        **expected_sources,
+        "target_receptacle_prim_path": receptacle_support_report.get(
+            "target_receptacle_prim_path"
+        ),
+        "target_support_prim_path": receptacle_support_report.get(
+            "target_support_prim_path"
+        ),
+        "support_report_source": receptacle_support_report.get("source"),
+        "support_geometry_verified": True,
+        "support_bbox_world": {
+            "min_xyz": list(support_bbox_min),
+            "max_xyz": list(support_bbox_max),
+        },
+        "placement_region_world": {
+            "x_min": x_min,
+            "x_max": x_max,
+            "y_min": y_min,
+            "y_max": y_max,
+            "z_surface": region_surface_z,
+        },
+        "pick_object_bbox_world": {
+            "min_xyz": list(pick_bbox_min),
+            "max_xyz": list(pick_bbox_max),
+            "center_xyz": list(pick_bbox_center),
+            "center_source": pick_object_bbox.get("center_source"),
+        },
+        "object_bbox_center_to_min_z_m": object_bbox_center_to_min_z_m,
+        "expected_object_bbox_center_to_min_z_m": expected_extent_m,
+        "expected_object_extent_config_field": expected_extent_field,
+        "object_extent_error_m": extent_error_m,
+        "object_extent_tolerance_m": extent_tolerance_m,
+        "object_extent_consistency_verified": True,
+        "derived_place_pose_world": {
+            "x": derived_xyz[0],
+            "y": derived_xyz[1],
+            "z": derived_xyz[2],
+            "roll": float(payload.get("roll", 0.0)),
+            "pitch": float(payload.get("pitch", 0.0)),
+            "yaw": float(payload.get("yaw", 0.0)),
+        },
+        "configured_place_pose_world": {
+            "x": configured_xyz[0],
+            "y": configured_xyz[1],
+            "z": configured_xyz[2],
+        },
+        "calibrated_place_pose_world": {
+            "x": calibrated_xyz[0],
+            "y": calibrated_xyz[1],
+            "z": calibrated_xyz[2],
+        },
+        "configured_pose_errors_m": configured_pose_errors_m,
+        "configured_pose_max_abs_error_m": configured_pose_max_abs_error_m,
+        "configured_pose_consistency_tolerance_m": geometry_tolerance_m,
+        "configured_pose_consistency_verified": True,
+        "runtime_to_configured_pose_errors_m": runtime_to_configured_errors_m,
+        "runtime_to_configured_pose_max_abs_error_m": max(
+            runtime_to_configured_errors_m.values()
+        ),
+        "xyz_source": "runtime_mesh_truth",
+        "orientation_source": "task_place_pose_world",
+    }
+    return payload, report
+
+
+def _resolve_mesh_truth_manipulation_contract(
+    raw_task: dict[str, Any],
+) -> dict[str, Any]:
+    """解析运行时 Mesh-truth 操作目标合同；旧任务默认不要求。"""
+
+    raw_config = raw_task.get("mesh_truth_manipulation_targets")
+    if raw_config is None:
+        return {"configured": False, "required": False}
+    if not isinstance(raw_config, dict):
+        raise RuntimeError("task.mesh_truth_manipulation_targets 必须是对象")
+    required = bool(raw_config.get("required", False))
+    report = {
+        **raw_config,
+        "configured": True,
+        "required": required,
+    }
+    if not required:
+        return report
+    expected = {
+        "visual_localization_required": False,
+        "pick_tcp_source": "runtime_live_object_bbox",
+        "place_tcp_source": (
+            "runtime_receptacle_bbox_plus_pick_object_bbox_plus_current_tcp_offset"
+        ),
+    }
+    mismatches = {
+        key: {"actual": raw_config.get(key), "expected": expected_value}
+        for key, expected_value in expected.items()
+        if raw_config.get(key) != expected_value
+    }
+    if mismatches:
+        raise RuntimeError(
+            "task.mesh_truth_manipulation_targets contract mismatch: "
+            f"{mismatches}"
+        )
+    return report
+
+
+def _resolve_pick_grasp_mode(raw_task: dict[str, Any]) -> dict[str, str]:
+    """解析 task.pick.grasp_mode，并保留 auto 的旧 side 兼容语义。"""
+
+    raw_pick = raw_task.get("pick")
+    raw_pick = raw_pick if isinstance(raw_pick, dict) else {}
+    requested = str(raw_pick.get("grasp_mode") or "auto").strip().lower()
+    requested = requested.replace("-", "_")
+    if requested not in {"auto", "side", "top_down"}:
+        raise RuntimeError(
+            "task.pick.grasp_mode 必须是 auto、side 或 top_down，"
+            f"当前为 {requested!r}"
+        )
+    resolved = "side" if requested == "auto" else requested
+    return {"requested": requested, "resolved": resolved}
+
+
 def _point_inside_aabb(point: Any, bbox_min: Any, bbox_max: Any, *, margin: float = 0.0) -> bool:
     """判断 point 是否在 AABB 内部。"""
 
@@ -345,30 +803,212 @@ def _sanitize_obstacle_name(prim_path: str, index: int) -> str:
     return f"obs_{index:03d}_{safe[-80:]}"
 
 
+def _collision_vector(
+    value: Any,
+    *,
+    field_name: str,
+    length: int,
+) -> Any:
+    """严格解析任务中的碰撞向量，禁止 NaN 或隐式补维。"""
+
+    import numpy as np
+
+    vector = np.asarray(value, dtype=float)
+    if vector.shape != (length,) or not bool(np.all(np.isfinite(vector))):
+        raise RuntimeError(
+            f"{field_name} 必须是 {length} 个有限数值，实际为 {value!r}"
+        )
+    return vector
+
+
+def _task_world_collision_cuboids(
+    *,
+    raw_task: dict[str, Any],
+    phase: str,
+    T_world_base: Any,
+    reference_point: Any,
+    padding_xy_m: float,
+    padding_z_m: float,
+) -> list[dict[str, Any]]:
+    """把任务显式声明的局部 world cuboid 转成 cuRobo base frame。
+
+    该入口用于没有独立桌子 prim 的合并碰撞场景。只有任务显式配置时才生效，
+    因而不会改变旧场景的默认 USD CollisionAPI 导出行为。
+    """
+
+    import numpy as np
+
+    from source.manipulation.current_state_curobo import (
+        pose_dict_from_matrix,
+        pose_to_matrix,
+    )
+
+    if phase not in {"pick", "place"}:
+        raise RuntimeError(f"不支持的任务碰撞阶段: {phase}")
+    raw_phase = raw_task.get(phase) or {}
+    if not isinstance(raw_phase, dict):
+        raise RuntimeError(f"task.{phase} 必须是对象")
+    raw_config = raw_phase.get("curobo_world_collision")
+    if raw_config is None:
+        return []
+    if not isinstance(raw_config, dict):
+        raise RuntimeError(f"task.{phase}.curobo_world_collision 必须是对象")
+
+    required = bool(raw_config.get("required", False))
+    enabled = bool(raw_config.get("enabled", True))
+    if not enabled:
+        if required:
+            raise RuntimeError(
+                f"task.{phase}.curobo_world_collision 同时配置 required=true 和 enabled=false"
+            )
+        return []
+    raw_cuboids = raw_config.get("cuboids_world", [])
+    if not isinstance(raw_cuboids, list):
+        raise RuntimeError(
+            f"task.{phase}.curobo_world_collision.cuboids_world 必须是数组"
+        )
+    if required and not raw_cuboids:
+        raise RuntimeError(f"task.{phase} 要求 CuRobo world collision，但未提供 cuboid")
+
+    T_world_base = np.asarray(T_world_base, dtype=float)
+    if T_world_base.shape != (4, 4) or not bool(np.all(np.isfinite(T_world_base))):
+        raise RuntimeError("T_world_base 必须是有限的 4x4 矩阵")
+    T_base_world = np.linalg.inv(T_world_base)
+    reference_point = _collision_vector(
+        reference_point,
+        field_name="reference_point",
+        length=3,
+    )
+    output: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+
+    for index, raw_cuboid in enumerate(raw_cuboids):
+        config_path = (
+            f"task.{phase}.curobo_world_collision.cuboids_world[{index}]"
+        )
+        if not isinstance(raw_cuboid, dict):
+            raise RuntimeError(f"{config_path} 必须是对象")
+        name = str(raw_cuboid.get("name") or "").strip()
+        if not name:
+            raise RuntimeError(f"{config_path}.name 不能为空")
+        if name in seen_names:
+            raise RuntimeError(f"{config_path}.name 重复: {name}")
+        seen_names.add(name)
+        if str(raw_cuboid.get("frame", "world")) != "world":
+            raise RuntimeError(f"{config_path}.frame 当前只支持 world")
+
+        center = _collision_vector(
+            raw_cuboid.get("center_xyz"),
+            field_name=f"{config_path}.center_xyz",
+            length=3,
+        )
+        dims = _collision_vector(
+            raw_cuboid.get("dims_xyz"),
+            field_name=f"{config_path}.dims_xyz",
+            length=3,
+        )
+        if bool(np.any(dims <= 0.0)):
+            raise RuntimeError(f"{config_path}.dims_xyz 必须全部大于 0")
+        quaternion = _collision_vector(
+            raw_cuboid.get("quaternion_wxyz", [1.0, 0.0, 0.0, 0.0]),
+            field_name=f"{config_path}.quaternion_wxyz",
+            length=4,
+        )
+        quaternion_norm = float(np.linalg.norm(quaternion))
+        if quaternion_norm <= 1.0e-8:
+            raise RuntimeError(f"{config_path}.quaternion_wxyz 不能是零四元数")
+        quaternion = quaternion / quaternion_norm
+        padding_mode = str(raw_cuboid.get("padding_mode", "symmetric"))
+        if padding_mode not in {"none", "symmetric", "preserve_top"}:
+            raise RuntimeError(
+                f"{config_path}.padding_mode 必须是 none/symmetric/preserve_top"
+            )
+
+        T_world_raw = pose_to_matrix(center, quaternion)
+        T_world_obstacle = T_world_raw.copy()
+        padded_dims = dims.copy()
+        if padding_mode == "symmetric":
+            padded_dims += np.asarray(
+                [2.0 * padding_xy_m, 2.0 * padding_xy_m, 2.0 * padding_z_m],
+                dtype=float,
+            )
+        elif padding_mode == "preserve_top":
+            # 支撑面膨胀只向局部 -Z 延伸，不能把人工标定的桌面虚拟抬高。
+            padded_dims += np.asarray(
+                [2.0 * padding_xy_m, 2.0 * padding_xy_m, padding_z_m],
+                dtype=float,
+            )
+            T_world_obstacle[:3, 3] -= (
+                T_world_raw[:3, 2] * float(padding_z_m) * 0.5
+            )
+
+        T_base_obstacle = T_base_world @ T_world_obstacle
+        source_prim_path = str(raw_cuboid.get("source_prim_path") or "")
+        semantic_role = str(raw_cuboid.get("semantic_role") or "task_obstacle")
+        output.append(
+            {
+                "prim_path": source_prim_path or f"task://{phase}/{name}",
+                "type": "task_configured_world_cuboid",
+                "task_configured": True,
+                "task_collision_required": required,
+                "task_collision_id": f"{phase}:{name}",
+                "task_collision_name": name,
+                "task_config_path": config_path,
+                "phase": phase,
+                "semantic_role": semantic_role,
+                "distance_to_reference_xy_m": float(
+                    np.linalg.norm(T_world_obstacle[:2, 3] - reference_point[:2])
+                ),
+                "dims_xyz": padded_dims.tolist(),
+                "raw_dims_xyz": dims.tolist(),
+                "pose_world": pose_dict_from_matrix(T_world_obstacle),
+                "raw_pose_world": pose_dict_from_matrix(T_world_raw),
+                "pose_base": pose_dict_from_matrix(T_base_obstacle),
+                "padding_m": float(padding_xy_m),
+                "padding_xy_m": float(padding_xy_m),
+                "padding_z_m": float(padding_z_m),
+                "padding_mode": padding_mode,
+                "source_prim_path": source_prim_path or None,
+                "source": dict(raw_cuboid.get("source") or {}),
+                "clipped_from_large_obstacle": False,
+            }
+        )
+
+    return output
+
+
 def _collision_candidate_sort_key(candidate: dict[str, Any]) -> tuple[int, float, str]:
     """优先保留任务物体附近的碰撞体，避免 stage 遍历顺序挤掉桌面。"""
 
     prim_path = str(candidate["prim_path"])
-    table_priority = 0 if any(
+    semantic_role = str(candidate.get("semantic_role") or "").lower()
+    if candidate.get("task_collision_required"):
+        collision_priority = 0
+    elif candidate.get("task_configured"):
+        collision_priority = 1
+    elif semantic_role == "table_support" or any(
         keyword in prim_path.lower()
         for keyword in ("table", "tabletop", "desk", "counter")
-    ) else 1
+    ):
+        collision_priority = 2
+    else:
+        collision_priority = 3
     return (
-        table_priority,
+        collision_priority,
         float(candidate["distance_to_reference_xy_m"]),
         prim_path,
     )
 
 
-def _retarget_height_scanners(scene_cfg: Any, terrain_prim_path: str) -> tuple[str, ...]:
-    """让地形高度扫描器跟随 runtime 实际导入的碰撞地形。"""
+def _retarget_height_scanners(scene_cfg: Any, terrain_mesh_prim_path: str) -> tuple[str, ...]:
+    """让地形高度扫描器跟随 runtime 实际导入的碰撞 Mesh。"""
 
     updated: list[str] = []
     for sensor_name in ("height_scanner", "height_scanner_base"):
         sensor_cfg = getattr(scene_cfg, sensor_name, None)
         if sensor_cfg is None:
             continue
-        sensor_cfg.mesh_prim_paths = [terrain_prim_path]
+        sensor_cfg.mesh_prim_paths = [terrain_mesh_prim_path]
         updated.append(sensor_name)
     return tuple(updated)
 
@@ -403,7 +1043,8 @@ def _collision_cuboid_diagnostics(
     table_paths = [
         str(cuboid.get("prim_path") or "")
         for cuboid in cuboids
-        if any(
+        if str(cuboid.get("semantic_role") or "").lower() == "table_support"
+        or any(
             keyword in str(cuboid.get("prim_path") or "").lower()
             for keyword in table_keywords
         )
@@ -411,6 +1052,11 @@ def _collision_cuboid_diagnostics(
     return {
         "collision_cuboids_table_present": bool(table_paths),
         "table_collision_prim_paths": table_paths,
+        "task_configured_collision_ids": [
+            str(cuboid.get("task_collision_id"))
+            for cuboid in cuboids
+            if cuboid.get("task_configured")
+        ],
         "nearest_collision_prim_paths": [
             str(cuboid.get("prim_path") or "") for cuboid in cuboids[:8]
         ],
@@ -1350,6 +1996,7 @@ class IsaacLabNavigationRuntime:
                     if (
                         self._config.enable_front_camera
                         or self._config.enable_wrist_camera
+                        or self._config.enable_overview_camera
                     )
                     else None
                 ),
@@ -1482,15 +2129,59 @@ class IsaacLabNavigationRuntime:
         from source.navigation.adapters.terrain_utils import write_collision_terrain_wrapper
 
         scene_usd = self._resolve_path(episode_spec.scene_usd)
-        stage_report = self._validate_scene_collision(scene_usd, self._config.terrain_prim_path)
+        scene_runtime = resolve_scene_runtime_settings(
+            episode_spec.raw_task,
+            default_collision_prim_path=self._config.terrain_prim_path,
+            default_visual_prim_path=self._config.visual_prim_path,
+            default_collision_floor_proxy_profile=(
+                self._config.collision_floor_proxy_profile
+            ),
+        )
+        collision_prim_path = str(scene_runtime["collision_prim_path"])
+        floor_proxy_profile = scene_runtime["collision_floor_proxy_profile"]
+        self._metadata["scene_runtime_settings"] = scene_runtime
+        from source.simulation.task_scene_pose import resolve_task_receptacle_pose
+
+        receptacle_pose_settings = resolve_task_receptacle_pose(
+            episode_spec.raw_task
+        )
+        if receptacle_pose_settings["configured"]:
+            # 源 USDA 只保存模板位姿；episode 覆盖必须在组合 stage 中验证，
+            # 否则会把预期的随机位移误报为资产漂移。
+            self._metadata["task_receptacle_support_source_report"] = {
+                "source": "isaaclab_source_scene_usd",
+                "geometry_verified": None,
+                "skipped": True,
+                "reason": "episode_receptacle_pose_requires_composed_stage",
+                "receptacle_pose": receptacle_pose_settings,
+            }
+        else:
+            self._metadata["task_receptacle_support_source_report"] = (
+                inspect_task_receptacle_support_usd(
+                    scene_usd,
+                    episode_spec.raw_task,
+                    source="isaaclab_source_scene_usd",
+                )
+            )
+        stage_report = self._validate_scene_collision(
+            scene_usd,
+            collision_prim_path,
+        )
         self._metadata["stage_report"] = stage_report
         terrain_usd = write_collision_terrain_wrapper(
             scene_usd,
-            self._config.terrain_prim_path,
-            floor_proxy_profile=self._config.collision_floor_proxy_profile,
+            collision_prim_path,
+            floor_proxy_profile=floor_proxy_profile,
+            source_prim_is_mesh=bool(stage_report["collision_root_is_mesh"]),
         )
+        wrapper_stage_report = self._validate_scene_collision(
+            terrain_usd,
+            "/scene_collision",
+        )
+        self._metadata["collision_terrain_wrapper_report"] = wrapper_stage_report
         self._metadata["collision_floor_proxy_report"] = {
-            "profile": self._config.collision_floor_proxy_profile,
+            "profile": floor_proxy_profile,
+            "source_collision_prim_path": collision_prim_path,
             "terrain_wrapper": str(terrain_usd),
         }
         env_cfg.scene.num_envs = 1
@@ -1502,12 +2193,16 @@ class IsaacLabNavigationRuntime:
             usd_path=str(terrain_usd),
             debug_vis=False,
         )
+        # TerrainImporter 会把 USD default prim 生成在 ``<prim_path>/terrain``；
+        # RayCaster 只接受 Mesh prim，不能绑定外层 ``/World/nav_collision`` 容器。
+        terrain_mesh_prim_path = f"{env_cfg.scene.terrain.prim_path}/terrain"
         updated_height_scanners = _retarget_height_scanners(
             env_cfg.scene,
-            env_cfg.scene.terrain.prim_path,
+            terrain_mesh_prim_path,
         )
         self._metadata["height_scanner_terrain_report"] = {
             "terrain_prim_path": env_cfg.scene.terrain.prim_path,
+            "terrain_mesh_prim_path": terrain_mesh_prim_path,
             "updated_sensors": updated_height_scanners,
         }
         default_root_pos = tuple(float(value) for value in env_cfg.scene.robot.init_state.pos)
@@ -1654,16 +2349,68 @@ class IsaacLabNavigationRuntime:
                 "data_types": ["rgb"],
                 "source": "dwa_ground_pick_arm_camera",
             }
+        if self._config.enable_overview_camera:
+            import omni.usd
+            from pxr import UsdGeom
+
+            stage = omni.usd.get_context().get_stage()
+            overview_prim = (
+                None
+                if stage is None
+                else stage.GetPrimAtPath(self._config.overview_camera_prim_path)
+            )
+            if (
+                overview_prim is not None
+                and overview_prim.IsValid()
+                and overview_prim.IsA(UsdGeom.Camera)
+            ):
+                env_cfg.scene.overview_camera = CameraCfg(
+                    prim_path=self._config.overview_camera_prim_path,
+                    update_period=0.0,
+                    height=self._config.overview_camera_height,
+                    width=self._config.overview_camera_width,
+                    data_types=["rgb"],
+                    spawn=None,
+                )
+                self._metadata["overview_camera_report"] = {
+                    "enabled": True,
+                    "bound_existing_stage_camera": True,
+                    "name": "overview_camera",
+                    "prim_path": self._config.overview_camera_prim_path,
+                    "resolution_hw": [
+                        self._config.overview_camera_height,
+                        self._config.overview_camera_width,
+                    ],
+                    "data_types": ["rgb"],
+                    "source": "authored_stage_camera",
+                }
+            else:
+                self._metadata["overview_camera_report"] = {
+                    "enabled": False,
+                    "bound_existing_stage_camera": False,
+                    "prim_path": self._config.overview_camera_prim_path,
+                    "reason": "overview_camera_prim_unavailable",
+                }
 
     def _load_visual_scene(self, episode_spec: EpisodeSpec) -> dict[str, Any]:
         import omni.usd
         from source.navigation.adapters.terrain_utils import write_visual_sublayer_wrapper
 
+        scene_runtime = resolve_scene_runtime_settings(
+            episode_spec.raw_task,
+            default_collision_prim_path=self._config.terrain_prim_path,
+            default_visual_prim_path=self._config.visual_prim_path,
+            default_collision_floor_proxy_profile=(
+                self._config.collision_floor_proxy_profile
+            ),
+        )
+        collision_prim_path = str(scene_runtime["collision_prim_path"])
+        visual_prim_path = str(scene_runtime["visual_prim_path"])
         wrapper = write_visual_sublayer_wrapper(
             self._resolve_path(episode_spec.scene_usd),
-            self._config.visual_prim_path,
+            visual_prim_path,
             excluded_prim_paths=(
-                self._config.terrain_prim_path,
+                collision_prim_path,
                 "/World/go2_x5",
                 "/World/mec_arm_6dof",
             ),
@@ -1680,6 +2427,21 @@ class IsaacLabNavigationRuntime:
         root_layer = stage.GetRootLayer()
         if str(wrapper) not in root_layer.subLayerPaths:
             root_layer.subLayerPaths.append(str(wrapper))
+        from source.simulation.task_scene_pose import apply_task_receptacle_pose
+
+        receptacle_pose_report = apply_task_receptacle_pose(
+            stage,
+            episode_spec.raw_task,
+        )
+        self._metadata["task_receptacle_pose_report"] = receptacle_pose_report
+        receptacle_support_report = inspect_task_receptacle_support_stage(
+            stage,
+            episode_spec.raw_task,
+            source="isaaclab_visual_sublayer_stage",
+        )
+        self._metadata["task_receptacle_support_runtime_stage_report"] = (
+            receptacle_support_report
+        )
         self._metadata["object_pose_setup_report"] = self._apply_object_pose(episode_spec)
         object_visibility = self._show_only_task_object(stage, episode_spec)
         self._metadata["object_visibility_report"] = object_visibility
@@ -1694,10 +2456,14 @@ class IsaacLabNavigationRuntime:
             "load_mode": "sublayer",
             "wrapper_path": str(wrapper),
             "scene_usd": str(self._resolve_path(episode_spec.scene_usd)),
-            "visual_prim_path": self._config.visual_prim_path,
+            "visual_prim_path": visual_prim_path,
+            "collision_prim_path": collision_prim_path,
+            "scene_runtime_settings": scene_runtime,
+            "task_receptacle_support_report": receptacle_support_report,
+            "task_receptacle_pose_report": receptacle_pose_report,
             "scene_visual_enabled": self._config.enable_scene_visual,
             "excluded_prim_paths": (
-                self._config.terrain_prim_path,
+                collision_prim_path,
                 "/World/go2_x5",
                 "/World/mec_arm_6dof",
             ),
@@ -1838,10 +2604,12 @@ class IsaacLabNavigationRuntime:
         if not prim.IsValid():
             raise RuntimeError(f"scene collision prim does not exist: {prim_path} in {scene_usd}")
         mesh_count = 0
+        mesh_prim_paths: list[str] = []
         collision_api_count = 0
         for child in Usd.PrimRange(prim):
             if child.IsA(UsdGeom.Mesh):
                 mesh_count += 1
+                mesh_prim_paths.append(str(child.GetPath()))
             if child.HasAPI(UsdPhysics.CollisionAPI):
                 collision_api_count += 1
         if mesh_count == 0:
@@ -1852,6 +2620,9 @@ class IsaacLabNavigationRuntime:
         return {
             "scene_usd": str(scene_usd),
             "collision_prim_path": prim_path,
+            "collision_root_type": prim.GetTypeName(),
+            "collision_root_is_mesh": bool(prim.IsA(UsdGeom.Mesh)),
+            "mesh_prim_paths": mesh_prim_paths,
             "mesh_count": mesh_count,
             "collision_api_count": collision_api_count,
         }
@@ -2233,7 +3004,7 @@ class IsaacLabNavigationRuntime:
 
         from source.manipulation.current_state_curobo import (
             build_curobo_state_payload,
-            build_side_grasp_target_payload,
+            build_grasp_target_payload,
             pose_dict_from_matrix,
             pose_to_matrix,
             write_json,
@@ -2253,8 +3024,21 @@ class IsaacLabNavigationRuntime:
             self._config.gripper_joint_names
         )
         bbox = self._compute_object_bbox(stage, object_prim_path)
+        mesh_truth_contract = _resolve_mesh_truth_manipulation_contract(
+            episode_spec.raw_task or {}
+        )
+        grasp_mode = _resolve_pick_grasp_mode(episode_spec.raw_task or {})
+        if (
+            mesh_truth_contract["required"]
+            and bbox.get("center_source") != "live_physx_object_pose"
+        ):
+            raise RuntimeError(
+                "required Mesh-truth pick target 缺少 live PhysX object pose"
+            )
         collision_cuboids = self._export_current_world_collision_cuboids(
             stage=stage,
+            episode_spec=episode_spec,
+            phase="pick",
             robot_root_path=self._robot_prim_path(),
             object_prim_path=object_prim_path,
             T_world_base=T_world_base,
@@ -2285,7 +3069,8 @@ class IsaacLabNavigationRuntime:
             world_collision_metadata=world_collision_metadata,
             source="IsaacLabNavigationRuntime.current_state_pick_replan",
         )
-        target_payload = build_side_grasp_target_payload(
+        target_payload = build_grasp_target_payload(
+            grasp_mode=grasp_mode["resolved"],
             object_prim_path=object_prim_path,
             T_world_base=T_world_base,
             bbox_min=bbox["min_xyz"],
@@ -2293,6 +3078,38 @@ class IsaacLabNavigationRuntime:
             bbox_center=bbox["center_xyz"],
             bbox_size=bbox["size_xyz"],
         )
+        pick_target_source = target_payload.get("source")
+        pick_target_source = (
+            pick_target_source if isinstance(pick_target_source, dict) else {}
+        )
+        expected_target_source_type = f"sim_object_bbox_{grasp_mode['resolved']}"
+        mesh_truth_pick_target_report = {
+            "configured": bool(mesh_truth_contract["configured"]),
+            "required": bool(mesh_truth_contract["required"]),
+            "verified": bool(
+                pick_target_source.get("type") == expected_target_source_type
+                and pick_target_source.get("grasp_mode") == grasp_mode["resolved"]
+                and (
+                    not mesh_truth_contract["required"]
+                    or bbox.get("center_source") == "live_physx_object_pose"
+                )
+            ),
+            "visual_localization_required": False,
+            "visual_localization_used": False,
+            "pick_tcp_source": "runtime_live_object_bbox",
+            "requested_grasp_mode": grasp_mode["requested"],
+            "resolved_grasp_mode": grasp_mode["resolved"],
+            "expected_target_source_type": expected_target_source_type,
+            "target_source_type": pick_target_source.get("type"),
+            "object_prim_path": object_prim_path,
+            "bbox_center_source": bbox.get("center_source"),
+            "bbox_world": bbox,
+        }
+        if (
+            mesh_truth_contract["required"]
+            and mesh_truth_pick_target_report["verified"] is not True
+        ):
+            raise RuntimeError("required Mesh-truth pick target 未验证")
 
         state_json = write_json(output_path / "pick_state.json", state_payload)
         target_json = write_json(output_path / "pick_target.json", target_payload)
@@ -2316,6 +3133,7 @@ class IsaacLabNavigationRuntime:
                 "source": target_payload.get("source", {}),
                 "diagnostics": target_payload.get("diagnostics", {}),
             },
+            "mesh_truth_pick_target_report": mesh_truth_pick_target_report,
             "target_grasp_position_base": (
                 target_payload.get("poses", {})
                 .get("grasp", {})
@@ -2332,6 +3150,9 @@ class IsaacLabNavigationRuntime:
             "state_json": str(state_json),
             "target_json": str(target_json),
         }
+        self._metadata["last_mesh_truth_pick_target_report"] = (
+            mesh_truth_pick_target_report
+        )
         return report
 
     def read_object_bbox_world(self) -> dict[str, Any]:
@@ -2372,13 +3193,39 @@ class IsaacLabNavigationRuntime:
             write_json,
         )
 
-        place_pose_world = self._place_pose_world_from_episode(episode_spec)
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
         stage = omni.usd.get_context().get_stage()
         if stage is None:
             raise RuntimeError("当前没有 USD stage，无法导出 cuRobo place 输入。")
+
+        mesh_truth_contract = _resolve_mesh_truth_manipulation_contract(
+            episode_spec.raw_task or {}
+        )
+        receptacle_support_report = inspect_task_receptacle_support_stage(
+            stage,
+            episode_spec.raw_task or {},
+            source="curobo_place_target_runtime_stage",
+        )
+        pick_export = self._metadata.get("last_current_state_curobo_pick_export")
+        pick_export = pick_export if isinstance(pick_export, dict) else {}
+        pick_object_bbox = pick_export.get("bbox_world")
+        pick_target_report = pick_export.get("mesh_truth_pick_target_report")
+        if mesh_truth_contract["required"] and (
+            not isinstance(pick_target_report, dict)
+            or pick_target_report.get("verified") is not True
+        ):
+            raise RuntimeError(
+                "required Mesh-truth place target 缺少已验证的 pick target 报告"
+            )
+        place_pose_world = self._place_pose_world_from_episode(
+            episode_spec,
+            receptacle_support_report=receptacle_support_report,
+            pick_object_bbox=(
+                pick_object_bbox if isinstance(pick_object_bbox, dict) else None
+            ),
+        )
 
         T_world_base, base_source = self._read_body_matrix("arm_base_link")
         T_world_tcp, tcp_source, tcp_mode = self._read_tcp_export_matrix()
@@ -2387,8 +3234,58 @@ class IsaacLabNavigationRuntime:
             self._config.gripper_joint_names
         )
         bbox = self._compute_object_bbox(stage, object_prim_path)
+        if (
+            mesh_truth_contract["required"]
+            and bbox.get("center_source") != "live_physx_object_pose"
+        ):
+            raise RuntimeError(
+                "required Mesh-truth place target 缺少当前 live PhysX object pose"
+            )
+        mesh_truth_place_target_report = self._metadata.get(
+            "last_mesh_truth_place_target_report"
+        )
+        if isinstance(mesh_truth_place_target_report, dict):
+            mesh_truth_place_target_report = {
+                **mesh_truth_place_target_report,
+                "required": bool(mesh_truth_contract["required"]),
+                "place_tcp_source": (
+                    "runtime_receptacle_bbox_plus_pick_object_bbox_plus_current_tcp_offset"
+                ),
+                "current_object_bbox_center_source": bbox.get("center_source"),
+                "current_object_center_live_verified": (
+                    bbox.get("center_source") == "live_physx_object_pose"
+                ),
+                "current_tcp_offset_source": (
+                    "runtime_current_tcp_and_live_object_center"
+                ),
+            }
+            mesh_truth_place_target_report["verified"] = bool(
+                mesh_truth_place_target_report.get("verified") is True
+                and (
+                    not mesh_truth_contract["required"]
+                    or mesh_truth_place_target_report[
+                        "current_object_center_live_verified"
+                    ]
+                )
+            )
+            self._metadata["last_mesh_truth_place_target_report"] = (
+                mesh_truth_place_target_report
+            )
+        else:
+            mesh_truth_place_target_report = {
+                "configured": False,
+                "required": bool(mesh_truth_contract["required"]),
+                "verified": not bool(mesh_truth_contract["required"]),
+            }
+        if (
+            mesh_truth_contract["required"]
+            and mesh_truth_place_target_report.get("verified") is not True
+        ):
+            raise RuntimeError("required Mesh-truth place target 未验证")
         collision_cuboids = self._export_current_world_collision_cuboids(
             stage=stage,
+            episode_spec=episode_spec,
+            phase="place",
             robot_root_path=self._robot_prim_path(),
             object_prim_path=object_prim_path,
             T_world_base=T_world_base,
@@ -2450,6 +3347,8 @@ class IsaacLabNavigationRuntime:
             "world_collision_export": world_collision_metadata,
             **_collision_cuboid_diagnostics(collision_cuboids),
             "hidden_distractor_root_paths": list(self._hidden_distractor_root_paths),
+            "receptacle_support_report": receptacle_support_report,
+            "mesh_truth_place_target_report": mesh_truth_place_target_report,
             "desired_final_object_center_world": (
                 target_payload.get("source", {}).get("desired_final_object_center_world")
             ),
@@ -2469,25 +3368,45 @@ class IsaacLabNavigationRuntime:
         }
         return report
 
-    def _place_pose_world_from_episode(self, episode_spec: EpisodeSpec) -> dict[str, Any]:
-        """优先使用 task JSON 的 place_pose_world，并保留 baseline 支持的 clearance 字段。"""
+    def _place_pose_world_from_episode(
+        self,
+        episode_spec: EpisodeSpec,
+        *,
+        receptacle_support_report: dict[str, Any] | None = None,
+        pick_object_bbox: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """解析 place pose；可选由运行时 Mesh 真值覆盖静态 XYZ。"""
 
         raw_place = dict((episode_spec.raw_task or {}).get("place") or {})
-        raw_pose = raw_place.get("place_pose_world")
-        if isinstance(raw_pose, dict):
-            payload = dict(raw_pose)
-        elif episode_spec.place_target_pose is not None:
-            x, y, z, roll, pitch, yaw = episode_spec.place_target_pose
-            payload = {
-                "x": x,
-                "y": y,
-                "z": z,
-                "roll": roll,
-                "pitch": pitch,
-                "yaw": yaw,
-            }
+        mesh_truth_result = _derive_mesh_truth_place_pose(
+            raw_place=raw_place,
+            receptacle_support_report=receptacle_support_report,
+            pick_object_bbox=pick_object_bbox,
+        )
+        if mesh_truth_result is not None:
+            payload, mesh_truth_report = mesh_truth_result
+            if hasattr(self, "_metadata"):
+                self._metadata["last_mesh_truth_place_target_report"] = (
+                    mesh_truth_report
+                )
         else:
-            raise RuntimeError("当前 task 缺少 place.place_pose_world，无法生成 arm-place target。")
+            raw_pose = raw_place.get("place_pose_world")
+            if isinstance(raw_pose, dict):
+                payload = dict(raw_pose)
+            elif episode_spec.place_target_pose is not None:
+                x, y, z, roll, pitch, yaw = episode_spec.place_target_pose
+                payload = {
+                    "x": x,
+                    "y": y,
+                    "z": z,
+                    "roll": roll,
+                    "pitch": pitch,
+                    "yaw": yaw,
+                }
+            else:
+                raise RuntimeError(
+                    "当前 task 缺少 place.place_pose_world，无法生成 arm-place target。"
+                )
         # baseline arm-place 只读取 clearance 字段。release_height/retreat_height
         # 属于旧 put 流程，映射后会把苹果抬高到 4~5 cm 再松爪，造成明显自由落体。
         for target_key in (
@@ -2648,17 +3567,40 @@ class IsaacLabNavigationRuntime:
         size = bbox_max - bbox_min
         center = 0.5 * (bbox_min + bbox_max)
         center_source = "usd_bbox"
+        live_transform_report: dict[str, Any] | None = None
         if self._object is not None:
-            # 动态刚体运动后，UsdGeom.BBoxCache 可能仍返回 authored 初始位置。
-            # 这里只读取 SingleRigidPrim 的实时 PhysX pose 修正中心，不修改物体状态。
-            live_position, _live_orientation = self._object.get_world_pose()
-            live_center = np.asarray(_as_tuple(live_position), dtype=float)
-            if live_center.shape == (3,) and np.all(np.isfinite(live_center)):
-                center = live_center
-                bbox_min = center - 0.5 * size
-                bbox_max = center + 0.5 * size
-                center_source = "live_physx_object_pose"
-        return {
+            # Fabric/PhysX 运动后，UsdGeom.BBoxCache 可能仍返回 authored 位姿。
+            # 先把 authored world AABB 还原到刚体局部系，再用 live pose 映射，
+            # 避免默认刚体原点恰好等于 Mesh bbox 中心。
+            reader_report = self._metadata.get("object_reader_report")
+            reader_report = reader_report if isinstance(reader_report, dict) else {}
+            rigid_body_prim_path = str(
+                reader_report.get("rigid_body_prim_path")
+                or _resolve_rigid_body_prim_path(stage, object_prim_path)
+            )
+            rigid_body_prim = stage.GetPrimAtPath(rigid_body_prim_path)
+            if not rigid_body_prim.IsValid() or not rigid_body_prim.IsA(UsdGeom.Xformable):
+                raise RuntimeError(
+                    f"object rigid body prim 不是有效 Xformable: {rigid_body_prim_path}"
+                )
+            authored_rigid_position, authored_rigid_quaternion = (
+                _xformable_world_pose(UsdGeom.Xformable(rigid_body_prim))
+            )
+            live_position, live_orientation = self._object.get_world_pose()
+            live_transform_report = _transform_authored_aabb_to_live_rigid_pose(
+                authored_bbox_min=bbox_min,
+                authored_bbox_max=bbox_max,
+                authored_rigid_position=authored_rigid_position,
+                authored_rigid_quaternion_wxyz=authored_rigid_quaternion,
+                live_rigid_position=_as_tuple(live_position),
+                live_rigid_quaternion_wxyz=_as_tuple(live_orientation),
+            )
+            bbox_min = np.asarray(live_transform_report["min_xyz"], dtype=float)
+            bbox_max = np.asarray(live_transform_report["max_xyz"], dtype=float)
+            center = np.asarray(live_transform_report["center_xyz"], dtype=float)
+            size = np.asarray(live_transform_report["size_xyz"], dtype=float)
+            center_source = "live_physx_object_pose"
+        report = {
             "min_xyz": bbox_min.tolist(),
             "max_xyz": bbox_max.tolist(),
             "center_xyz": center.tolist(),
@@ -2666,11 +3608,16 @@ class IsaacLabNavigationRuntime:
             "center_source": center_source,
             "read_only": True,
         }
+        if live_transform_report is not None:
+            report["live_bbox_transform"] = live_transform_report
+        return report
 
     def _export_current_world_collision_cuboids(
         self,
         *,
         stage: Any,
+        episode_spec: EpisodeSpec,
+        phase: str,
         robot_root_path: str,
         object_prim_path: str,
         T_world_base: Any,
@@ -2710,9 +3657,16 @@ class IsaacLabNavigationRuntime:
         )
         T_world_base = np.asarray(T_world_base, dtype=float)
         T_base_world = np.linalg.inv(T_world_base)
-        candidates: list[dict[str, Any]] = []
         reference_point = np.asarray(object_bbox_center, dtype=float)
         base_position = T_world_base[:3, 3].copy()
+        candidates = _task_world_collision_cuboids(
+            raw_task=episode_spec.raw_task,
+            phase=phase,
+            T_world_base=T_world_base,
+            reference_point=reference_point,
+            padding_xy_m=padding_xy_m,
+            padding_z_m=padding_z_m,
+        )
 
         for prim in stage.TraverseAll():
             if not prim.IsValid() or not prim.IsActive():
@@ -2835,9 +3789,25 @@ class IsaacLabNavigationRuntime:
         # 再按苹果距离截断，否则前 16 个 terrain prim 会让 cuRobo 看不到桌面。
         candidates.sort(key=_collision_candidate_sort_key)
         obstacles = candidates[:max_obstacles]
+        required_ids = {
+            str(candidate["task_collision_id"])
+            for candidate in candidates
+            if candidate.get("task_collision_required")
+        }
+        selected_required_ids = {
+            str(candidate["task_collision_id"])
+            for candidate in obstacles
+            if candidate.get("task_collision_required")
+        }
+        if required_ids != selected_required_ids:
+            missing = sorted(required_ids - selected_required_ids)
+            raise RuntimeError(
+                "任务要求的 CuRobo world collision 被 max_obstacles 截断: "
+                f"{missing}"
+            )
         for index, obstacle in enumerate(obstacles):
             obstacle["name"] = _sanitize_obstacle_name(
-                str(obstacle["prim_path"]),
+                str(obstacle.get("task_collision_name") or obstacle["prim_path"]),
                 index,
             )
         return obstacles
@@ -2850,7 +3820,17 @@ class IsaacLabNavigationRuntime:
 
         padding_xy_m = float(self._config.world_collision_padding_m)
         padding_z_m = float(self._config.world_collision_vertical_padding_m)
+        task_configured_count = sum(
+            1 for cuboid in cuboids if cuboid.get("task_configured")
+        )
         return {
+            "representation": (
+                "IsaacLab CollisionAPI world AABB plus task-configured world cuboids "
+                "in arm_base_link frame"
+                if task_configured_count
+                else "IsaacLab current CollisionAPI world AABB exported as cuRobo "
+                "cuboids in arm_base_link frame"
+            ),
             "padding_m": padding_xy_m,
             "padding_xy_m": padding_xy_m,
             "padding_z_m": padding_z_m,
@@ -2865,6 +3845,20 @@ class IsaacLabNavigationRuntime:
                 self._config.world_collision_large_obstacle_clip_half_extent_m
             ),
             "obstacle_count": len(cuboids),
+            "task_configured_obstacle_count": task_configured_count,
+            "required_task_collision_count": sum(
+                1 for cuboid in cuboids if cuboid.get("task_collision_required")
+            ),
+            "task_collision_ids": [
+                str(cuboid.get("task_collision_id"))
+                for cuboid in cuboids
+                if cuboid.get("task_configured")
+            ],
+            "preserve_top_padding_count": sum(
+                1
+                for cuboid in cuboids
+                if cuboid.get("padding_mode") == "preserve_top"
+            ),
             "clipped_large_obstacle_count": sum(
                 1 for cuboid in cuboids if cuboid.get("clipped_from_large_obstacle")
             ),
@@ -2874,8 +3868,8 @@ class IsaacLabNavigationRuntime:
                 else float(cuboids[0].get("distance_to_reference_xy_m", 0.0))
             ),
             "note": (
-                "padding_xy/clearance_margin 只水平膨胀传给 cuRobo 的规划障碍；"
-                "padding_z 保持较小，避免把桌面虚拟抬高到抓取目标。"
+                "任务支撑代理可使用 preserve_top，使 padding_z 仅向局部 -Z 膨胀；"
+                "USD AABB 仍沿用旧场景的对称膨胀语义。"
             ),
         }
 
@@ -3154,6 +4148,8 @@ class IsaacLabNavigationRuntime:
             sensor_names.append(("front", "head_camera"))
         if self._config.enable_wrist_camera:
             sensor_names.append(("wrist", "arm_camera"))
+        if self._config.enable_overview_camera:
+            sensor_names.append(("overview", "overview_camera"))
         for camera_key, sensor_name in sensor_names:
             try:
                 sensor = self._runtime.scene[sensor_name]

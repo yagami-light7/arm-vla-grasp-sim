@@ -49,8 +49,9 @@ def planner_server_supports_required_features(
     host: str = "127.0.0.1",
     port: int = 8765,
     timeout_s: float = 1.0,
+    expected_workspace: str | Path | None = None,
 ) -> bool:
-    """确认常驻 server 支持本分支 full_physics 所需的新规划字段。"""
+    """确认 server 功能齐全；可选 workspace 只用于严格诊断。"""
 
     try:
         with socket.create_connection((host, port), timeout=timeout_s) as sock:
@@ -66,8 +67,17 @@ def planner_server_supports_required_features(
     except json.JSONDecodeError:
         return False
     features = response.get("features")
+    workspace_matches = True
+    if expected_workspace is not None:
+        server_workspace = response.get("workspace")
+        workspace_matches = bool(
+            isinstance(server_workspace, str)
+            and Path(server_workspace).expanduser().resolve()
+            == Path(expected_workspace).expanduser().resolve()
+        )
     return bool(
         response.get("ok", False)
+        and workspace_matches
         and isinstance(features, dict)
         and features.get("side_grasp_retreat_to_pregrasp") is True
         and features.get("split_pregrasp_motion") is True
@@ -94,7 +104,7 @@ def _request_shutdown(*, host: str, port: int, timeout_s: float = 2.0) -> bool:
 
 
 class CuroboPlannerServerProcess:
-    """复用已有服务，或启动并清理本次 pipeline 创建的服务。"""
+    """复用能力兼容的共享服务，或启动并清理本次 pipeline 创建的服务。"""
 
     def __init__(self, config: CuroboPlannerServerProcessConfig):
         self.config = config
@@ -117,6 +127,8 @@ class CuroboPlannerServerProcess:
                         "started": False,
                         "reused_existing": True,
                         "ready": True,
+                        "compatibility_check": "required_capabilities",
+                        "shared_server_preserved": True,
                     }
                 )
                 print(
@@ -125,13 +137,19 @@ class CuroboPlannerServerProcess:
                     flush=True,
                 )
                 return
-            _request_shutdown(host=self.config.host, port=self.config.port)
-            deadline = time.monotonic() + 5.0
-            while time.monotonic() < deadline:
-                if not planner_server_ping(host=self.config.host, port=self.config.port, timeout_s=0.2):
-                    break
-                time.sleep(0.2)
-            self.start_report["restarted_incompatible_existing"] = True
+            self.start_report.update(
+                {
+                    "started": False,
+                    "reused_existing": False,
+                    "ready": False,
+                    "failure_reason": "existing_server_features_mismatch",
+                    "existing_server_preserved": True,
+                }
+            )
+            raise RuntimeError(
+                "127.0.0.1 cuRobo planner server 功能不兼容；为保护外部进程，"
+                "拒绝 shutdown/reuse/restart。"
+            )
 
         log_path = self.config.log_path.expanduser().resolve()
         log_path.parent.mkdir(parents=True, exist_ok=True)

@@ -13,7 +13,9 @@ from .current_state_curobo import (
     CurrentStateCuroboPickPlanner,
     CurrentStateCuroboPickPlannerConfig,
     build_curobo_state_payload,
+    build_grasp_target_payload,
     build_side_grasp_target_payload,
+    build_top_down_grasp_target_payload,
 )
 from .gripper_controller import BinaryGripperController
 from .grasp_pipeline import GraspPipeline, GraspPipelineConfig, GraspTask
@@ -42,7 +44,9 @@ __all__ = [
     "SegmentedSmokeManipulationPlanner",
     "arm_plan_from_curobo_payload",
     "build_curobo_state_payload",
+    "build_grasp_target_payload",
     "build_side_grasp_target_payload",
+    "build_top_down_grasp_target_payload",
     "load_curobo_plan_json",
     "planner_server_ping",
 ]

@@ -8,7 +8,7 @@ from typing import Any
 def candidate_stage_camera_paths(camera_prim_path: str) -> tuple[str, ...]:
     """返回 sublayer 与 reference 两种视觉场景中的相机候选路径。"""
 
-    candidates = [str(camera_prim_path)]
+    candidates = [str(camera_prim_path), "/World/overview"]
     if camera_prim_path == "/World/camera_main":
         candidates.append("/World/Camera_main")
     if camera_prim_path == "/World/Camera_main":
@@ -291,7 +291,7 @@ def _candidate_viewports() -> tuple[tuple[str, Any], ...]:
 
 def configure_navigation_viewport(
     *,
-    camera_prim_path: str = "/World/Camera0",
+    camera_prim_path: str = "/World/overview",
     hide_collision_visual: bool = True,
 ) -> dict[str, Any]:
     """配置导航 GUI；只修改可见性与 viewport，不改动物理属性。"""
@@ -341,6 +341,7 @@ def configure_navigation_viewport(
         dict.fromkeys(
             (
                 camera_prim_path,
+                "/World/overview",
                 "/World/camera0",
                 "/World/camera1",
                 "/World/camera2",

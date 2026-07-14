@@ -1,0 +1,188 @@
+{
+  "schema_version": "liangzhu_mat_placement_target_v2",
+  "scene_profile": "liangzhu_single_floor",
+  "source": "usd_receptacle_collision_geometry",
+  "target_object_id": "cola_01",
+  "target_object_class": "cola_can",
+  "target_object_prim_path": "/World/cola",
+  "target_receptacle_id": "mat_carpet_01",
+  "target_receptacle_class": "floor_mat",
+  "target_receptacle_aliases": [
+    "mouse_mat",
+    "mouse_pad",
+    "mat",
+    "carpet"
+  ],
+  "target_receptacle_prim_path": "/World/carpet",
+  "target_support_prim_path": "/World/carpet/material",
+  "support_runtime_validation_required": true,
+  "support_expected_static": true,
+  "receptacle_pose_world": {
+    "prim_path": "/World/carpet",
+    "x": -0.438209287414772,
+    "y": 5.042934329921819,
+    "z": -0.1509331168865564,
+    "roll": 0.0,
+    "pitch": 0.0,
+    "yaw": 0.0,
+    "source": "task_override_before_physics"
+  },
+  "placement_pose_world": {
+    "position_xyz": [
+      -0.4375161874288581,
+      5.111811405946711,
+      -0.09712594670872055
+    ],
+    "orientation_quaternion_wxyz": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "euler_rpy_rad": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "asset_scale_xyz": [
+      0.03,
+      0.03,
+      0.03
+    ],
+    "asset_units_resolve_rotate_x_deg": 90.0
+  },
+  "task_schema_fragment": {
+    "place": {
+      "enabled": true,
+      "receptacle_pose_world": {
+        "prim_path": "/World/carpet",
+        "x": -0.438209287414772,
+        "y": 5.042934329921819,
+        "z": -0.1509331168865564,
+        "roll": 0.0,
+        "pitch": 0.0,
+        "yaw": 0.0
+      },
+      "place_pose_world": {
+        "x": -0.4375161874288581,
+        "y": 5.111811405946711,
+        "z": -0.09712594670872055,
+        "roll": 0.0,
+        "pitch": 0.0,
+        "yaw": 0.0
+      }
+    }
+  },
+  "placement_region": {
+    "status": "phase0_safe_center_region_offline_verified",
+    "mode": "axis_aligned_rectangle_phase0",
+    "frame": "world",
+    "center_xyz": [
+      -0.4375161874288581,
+      5.111811405946711,
+      -0.1507709268939391
+    ],
+    "x_min": -0.48569129097665625,
+    "x_max": -0.3893410838810599,
+    "y_min": 5.082934329921819,
+    "y_max": 5.140688481971604,
+    "z_surface": -0.1507709268939391,
+    "object_footprint_radius_m": 0.03,
+    "edge_clearance_m": 0.01
+  },
+  "target_object_mesh_geometry": {
+    "source": "composed_stage_usd_world_bbox_at_authored_upright_pose",
+    "rigid_prim_path": "/World/cola",
+    "authored_world_bbox_min_xyz": [
+      -0.6682593455100576,
+      7.601184405498931,
+      0.5899950198147811
+    ],
+    "authored_world_bbox_max_xyz": [
+      -0.6082593504274407,
+      7.661184432768056,
+      0.6972849801852182
+    ],
+    "authored_world_bbox_center_xyz": [
+      -0.6382593479687492,
+      7.631184419133493,
+      0.6436399999999997
+    ],
+    "bbox_center_to_min_z_m": 0.05364498018521855,
+    "runtime_role": "offline_extent_audit_only_live_physx_bbox_is_authoritative"
+  },
+  "support_geometry": {
+    "receptacle_asset_path": "source/scene/objects/carpet.usd",
+    "receptacle_asset_sha256": "817ff5412fedeb712ad23e8f137d698d3247f2416831bbfebfe376ab7b8cfd04",
+    "receptacle_prim_path": "/World/carpet",
+    "collision_prim_path": "/World/carpet/material",
+    "world_bbox_min_xyz": [
+      -0.5256912909766562,
+      5.042934329921819,
+      -0.1511698018711953
+    ],
+    "world_bbox_max_xyz": [
+      -0.34934108388105994,
+      5.180688481971604,
+      -0.1507709268939391
+    ],
+    "world_bbox_center_xyz": [
+      -0.4375161874288581,
+      5.111811405946711,
+      -0.1509703643825672
+    ],
+    "world_bbox_dims_xyz": [
+      0.1763502070955963,
+      0.13775415204978536,
+      0.00039887497725618615
+    ],
+    "support_surface_z": -0.1507709268939391,
+    "object_bbox_center_to_min_z_m": 0.05364498018521855,
+    "scene_floor_collision_prim_path": "/World/PhysicsScene/CollisionScene/LiangzhuCollision",
+    "scene_floor_collision_ply_sha256": "85c2a2e745905eb9e83cc46c8f68e1706431658598d783c94f022f8131ad78de",
+    "scene_floor_support_z": -0.15136980187119528,
+    "scene_floor_support_face_index": 263591,
+    "scene_floor_height_variation_m": 0.00274828382379938,
+    "mat_bottom_clearance_above_highest_floor_m": 0.0002,
+    "mat_top_above_scene_floor_m": 0.0005988749772561862,
+    "phase0_curobo_support_proxy": {
+      "center_xyz": [
+        -0.4375161874288581,
+        5.111811405946711,
+        -0.1509703643825672
+      ],
+      "quaternion_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "dims_xyz": [
+        0.1763502070955963,
+        0.13775415204978536,
+        0.00039887497725618615
+      ],
+      "padding_mode": "preserve_top",
+      "scope": "phase0_proxy_from_task_grounded_mat_collision_world_bbox"
+    }
+  },
+  "validation": {
+    "receptacle_scene_transform_matches": false,
+    "receptacle_task_pose_override_verified": true,
+    "mat_collision_api_offline_verified": true,
+    "mat_bbox_geometry_verified": true,
+    "mat_ground_clearance_geometry_verified": true,
+    "object_footprint_fits_safe_region": true,
+    "collision_support_runtime_verified": false,
+    "release_stability_verified": false
+  },
+  "notes": [
+    "任务目标已由桌面切换为把现有可乐放到 /World/carpet 垫子上。",
+    "放置点使用垫子碰撞 Mesh 的世界包围盒中心，而不是使用位于边角的 /World/carpet translate。",
+    "安全区域已按可乐 0.03m 足迹半径和 0.01m 边缘余量从垫子边界向内收缩。",
+    "垫子为静态碰撞体；任务在 PhysX 初始化前覆盖其根 Z，使底面位于五点地面探针最高点上方 0.2mm。",
+    "放置中心高度使用组合 stage 中可乐 authored upright Mesh bbox 的 center-to-min-z=0.05364498018521855m；运行时仍以抓取前 live PhysX bbox 为准。",
+    "rotateX:unitsResolve 是 cola 资产导入变换，不能在世界位姿转换中静默删除。",
+    "Phase 0 CuRobo 代理来自应用 task pose 后的 /World/carpet/material 碰撞包围盒；真实运行仍需验证 release/settle 后目标稳定留在安全区域。"
+  ]
+}

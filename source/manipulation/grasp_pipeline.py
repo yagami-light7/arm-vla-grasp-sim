@@ -116,12 +116,59 @@ class GraspPipeline:
 
         Path(task.plan_json).unlink(missing_ok=True)
         task_mode = (task.curobo_task_mode or "grasp").strip().lower()
+        target_data: dict[str, Any] | None = None
         if task_mode == "grasp":
             # 在启动耗时规划前拦截错误的 nav-to-pick 交接位姿。
-            self._validate_target_workspace(self._read_json(task.target_json))
-        if task.use_planner_server and self._try_server(task):
+            target_data = self._read_json(task.target_json)
+            self._validate_target_workspace(target_data)
+        use_server = bool(task.use_planner_server)
+        grasp_mode = str(
+            ((target_data or {}).get("source") or {}).get("grasp_mode") or "side"
+        )
+        if (
+            use_server
+            and task_mode == "grasp"
+            and grasp_mode == "top_down"
+            and not self._server_supports_top_down_reverse_lift()
+        ):
+            print(
+                "[grasp] planner server 未声明 top_down_reverse_lift；"
+                "保留外部服务并改用当前代码的一次性 planner。",
+                flush=True,
+            )
+            use_server = False
+        if use_server and self._try_server(task):
             return self._read_json(task.plan_json)
         return self._run_one_shot_planner(task, task_mode=task_mode or "grasp")
+
+    def _server_supports_top_down_reverse_lift(self) -> bool:
+        """查询共享 server 是否已加载稳定的 top-down 反向抬升实现。"""
+
+        request = {"command": "capabilities"}
+        try:
+            with socket.create_connection(
+                (self.config.planner_host, self.config.planner_port),
+                timeout=1.0,
+            ) as sock:
+                sock.settimeout(min(3.0, self.config.planner_timeout_s))
+                sock.sendall(
+                    (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
+                )
+                response_line = sock.makefile("r", encoding="utf-8").readline()
+        except OSError:
+            return False
+        if not response_line:
+            return False
+        try:
+            response = json.loads(response_line)
+        except json.JSONDecodeError:
+            return False
+        features = response.get("features")
+        return bool(
+            response.get("ok", False)
+            and isinstance(features, dict)
+            and features.get("top_down_reverse_lift") is True
+        )
 
     def _run_one_shot_planner(self, task: GraspTask, *, task_mode: str) -> dict[str, Any]:
         if not self.script_plan.exists():

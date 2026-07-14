@@ -342,6 +342,12 @@ class OverviewVideoRecorder:
         self.episode_dir = Path(episode_dir).expanduser().resolve()
         self.episode_id = int(episode_id)
         self.log_prefix = log_prefix
+        self._overview_camera_mode = str(
+            getattr(settings, "overview_camera_mode", "fixed")
+        )
+        self._preferred_camera_path = str(
+            getattr(settings, "overview_camera_prim_path", "/World/overview")
+        )
         self.output_paths = self._resolve_output_paths()
         self.output_path = self.output_paths[self.modes[0]]
         self._writers: dict[str, Any] = {}
@@ -391,7 +397,8 @@ class OverviewVideoRecorder:
         print(
             f"{self.log_prefix} enabled=True mode={getattr(self.settings, 'mode', 'overview')} "
             f"streams={self.modes} "
-            f"camera_mode={getattr(self.settings, 'overview_camera_mode', 'auto')} "
+            f"camera_mode={self._overview_camera_mode} "
+            f"camera_prim={self._preferred_camera_path} "
             f"fps={float(getattr(self.settings, 'fps', 25.0)):.3f} "
             f"overview_size={int(getattr(self.settings, 'width', 1280))}x"
             f"{int(getattr(self.settings, 'height', 720))} "
@@ -554,6 +561,12 @@ class OverviewVideoRecorder:
             "discovery_attempt_count": self._discovery_attempt_count,
             "has_real_scene_camera": self._has_real_scene_camera(cameras),
             "has_third_person_camera": self._has_third_person_camera(cameras),
+            "overview_camera_mode": self._overview_camera_mode,
+            "preferred_camera_prim_path": self._preferred_camera_path,
+            "preferred_camera_found": any(
+                camera.path == self._preferred_camera_path
+                for camera in self._all_cameras
+            ),
         }
         discovery_signature = tuple(camera.path for camera in self._all_cameras)
         if (
@@ -578,6 +591,17 @@ class OverviewVideoRecorder:
         """Pick a stable camera path for the current pipeline state."""
 
         candidates = self._overview_cameras or self._all_cameras
+        if self._overview_camera_mode == "fixed":
+            preferred = next(
+                (
+                    camera.path
+                    for camera in self._all_cameras
+                    if camera.path == self._preferred_camera_path
+                ),
+                None,
+            )
+            if preferred is not None:
+                return preferred
         if not candidates:
             return self._active_viewport_camera_path
         role = _state_role(str(state), previous_role=self._last_role)
@@ -648,6 +672,11 @@ class OverviewVideoRecorder:
             "success": bool(success),
             "status": status,
             "mode": str(getattr(self.settings, "mode", "overview")),
+            "overview_camera_mode": self._overview_camera_mode,
+            "preferred_camera_prim_path": self._preferred_camera_path,
+            "preferred_camera_found": bool(
+                self._discovery_report.get("preferred_camera_found", False)
+            ),
             "streams": list(self.modes),
             "video_path": str(self.output_path),
             "video_paths": {
@@ -740,6 +769,11 @@ class OverviewVideoRecorder:
             return False
         if not self._all_cameras:
             return True
+        if self._overview_camera_mode == "fixed":
+            return not any(
+                camera.path == self._preferred_camera_path
+                for camera in self._all_cameras
+            )
         if self._has_third_person_camera(self._overview_cameras):
             return False
         return True

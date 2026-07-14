@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 PCT_MULTIFLOOR_LOCOMOTION_TASK = "RobotLab-Isaac-Velocity-Rough-Go2-X5-DogOnly-v0"
+DEFAULT_OVERVIEW_CAMERA_PRIM_PATH = "/World/overview"
 
 
 @dataclass(frozen=True)
@@ -147,6 +148,8 @@ class NavigationSettings:
     speed_bias: float = 0.35
     max_linear_accel: float = 2.5
     final_position_tolerance: float = 0.18
+    # 四足携物短程定位的独立 handoff 半径；None 表示复用通用位置容差。
+    place_position_tolerance: float | None = None
     final_yaw_tolerance: float = 3.141592653589793
     stable_linear_velocity: float = 0.06
     stable_angular_velocity: float = 0.20
@@ -236,6 +239,8 @@ class RandomizationSettings:
 
     enabled: bool = False
     show_debug_region: bool = False
+    # 良渚联合采样优先复用 PCT CLI 的 collision PLY；未提供时再读 task 环境变量。
+    collision_ply_path: Path | None = None
     pick_x_range: tuple[float, float] = (0.90, 0.95)
     pick_y_range: tuple[float, float] = (0.75, 1.50)
     place_x_range: tuple[float, float] = (0.70, 0.75)
@@ -261,9 +266,10 @@ class RecordingSettings:
     image_width: int = 640
     jpeg_quality: int = 90
     chunks_size: int = 1000
-    # front/wrist 由 IsaacLab runtime 直接采集；overview 缺失时只记录 warning。
+    # front/wrist/overview 都由 IsaacLab runtime 直接采集并参与完整性检查。
     camera_keys: tuple[str, ...] = ("front", "wrist", "overview")
     primary_camera_key: str = "front"
+    overview_camera_prim_path: str = DEFAULT_OVERVIEW_CAMERA_PRIM_PATH
     save_raw_images: bool = True
     debug_per_episode_lerobot: bool = True
     unified_dataset: bool = True
@@ -287,7 +293,8 @@ class VideoRecordingSettings:
     mode: str = "overview"
     output_path: Path | None = None
     fps: float = 25.0
-    overview_camera_mode: str = "auto"
+    overview_camera_mode: str = "fixed"
+    overview_camera_prim_path: str = DEFAULT_OVERVIEW_CAMERA_PRIM_PATH
     width: int = 1280
     height: int = 720
     overview_capture_backend: str = "viewport"
@@ -483,6 +490,11 @@ class FullPhysicsConfig:
             )
         if self.navigation.goal_z_tolerance < 0.0:
             raise ValueError("goal_z_tolerance must be non-negative")
+        if (
+            self.navigation.place_position_tolerance is not None
+            and self.navigation.place_position_tolerance <= 0.0
+        ):
+            raise ValueError("place_position_tolerance must be positive")
         if self.navigation.dwa_replan_interval_steps < 1:
             raise ValueError("dwa_replan_interval_steps must be at least 1")
         if self.navigation.max_angular_velocity <= 0.0:
@@ -675,6 +687,8 @@ class FullPhysicsConfig:
             raise ValueError("recording camera_keys must not be empty")
         if self.recording.primary_camera_key not in self.recording.camera_keys:
             raise ValueError("recording primary_camera_key must be included in camera_keys")
+        if not self.recording.overview_camera_prim_path.startswith("/"):
+            raise ValueError("recording overview_camera_prim_path 必须是绝对 prim path")
         if self.lighting.scene_light_mode not in {"camera", "stage"}:
             raise ValueError("scene_light_mode 必须是 camera 或 stage")
         if self.lighting.camera_light_intensity <= 0:
@@ -693,8 +707,15 @@ class FullPhysicsConfig:
             raise ValueError("video fps must be positive")
         if self.video.width <= 0 or self.video.height <= 0:
             raise ValueError("video image size must be positive")
-        if self.video.overview_camera_mode != "auto":
-            raise ValueError("only overview_camera_mode='auto' is currently supported")
+        if self.video.overview_camera_mode not in {"fixed", "auto"}:
+            raise ValueError("overview_camera_mode 必须是 fixed 或 auto")
+        if not self.video.overview_camera_prim_path.startswith("/"):
+            raise ValueError("video overview_camera_prim_path 必须是绝对 prim path")
+        if (
+            self.video.overview_camera_prim_path
+            != self.recording.overview_camera_prim_path
+        ):
+            raise ValueError("image/video overview camera prim path 必须一致")
         if self.video.overview_capture_backend not in {"viewport", "render_product", "auto"}:
             raise ValueError("video overview_capture_backend must be one of: viewport, render_product, auto")
         if self.video.min_switch_interval_frames < 0:

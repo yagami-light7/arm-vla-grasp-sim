@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import inspect
+import json
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,11 +21,14 @@ from source.simulation.isaaclab_runtime import (
     IsaacLabNavigationRuntime,
     IsaacLabNavigationRuntimeConfig,
     _collision_candidate_sort_key,
+    _derive_mesh_truth_place_pose,
     _dedupe_root_paths,
     _path_is_excluded_by_roots,
     _prim_keyword_match_text,
     _retarget_height_scanners,
     _resolve_rigid_body_prim_path,
+    _task_world_collision_cuboids,
+    _transform_authored_aabb_to_live_rigid_pose,
 )
 from source.simulation.collision_patch import (
     gripper_collision_patch_report,
@@ -402,6 +407,39 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         )
         self.assertIn("gripper_collision_patch_report", build_source)
 
+    def test_collision_wrapper_is_validated_before_terrain_import(self) -> None:
+        configure_source = inspect.getsource(IsaacLabNavigationRuntime._configure_env)
+
+        self.assertIn('"collision_terrain_wrapper_report"', configure_source)
+        self.assertIn('"task_receptacle_support_source_report"', configure_source)
+        self.assertIn("inspect_task_receptacle_support_usd", configure_source)
+        self.assertIn('terrain_usd,\n            "/scene_collision"', configure_source)
+        self.assertLess(
+            configure_source.index("wrapper_stage_report ="),
+            configure_source.index("TerrainImporterCfg("),
+        )
+        self.assertLess(
+            configure_source.index("inspect_task_receptacle_support_usd"),
+            configure_source.index("TerrainImporterCfg("),
+        )
+
+    def test_visual_sublayer_stage_validates_task_receptacle_support(self) -> None:
+        load_source = inspect.getsource(IsaacLabNavigationRuntime._load_visual_scene)
+
+        self.assertIn("inspect_task_receptacle_support_stage", load_source)
+        self.assertIn(
+            '"task_receptacle_support_runtime_stage_report"',
+            load_source,
+        )
+        self.assertLess(
+            load_source.index("root_layer.subLayerPaths.append"),
+            load_source.index("inspect_task_receptacle_support_stage"),
+        )
+        self.assertLess(
+            load_source.index("inspect_task_receptacle_support_stage"),
+            load_source.index("_apply_object_pose"),
+        )
+
     def test_world_collision_padding_matches_stable_baseline(self) -> None:
         config = IsaacLabNavigationRuntimeConfig()
 
@@ -412,6 +450,68 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         self.assertEqual(config.world_collision_local_radius_m, 1.25)
         self.assertFalse(config.world_collision_clip_large_support_obstacles)
         self.assertEqual(config.world_collision_large_obstacle_clip_half_extent_m, 0.45)
+
+    def test_task_support_collision_preserves_authored_top_surface(self) -> None:
+        """任务支撑代理的垂直 padding 只能向下扩展。"""
+
+        T_world_base = np.eye(4, dtype=float)
+        T_world_base[:3, 3] = [1.0, 1.0, 1.0]
+        cuboids = _task_world_collision_cuboids(
+            raw_task={
+                "place": {
+                    "curobo_world_collision": {
+                        "required": True,
+                        "cuboids_world": [
+                            {
+                                "name": "table_support",
+                                "frame": "world",
+                                "semantic_role": "table_support",
+                                "center_xyz": [1.0, 2.0, 3.0],
+                                "dims_xyz": [0.4, 0.4, 0.04],
+                                "padding_mode": "preserve_top",
+                            }
+                        ],
+                    }
+                }
+            },
+            phase="place",
+            T_world_base=T_world_base,
+            reference_point=[1.0, 2.0, 3.04],
+            padding_xy_m=0.02,
+            padding_z_m=0.02,
+        )
+
+        self.assertEqual(len(cuboids), 1)
+        cuboid = cuboids[0]
+        self.assertEqual(cuboid["dims_xyz"], [0.44, 0.44, 0.06])
+        self.assertAlmostEqual(cuboid["pose_world"]["position_xyz"][2], 2.99)
+        self.assertAlmostEqual(cuboid["pose_base"]["position_xyz"][2], 1.99)
+        self.assertAlmostEqual(
+            cuboid["pose_world"]["position_xyz"][2]
+            + cuboid["dims_xyz"][2] * 0.5,
+            3.02,
+        )
+        self.assertTrue(cuboid["task_collision_required"])
+
+    def test_required_task_collision_cannot_be_empty(self) -> None:
+        """required=true 时禁止静默退化成无环境碰撞规划。"""
+
+        with self.assertRaisesRegex(RuntimeError, "未提供 cuboid"):
+            _task_world_collision_cuboids(
+                raw_task={
+                    "place": {
+                        "curobo_world_collision": {
+                            "required": True,
+                            "cuboids_world": [],
+                        }
+                    }
+                },
+                phase="place",
+                T_world_base=np.eye(4, dtype=float),
+                reference_point=[0.0, 0.0, 0.0],
+                padding_xy_m=0.02,
+                padding_z_m=0.02,
+            )
 
     def test_place_export_builds_world_collision_metadata_before_payload(self) -> None:
         source = inspect.getsource(
@@ -426,6 +526,208 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         self.assertLess(
             source.index(assignment),
             source.index("world_collision_metadata=world_collision_metadata"),
+        )
+
+    def test_place_export_derives_target_from_runtime_mesh_before_curobo_payload(
+        self,
+    ) -> None:
+        source = inspect.getsource(
+            IsaacLabNavigationRuntime.export_current_curobo_place_inputs
+        )
+
+        self.assertLess(
+            source.index("inspect_task_receptacle_support_stage"),
+            source.index("self._place_pose_world_from_episode"),
+        )
+        self.assertLess(
+            source.index("self._place_pose_world_from_episode"),
+            source.index("target_payload = build_arm_place_target_payload"),
+        )
+        self.assertIn("mesh_truth_place_target_report", source)
+
+    def test_mesh_truth_place_pose_matches_liangzhu_runtime_geometry(self) -> None:
+        task = json.loads(
+            (PROJECT_ROOT / "tasks/nav_pick_place_cola_liangzhu_pct.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        raw_place = task["place"]
+        proxy_source = raw_place["curobo_world_collision"]["cuboids_world"][0][
+            "source"
+        ]
+        object_pose = task["pick"]["object_pose_world"]
+        object_extent = raw_place["mesh_truth_target"][
+            "expected_object_bbox_center_to_min_z_m"
+        ]
+        support_report = {
+            "configured": True,
+            "geometry_verified": True,
+            "source": "unit_test_runtime_stage",
+            "target_receptacle_prim_path": raw_place[
+                "target_receptacle_prim_path"
+            ],
+            "target_support_prim_path": raw_place["target_support_prim_path"],
+            "placement_region": raw_place["placement_region"],
+            "placement_region_report": {"verified": True},
+            "world_bbox_min_xyz": proxy_source["world_bbox_min_xyz"],
+            "world_bbox_max_xyz": proxy_source["world_bbox_max_xyz"],
+            "support_surface_z": proxy_source["support_surface_z"],
+        }
+        pick_bbox = {
+            "min_xyz": [
+                object_pose["x"] - 0.03,
+                object_pose["y"] - 0.03,
+                object_pose["z"] - object_extent,
+            ],
+            "max_xyz": [
+                object_pose["x"] + 0.03,
+                object_pose["y"] + 0.03,
+                object_pose["z"] + object_extent,
+            ],
+            "center_xyz": [
+                object_pose["x"],
+                object_pose["y"],
+                object_pose["z"],
+            ],
+            "center_source": "live_physx_object_pose",
+        }
+
+        result = _derive_mesh_truth_place_pose(
+            raw_place=raw_place,
+            receptacle_support_report=support_report,
+            pick_object_bbox=pick_bbox,
+        )
+
+        self.assertIsNotNone(result)
+        payload, report = result
+        for axis in ("x", "y", "z"):
+            self.assertAlmostEqual(payload[axis], raw_place["place_pose_world"][axis])
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["xyz_source"], "runtime_mesh_truth")
+        self.assertFalse(report["visual_localization_used"])
+        self.assertAlmostEqual(report["object_extent_error_m"], 0.0)
+        self.assertEqual(
+            report["expected_object_extent_config_field"],
+            "expected_object_bbox_center_to_min_z_m",
+        )
+        self.assertAlmostEqual(
+            report["object_bbox_center_to_min_z_m"],
+            object_extent,
+        )
+
+        settled_bbox = deepcopy(pick_bbox)
+        settled_bbox["min_xyz"][2] -= 0.001
+        settled_payload, settled_report = _derive_mesh_truth_place_pose(
+            raw_place=raw_place,
+            receptacle_support_report=support_report,
+            pick_object_bbox=settled_bbox,
+        )
+        self.assertAlmostEqual(
+            settled_payload["z"],
+            raw_place["place_pose_world"]["z"] + 0.001,
+        )
+        self.assertAlmostEqual(settled_report["object_extent_error_m"], 0.001)
+        self.assertTrue(settled_report["configured_pose_consistency_verified"])
+
+    def test_mesh_truth_place_pose_rejects_geometry_or_annotation_drift(self) -> None:
+        task = json.loads(
+            (PROJECT_ROOT / "tasks/nav_pick_place_cola_liangzhu_pct.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        raw_place = task["place"]
+        source = raw_place["curobo_world_collision"]["cuboids_world"][0]["source"]
+        object_pose = task["pick"]["object_pose_world"]
+        object_extent = raw_place["mesh_truth_target"][
+            "expected_object_bbox_center_to_min_z_m"
+        ]
+        support_report = {
+            "configured": True,
+            "geometry_verified": True,
+            "source": "unit_test_runtime_stage",
+            "placement_region": raw_place["placement_region"],
+            "placement_region_report": {"verified": True},
+            "world_bbox_min_xyz": source["world_bbox_min_xyz"],
+            "world_bbox_max_xyz": source["world_bbox_max_xyz"],
+            "support_surface_z": source["support_surface_z"],
+        }
+        pick_bbox = {
+            "min_xyz": [0.0, 0.0, object_pose["z"] - object_extent],
+            "max_xyz": [0.1, 0.1, object_pose["z"] + object_extent],
+            "center_xyz": [0.05, 0.05, object_pose["z"]],
+            "center_source": "live_physx_object_pose",
+        }
+
+        invalid_support = deepcopy(support_report)
+        invalid_support["geometry_verified"] = False
+        with self.assertRaisesRegex(RuntimeError, "support geometry"):
+            _derive_mesh_truth_place_pose(
+                raw_place=raw_place,
+                receptacle_support_report=invalid_support,
+                pick_object_bbox=pick_bbox,
+            )
+
+        stale_extent = deepcopy(pick_bbox)
+        stale_extent["min_xyz"][2] -= 0.01
+        with self.assertRaisesRegex(RuntimeError, "Mesh extent"):
+            _derive_mesh_truth_place_pose(
+                raw_place=raw_place,
+                receptacle_support_report=support_report,
+                pick_object_bbox=stale_extent,
+            )
+
+        stale_pose = deepcopy(raw_place)
+        stale_pose["place_pose_world"]["z"] += 0.01
+        with self.assertRaisesRegex(RuntimeError, "configured place pose drifted"):
+            _derive_mesh_truth_place_pose(
+                raw_place=stale_pose,
+                receptacle_support_report=support_report,
+                pick_object_bbox=pick_bbox,
+            )
+
+    def test_live_bbox_preserves_mesh_center_offset_from_rigid_origin(self) -> None:
+        report = _transform_authored_aabb_to_live_rigid_pose(
+            authored_bbox_min=[1.0, 2.0, 3.0],
+            authored_bbox_max=[3.0, 4.0, 5.0],
+            authored_rigid_position=[1.0, 2.0, 3.0],
+            authored_rigid_quaternion_wxyz=[1.0, 0.0, 0.0, 0.0],
+            live_rigid_position=[10.0, 20.0, 30.0],
+            live_rigid_quaternion_wxyz=[1.0, 0.0, 0.0, 0.0],
+        )
+
+        np.testing.assert_allclose(report["min_xyz"], [10.0, 20.0, 30.0])
+        np.testing.assert_allclose(report["max_xyz"], [12.0, 22.0, 32.0])
+        np.testing.assert_allclose(report["center_xyz"], [11.0, 21.0, 31.0])
+        np.testing.assert_allclose(
+            report["bbox_center_offset_rigid_xyz"],
+            [1.0, 1.0, 1.0],
+        )
+        self.assertNotEqual(
+            report["center_xyz"],
+            report["live_rigid_position_xyz"],
+        )
+
+    def test_live_bbox_rotates_authored_mesh_extents_with_physx_pose(self) -> None:
+        half_sqrt_two = float(np.sqrt(0.5))
+        report = _transform_authored_aabb_to_live_rigid_pose(
+            authored_bbox_min=[-1.0, -0.5, -0.25],
+            authored_bbox_max=[1.0, 0.5, 0.25],
+            authored_rigid_position=[0.0, 0.0, 0.0],
+            authored_rigid_quaternion_wxyz=[1.0, 0.0, 0.0, 0.0],
+            live_rigid_position=[4.0, 5.0, 6.0],
+            live_rigid_quaternion_wxyz=[
+                half_sqrt_two,
+                0.0,
+                0.0,
+                half_sqrt_two,
+            ],
+        )
+
+        np.testing.assert_allclose(report["center_xyz"], [4.0, 5.0, 6.0])
+        np.testing.assert_allclose(report["size_xyz"], [1.0, 2.0, 0.5])
+        self.assertEqual(
+            report["transform_mode"],
+            "authored_world_aabb_via_live_rigid_pose",
         )
 
     def test_legacy_place_height_fields_do_not_override_baseline_clearances(self) -> None:
@@ -550,10 +852,12 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
             candidate["prim_path"] for candidate in selected
         })
 
-    def test_runtime_defaults_to_current_scene_camera(self) -> None:
+    def test_runtime_defaults_to_authored_overview_camera_without_gaussian(self) -> None:
         config = IsaacLabNavigationRuntimeConfig()
 
-        self.assertEqual(config.viewport_camera_prim_path, "/World/Camera0")
+        self.assertEqual(config.viewport_camera_prim_path, "/World/overview")
+        self.assertEqual(config.overview_camera_prim_path, "/World/overview")
+        self.assertFalse(config.enable_scene_visual)
         self.assertTrue(config.hide_navigation_collision_visual)
         self.assertEqual(config.scene_light_mode, "camera")
         self.assertGreater(config.camera_light_intensity, 0.0)
@@ -570,11 +874,11 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
             },
         )()
 
-        updated = _retarget_height_scanners(scene_cfg, "/World/nav_collision")
+        updated = _retarget_height_scanners(scene_cfg, "/World/nav_collision/terrain")
 
         self.assertEqual(updated, ("height_scanner", "height_scanner_base"))
-        self.assertEqual(scanner.mesh_prim_paths, ["/World/nav_collision"])
-        self.assertEqual(scanner_base.mesh_prim_paths, ["/World/nav_collision"])
+        self.assertEqual(scanner.mesh_prim_paths, ["/World/nav_collision/terrain"])
+        self.assertEqual(scanner_base.mesh_prim_paths, ["/World/nav_collision/terrain"])
 
     def test_height_scanner_retarget_skips_disabled_sensor(self) -> None:
         scene_cfg = type(
@@ -586,7 +890,7 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
             },
         )()
 
-        updated = _retarget_height_scanners(scene_cfg, "/World/nav_collision")
+        updated = _retarget_height_scanners(scene_cfg, "/World/nav_collision/terrain")
 
         self.assertEqual(updated, ())
 

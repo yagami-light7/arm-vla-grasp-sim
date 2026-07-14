@@ -10,6 +10,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .training_action import (
+    VLA_TRAINING_ACTION_ALIGNMENT,
+    VLA_TRAINING_ACTION_DIMENSION,
+    VLA_TRAINING_ACTION_NAMES,
+    VLA_TRAINING_ACTION_SCHEMA,
+)
+
 
 REQUIRED_PARQUET_COLUMNS = (
     "index",
@@ -217,8 +224,10 @@ def _validate_info(
     metadata_names = {
         "observation.state": "observation_state_names",
         "observation.base_velocity": "base_velocity_names",
+        "observation.base_pose": "base_pose_names",
         "observation.object_state": "object_state_names",
         "observation.tcp_pose": "tcp_pose_names",
+        "control.action": "control_action_names",
         "action": "action_names",
     }
     for feature_name, metadata_name in metadata_names.items():
@@ -227,8 +236,13 @@ def _validate_info(
             continue
         feature_names = feature.get("names")
         metadata_value = info.get(metadata_name)
-        if feature_name in {"observation.object_state", "observation.tcp_pose"}:
-            # 这两个扩展 feature 在旧数据中可缺失；出现时才要求顶层 names metadata。
+        if feature_name in {
+            "observation.base_pose",
+            "observation.object_state",
+            "observation.tcp_pose",
+            "control.action",
+        }:
+            # 扩展 feature 在旧数据中可缺失；出现时才要求顶层 names metadata。
             if metadata_value is None:
                 context.error(
                     "missing_dimension_names_metadata",
@@ -248,12 +262,62 @@ def _validate_info(
                 f"{metadata_name} 与 feature {feature_name}.names 不一致。",
                 feature=feature_name,
             )
-        elif dimension is not None and len(names) != dimension:
+        dimension = _feature_dimension(feature)
+        if (
+            isinstance(feature_names, list)
+            and dimension is not None
+            and len(feature_names) != dimension
+        ):
             context.error(
                 "feature_names_count_mismatch",
-                f"feature {name} 的 names 数量 {len(names)} 与维度 {dimension} 不一致。",
-                feature=name,
+                f"feature {feature_name} 的 names 数量 {len(feature_names)} 与维度 {dimension} 不一致。",
+                feature=feature_name,
             )
+
+    if info.get("vla_training_action_available") is True:
+        vla_requirements = {
+            "vla_training_action_schema": VLA_TRAINING_ACTION_SCHEMA,
+            "training_action_alignment": VLA_TRAINING_ACTION_ALIGNMENT,
+            "training_action_horizon_frames": 1,
+            "base_pose_frame": "world",
+            "tcp_pose_frame": "world",
+            "training_action_base_pose_frame": "world",
+            "training_action_tcp_pose_frame": "base_frame",
+            "training_action_tcp_euler_order": "roll_pitch_yaw",
+            "training_action_position_unit": "m",
+            "training_action_angle_unit": "rad",
+        }
+        for key, expected in vla_requirements.items():
+            if info.get(key) != expected:
+                context.error(
+                    "invalid_vla_training_metadata",
+                    f"info.json 的 {key} 必须是 {expected!r}。",
+                    feature="action",
+                )
+        if info.get("training_action_gripper_range") != [0.0, 1.0]:
+            context.error(
+                "invalid_vla_training_metadata",
+                "info.json 的 training_action_gripper_range 必须是 [0.0, 1.0]。",
+                feature="action",
+            )
+        action_feature = features.get("action")
+        if (
+            action_feature is None
+            or _feature_dimension(action_feature) != VLA_TRAINING_ACTION_DIMENSION
+            or action_feature.get("names") != list(VLA_TRAINING_ACTION_NAMES)
+        ):
+            context.error(
+                "invalid_vla_training_action_feature",
+                "VLA 数据集的 action 必须是已命名的标准 10 维向量。",
+                feature="action",
+            )
+        for required_feature in ("observation.base_pose", "control.action"):
+            if required_feature not in features:
+                context.error(
+                    "missing_vla_support_feature",
+                    f"VLA 数据集缺少 {required_feature}。",
+                    feature=required_feature,
+                )
 
     image_features = sorted(
         name for name in features if name.startswith("observation.images.")
@@ -392,6 +456,19 @@ def _check_vector_column(
                 feature=feature,
             )
             return None
+        if any(
+            isinstance(item, bool)
+            or not isinstance(item, (int, float))
+            or not math.isfinite(float(item))
+            for item in value
+        ):
+            context.error(
+                "non_finite_vector_value",
+                f"{feature} 包含非有限数值。",
+                episode_index=episode_index,
+                feature=feature,
+            )
+            return None
         dimensions.add(len(value))
     if len(dimensions) != 1:
         context.error(
@@ -498,6 +575,7 @@ def _validate_episode_table(
     fps: float | None,
     features: dict[str, dict[str, Any]],
     image_features: list[str],
+    vla_training_action_available: bool,
     context: _ValidationContext,
 ) -> dict[str, Any]:
     row_count = int(table.num_rows)
@@ -658,8 +736,14 @@ def _validate_episode_table(
     for feature_name in (
         "observation.state",
         "observation.base_velocity",
+        "observation.base_pose",
+        "observation.object_state",
+        "observation.tcp_pose",
+        "control.action",
         "action",
     ):
+        if feature_name not in features or feature_name not in column_names:
+            continue
         feature = features.get(feature_name, {})
         _check_vector_column(
             _column_values(table, feature_name),
@@ -668,6 +752,23 @@ def _validate_episode_table(
             episode_index=episode_index,
             context=context,
         )
+
+    if vla_training_action_available:
+        action_values = _column_values(table, "action")
+        if any(
+            len(value) != VLA_TRAINING_ACTION_DIMENSION
+            or float(value[-1]) < 0.0
+            or float(value[-1]) > 1.0
+            for value in action_values
+            if isinstance(value, (list, tuple))
+        ):
+            context.error(
+                "invalid_vla_gripper_action",
+                "VLA action 的 gripper_normalized 必须位于 [0, 1]。",
+                path=parquet_path,
+                episode_index=episode_index,
+                feature="action",
+            )
 
     episode_report["global_indices"] = _column_values(table, "index")
     return episode_report
@@ -863,6 +964,9 @@ def _validate_dataset(dataset_root: Path, context: _ValidationContext) -> dict[s
             fps=fps,
             features=features,
             image_features=image_features,
+            vla_training_action_available=(
+                info.get("vla_training_action_available") is True
+            ),
             context=context,
         )
         context.episodes.append(episode_report)

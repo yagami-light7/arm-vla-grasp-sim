@@ -161,3 +161,17 @@ def test_navigation_visual_auto_uses_collision_for_pct_only() -> None:
         "hide_navigation_collision_visual": True,
         "hide_object_collision_visual": True,
     }
+
+
+def test_navigation_visual_auto_uses_full_scene_for_recorded_rgb() -> None:
+    recorded = _navigation_visual_runtime_kwargs(
+        "pct_multifloor",
+        "auto",
+        recording_visual_required=True,
+    )
+
+    assert recorded == {
+        "enable_scene_visual": True,
+        "hide_navigation_collision_visual": True,
+        "hide_object_collision_visual": True,
+    }

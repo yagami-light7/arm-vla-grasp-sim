@@ -234,6 +234,7 @@ class CuroboPlannerServer:
                     "side_grasp_retreat_to_pregrasp": True,
                     "split_pregrasp_motion": True,
                     "single_retime_split_pregrasp": True,
+                    "top_down_reverse_lift": True,
                 },
                 "workspace": str(WORKSPACE),
             }

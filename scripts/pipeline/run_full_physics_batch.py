@@ -22,6 +22,11 @@ PIPELINE_ENTRY = PROJECT_ROOT / "scripts/pipeline/run_full_physics_pipeline.py"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from source.recording.training_action import (  # noqa: E402
+    training_quality_success_verified,
+)
+from source.pipeline import DEFAULT_OVERVIEW_CAMERA_PRIM_PATH  # noqa: E402
+
 
 _REAL_MODES = {
     "simulation_smoke": "--simulation-smoke",
@@ -98,6 +103,7 @@ class BatchEpisodeResult:
     pick_place_xy: str
     base_goal_relative_xy: str
     success: bool
+    training_quality_gate_passed: bool
     failed_state: str
     lerobot_path: str
     elapsed_seconds: float
@@ -150,6 +156,66 @@ def _build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="批量运行默认 headless；需要 GUI 时使用 --no-headless。",
+    )
+    parser.add_argument(
+        "--navigation-visual-mode",
+        choices=("auto", "collision", "full"),
+        default="collision",
+        help=(
+            "转发物理场景视觉模式；默认 collision，不加载 GaussianScene。"
+        ),
+    )
+    parser.add_argument(
+        "--global-planner",
+        choices=("astar", "pct"),
+        default="astar",
+        help="转发全局规划器；良渚任务必须显式使用 pct。",
+    )
+    parser.add_argument("--pct-server-script", help="转发 PCT server 脚本路径。")
+    parser.add_argument("--pct-server-python", help="转发 PCT server Python 路径。")
+    parser.add_argument("--pct-tomogram-path", help="转发 PCT tomogram 路径。")
+    parser.add_argument("--pct-walkable-path", help="转发 PCT walkable 路径。")
+    parser.add_argument("--pct-collision-ply-path", help="转发 PCT collision PLY 路径。")
+    parser.add_argument(
+        "--pct-no-fallback",
+        action="store_true",
+        help="禁止 PCT 失败时回退 A*。",
+    )
+    parser.add_argument(
+        "--pct-coord-mode",
+        choices=("sim_to_pct_180deg", "identity"),
+        default="sim_to_pct_180deg",
+        help="转发 Isaac 到 PCT 的坐标变换模式。",
+    )
+    parser.add_argument(
+        "--pct-cross-floor-gateway",
+        action="append",
+        default=None,
+        help="转发跨层 gateway；单层任务传 none。",
+    )
+    parser.add_argument(
+        "--pct-cross-floor-stair-exit",
+        action="append",
+        default=None,
+        help="转发跨层楼梯出口；单层任务传 none。",
+    )
+    parser.add_argument(
+        "--pct-cross-floor-stair-midpoint",
+        action="append",
+        default=None,
+        help="转发跨层楼梯中点；单层任务传 none。",
+    )
+    parser.add_argument(
+        "--policy-profile",
+        choices=("flat", "pct_multifloor"),
+        default="flat",
+        help="转发 locomotion policy profile。",
+    )
+    parser.add_argument("--locomotion-checkpoint", help="转发 locomotion checkpoint。")
+    parser.add_argument(
+        "--require-locomotion-checkpoint",
+        action="store_true",
+        help="要求 checkpoint 存在，缺失时立即失败。",
     )
     parser.add_argument(
         "--continue-on-failure",
@@ -209,9 +275,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--overview-camera-mode",
-        choices=("auto",),
-        default="auto",
-        help="转发给单 episode pipeline：overview camera 自动发现/切换模式。",
+        choices=("fixed", "auto"),
+        default="fixed",
+        help="转发给单 episode pipeline：fixed 固定相机，auto 按阶段切换。",
+    )
+    parser.add_argument(
+        "--overview-camera-prim-path",
+        default=DEFAULT_OVERVIEW_CAMERA_PRIM_PATH,
+        help="转发 image/video/GUI 共用的 overview Camera prim。",
     )
     parser.add_argument(
         "--overview-capture-backend",
@@ -578,6 +649,7 @@ def _build_episode_result(
         pick_place_xy=_summary_xy(summary),
         base_goal_relative_xy=_summary_base_goal_relative_xy(summary),
         success=success,
+        training_quality_gate_passed=_training_quality_gate_passed(summary),
         failed_state=_failed_state(summary, success=success),
         lerobot_path=_lerobot_path(episode, summary),
         elapsed_seconds=max(0.0, float(elapsed_seconds)),
@@ -586,6 +658,18 @@ def _build_episode_result(
             if summary
             else "summary_missing"
         ),
+    )
+
+
+def _training_quality_gate_passed(
+    summary: dict[str, object] | None,
+) -> bool:
+    """批量训练只接收具有最终物理执行来源证据的 episode。"""
+
+    return bool(
+        summary
+        and summary.get("training_quality_gate_passed") is True
+        and training_quality_success_verified(summary)
     )
 
 
@@ -612,6 +696,7 @@ def _format_result_table(
         "随机化 Pick / Place XY",
         "随机化 BaseGoal / 相对目标",
         "Pipeline 成功",
+        "训练质量门禁",
         "失败 State",
         "LeRobot 数据路径",
         "Episode 耗时",
@@ -622,6 +707,7 @@ def _format_result_table(
             result.pick_place_xy,
             result.base_goal_relative_xy,
             "成功" if result.success else "失败",
+            "通过" if result.training_quality_gate_passed else "拒绝",
             result.failed_state,
             result.lerobot_path,
             _format_duration(result.elapsed_seconds),
@@ -632,7 +718,16 @@ def _format_result_table(
         max(_display_width(headers[index]), *(_display_width(row[index]) for row in rows))
         for index in range(len(headers))
     ]
-    column_colors = ("cyan", "magenta", "yellow", "green", "red", "blue", "white")
+    column_colors = (
+        "cyan",
+        "magenta",
+        "yellow",
+        "green",
+        "green",
+        "red",
+        "blue",
+        "white",
+    )
     separator = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
 
     def _row(values: Sequence[str], *, header: bool = False) -> str:
@@ -640,6 +735,8 @@ def _format_result_table(
         for index, value in enumerate(values):
             color_name = column_colors[index]
             if not header and index == 3 and value == "失败":
+                color_name = "red"
+            if not header and index == 4 and value == "拒绝":
                 color_name = "red"
             padded = _pad_cell(value, widths[index])
             cells.append(_color(padded, color_name, enabled=color_enabled))
@@ -692,7 +789,47 @@ def _build_child_command(
             "--no-randomize-base-goal",
         ),
         _bool_flag(args.headless, "--headless", "--no-headless"),
+        "--navigation-visual-mode",
+        str(args.navigation_visual_mode),
+        "--global-planner",
+        str(args.global_planner),
+        "--policy-profile",
+        str(args.policy_profile),
+        "--overview-camera-prim-path",
+        str(args.overview_camera_prim_path),
     ]
+    if args.global_planner == "pct":
+        command.extend(["--pct-coord-mode", str(args.pct_coord_mode)])
+        for argument_name in (
+            "pct_server_script",
+            "pct_server_python",
+            "pct_tomogram_path",
+            "pct_walkable_path",
+            "pct_collision_ply_path",
+        ):
+            value = getattr(args, argument_name)
+            if value:
+                command.extend(
+                    [f"--{argument_name.replace('_', '-')}", str(_project_path(value))]
+                )
+        if args.pct_no_fallback:
+            command.append("--pct-no-fallback")
+        for argument_name in (
+            "pct_cross_floor_gateway",
+            "pct_cross_floor_stair_exit",
+            "pct_cross_floor_stair_midpoint",
+        ):
+            for value in getattr(args, argument_name) or ():
+                command.extend([f"--{argument_name.replace('_', '-')}", str(value)])
+    if args.locomotion_checkpoint:
+        command.extend(
+            [
+                "--locomotion-checkpoint",
+                str(_project_path(args.locomotion_checkpoint)),
+            ]
+        )
+    if args.require_locomotion_checkpoint:
+        command.append("--require-locomotion-checkpoint")
     if args.mode == "dry_run":
         command.append("--dry-run")
     elif args.mode != "full_physics":
@@ -879,6 +1016,10 @@ def _write_batch_record(
         "output_dir": str(episode.output_dir),
         "summary_path": str(episode.summary_path),
         "success": bool(summary.get("success")) if summary else False,
+        "training_quality_gate_passed": _training_quality_gate_passed(summary),
+        "lerobot_training_eligible": (
+            summary.get("lerobot_training_eligible") if summary else False
+        ),
         "failure_reason": summary.get("failure_reason") if summary else "summary_missing",
         "execution_mode": summary.get("execution_mode") if summary else None,
         "base_goal_randomization_enabled": (
@@ -907,7 +1048,7 @@ def _materialize_batch_lerobot(
     output_root: Path,
     episode_dirs: Sequence[Path],
 ) -> dict[str, object]:
-    """只把本次 batch 成功的 episode 合并，避免旧目录污染训练数据。"""
+    """只合并本次通过物理来源门禁的 episode，避免旧目录和 smoke 污染。"""
 
     from source.recording import materialize_lerobot_dataset
 
@@ -959,7 +1100,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     batch_started_at = time.monotonic()
     color_enabled = bool(args.color) and "NO_COLOR" not in env
     episode_results: list[BatchEpisodeResult] = []
-    successful_episode_dirs: list[Path] = []
+    training_accepted_episode_dirs: list[Path] = []
     _print_banner(
         (
             f"[full-physics-batch] mode={args.mode} episodes={args.num_episodes} "
@@ -993,9 +1134,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 elapsed_seconds=episode_elapsed_seconds,
             )
             episode_results.append(result)
-            if success:
-                successful_episode_dirs.append(episode.output_dir)
-            all_success = all_success and success
+            training_quality_passed = _training_quality_gate_passed(summary)
+            if args.mode == "full_physics" and success and training_quality_passed:
+                training_accepted_episode_dirs.append(episode.output_dir)
+            episode_accepted = bool(
+                success
+                and (
+                    args.mode != "full_physics"
+                    or training_quality_passed
+                )
+            )
+            all_success = all_success and episode_accepted
             completed += 1
             _write_batch_record(
                 summary_stream,
@@ -1004,8 +1153,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 summary=summary,
                 result=result,
             )
-            status_text = "success" if success else "failed"
-            status_color = "green" if success else "red"
+            status_text = (
+                "success"
+                if episode_accepted
+                else ("quality-rejected" if success else "failed")
+            )
+            status_color = "green" if episode_accepted else "red"
             final_progress = _progress_from_summary(
                 episode.summary_path,
                 min_mtime=episode_started_at_epoch,
@@ -1024,14 +1177,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _format_progress_suffix(final_progress, color_enabled=color_enabled),
                 flush=True,
             )
-            if not success and not args.continue_on_failure:
+            if not episode_accepted and not args.continue_on_failure:
                 break
     lerobot_report: dict[str, object] | None = None
     if args.mode == "full_physics":
         lerobot_report = _materialize_batch_lerobot(
             output_root,
-            successful_episode_dirs,
+            training_accepted_episode_dirs,
         )
+        all_success = bool(all_success and lerobot_report.get("lerobot_exported"))
         export_status = "success" if lerobot_report.get("lerobot_exported") else "pending"
         export_color = "green" if export_status == "success" else "yellow"
         print(

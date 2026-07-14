@@ -40,6 +40,8 @@ SIDE_GRASP_SUPPORT_CLEARANCE_M = 0.0
 # 但持续保持零目标能在 carry 阶段提供夹紧力，避免苹果在导航起步时滑落。
 SIDE_GRASP_SAFE_CLOSE_M = 0.0
 SIDE_PREGRASP_OFFSET_M = 0.10
+TOP_GRASP_DEPTH_BELOW_TOP_M = 0.035
+TOP_PREGRASP_OFFSET_M = 0.10
 LIFT_OFFSET_M = 0.10
 ARM_PLACE_RELEASE_CLEARANCE_M = 0.013
 ARM_PLACE_PRE_PLACE_CLEARANCE_M = 0.06
@@ -49,6 +51,12 @@ WORKSPACE_WARN_XY_RADIUS_M = 0.55
 WORKSPACE_WARN_GRASP_Z_M = 0.35
 WORKSPACE_WARN_PREGRASP_Z_M = 0.45
 WORKSPACE_WARN_RADIUS_3D_M = 0.65
+
+# grasp_tcp_link 局部 +X 是夹爪伸出方向；该姿态把 +X 对齐到 base -Z。
+TCP_TOP_DOWN_QUAT_BASE_WXYZ = np.array(
+    [np.sqrt(0.5), 0.0, np.sqrt(0.5), 0.0],
+    dtype=float,
+)
 
 
 def normalize_quat_wxyz(quaternion: Any) -> np.ndarray:
@@ -381,6 +389,139 @@ def build_side_grasp_target_payload(
             "target_workspace_base": diagnostics,
         },
     }
+
+
+def build_top_down_grasp_target_payload(
+    *,
+    object_prim_path: str,
+    T_world_base: Any,
+    bbox_min: Any,
+    bbox_max: Any,
+    bbox_center: Any,
+    bbox_size: Any,
+) -> dict[str, Any]:
+    """从物体上方竖直下探，生成当前物体的 pick target JSON。"""
+
+    T_world_base = np.asarray(T_world_base, dtype=float)
+    bbox_min = np.asarray(bbox_min, dtype=float)
+    bbox_max = np.asarray(bbox_max, dtype=float)
+    bbox_center = np.asarray(bbox_center, dtype=float)
+    bbox_size = np.asarray(bbox_size, dtype=float)
+
+    grasp_position_world = bbox_center.copy()
+    grasp_position_world[2] = bbox_max[2] - TOP_GRASP_DEPTH_BELOW_TOP_M
+    grasp_position_base = _world_point_to_base_position(
+        T_world_base,
+        grasp_position_world,
+    )
+    T_base_grasp = pose_to_matrix(
+        grasp_position_base,
+        TCP_TOP_DOWN_QUAT_BASE_WXYZ,
+    )
+    T_base_pregrasp = _offset_pose_along_base_z(
+        T_base_grasp,
+        TOP_PREGRASP_OFFSET_M,
+    )
+    T_base_lift = _offset_pose_along_base_z(T_base_grasp, LIFT_OFFSET_M)
+
+    T_world_pregrasp = T_world_base @ T_base_pregrasp
+    T_world_grasp = T_world_base @ T_base_grasp
+    T_world_lift = T_world_base @ T_base_lift
+    diagnostics = _make_target_workspace_diagnostics(
+        T_base_pregrasp,
+        T_base_grasp,
+        T_base_lift,
+    )
+    grasp_pos_base, grasp_quat_base = matrix_to_pose(T_base_grasp)
+    grasp_pos_world, grasp_quat_world = matrix_to_pose(T_world_grasp)
+    pregrasp_pos_world, pregrasp_quat_world = matrix_to_pose(T_world_pregrasp)
+    lift_pos_world, lift_quat_world = matrix_to_pose(T_world_lift)
+
+    return {
+        "schema_version": 1,
+        "frame": "arm_base_link",
+        "default_target_name": "grasp",
+        "position_xyz": grasp_pos_base.tolist(),
+        "quaternion_wxyz": grasp_quat_base.tolist(),
+        "sequence": ["pregrasp", "grasp", "close_gripper", "lift"],
+        "poses": {
+            "pregrasp": _make_named_pose_entry(T_base_pregrasp, T_world_pregrasp),
+            "grasp": _make_named_pose_entry(T_base_grasp, T_world_grasp),
+            "lift": _make_named_pose_entry(T_base_lift, T_world_lift),
+        },
+        "gripper": {
+            "open_m": 0.043,
+            "close_m": SIDE_GRASP_SAFE_CLOSE_M,
+            "joint_names": list(GRIPPER_JOINT_NAMES),
+        },
+        "source": {
+            "type": "sim_object_bbox_top_down",
+            "grasp_mode": "top_down",
+            "object_prim_path": object_prim_path,
+            "world_grasp_pose": {
+                "position_xyz": grasp_pos_world.tolist(),
+                "quaternion_wxyz": grasp_quat_world.tolist(),
+            },
+            "world_pregrasp_pose": {
+                "position_xyz": pregrasp_pos_world.tolist(),
+                "quaternion_wxyz": pregrasp_quat_world.tolist(),
+            },
+            "world_lift_pose": {
+                "position_xyz": lift_pos_world.tolist(),
+                "quaternion_wxyz": lift_quat_world.tolist(),
+            },
+            "bbox_world": {
+                "min_xyz": bbox_min.tolist(),
+                "max_xyz": bbox_max.tolist(),
+                "center_xyz": bbox_center.tolist(),
+                "size_xyz": bbox_size.tolist(),
+            },
+            "grasp_depth_below_top_m": TOP_GRASP_DEPTH_BELOW_TOP_M,
+            "pregrasp_offset_m": TOP_PREGRASP_OFFSET_M,
+            "lift_offset_m": LIFT_OFFSET_M,
+            "tcp_orientation_rule": (
+                "base_top_down: grasp_tcp_link local +X points to arm_base_link -Z"
+            ),
+        },
+        "diagnostics": {
+            "target_workspace_base": diagnostics,
+        },
+    }
+
+
+def build_grasp_target_payload(
+    *,
+    grasp_mode: str,
+    object_prim_path: str,
+    T_world_base: Any,
+    bbox_min: Any,
+    bbox_max: Any,
+    bbox_center: Any,
+    bbox_size: Any,
+) -> dict[str, Any]:
+    """按显式抓取模式分派目标生成；auto 保持旧 side 行为。"""
+
+    normalized_mode = str(grasp_mode).strip().lower().replace("-", "_")
+    if normalized_mode == "auto":
+        normalized_mode = "side"
+    builders = {
+        "side": build_side_grasp_target_payload,
+        "top_down": build_top_down_grasp_target_payload,
+    }
+    builder = builders.get(normalized_mode)
+    if builder is None:
+        raise ValueError(
+            "grasp_mode 必须是 auto、side 或 top_down，"
+            f"当前为 {grasp_mode!r}"
+        )
+    return builder(
+        object_prim_path=object_prim_path,
+        T_world_base=T_world_base,
+        bbox_min=bbox_min,
+        bbox_max=bbox_max,
+        bbox_center=bbox_center,
+        bbox_size=bbox_size,
+    )
 
 
 def build_arm_place_target_payload(
@@ -757,7 +898,15 @@ class CurrentStateCuroboPlanner:
         if not isinstance(payload, dict):
             payload = load_curobo_plan_json(plan_json)
         segment_names = _motion_segment_names(payload)
-        expected_side_retreat = not self._config.side_grasp_plan_vertical_lift
+        pick_target = export_report.get("pick_target")
+        pick_target = pick_target if isinstance(pick_target, dict) else {}
+        pick_source = pick_target.get("source")
+        pick_source = pick_source if isinstance(pick_source, dict) else {}
+        grasp_mode = str(pick_source.get("grasp_mode") or "side")
+        expected_side_retreat = bool(
+            grasp_mode == "side"
+            and not self._config.side_grasp_plan_vertical_lift
+        )
         if expected_side_retreat and (
             "lift_object" in segment_names or "retreat_object" not in segment_names
         ):
@@ -766,6 +915,11 @@ class CurrentStateCuroboPlanner:
                 "需要 retreat_object，且禁止 lift_object。"
                 f"当前 cuRobo 返回 motion segments={segment_names}。"
                 "如果正在复用 planner server，请重启 server 后再试。"
+            )
+        if grasp_mode == "top_down" and "lift_object" not in segment_names:
+            raise RuntimeError(
+                "top-down pick 必须在闭合夹爪后执行 lift_object；"
+                f"当前 cuRobo 返回 motion segments={segment_names}。"
             )
         plan = arm_plan_from_curobo_payload(
             payload,
@@ -785,8 +939,13 @@ class CurrentStateCuroboPlanner:
             "expected": (
                 "baseline_side_retreat"
                 if expected_side_retreat
-                else "vertical_lift_after_side_grasp"
+                else (
+                    "vertical_lift_after_top_down_grasp"
+                    if grasp_mode == "top_down"
+                    else "vertical_lift_after_side_grasp"
+                )
             ),
+            "grasp_mode": grasp_mode,
             "motion_segment_names": segment_names,
             "side_grasp_plan_vertical_lift": self._config.side_grasp_plan_vertical_lift,
             "side_grasp_fallback_retreat": self._config.side_grasp_fallback_retreat,
@@ -952,7 +1111,9 @@ __all__ = [
     "CurrentStateCuroboPickPlannerConfig",
     "build_arm_place_target_payload",
     "build_curobo_state_payload",
+    "build_grasp_target_payload",
     "build_side_grasp_target_payload",
+    "build_top_down_grasp_target_payload",
     "matrix_to_pose",
     "pose_dict_from_matrix",
     "pose_to_matrix",

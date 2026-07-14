@@ -12,6 +12,10 @@ from typing import TYPE_CHECKING, Any
 from source.data.random_task import SpawnRegion, sample_object_pose
 from source.interfaces import EpisodeSpec
 
+from .forward_sector_randomization import (
+    apply_forward_sector_randomization,
+    uses_forward_sector_randomization,
+)
 from .task_loader import episode_spec_from_dict
 
 if TYPE_CHECKING:
@@ -19,6 +23,43 @@ if TYPE_CHECKING:
 
 
 _RANDOMIZATION_NAV_MAP_CACHE: dict[tuple[str, float], tuple[Any, dict[str, Any]]] = {}
+
+
+def _fixed_curobo_collision_proxy_paths(task: dict[str, Any]) -> list[str]:
+    """列出不会随目标采样自动更新的任务级 CuRobo collision proxy。"""
+
+    paths: list[str] = []
+    for phase in ("pick", "place"):
+        raw_phase = task.get(phase) or {}
+        if not isinstance(raw_phase, dict):
+            continue
+        raw_collision = raw_phase.get("curobo_world_collision")
+        if not isinstance(raw_collision, dict) or not raw_collision.get("enabled", True):
+            continue
+        cuboids = raw_collision.get("cuboids_world") or []
+        if not isinstance(cuboids, list):
+            continue
+        for index, cuboid in enumerate(cuboids):
+            if isinstance(cuboid, dict):
+                name = str(cuboid.get("name") or index)
+                paths.append(
+                    f"task.{phase}.curobo_world_collision.cuboids_world[{index}]={name}"
+                )
+    return paths
+
+
+def _reject_unsynchronized_collision_proxy_randomization(
+    task: dict[str, Any],
+) -> None:
+    """目标随机化与固定碰撞代理不能使用不同坐标。"""
+
+    proxy_paths = _fixed_curobo_collision_proxy_paths(task)
+    if not proxy_paths:
+        return
+    raise RuntimeError(
+        "task_randomization_conflicts_with_fixed_curobo_collision_proxies: "
+        f"{proxy_paths}; use --no-randomize-task until proxy regeneration is implemented"
+    )
 
 
 def _normalize_angle(angle: float) -> float:
@@ -833,7 +874,16 @@ def prepare_episode_spec(
 
     task = copy.deepcopy(base_spec.raw_task)
     task["episode_id"] = int(episode_id)
-    if settings.enabled:
+    forward_sector_mode = uses_forward_sector_randomization(task)
+    if settings.enabled and forward_sector_mode:
+        apply_forward_sector_randomization(
+            task,
+            seed=seed,
+            randomize_base_goal=settings.base_goal.enabled,
+            collision_ply_path=settings.collision_ply_path,
+        )
+    elif settings.enabled:
+        _reject_unsynchronized_collision_proxy_randomization(task)
         _randomize_pick_xy(
             task,
             seed=seed,
@@ -843,9 +893,11 @@ def prepare_episode_spec(
             _randomize_place_xy_and_base_goals(task, seed=seed, settings=settings)
         else:
             _randomize_place_xy(task, seed=seed, settings=settings)
-    if not (settings.enabled and settings.base_goal.enabled):
+    if not forward_sector_mode and not (
+        settings.enabled and settings.base_goal.enabled
+    ):
         _randomize_base_goals(task, seed=seed, settings=settings)
-    if settings.show_debug_region:
+    if settings.show_debug_region and not forward_sector_mode:
         _attach_region_metadata(task, seed=seed, settings=settings)
 
     if (

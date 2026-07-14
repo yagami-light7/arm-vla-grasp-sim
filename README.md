@@ -182,7 +182,8 @@ source/
 │   └── lerobot_converter.py                # 旧 LeRobot converter 兼容接口
 ├── tasks/                                  # task loader 与随机化逻辑
 │   ├── task_loader.py                      # JSON task -> EpisodeSpec
-│   └── randomizer.py                       # pick/place XY 和 base_goal 随机化
+│   ├── randomizer.py                       # 通用 pick/place XY 和 base_goal 随机化
+│   └── forward_sector_randomization.py     # 良渚机器人前向扇区联合随机化
 ├── scene/                                  # USD 场景、物体资产和导航地图
 │   ├── 839920_go2_x5.usd                   # 当前主场景 USD
 │   ├── nav_maps/839920/                    # occupancy map / metadata
@@ -599,16 +600,18 @@ python \
 | `--output-dir`                                       | `outputs/full_physics_pipeline` | 输出目录                                            |
 | `--num-episodes`                                     | `1`                             | episode 数量；真实 Isaac 模式当前只支持 1           |
 | `--seed`                                             | `0`                             | 首个 episode seed                                   |
-| `--randomize-task` / `--no-randomize-task`           | 默认开启                        | 是否随机化 pick/place 目标 XY                       |
-| `--show-randomization-debug`                         | 默认关闭                        | 显示随机区域和采样点 USD guide                      |
+| `--randomize-task` / `--no-randomize-task`           | 默认开启                        | 是否按 task profile 随机化完整 episode 布局         |
+| `--show-randomization-debug`                         | 默认关闭                        | 显示矩形/前向扇区和采样点 USD guide                 |
 | `--randomize-base-goal` / `--no-randomize-base-goal` | 默认开启                        | 是否随机化 pick/place 导航交接 base_goal            |
 | `--keep-window-open` / `--no-keep-window-open`       | 默认关闭                        | 结束后保留 GUI；必须配合`--no-headless`             |
 | `--headless` / `--no-headless`                       | 默认`--no-headless`             | 是否无界面运行                                      |
+| `--navigation-visual-mode`                           | `collision`                     | 默认不加载 Gaussian；`full` 显式加载，`auto` 保留兼容 |
 | `--record-video`                                     | 默认关闭                        | 启用 episode 展示/observation MP4 录制；展示视频固定 25fps |
 | `--video-mode`                                       | `overview`                      | `overview` 使用第三人称视角；`front`/`font` 使用前视 observation；`wrist` 使用腕部 observation；`all` 同时导出三路 |
 | `--video-out`                                        | 可选                            | 视频输出目录或单个`.mp4`；多路/多 episode 请传目录  |
 | `--video-width` / `--video-height`                   | `1280` / `720`                  | overview 捕获分辨率；不改变 front/wrist observation |
-| `--overview-camera-mode`                             | `auto`                          | 自动发现 USD Camera；overview 按阶段优先切换`third_person1..4` |
+| `--overview-camera-mode`                             | `fixed`                         | 默认固定使用指定 overview；`auto` 才按阶段发现相机  |
+| `--overview-camera-prim-path`                        | `/World/overview`               | image/video/GUI 共用的 overview Camera prim          |
 | `--overview-capture-backend`                         | `viewport`                      | overview 取帧后端；`viewport` 抓最终视口画面最接近 GUI，`render_product` 使用 Replicator RGB，`auto` 先 viewport 后回退 |
 | `--overview-initial-hold-frames`                     | `160`                           | 初始`third_person1`最少保持帧数，避免刚 reset 后立即切到导航镜头 |
 | `--overview-exposure`                                | `0.0`                           | overview 线性 RGB 转视频前曝光补偿，单位 EV stops  |
@@ -633,10 +636,11 @@ python \
 | `--output-dir`                                       | 必填          | batch 输出目录                              |
 | `--num-episodes`                                     | `1`           | episode 数量                                |
 | `--seed`                                             | `0`           | 首个 seed，后续使用`seed + episode_index`   |
-| `--randomize-task` / `--no-randomize-task`           | 默认开启      | 是否随机化 pick/place 目标 XY               |
-| `--show-randomization-debug`                         | 默认关闭      | 显示随机区域；通常只用于 GUI 单 episode     |
+| `--randomize-task` / `--no-randomize-task`           | 默认开启      | 是否按 task profile 随机化完整 episode 布局 |
+| `--show-randomization-debug`                         | 默认关闭      | 显示矩形/前向扇区；通常只用于 GUI 单 episode |
 | `--randomize-base-goal` / `--no-randomize-base-goal` | 默认开启      | 是否随机化导航交接 base_goal                |
 | `--headless` / `--no-headless`                       | 默认 headless | batch 是否无界面运行                        |
+| `--navigation-visual-mode`                           | `collision`   | 默认不加载 Gaussian；可显式改为`full`       |
 | `--continue-on-failure` / `--no-continue-on-failure` | 默认继续      | 单 episode 失败后是否继续                   |
 | `--pick-plan-json`                                   | 可选          | 非 full-physics smoke 可转发离线 pick plan  |
 | `--place-plan-json`                                  | 可选          | 非 full-physics smoke 可转发离线 place plan |
@@ -646,7 +650,8 @@ python \
 | `--video-mode`                                       | `overview`    | `overview`/`front`/`font`/`wrist`/`all`；`font` 是 `front` 兼容别名 |
 | `--video-out`                                        | 可选          | 视频输出根目录；batch 会写入其下的`episode_XXXXXX/`子目录，不支持单个`.mp4` |
 | `--video-width` / `--video-height`                   | `1280` / `720`| overview 捕获分辨率；不改变 front/wrist observation |
-| `--overview-camera-mode`                             | `auto`        | 自动发现 USD Camera；overview 按阶段优先切换`third_person1..4` |
+| `--overview-camera-mode`                             | `fixed`       | 默认固定使用指定 overview；`auto` 保留动态发现 |
+| `--overview-camera-prim-path`                        | `/World/overview` | image/video/GUI 共用的 overview Camera prim |
 | `--overview-capture-backend`                         | `viewport`    | overview 取帧后端；`viewport` 最接近 GUI，`render_product` 用于排查 fallback |
 | `--overview-initial-hold-frames`                     | `160`         | 初始`third_person1`最少保持帧数              |
 | `--overview-exposure`                                | `0.0`         | overview 曝光补偿，单位 EV stops            |

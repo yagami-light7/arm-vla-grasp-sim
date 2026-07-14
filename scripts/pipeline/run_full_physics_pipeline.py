@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from source.pipeline import (  # noqa: E402
     BaseGoalRandomizationSettings,
+    DEFAULT_OVERVIEW_CAMERA_PRIM_PATH,
     FullPhysicsConfig,
     LocomotionPolicySettings,
     ManipulationSettings,
@@ -163,16 +164,22 @@ def _locomotion_runtime_kwargs(config: FullPhysicsConfig) -> dict[str, object]:
 def _navigation_visual_runtime_kwargs(
     policy_profile: str,
     requested_mode: str,
+    *,
+    recording_visual_required: bool = False,
 ) -> dict[str, object]:
     """选择物理验收的视觉负载，隔离高质量渲染与导航执行。"""
 
     mode = requested_mode
     if mode == "auto":
-        mode = "collision" if policy_profile == "pct_multifloor" else "full"
+        mode = (
+            "full"
+            if recording_visual_required
+            else ("collision" if policy_profile == "pct_multifloor" else "full")
+        )
     return {
         "enable_scene_visual": mode == "full",
         "hide_navigation_collision_visual": mode != "collision",
-        "hide_object_collision_visual": policy_profile != "pct_multifloor",
+        "hide_object_collision_visual": mode != "collision",
     }
 
 
@@ -191,13 +198,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--seed",
         type=int,
         default=0,
-        help="首个 episode 的随机种子；相同 seed 会严格复现相同的随机 XY。",
+        help="首个 episode 的随机种子；相同 seed 会严格复现同一任务布局。",
     )
     parser.add_argument(
         "--randomize-task",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="按 episode seed 随机采样 pick/place XY；默认开启，可用 --no-randomize-task 关闭。",
+        help="按 episode seed 随机采样任务布局；默认开启，可用 --no-randomize-task 关闭。",
     )
     parser.add_argument(
         "--show-randomization-debug",
@@ -213,7 +220,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--randomize-base-goal",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="开启 pick/place 导航交接 base_goal 极坐标随机化；默认开启，可用 --no-randomize-base-goal 关闭。",
+        help="开启 pick/place 导航交接 base_goal 随机化；默认开启，可用 --no-randomize-base-goal 关闭。",
     )
     parser.add_argument(
         "--keep-window-open",
@@ -230,10 +237,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--navigation-visual-mode",
         choices=("auto", "collision", "full"),
-        default="auto",
+        default="collision",
         help=(
-            "物理验收视觉模式；auto 在 pct_multifloor 中使用轻量碰撞层，"
-            "flat 保持完整视觉。"
+            "物理验收视觉模式；默认 collision，不加载 GaussianScene；"
+            "full 显式加载，auto 保留旧自适应语义。"
         ),
     )
     parser.add_argument(
@@ -286,9 +293,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--overview-camera-mode",
-        choices=("auto",),
-        default="auto",
-        help="overview camera 选择模式；auto 会遍历 USD stage 中已有 Camera 并按任务阶段切换。",
+        choices=("fixed", "auto"),
+        default="fixed",
+        help="overview camera 选择模式；fixed 固定优先指定相机，auto 保留按任务阶段切换。",
+    )
+    parser.add_argument(
+        "--overview-camera-prim-path",
+        default=DEFAULT_OVERVIEW_CAMERA_PRIM_PATH,
+        help="image/video/GUI 共用的 overview Camera prim，默认 /World/overview。",
     )
     parser.add_argument(
         "--overview-capture-backend",
@@ -350,6 +362,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--pct-no-fallback",
         action="store_true",
         help="PCT 规划失败时不回退 A*，直接报错。",
+    )
+    parser.add_argument(
+        "--pct-coord-mode",
+        choices=("sim_to_pct_180deg", "identity"),
+        default=NavigationSettings().pct_coord_mode,
+        help=(
+            "Isaac 世界坐标到 PCT/PLY 的变换模式；旧多楼层场景使用 "
+            "sim_to_pct_180deg，良渚同坐标 PLY 使用 identity。"
+        ),
     )
     parser.add_argument("--pct-offset-x", type=float, default=0.0, help="PCT 坐标 X 偏移。")
     parser.add_argument("--pct-offset-y", type=float, default=0.0, help="PCT 坐标 Y 偏移。")
@@ -770,6 +791,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             pct_walkable_path=_optional_project_path(args.pct_walkable_path),
             pct_collision_ply_path=_optional_project_path(args.pct_collision_ply_path),
             pct_fallback_to_astar=not bool(args.pct_no_fallback),
+            pct_coord_mode=str(args.pct_coord_mode),
             pct_offset_x=float(args.pct_offset_x),
             pct_offset_y=float(args.pct_offset_y),
             pct_scale_x=float(args.pct_scale_x),
@@ -882,6 +904,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         randomization=RandomizationSettings(
             enabled=args.randomize_task,
             show_debug_region=args.show_randomization_debug,
+            collision_ply_path=_optional_project_path(
+                args.pct_collision_ply_path
+            ),
             base_goal=BaseGoalRandomizationSettings(
                 enabled=args.randomize_base_goal,
             ),
@@ -890,6 +915,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             debug_per_episode_lerobot=(
                 os.environ.get("FULL_PHYSICS_DEFER_LEROBOT_EXPORT") != "1"
             ),
+            overview_camera_prim_path=str(args.overview_camera_prim_path),
         ),
         lighting=SceneLightingSettings(
             scene_light_mode=str(args.scene_light_mode),
@@ -901,6 +927,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             mode=str(args.video_mode),
             output_path=_project_path(args.video_out) if args.video_out else None,
             overview_camera_mode=str(args.overview_camera_mode),
+            overview_camera_prim_path=str(args.overview_camera_prim_path),
             width=int(args.video_width),
             height=int(args.video_height),
             overview_capture_backend=str(args.overview_capture_backend),
@@ -938,8 +965,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "headless": bool(config.headless),
         "keep_window_open": bool(config.keep_window_open),
         "record_video": bool(config.video.enabled),
+        "navigation_visual_mode": str(args.navigation_visual_mode),
+        "overview_camera_mode": config.video.overview_camera_mode,
+        "overview_camera_prim_path": config.recording.overview_camera_prim_path,
         "scene_light_mode": config.lighting.scene_light_mode,
         "global_planner": config.navigation.global_planner,
+        "pct_coord_mode": config.navigation.pct_coord_mode,
         "policy_profile": config.locomotion.policy_profile,
         "pct_plan_preview_auto_keep_window_open": bool(
             pct_plan_preview and not config.headless
@@ -1186,6 +1217,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                             **_navigation_visual_runtime_kwargs(
                                 config.locomotion.policy_profile,
                                 args.navigation_visual_mode,
+                                recording_visual_required=(
+                                    config.recording.enabled
+                                    and bool(config.recording.camera_keys)
+                                ),
                             ),
                             enable_front_camera=(
                                 (
@@ -1205,6 +1240,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                             ),
                             wrist_camera_height=config.recording.image_height,
                             wrist_camera_width=config.recording.image_width,
+                            enable_overview_camera=(
+                                config.recording.enabled
+                                and "overview" in config.recording.camera_keys
+                            ),
+                            overview_camera_prim_path=(
+                                config.recording.overview_camera_prim_path
+                            ),
+                            overview_camera_height=config.recording.image_height,
+                            overview_camera_width=config.recording.image_width,
+                            viewport_camera_prim_path=(
+                                config.recording.overview_camera_prim_path
+                            ),
                             scene_light_mode=config.lighting.scene_light_mode,
                             camera_light_intensity=(
                                 config.lighting.camera_light_intensity

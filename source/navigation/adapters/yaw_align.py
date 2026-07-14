@@ -54,6 +54,14 @@ class TerminalPoseConfig:
     yaw_polish_gait_vx: float = 0.08
     yaw_polish_min_wz: float = 0.45
     yaw_polish_max_wz: float = 0.55
+    # 携物终端段优先使用“转向剩余位置误差 -> 前向收敛”，避免 locomotion
+    # policy 在最终 yaw 已对齐、但仍有横向位置误差时持续低速踏步。
+    prefer_forward_translation: bool = False
+    forward_heading_deadband: float = 0.20
+    # 大航向误差时必须先原地转向；非零 vx 与固定 wz 会形成最小转弯半径，
+    # 在短程 place goal 周围产生稳定圆周轨迹。
+    forward_turn_gait_vx: float = 0.0
+    forward_turn_max_wz: float = 0.50
 
 
 @dataclass(frozen=True)
@@ -124,6 +132,17 @@ def compute_terminal_pose_command(
     recovery: bool = False,
 ) -> tuple[float, float, float]:
     """Return a body-frame command for final XY + yaw convergence."""
+
+    if (
+        config.prefer_forward_translation
+        and distance_to_goal > config.position_tolerance
+    ):
+        return _compute_forward_translation_command(
+            body_goal_x=body_goal_x,
+            body_goal_y=body_goal_y,
+            distance_to_goal=distance_to_goal,
+            config=config,
+        )
 
     abs_yaw_error = abs(yaw_error)
     position_scale = 1.0
@@ -239,6 +258,41 @@ def compute_terminal_pose_command(
         wz_abs = min(max_wz, max(config.yaw_kp * abs_yaw_error, min_wz))
         wz = math.copysign(wz_abs, yaw_error)
     return vx, vy, wz
+
+
+def _compute_forward_translation_command(
+    *,
+    body_goal_x: float,
+    body_goal_y: float,
+    distance_to_goal: float,
+    config: TerminalPoseConfig,
+) -> tuple[float, float, float]:
+    """携物时用非完整约束式小步收敛，避免依赖低速横移能力。"""
+
+    heading_error = math.atan2(body_goal_y, body_goal_x)
+    abs_heading_error = abs(heading_error)
+    max_wz = min(
+        max(0.0, float(config.yaw_max_wz)),
+        max(0.0, float(config.forward_turn_max_wz)),
+    )
+    if abs_heading_error <= 1.0e-6 or max_wz <= 0.0:
+        wz = 0.0
+    else:
+        proportional_wz = min(max_wz, config.yaw_kp * abs_heading_error)
+        if abs_heading_error > config.forward_heading_deadband:
+            min_wz = min(max_wz, max(0.0, config.yaw_min_wz))
+            proportional_wz = max(proportional_wz, min_wz)
+        wz = math.copysign(proportional_wz, heading_error)
+
+    max_vx = max(0.0, float(config.max_vx))
+    if abs_heading_error > config.forward_heading_deadband:
+        vx = min(max_vx, max(0.0, config.forward_turn_gait_vx))
+    else:
+        vx = min(max_vx, max(0.0, config.position_kp * distance_to_goal))
+        min_vx = min(max_vx, max(0.0, config.min_vx))
+        if 0.0 < vx < min_vx:
+            vx = min_vx
+    return vx, 0.0, wz
 
 
 def _axis_velocity(

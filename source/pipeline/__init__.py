@@ -2,6 +2,7 @@
 
 from .config import (
     BaseGoalRandomizationSettings,
+    DEFAULT_OVERVIEW_CAMERA_PRIM_PATH,
     FullPhysicsConfig,
     LocomotionPolicySettings,
     ManipulationSettings,
@@ -19,6 +20,7 @@ from .states import PipelineState
 
 __all__ = [
     "BaseGoalRandomizationSettings",
+    "DEFAULT_OVERVIEW_CAMERA_PRIM_PATH",
     "FullPhysicsConfig",
     "FullPhysicsPipeline",
     "FullPhysicsStateMachine",

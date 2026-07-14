@@ -18,6 +18,7 @@ class NavigationEpisodeVerifier:
         self,
         *,
         position_tolerance: float = 0.18,
+        place_position_tolerance: float | None = None,
         yaw_tolerance: float = 0.18,
         linear_velocity_tolerance: float = 0.06,
         angular_velocity_tolerance: float = 0.20,
@@ -26,6 +27,13 @@ class NavigationEpisodeVerifier:
         goal_z_tolerance: float = 0.35,
     ):
         self.position_tolerance = float(position_tolerance)
+        self.place_position_tolerance = (
+            self.position_tolerance
+            if place_position_tolerance is None
+            else float(place_position_tolerance)
+        )
+        if self.place_position_tolerance <= 0.0:
+            raise ValueError("place_position_tolerance must be positive")
         self.yaw_tolerance = float(yaw_tolerance)
         self.linear_velocity_tolerance = float(linear_velocity_tolerance)
         self.angular_velocity_tolerance = float(angular_velocity_tolerance)
@@ -45,6 +53,7 @@ class NavigationEpisodeVerifier:
             goal_z=episode_spec.pick_goal.z,
             goal_yaw=episode_spec.pick_goal.yaw,
             failure_reason="pick_target_unreachable",
+            position_tolerance=self.position_tolerance,
         )
 
     def verify_place_reachable(
@@ -61,6 +70,7 @@ class NavigationEpisodeVerifier:
             goal_z=episode_spec.place_goal.z,
             goal_yaw=episode_spec.place_goal.yaw,
             failure_reason="place_target_unreachable",
+            position_tolerance=self.place_position_tolerance,
         )
 
     def verify_pick_success(
@@ -88,6 +98,7 @@ class NavigationEpisodeVerifier:
         goal_z: float | None,
         goal_yaw: float,
         failure_reason: str,
+        position_tolerance: float,
     ) -> VerificationResult:
         pose = state.robot_root_pose
         yaw = self._yaw_from_quaternion(pose[3:])
@@ -104,7 +115,7 @@ class NavigationEpisodeVerifier:
         else:
             linear_speed = math.hypot(float(body_velocity[0]), float(body_velocity[1]))
             angular_speed = abs(float(body_velocity[2]))
-        position_reached = distance <= self.position_tolerance
+        position_reached = distance <= position_tolerance
         z_reached = True if z_error is None else z_error <= self.goal_z_tolerance
         yaw_aligned = yaw_error <= self.yaw_tolerance
         base_stable = (
@@ -128,7 +139,7 @@ class NavigationEpisodeVerifier:
                 "yaw_error": yaw_error,
                 "linear_speed": linear_speed,
                 "angular_speed": angular_speed,
-                "position_tolerance": self.position_tolerance,
+                "position_tolerance": position_tolerance,
                 "goal_z_tolerance": self.goal_z_tolerance,
                 "yaw_tolerance": self.yaw_tolerance,
                 "linear_velocity_tolerance": self.linear_velocity_tolerance,

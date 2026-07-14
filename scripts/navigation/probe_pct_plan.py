@@ -30,6 +30,7 @@ def main() -> int:
     task_json = _project_path(args.task_json)
     tomogram_path = _project_path(args.pct_tomogram_path)
     walkable_path = _project_path(args.pct_walkable_path)
+    collision_ply_path = _optional_project_path(args.pct_collision_ply_path)
     server_script = _optional_project_path(args.pct_server_script)
     planner_root = _optional_project_path(args.pct_planner_root)
     server_python = _optional_project_path(args.pct_server_python)
@@ -42,6 +43,9 @@ def main() -> int:
         "pct_server_python": str(server_python) if server_python else None,
         "pct_tomogram_path": str(tomogram_path),
         "pct_walkable_path": str(walkable_path),
+        "pct_collision_ply_path": (
+            str(collision_ply_path) if collision_ply_path else None
+        ),
         "coord_mode": args.pct_coord_mode,
         "cross_floor_gateway_points": _parse_xyz_points(
             args.pct_cross_floor_gateway,
@@ -71,6 +75,7 @@ def main() -> int:
         server_script=server_script,
         tomogram_path=tomogram_path,
         walkable_path=walkable_path,
+        collision_ply_path=collision_ply_path,
     )
     report["ready_for_pct_server_plan"] = not missing
     report["missing"] = missing
@@ -92,6 +97,7 @@ def main() -> int:
             server_python=server_python,
             tomogram_path=tomogram_path,
             walkable_path=walkable_path,
+            collision_ply_path=collision_ply_path,
             startup_timeout_s=float(args.startup_timeout_s),
             request_timeout_s=float(args.request_timeout_s),
             coord_mode=args.pct_coord_mode,
@@ -203,6 +209,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--pct-server-python", default=None, help="运行 PCT server 的 Python。")
     parser.add_argument("--pct-tomogram-path", default=str(DEFAULT_TOMOGRAM), help="PCT tomogram pickle。")
     parser.add_argument("--pct-walkable-path", default=str(DEFAULT_WALKABLE), help="PCT walkable npy。")
+    parser.add_argument(
+        "--pct-collision-ply-path",
+        default=None,
+        help="可选 collision PLY；提供后探针与真实 server 使用同一身体障碍层。",
+    )
     parser.add_argument("--pct-coord-mode", default="sim_to_pct_180deg", choices=["sim_to_pct_180deg", "identity"])
     parser.add_argument("--pct-offset-x", type=float, default=0.0)
     parser.add_argument("--pct-offset-y", type=float, default=0.0)
@@ -315,12 +326,19 @@ def _collect_missing_inputs(
     server_script: Path | None,
     tomogram_path: Path,
     walkable_path: Path,
+    collision_ply_path: Path | None,
 ) -> list[str]:
     checks = report["checks"]
     checks["task_json_exists"] = task_json.is_file()
     checks["task_loaded"] = task is not None
     checks["tomogram_exists"] = tomogram_path.is_file()
     checks["walkable_exists"] = walkable_path.is_file()
+    checks["collision_ply"] = (
+        None if collision_ply_path is None else str(collision_ply_path)
+    )
+    checks["collision_ply_exists"] = (
+        None if collision_ply_path is None else collision_ply_path.is_file()
+    )
     resolved_server = _resolve_server_script(planner_root, server_script)
     checks["server_script"] = str(resolved_server) if resolved_server else None
     checks["server_script_exists"] = resolved_server is not None and resolved_server.is_file()
@@ -347,6 +365,8 @@ def _collect_missing_inputs(
         missing.append("pct_tomogram_path")
     if not checks["walkable_exists"]:
         missing.append("pct_walkable_path")
+    if collision_ply_path is not None and not collision_ply_path.is_file():
+        missing.append("pct_collision_ply_path")
     if not checks["server_script_exists"]:
         missing.append("pct_server_script_or_pct_planner_root")
     warnings: list[str] = report.setdefault("warnings", [])

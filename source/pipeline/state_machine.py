@@ -767,6 +767,7 @@ class FullPhysicsStateMachine:
         self.pick_planner_result: dict[str, Any] = {}
         self.pick_executor_status: dict[str, Any] = {}
         self.pick_verification_result: dict[str, Any] = {}
+        self.place_verification_result: dict[str, Any] = {}
         self.export_result: dict[str, Any] = {}
         self._carry_gripper_target: dict[str, Any] | None = None
         self._carry_arm_home_target: dict[str, Any] | None = None
@@ -845,6 +846,7 @@ class FullPhysicsStateMachine:
             "pick_planner_result": dict(self.pick_planner_result),
             "pick_executor_status": dict(self.pick_executor_status),
             "pick_verification_result": dict(self.pick_verification_result),
+            "place_verification_result": dict(self.place_verification_result),
             "lerobot_export": dict(self.export_result),
             "carry_gripper_target": dict(self._carry_gripper_target or {}),
             "carry_arm_home_target": dict(self._carry_arm_home_target or {}),
@@ -1374,7 +1376,7 @@ class FullPhysicsStateMachine:
                 **plan.metadata,
                 "execution_phase": "carry_nav_to_place",
                 "require_yaw_alignment": True,
-                "yaw_tolerance": 0.18,
+                "yaw_tolerance": self.config.navigation.final_yaw_tolerance,
             },
         )
         self.nav_executor.reset(plan)
@@ -1662,6 +1664,11 @@ class FullPhysicsStateMachine:
         observation: SimulationState,
     ) -> tuple[RobotAction, list[PipelineEvent]]:
         result = self.verifier.verify_place_success(observation, self.episode_spec)
+        self.place_verification_result = {
+            "success": bool(result.success),
+            "failure_reason": result.failure_reason,
+            **result.metadata,
+        }
         if not result.success:
             return RobotAction.idle(source="verify_place_success"), self._fail(
                 result.failure_reason or "object_out_of_place",
@@ -1688,9 +1695,14 @@ class FullPhysicsStateMachine:
         return RobotAction.idle(source="verify_place_success"), events
 
     def _export_lerobot(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
+        training_eligible = bool(self.config.full_physics and not self.config.dry_run)
         self.export_result = self.recorder.prepare_lerobot_export(
-            training_eligible=True,
-            training_eligibility_reason="episode_success_verified",
+            training_eligible=training_eligible,
+            training_eligibility_reason=(
+                "episode_success_verified"
+                if training_eligible
+                else "execution_mode_is_not_full_physics"
+            ),
         )
         if (
             self.config.full_physics
@@ -2508,6 +2520,7 @@ class FullPhysicsStateMachine:
             "pick_planner_result": dict(self.pick_planner_result),
             "pick_executor_status": dict(self.pick_executor_status),
             "pick_verification_result": dict(self.pick_verification_result),
+            "place_verification_result": dict(self.place_verification_result),
             **dict(metadata or {}),
         }
         self.state = PipelineState.FAILED

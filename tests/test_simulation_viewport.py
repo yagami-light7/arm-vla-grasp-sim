@@ -41,6 +41,7 @@ class SimulationViewportTest(unittest.TestCase):
         self.assertEqual(candidates[0], "/World/Camera_main")
         self.assertIn("/World/camera_main", candidates)
         self.assertIn("/World/Camera0", candidates)
+        self.assertIn("/World/overview", candidates)
         self.assertIn("/World/Camera1", candidates)
         self.assertIn("/World/Camera_font", candidates)
         self.assertIn("/World/camera0", candidates)
@@ -93,6 +94,38 @@ class SimulationViewportTest(unittest.TestCase):
         )
 
         self.assertEqual(recorder.select_camera_for_state("RESET_EPISODE"), "/World/Camera0")
+
+    def test_fixed_mode_keeps_authored_overview_for_every_pipeline_state(self) -> None:
+        """fixed 模式必须让 image/video/GUI 使用同一个 authored overview。"""
+
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(overview_camera_mode="fixed"),
+            episode_dir=".",
+            episode_id=0,
+        )
+        recorder._all_cameras = (  # noqa: SLF001 - 单元测试仅验证相机选择。
+            _CameraCandidate(
+                path="/World/overview",
+                name="overview",
+                normalized_text="/world/overview overview",
+                is_observation=False,
+                overview_score=100,
+            ),
+            _CameraCandidate(
+                path="/World/third_person4",
+                name="third_person4",
+                normalized_text="/world/third_person4 third_person4",
+                is_observation=False,
+                overview_score=100,
+            ),
+        )
+
+        for state in ("RESET_EPISODE", "EXEC_NAV_TO_PICK", "EXEC_PLACE"):
+            self.assertEqual(
+                recorder.select_camera_for_state(state),
+                "/World/overview",
+            )
+        self.assertFalse(recorder._should_rediscover_cameras())  # noqa: SLF001
 
     def test_camera_font_name_is_supported_for_current_scene(self) -> None:
         candidates = candidate_stage_camera_paths("/World/Camera_font")

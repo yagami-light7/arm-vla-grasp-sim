@@ -164,6 +164,7 @@ from curobo.scene import Cuboid, Scene
 from curobo.types import GoalToolPose, JointState, Pose
 
 from scripts.math.SE3 import matrix_to_pose, pose_to_matrix, quat_error_deg
+from source.manipulation.curobo_robot_config import load_workspace_robot_config
 
 
 SCRIPT_START_TIME = time.perf_counter()
@@ -418,7 +419,7 @@ def create_planner() -> MotionPlanner:
 
     with profile_block("MotionPlannerCfg.create"):
         cfg = MotionPlannerCfg.create(
-            robot=str(ROBOT_YAML),
+            robot=load_workspace_robot_config(WORKSPACE, robot_yaml=ROBOT_YAML),
             scene_model=None,
             collision_cache=WORLD_COLLISION_CACHE if WORLD_COLLISION_ENABLED else None,
             self_collision_check=True,
@@ -1477,7 +1478,49 @@ def plan_grasp_segments(
         segments.append(make_gripper_segment("close_gripper", gripper_close, gripper_joint_names))
 
         post_grasp_segments: list[dict] = []
-        if grasp_mode == "side" and not SIDE_GRASP_PLAN_VERTICAL_LIFT:
+        if grasp_mode == "top_down":
+            # top-down 的 approach 本身就是竖直下降；反向复用该路径可稳定抬升，
+            # 并避免从接触构型重新调用 plan_pose 时陷入局部不可达。
+            if SPLIT_PREGRASP_MOTION:
+                segment, q_current = build_lift_segment_from_reverse_approach(
+                    planner=planner,
+                    approach_segment=approach_segment,
+                    T_world_base=T_world_base,
+                    segment_name="lift_object",
+                    target_name="pregrasp",
+                    reverse_info_key="reverse_approach_lift",
+                )
+                segment["lift_strategy"] = (
+                    "reverse_vertical_top_down_approach_to_pregrasp"
+                )
+                post_grasp_segments.append(segment)
+
+                segment, q_current = build_lift_segment_from_reverse_approach(
+                    planner=planner,
+                    approach_segment=approach_segment,
+                    T_world_base=T_world_base,
+                    segment_name="return_home_after_retreat",
+                    target_name="home",
+                    reverse_info_key="reverse_home_after_pregrasp",
+                )
+                segment["retreat_strategy"] = (
+                    "reverse_pregrasp_to_home_after_top_down_lift"
+                )
+                post_grasp_segments.append(segment)
+            else:
+                segment, q_current = build_lift_segment_from_reverse_approach(
+                    planner=planner,
+                    approach_segment=approach_segment,
+                    T_world_base=T_world_base,
+                    segment_name="lift_object",
+                    target_name="home",
+                    reverse_info_key="reverse_full_approach_return",
+                )
+                segment["lift_strategy"] = (
+                    "reverse_full_top_down_approach_to_home"
+                )
+                post_grasp_segments.append(segment)
+        elif grasp_mode == "side" and not SIDE_GRASP_PLAN_VERTICAL_LIFT:
             print("[side grasp] legacy mode: skip vertical lift; retreat by reversing approach path.")
             if SPLIT_PREGRASP_MOTION:
                 segment, q_current = build_lift_segment_from_reverse_approach(

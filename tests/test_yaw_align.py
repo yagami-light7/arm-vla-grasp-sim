@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import unittest
 
 from source.navigation.adapters.yaw_align import (
@@ -239,6 +240,45 @@ class YawAlignTest(unittest.TestCase):
         self.assertEqual(command[0], 0.07)
         self.assertEqual(command[1], 0.0)
         self.assertEqual(command[2], -0.30)
+
+    def test_carry_forward_terminal_reorients_instead_of_strafing_forever(self) -> None:
+        """复现真实 place 卡点：最终 yaw 已合格，但目标仍主要位于机身侧方。"""
+
+        command = compute_terminal_pose_command(
+            body_goal_x=0.031,
+            body_goal_y=0.099,
+            yaw_error=0.148,
+            distance_to_goal=0.104,
+            config=TerminalPoseConfig(
+                position_tolerance=0.05,
+                yaw_tolerance=0.15,
+                max_vx=0.25,
+                yaw_max_wz=0.65,
+                prefer_forward_translation=True,
+            ),
+        )
+
+        self.assertEqual(command[0], 0.0)
+        self.assertEqual(command[1], 0.0)
+        self.assertEqual(command[2], 0.50)
+
+    def test_carry_forward_terminal_advances_after_position_heading_is_aligned(self) -> None:
+        command = compute_terminal_pose_command(
+            body_goal_x=0.10,
+            body_goal_y=0.01,
+            yaw_error=-0.40,
+            distance_to_goal=math.hypot(0.10, 0.01),
+            config=TerminalPoseConfig(
+                position_tolerance=0.05,
+                yaw_tolerance=0.15,
+                max_vx=0.25,
+                prefer_forward_translation=True,
+            ),
+        )
+
+        self.assertEqual(command[0], 0.16)
+        self.assertEqual(command[1], 0.0)
+        self.assertAlmostEqual(command[2], 2.0 * math.atan2(0.01, 0.10))
 
 
 if __name__ == "__main__":

@@ -22,6 +22,62 @@ from .full_physics_pipeline import FullPhysicsPipeline
 from .navigation_smoke import create_navigation_components
 
 
+def _navigation_settings_for_episode(settings, episode_spec: EpisodeSpec):
+    """把任务声明的终点交接精度映射到现有 NavigationSettings。"""
+
+    raw_config = episode_spec.raw_task.get("navigation_execution")
+    if raw_config is None:
+        return settings
+    if not isinstance(raw_config, dict):
+        raise ValueError("task.navigation_execution 必须是对象")
+
+    numeric_fields = (
+        "final_position_tolerance",
+        "place_position_tolerance",
+        "final_yaw_tolerance",
+        "stable_linear_velocity",
+        "stable_angular_velocity",
+    )
+    boolean_fields = ("require_yaw_alignment", "require_stable_base")
+    updates = {}
+    for field_name in numeric_fields:
+        if field_name not in raw_config:
+            continue
+        value = float(raw_config[field_name])
+        if value <= 0.0:
+            raise ValueError(f"task.navigation_execution.{field_name} 必须大于零")
+        updates[field_name] = value
+    for field_name in boolean_fields:
+        if field_name not in raw_config:
+            continue
+        value = raw_config[field_name]
+        if not isinstance(value, bool):
+            raise ValueError(f"task.navigation_execution.{field_name} 必须是布尔值")
+        updates[field_name] = value
+    return replace(settings, **updates)
+
+
+def _manipulation_settings_for_episode(settings, episode_spec: EpisodeSpec):
+    """把任务声明的抓放姿态约束映射到现有 ManipulationSettings。"""
+
+    raw_config = episode_spec.raw_task.get("manipulation_execution")
+    if raw_config is None:
+        return settings
+    if not isinstance(raw_config, dict):
+        raise ValueError("task.manipulation_execution 必须是对象")
+    updates = {}
+    for field_name in ("reuse_pick_grasp_orientation_for_place",):
+        if field_name not in raw_config:
+            continue
+        value = raw_config[field_name]
+        if not isinstance(value, bool):
+            raise ValueError(
+                f"task.manipulation_execution.{field_name} 必须是布尔值"
+            )
+        updates[field_name] = value
+    return replace(settings, **updates)
+
+
 def create_full_physics_pipeline(
     *,
     config: FullPhysicsConfig,
@@ -37,8 +93,17 @@ def create_full_physics_pipeline(
     # 完整 pipeline 在 pick 后必须先回到抓取起始姿态，才能释放 root/support lock
     # 并进入 carry nav。这里使用规划 motion 的反向轨迹，不生成无避障 all-zero 直连。
     pct_multifloor = config.locomotion.policy_profile == "pct_multifloor"
+    navigation_settings = _navigation_settings_for_episode(
+        config.navigation,
+        episode_spec,
+    )
+    manipulation_settings = _manipulation_settings_for_episode(
+        config.manipulation,
+        episode_spec,
+    )
     full_physics_config = replace(
         config,
+        navigation=navigation_settings,
         limits=(
             replace(
                 config.limits,
@@ -49,7 +114,7 @@ def create_full_physics_pipeline(
             else config.limits
         ),
         manipulation=replace(
-            config.manipulation,
+            manipulation_settings,
             return_home_after_pick=True,
             settle_object_before_navigation=(
                 config.manipulation.settle_object_before_navigation
@@ -67,8 +132,7 @@ def create_full_physics_pipeline(
             output_dir=Path(episode_dir) / "current_state_curobo",
             project_root=Path(__file__).resolve().parents[2],
             place_plan_json=None,
-            # 对齐 random nav-pick-place baseline：侧抓后沿 approach 原路撤回，
-            # 避免 vertical lift 及随后 reverse lift-down 与桌面剐蹭。
+            # 该开关只约束 side grasp；top-down 会按目标语义执行竖直 lift。
             side_grasp_plan_vertical_lift=False,
             side_grasp_fallback_retreat=False,
             side_grasp_retreat_to_pregrasp=False,

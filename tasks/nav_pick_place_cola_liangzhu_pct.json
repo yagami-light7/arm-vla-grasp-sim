@@ -1,0 +1,378 @@
+{
+  "task_id": 2001,
+  "episode_id": 1,
+  "instruction": "Pick up the coke can on the floor in front of the robot and place it on the designated mouse mat on the floor.",
+  "scene_usd": "source/scene/liangzhu/liangzhu.usda",
+  "nav_map": "",
+  "scene_profile": "liangzhu_single_floor",
+  "perception_mode": "sim_ground_truth",
+  "global_planner": "pct",
+  "policy_profile": "pct_multifloor",
+  "navigation_execution": {
+    "final_position_tolerance": 0.05,
+    "place_position_tolerance": 0.12,
+    "final_yaw_tolerance": 0.15,
+    "stable_linear_velocity": 0.06,
+    "stable_angular_velocity": 0.2,
+    "require_yaw_alignment": true,
+    "require_stable_base": true
+  },
+  "manipulation_execution": {
+    "reuse_pick_grasp_orientation_for_place": true
+  },
+  "mesh_truth_manipulation_targets": {
+    "required": true,
+    "visual_localization_required": false,
+    "pick_tcp_source": "runtime_live_object_bbox",
+    "place_tcp_source": "runtime_receptacle_bbox_plus_pick_object_bbox_plus_current_tcp_offset"
+  },
+  "scene_runtime": {
+    "collision_prim_path": "/World/PhysicsScene/CollisionScene/LiangzhuCollision",
+    "visual_prim_path": "/World/VisualScene/GaussianScene",
+    "collision_floor_proxy_profile": null
+  },
+  "target_object_id": "cola_01",
+  "target_receptacle_id": "mat_carpet_01",
+  "target_receptacle_aliases": [
+    "mouse_mat",
+    "mouse_pad",
+    "mat",
+    "carpet"
+  ],
+  "target_receptacle_prim_path": "/World/carpet",
+  "phase0_spatial_preconditions": {
+    "object_in_front_of_robot": {
+      "offline_geometry_verified": true,
+      "distance_m": 0.9687397169288612,
+      "bearing_world_rad": 0.511120222919071,
+      "robot_start_yaw_rad": 0.0,
+      "heading_error_rad": 0.511120222919071,
+      "sector_half_angle_rad": 0.6108652381980153
+    },
+    "object_on_floor": {
+      "offline_geometry_verified": true,
+      "support_prim_path": "/World/PhysicsScene/CollisionScene/LiangzhuCollision",
+      "support_surface_z": -0.13462198378754056
+    },
+    "receptacle_on_floor": {
+      "offline_geometry_verified": true,
+      "receptacle_prim_path": "/World/carpet",
+      "support_prim_path": "/World/carpet/material",
+      "scene_floor_surface_z": -0.15136980187119528,
+      "scene_floor_height_variation_m": 0.00274828382379938,
+      "receptacle_bottom_surface_z": -0.1511698018711953,
+      "receptacle_top_surface_z": -0.1507709268939391,
+      "bottom_clearance_above_highest_floor_m": 0.0002,
+      "top_above_scene_floor_m": 0.0005988749772561862
+    }
+  },
+  "start": {
+    "x": -1.4849319648011197,
+    "y": 5.126136502764003,
+    "z": 0.29281728532721385,
+    "yaw": 0.0,
+    "floor_id": "liangzhu_F1",
+    "slice_id": null
+  },
+  "pick": {
+    "base_goal": {
+      "x": -0.64,
+      "y": 5.22,
+      "z": 0.29425117303010245,
+      "yaw": 1.5707963267948966,
+      "floor_id": "liangzhu_F1",
+      "slice_id": null,
+      "target_region_in_base": "front",
+      "final_alignment_mode": "face_target"
+    },
+    "target_object_id": "cola_01",
+    "target_object_class": "cola_can",
+    "object_prim_path": "/World/cola",
+    "object_pose_world": {
+      "x": -0.64,
+      "y": 5.6,
+      "z": -0.08087518948544228,
+      "roll": 0.0,
+      "pitch": 0.0,
+      "yaw": 0.0
+    },
+    "support_geometry": {
+      "collision_support_z": -0.13462198378754056,
+      "center_to_support_m": 0.05374679430209828,
+      "collision_face_index": 263602,
+      "collision_ply_sha256": "85c2a2e745905eb9e83cc46c8f68e1706431658598d783c94f022f8131ad78de"
+    },
+    "curobo_world_collision": {
+      "enabled": true,
+      "required": true,
+      "cuboids_world": [
+        {
+          "name": "liangzhu_pick_floor_support_phase0",
+          "frame": "world",
+          "semantic_role": "floor_support",
+          "source_prim_path": "/World/PhysicsScene/CollisionScene/LiangzhuCollision",
+          "center_xyz": [
+            -0.6395751043086975,
+            5.6006422004540255,
+            -0.15460715434544078
+          ],
+          "quaternion_wxyz": [
+            0.9998146147899147,
+            0.01605798826417002,
+            -0.01062436188212218,
+            0
+          ],
+          "dims_xyz": [
+            0.45,
+            0.3,
+            0.04
+          ],
+          "padding_mode": "preserve_top",
+          "source": {
+            "type": "collision_ply_support_face_proxy",
+            "collision_face_index": 263602,
+            "support_point_xyz": [
+              -0.64,
+              5.6,
+              -0.13462198378754056
+            ],
+            "support_normal_xyz": [
+              -0.021244784565125283,
+              -0.03211002270128424,
+              0.999258527895011
+            ],
+            "collision_ply_sha256": "85c2a2e745905eb9e83cc46c8f68e1706431658598d783c94f022f8131ad78de"
+          }
+        }
+      ]
+    },
+    "grasp_mode": "top_down",
+    "pose_source": "runtime_live_object_bbox_top_down_grasp"
+  },
+  "place": {
+    "enabled": true,
+    "base_goal": {
+      "x": -0.4375161874288581,
+      "y": 4.731811405946711,
+      "z": 0.29576493717060154,
+      "yaw": 1.5707963267948966,
+      "floor_id": "liangzhu_F1",
+      "slice_id": null,
+      "target_region_in_base": "front",
+      "final_alignment_mode": "face_target"
+    },
+    "target_receptacle_id": "mat_carpet_01",
+    "target_receptacle_class": "floor_mat",
+    "target_receptacle_prim_path": "/World/carpet",
+    "target_support_prim_path": "/World/carpet/material",
+    "support_runtime_validation_required": true,
+    "support_expected_static": true,
+    "receptacle_pose_world": {
+      "prim_path": "/World/carpet",
+      "x": -0.438209287414772,
+      "y": 5.042934329921819,
+      "z": -0.1509331168865564,
+      "roll": 0.0,
+      "pitch": 0.0,
+      "yaw": 0.0
+    },
+    "mesh_truth_target": {
+      "enabled": true,
+      "visual_localization_required": false,
+      "target_xy_source": "runtime_placement_region_center",
+      "support_surface_source": "runtime_target_support_bbox_top",
+      "object_support_extent_source": "pick_live_object_bbox_center_to_min_z",
+      "expected_object_bbox_center_to_min_z_m": 0.05364498018521855,
+      "object_extent_tolerance_m": 0.002,
+      "configured_pose_consistency_tolerance_m": 1e-6
+    },
+    "place_pose_world": {
+      "x": -0.4375161874288581,
+      "y": 5.111811405946711,
+      "z": -0.09712594670872055,
+      "roll": 0.0,
+      "pitch": 0.0,
+      "yaw": 0.0
+    },
+    "placement_region": {
+      "mode": "axis_aligned_rectangle_phase0",
+      "frame": "world",
+      "center_xyz": [
+        -0.4375161874288581,
+        5.111811405946711,
+        -0.1507709268939391
+      ],
+      "x_min": -0.48569129097665625,
+      "x_max": -0.3893410838810599,
+      "y_min": 5.082934329921819,
+      "y_max": 5.140688481971604,
+      "z_surface": -0.1507709268939391,
+      "object_footprint_radius_m": 0.03,
+      "edge_clearance_m": 0.01
+    },
+    "collision_support_prim_path": "/World/carpet/material",
+    "curobo_world_collision": {
+      "enabled": true,
+      "required": true,
+      "cuboids_world": [
+        {
+          "name": "liangzhu_mat_support_phase0",
+          "frame": "world",
+          "semantic_role": "mat_support",
+          "source_prim_path": "/World/carpet/material",
+          "center_xyz": [
+            -0.4375161874288581,
+            5.111811405946711,
+            -0.1509703643825672
+          ],
+          "quaternion_wxyz": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "dims_xyz": [
+            0.1763502070955963,
+            0.13775415204978536,
+            0.00039887497725618615
+          ],
+          "padding_mode": "preserve_top",
+          "source": {
+            "type": "usd_collision_world_bbox_proxy",
+            "asset_path": "source/scene/objects/carpet.usd",
+            "asset_sha256": "817ff5412fedeb712ad23e8f137d698d3247f2416831bbfebfe376ab7b8cfd04",
+            "world_bbox_min_xyz": [
+              -0.5256912909766562,
+              5.042934329921819,
+              -0.1511698018711953
+            ],
+            "world_bbox_max_xyz": [
+              -0.34934108388105994,
+              5.180688481971604,
+              -0.1507709268939391
+            ],
+            "support_surface_z": -0.1507709268939391
+          }
+        }
+      ]
+    },
+    "release_clearance": 0.0,
+    "pre_place_clearance": 0.08,
+    "retreat_clearance": 0.12,
+    "settle_steps": 120,
+    "place_xy_tolerance": 0.025,
+    "place_z_tolerance": 0.02
+  },
+  "carry": {
+    "mode": "contact",
+    "arm_posture": "carry_high",
+    "gripper_hold_command": "close",
+    "max_slip_distance": 0.08,
+    "min_lift_height": 0.05,
+    "object_drop_height_threshold": 0.05,
+    "verify_grasp_steps": 60,
+    "verify_carry_every_steps": 10
+  },
+  "loop": {
+    "enabled": false,
+    "num_cycles": 1
+  },
+  "recording": {
+    "dataset_dir": "episodes/liangzhu_cola_to_mat_phase0",
+    "front_camera": true,
+    "wrist_camera": false,
+    "save_every_n_steps": 10
+  },
+  "training_action": {
+    "enabled": true,
+    "schema": "base_xyyaw_tcp_base_rpy_gripper_v1",
+    "dimension": 10,
+    "base_pose_frame": "world",
+    "tcp_pose_frame": "base_frame",
+    "tcp_euler_order": "roll_pitch_yaw",
+    "angle_unit": "rad",
+    "position_unit": "m",
+    "gripper_range": [
+      0.0,
+      1.0
+    ],
+    "gripper_closed_value": 0.0,
+    "gripper_open_value": 1.0,
+    "source_gripper_joint_range_m": [
+      0.0,
+      0.04
+    ],
+    "action_alignment": "next_sample_executed_pose",
+    "terminal_action": "hold_current_pose"
+  },
+  "randomization": {
+    "enabled": true,
+    "phase": 1,
+    "mode": "robot_forward_sector_v1",
+    "forward_sector": {
+      "robot_translate_xyz": [
+        -1.4849319648011197,
+        5.126136502764003,
+        0.29281728532721385
+      ],
+      "robot_yaw_range_deg": [-30.0, 30.0],
+      "sector_half_angle_deg": 35.0,
+      "cola_radius_range_m": [0.70, 1.15],
+      "mat_radius_range_m": [0.85, 1.30],
+      "cola_yaw_range_deg": [-180.0, 180.0],
+      "mat_yaw_range_deg": [-180.0, 180.0],
+      "place_object_yaw_range_deg": [-180.0, 180.0],
+      "cola_footprint_radius_m": 0.03,
+      "cola_mat_separation_margin_m": 0.06,
+      "min_cola_mat_center_distance_m": 0.30,
+      "pick_base_standoff_range_m": [0.35, 0.39],
+      "place_base_standoff_range_m": [0.35, 0.39],
+      "base_approach_angle_noise_deg": 0.0,
+      "base_other_target_clearance_m": 0.30,
+      "pick_floor_proxy_dims_xyz": [0.45, 0.30, 0.04],
+      "mat_support_dims_xyz": [
+        0.2645253172129515,
+        0.183672198171499,
+        0.00039887497725618615
+      ],
+      "mat_root_to_support_center_xyz": [
+        0.0010396500046908425,
+        0.0918360990857495,
+        -0.000037247496010806014
+      ],
+      "mat_root_to_support_top_z_m": 0.00016218999261730094,
+      "mat_top_above_ground_m": 0.0005988749772561862,
+      "mat_ground_probe_inset_m": 0.0,
+      "max_mat_ground_height_variation_m": 0.006,
+      "cola_center_to_ground_m": 0.05374679430209828,
+      "place_object_bbox_center_to_min_z_m": 0.05364498018521855,
+      "placement_region_half_extent_xy_m": [0.02, 0.02],
+      "placement_edge_clearance_m": 0.01,
+      "collision_ply_env": "LIANGZHU_COLLISION_PLY",
+      "collision_ply_sha256": "85c2a2e745905eb9e83cc46c8f68e1706431658598d783c94f022f8131ad78de",
+      "ground_query_ceiling_z": 2.0,
+      "mat_asset_path": "source/scene/objects/carpet.usd",
+      "mat_asset_sha256": "817ff5412fedeb712ad23e8f137d698d3247f2416831bbfebfe376ab7b8cfd04",
+      "max_attempts": 300,
+      "max_support_resamples": 20
+    }
+  },
+  "notes": {
+    "placement_annotation": "tasks/liangzhu_placement_target.json",
+    "runtime_asset_manifest": "source/scene/liangzhu/runtime_asset_manifest.json",
+    "fixed_place_target": false,
+    "runtime_mesh_truth_place_target": true,
+    "place_pose_world_role": "offline_geometry_consistency_baseline",
+    "scene_runtime_note": "collision/visual prim 由 task.scene_runtime 绑定；良渚禁止继承旧 Yinluyuan F2 floor proxy。",
+    "recording_visual_gate": "VLA 训练 episode 必须具有完整且同步的 front/wrist/overview 相机流；GaussianScene 不是训练资格前提。",
+    "pick_pose_status": "runtime_live_mesh_bbox_top_down_truth",
+    "phase0_spatial_precondition_note": "固定模板使用场景 authored 机器狗 translate；可乐和垫子位于其前方扇形内，垫子底面按最高地面探针加 0.2mm 净空放置。",
+    "perception_note": "抓取和放置 TCP 目标直接由运行时 Mesh/PhysX 真值生成；RGB 仅用于 VLA 记录，不代表 RGB-D 视觉定位已完成。",
+    "planner_note": "运行时必须显式使用 --global-planner pct --pct-no-fallback --pct-coord-mode identity。",
+    "policy_note": "运行时必须使用 policy_profile=pct_multifloor 和原 model_26000.pt。",
+    "receptacle_note": "指定垫子为 /World/carpet；运行时由 /World/carpet/material 的碰撞 Mesh 包围盒顶面、安全区中心和抓取前可乐 bbox 半高生成最终物体中心，静态 place_pose_world 仅用于漂移审计。",
+    "curobo_collision_note": "pick 使用良渚 PLY 地面代理并从可乐上方竖直下探；place 使用实际垫子碰撞包围盒代理并保持 top-down TCP 姿态，真实运行仍需核对 CuRobo 导出和 release/settle。",
+    "front_manipulation_note": "pick/place 底盘终态直接面向目标，使可乐或鼠标垫位于机器人正前方后执行 top-down 抓放。",
+    "randomization_guard": "robot_forward_sector_v1 会按 episode seed 同步更新机器人 yaw、可乐、垫子、放置区、正面导航目标和 pick/place CuRobo 支撑代理；place 目标从 pick base goal 沿直线朝鼠标垫生成，携物终端段先前向收敛位置再对齐最终 yaw。"
+  }
+}

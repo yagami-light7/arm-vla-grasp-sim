@@ -15,6 +15,19 @@ from PIL import Image
 
 from source.interfaces import StepRecord
 
+from .training_action import (
+    BASE_POSE_NAMES,
+    VLA_TRAINING_ACTION_ALIGNMENT,
+    VLA_TRAINING_ACTION_DIMENSION,
+    VLA_TRAINING_ACTION_NAMES,
+    VLA_TRAINING_ACTION_SCHEMA,
+    VLA_TRAINING_TERMINAL_ACTION,
+    build_vla_training_actions,
+    task_requests_vla_training_action,
+    training_quality_success_verified,
+    validate_vla_training_action_config,
+)
+
 
 LEGACY_DWA_CSV_COLUMNS = (
     "时间戳(秒)",
@@ -137,7 +150,8 @@ TCP_POSE_NAMES = (
     "tcp_quat_z",
 )
 
-SCHEMA_VERSION = "full_physics_lerobot_v2.1.1"
+SCHEMA_VERSION = "full_physics_lerobot_v2.1.2"
+CONTROL_ACTION_SCHEMA = "base_velocity_arm_joint_gripper_targets_v1"
 
 
 @dataclass(frozen=True)
@@ -291,7 +305,7 @@ class DwaEpisodeWriter:
         return bool(self.config.save_raw_images)
 
     def record(self, record: StepRecord) -> dict[str, Any] | None:
-        if not self.config.enabled:
+        if not self.config.enabled or self._finalized:
             return None
         full_action = self._update_full_action(record)
         state = record.observation
@@ -344,10 +358,13 @@ class DwaEpisodeWriter:
             "pipeline_state": record.pipeline_state,
             "base_velocity": list(_measured_base_velocity(record)),
             "action": list(full_action),
+            "base_pose": list(state.robot_root_pose),
             "object_state": self._object_state(record),
             "tcp_pose": list(
                 state.tcp_pose or (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
             ),
+            "tcp_pose_valid": state.tcp_pose is not None,
+            "gripper_position": float(sum(_joint_values(record)[1]) / 2.0),
             "camera_frames": camera_frames,
         }
         with self.samples_path.open("a", encoding="utf-8") as stream:
@@ -537,8 +554,15 @@ class DwaEpisodeWriter:
         return row
 
 
-def _read_instruction(task_path: Path) -> str:
+def _read_task(task_path: Path) -> dict[str, Any]:
     task = json.loads(task_path.read_text(encoding="utf-8"))
+    if not isinstance(task, dict):
+        raise ValueError(f"{task_path} must contain a JSON object")
+    return task
+
+
+def _read_instruction(task_path: Path) -> str:
+    task = _read_task(task_path)
     return str(task.get("instruction") or "Complete the navigation pick and place task.")
 
 
@@ -579,6 +603,34 @@ def _read_episode_samples(episode_dir: Path) -> list[dict[str, Any]]:
             if isinstance(simulation_step, int) and simulation_step in body_velocity_by_step:
                 sample["base_velocity"] = list(body_velocity_by_step[simulation_step])
     return samples
+
+
+def _sample_base_poses(
+    rows: list[dict[str, str]],
+    samples: list[dict[str, Any]],
+) -> np.ndarray:
+    """读取完整 world pose；旧 episode 仅能按 CSV yaw 恢复水平姿态。"""
+
+    poses: list[list[float]] = []
+    for row, sample in zip(rows, samples):
+        raw_pose = sample.get("base_pose")
+        if isinstance(raw_pose, list) and len(raw_pose) == len(BASE_POSE_NAMES):
+            pose = [float(value) for value in raw_pose]
+        else:
+            yaw = float(row["偏航角"])
+            pose = [
+                float(row["位置X"]),
+                float(row["位置Y"]),
+                float(row["位置Z"]),
+                math.cos(0.5 * yaw),
+                0.0,
+                0.0,
+                math.sin(0.5 * yaw),
+            ]
+        if not all(math.isfinite(value) for value in pose):
+            raise ValueError("episode contains a non-finite base pose")
+        poses.append(pose)
+    return np.asarray(poses, dtype=np.float32)
 
 
 def _read_body_velocity_by_sim_step(
@@ -635,12 +687,26 @@ def _source_episode_metadata(episode_dir: Path) -> dict[str, Any]:
     return payload
 
 
+def _source_episode_success_verified(episode_dir: Path) -> bool:
+    """只接受最终 summary 的成功标记作为离线批量训练资格证据。"""
+
+    summary_path = episode_dir / "summary.json"
+    if not summary_path.is_file():
+        return False
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    return bool(
+        isinstance(summary, dict)
+        and training_quality_success_verified(summary)
+    )
+
+
 def discover_recorded_episodes(
     episodes_root: str | Path,
     *,
     require_success: bool = True,
+    require_training_quality: bool = False,
 ) -> list[Path]:
-    """发现 full-physics 输出中的原始 episode。"""
+    """发现原始 episode；训练转换可额外要求最终物理来源门禁。"""
 
     root = Path(episodes_root).expanduser().resolve()
     episodes: list[Path] = []
@@ -656,6 +722,10 @@ def discover_recorded_episodes(
                 continue
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
             if not bool(summary.get("success")):
+                continue
+            if require_training_quality and not _source_episode_success_verified(
+                episode_dir
+            ):
                 continue
         episodes.append(episode_dir)
     return episodes
@@ -827,6 +897,8 @@ def _feature_metadata(
     *,
     camera_shapes: dict[str, tuple[int, int, int]],
     fps: float,
+    action_names: tuple[str, ...],
+    include_control_action: bool,
 ) -> dict[str, Any]:
     features: dict[str, Any] = {
         "observation.state": {
@@ -838,6 +910,11 @@ def _feature_metadata(
             "dtype": "float32",
             "shape": [len(BASE_VELOCITY_NAMES)],
             "names": list(BASE_VELOCITY_NAMES),
+        },
+        "observation.base_pose": {
+            "dtype": "float32",
+            "shape": [len(BASE_POSE_NAMES)],
+            "names": list(BASE_POSE_NAMES),
         },
         "observation.object_state": {
             "dtype": "float32",
@@ -852,8 +929,8 @@ def _feature_metadata(
         "pipeline_state": {"dtype": "string", "shape": [1], "names": None},
         "action": {
             "dtype": "float32",
-            "shape": [len(ACTION_NAMES)],
-            "names": list(ACTION_NAMES),
+            "shape": [len(action_names)],
+            "names": list(action_names),
         },
         "next.done": {"dtype": "bool", "shape": [1], "names": None},
         "timestamp": {"dtype": "float32", "shape": [1], "names": None},
@@ -862,6 +939,12 @@ def _feature_metadata(
         "index": {"dtype": "int64", "shape": [1], "names": None},
         "task_index": {"dtype": "int64", "shape": [1], "names": None},
     }
+    if include_control_action:
+        features["control.action"] = {
+            "dtype": "float32",
+            "shape": [len(ACTION_NAMES)],
+            "names": list(ACTION_NAMES),
+        }
     for camera_key, shape in sorted(camera_shapes.items()):
         features[f"observation.images.{camera_key}"] = {
             "dtype": "video",
@@ -889,13 +972,22 @@ def materialize_lerobot_dataset(
 
     episodes = [Path(path).expanduser().resolve() for path in episode_dirs]
     valid_episodes: list[
-        tuple[Path, str, list[dict[str, str]], list[dict[str, Any]]]
+        tuple[
+            Path,
+            str,
+            list[dict[str, str]],
+            list[dict[str, Any]],
+            dict[str, Any],
+            dict[str, Any] | None,
+        ]
     ] = []
     for episode_dir in episodes:
         task_path = episode_dir / "task.json"
         csv_path = episode_dir / "data.csv"
         if not task_path.is_file() or not csv_path.is_file():
             continue
+        task = _read_task(task_path)
+        training_action_config = validate_vla_training_action_config(task)
         rows = _read_episode_rows(episode_dir)
         if not rows:
             continue
@@ -905,12 +997,32 @@ def materialize_lerobot_dataset(
                 f"{episode_dir} data.csv/samples.jsonl length mismatch: "
                 f"{len(rows)} != {len(samples)}"
             )
-        valid_episodes.append((episode_dir, _read_instruction(task_path), rows, samples))
+        valid_episodes.append(
+            (
+                episode_dir,
+                str(
+                    task.get("instruction")
+                    or "Complete the navigation pick and place task."
+                ),
+                rows,
+                samples,
+                task,
+                training_action_config,
+            )
+        )
 
     output_path = Path(output_root).expanduser().resolve()
     dataset_fps = _infer_dataset_fps(
         [episode_dir for episode_dir, *_rest in valid_episodes],
         fps,
+    )
+    requested_modes = {
+        task_requests_vla_training_action(task)
+        for _episode_dir, _instruction, _rows, _samples, task, _config in valid_episodes
+    }
+    vla_training_action_enabled = requested_modes == {True}
+    action_names = (
+        VLA_TRAINING_ACTION_NAMES if vla_training_action_enabled else ACTION_NAMES
     )
     report: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -924,13 +1036,61 @@ def materialize_lerobot_dataset(
         "chunks_size": int(chunks_size),
         "format": "lerobot_v2.1_full_physics",
         "observation_state_names": list(STATE_NAMES),
-        "action_names": list(ACTION_NAMES),
+        "action_names": list(action_names),
+        "control_action_schema": CONTROL_ACTION_SCHEMA,
+        "control_action_dimension": len(ACTION_NAMES),
+        "control_action_names": list(ACTION_NAMES),
+        "vla_training_action_schema": VLA_TRAINING_ACTION_SCHEMA,
+        "vla_training_action_dimension": VLA_TRAINING_ACTION_DIMENSION,
+        "vla_training_action_names": list(VLA_TRAINING_ACTION_NAMES),
+        "vla_training_action_requested": vla_training_action_enabled,
+        "vla_training_action_available": False,
+        "vla_training_eligible": False,
+        "vla_training_ineligibility_reason": (
+            "training_action_conversion_not_completed"
+            if vla_training_action_enabled
+            else "task_does_not_request_vla_training_action"
+        ),
+        "training_action_alignment": VLA_TRAINING_ACTION_ALIGNMENT,
+        "training_action_horizon_frames": 1,
+        "training_action_terminal_action": VLA_TRAINING_TERMINAL_ACTION,
+        "training_action_base_pose_frame": "world",
+        "training_action_tcp_pose_frame": "base_frame",
+        "training_action_tcp_euler_order": "roll_pitch_yaw",
+        "training_action_position_unit": "m",
+        "training_action_angle_unit": "rad",
+        "training_action_gripper_range": [0.0, 1.0],
+        "base_pose_names": list(BASE_POSE_NAMES),
+        "base_pose_frame": "world",
+        "tcp_pose_frame": "world",
         "object_state_names": list(OBJECT_STATE_NAMES),
         "tcp_pose_names": list(TCP_POSE_NAMES),
         "base_velocity_names": list(BASE_VELOCITY_NAMES),
     }
     if not valid_episodes:
         return {**report, "failure_reason": "no_recorded_episode_frames"}
+    if len(requested_modes) != 1:
+        return {
+            **report,
+            "failure_reason": "mixed_training_action_schemas",
+            "vla_training_ineligibility_reason": "mixed_training_action_schemas",
+        }
+    if vla_training_action_enabled:
+        training_configs = [
+            config
+            for *_prefix, config in valid_episodes
+            if config is not None
+        ]
+        if not training_configs or any(
+            config != training_configs[0] for config in training_configs[1:]
+        ):
+            return {
+                **report,
+                "failure_reason": "inconsistent_training_action_config",
+                "vla_training_ineligibility_reason": (
+                    "inconsistent_training_action_config"
+                ),
+            }
 
     try:
         import pyarrow as pa
@@ -948,15 +1108,14 @@ def materialize_lerobot_dataset(
     meta_dir.mkdir(parents=True, exist_ok=True)
 
     task_index_map: dict[str, int] = {}
-    for _episode_dir, instruction, _rows, _samples in valid_episodes:
+    for _episode_dir, instruction, _rows, _samples, _task, _config in valid_episodes:
         task_index_map.setdefault(instruction, len(task_index_map))
     (meta_dir / "task_index_map.json").write_text(
         json.dumps(task_index_map, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
-    schema = pa.schema(
-        [
+    schema_fields = [
             pa.field("index", pa.int64()),
             pa.field("episode_index", pa.int64()),
             pa.field("frame_index", pa.int64()),
@@ -968,6 +1127,10 @@ def materialize_lerobot_dataset(
                 pa.list_(pa.float32(), len(BASE_VELOCITY_NAMES)),
             ),
             pa.field(
+                "observation.base_pose",
+                pa.list_(pa.float32(), len(BASE_POSE_NAMES)),
+            ),
+            pa.field(
                 "observation.object_state",
                 pa.list_(pa.float32(), len(OBJECT_STATE_NAMES)),
             ),
@@ -976,17 +1139,25 @@ def materialize_lerobot_dataset(
                 pa.list_(pa.float32(), len(TCP_POSE_NAMES)),
             ),
             pa.field("pipeline_state", pa.string()),
-            pa.field("action", pa.list_(pa.float32(), len(ACTION_NAMES))),
+            pa.field("action", pa.list_(pa.float32(), len(action_names))),
             pa.field("next.done", pa.bool_()),
         ]
-    )
+    if vla_training_action_enabled:
+        schema_fields.insert(
+            -1,
+            pa.field("control.action", pa.list_(pa.float32(), len(ACTION_NAMES))),
+        )
+    schema = pa.schema(schema_fields)
     all_feature_arrays: dict[str, list[np.ndarray]] = {
         "observation.state": [],
         "observation.base_velocity": [],
+        "observation.base_pose": [],
         "observation.object_state": [],
         "observation.tcp_pose": [],
         "action": [],
     }
+    if vla_training_action_enabled:
+        all_feature_arrays["control.action"] = []
     episodes_meta: list[dict[str, Any]] = []
     episode_stats: list[dict[str, Any]] = []
     episode_exports: list[dict[str, Any]] = []
@@ -995,7 +1166,14 @@ def materialize_lerobot_dataset(
     camera_shapes: dict[str, tuple[int, int, int]] = {}
     all_raw_images_saved = True
 
-    for episode_index, (episode_dir, instruction, rows, samples) in enumerate(valid_episodes):
+    for episode_index, (
+        episode_dir,
+        instruction,
+        rows,
+        samples,
+        _task,
+        training_action_config,
+    ) in enumerate(valid_episodes):
         chunk_index = episode_index // chunks_size
         states = np.asarray(
             [[float(row[column]) for column in STATE_COLUMNS] for row in rows],
@@ -1015,7 +1193,28 @@ def materialize_lerobot_dataset(
             ],
             dtype=np.float32,
         )
-        actions = np.asarray([sample["action"] for sample in samples], dtype=np.float32)
+        base_poses = _sample_base_poses(rows, samples)
+        control_actions = np.asarray(
+            [sample["action"] for sample in samples],
+            dtype=np.float32,
+        )
+        if vla_training_action_enabled:
+            assert training_action_config is not None
+            source_gripper_range = tuple(
+                float(value)
+                for value in training_action_config[
+                    "source_gripper_joint_range_m"
+                ]
+            )
+            actions = build_vla_training_actions(
+                samples,
+                source_gripper_joint_range_m=(
+                    source_gripper_range[0],
+                    source_gripper_range[1],
+                ),
+            )
+        else:
+            actions = control_actions
         object_states = np.asarray(
             [sample["object_state"] for sample in samples],
             dtype=np.float32,
@@ -1031,8 +1230,7 @@ def materialize_lerobot_dataset(
         ]
         frame_count = len(rows)
         task_index = task_index_map[instruction]
-        table = pa.table(
-            {
+        table_payload: dict[str, Any] = {
                 "index": pa.array(
                     range(global_frame_index, global_frame_index + frame_count),
                     type=pa.int64(),
@@ -1049,6 +1247,10 @@ def materialize_lerobot_dataset(
                     base_velocities.tolist(),
                     type=pa.list_(pa.float32(), len(BASE_VELOCITY_NAMES)),
                 ),
+                "observation.base_pose": pa.array(
+                    base_poses.tolist(),
+                    type=pa.list_(pa.float32(), len(BASE_POSE_NAMES)),
+                ),
                 "observation.object_state": pa.array(
                     object_states.tolist(),
                     type=pa.list_(pa.float32(), len(OBJECT_STATE_NAMES)),
@@ -1060,13 +1262,20 @@ def materialize_lerobot_dataset(
                 "pipeline_state": pa.array(pipeline_states, type=pa.string()),
                 "action": pa.array(
                     actions.tolist(),
-                    type=pa.list_(pa.float32(), len(ACTION_NAMES)),
+                    type=pa.list_(pa.float32(), len(action_names)),
                 ),
                 "next.done": pa.array(
                     [False] * (frame_count - 1) + [True],
                     type=pa.bool_(),
                 ),
-            },
+            }
+        if vla_training_action_enabled:
+            table_payload["control.action"] = pa.array(
+                control_actions.tolist(),
+                type=pa.list_(pa.float32(), len(ACTION_NAMES)),
+            )
+        table = pa.table(
+            table_payload,
             schema=schema,
         )
         data_dir = output_path / "data" / f"chunk-{chunk_index:03d}"
@@ -1109,10 +1318,13 @@ def materialize_lerobot_dataset(
         feature_stats = {
             "observation.state": _compute_stats(states),
             "observation.base_velocity": _compute_stats(base_velocities),
+            "observation.base_pose": _compute_stats(base_poses),
             "observation.object_state": _compute_stats(object_states),
             "observation.tcp_pose": _compute_stats(tcp_poses),
             "action": _compute_stats(actions),
         }
+        if vla_training_action_enabled:
+            feature_stats["control.action"] = _compute_stats(control_actions)
         episodes_meta.append(
             {
                 "episode_index": episode_index,
@@ -1144,11 +1356,14 @@ def materialize_lerobot_dataset(
         for key, array in (
             ("observation.state", states),
             ("observation.base_velocity", base_velocities),
+            ("observation.base_pose", base_poses),
             ("observation.object_state", object_states),
             ("observation.tcp_pose", tcp_poses),
             ("action", actions),
         ):
             all_feature_arrays[key].append(array)
+        if vla_training_action_enabled:
+            all_feature_arrays["control.action"].append(control_actions)
         global_frame_index += frame_count
 
     actual_camera_keys = tuple(sorted(shared_camera_keys or ()))
@@ -1197,7 +1412,24 @@ def materialize_lerobot_dataset(
             stream.write(json.dumps({key: value}, ensure_ascii=False) + "\n")
 
     total_episodes = len(valid_episodes)
-    features = _feature_metadata(camera_shapes=camera_shapes, fps=dataset_fps)
+    features = _feature_metadata(
+        camera_shapes=camera_shapes,
+        fps=dataset_fps,
+        action_names=tuple(action_names),
+        include_control_action=vla_training_action_enabled,
+    )
+    source_success_verified = all(
+        _source_episode_success_verified(episode_dir)
+        for episode_dir, *_rest in valid_episodes
+    )
+    vla_training_eligible = bool(
+        vla_training_action_enabled and source_success_verified
+    )
+    vla_ineligibility_reason = None
+    if not vla_training_action_enabled:
+        vla_ineligibility_reason = "task_does_not_request_vla_training_action"
+    elif not source_success_verified:
+        vla_ineligibility_reason = "episode_success_gate_not_verified"
     info = {
         "codebase_version": "v2.1",
         "schema_version": SCHEMA_VERSION,
@@ -1214,9 +1446,28 @@ def materialize_lerobot_dataset(
         "camera_keys": list(actual_camera_keys),
         "features": features,
         "observation_state_names": list(STATE_NAMES),
-        "action_names": list(ACTION_NAMES),
+        "action_names": list(action_names),
+        "control_action_schema": CONTROL_ACTION_SCHEMA,
+        "control_action_names": list(ACTION_NAMES),
+        "vla_training_action_schema": VLA_TRAINING_ACTION_SCHEMA,
+        "vla_training_action_names": list(VLA_TRAINING_ACTION_NAMES),
+        "vla_training_action_available": vla_training_action_enabled,
+        "vla_training_eligible": vla_training_eligible,
+        "vla_training_ineligibility_reason": vla_ineligibility_reason,
+        "training_action_alignment": VLA_TRAINING_ACTION_ALIGNMENT,
+        "training_action_horizon_frames": 1,
+        "training_action_terminal_action": VLA_TRAINING_TERMINAL_ACTION,
+        "training_action_base_pose_frame": "world",
+        "training_action_tcp_pose_frame": "base_frame",
+        "training_action_tcp_euler_order": "roll_pitch_yaw",
+        "training_action_position_unit": "m",
+        "training_action_angle_unit": "rad",
+        "training_action_gripper_range": [0.0, 1.0],
+        "base_pose_names": list(BASE_POSE_NAMES),
+        "base_pose_frame": "world",
         "object_state_names": list(OBJECT_STATE_NAMES),
         "tcp_pose_names": list(TCP_POSE_NAMES),
+        "tcp_pose_frame": "world",
         "base_velocity_names": list(BASE_VELOCITY_NAMES),
         "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
         "video_path": (
@@ -1241,6 +1492,10 @@ def materialize_lerobot_dataset(
         "raw_images_saved": all_raw_images_saved,
         "info_path": str(info_path),
         "episodes": episode_exports,
+        "vla_training_action_available": vla_training_action_enabled,
+        "vla_training_eligible": vla_training_eligible,
+        "vla_training_ineligibility_reason": vla_ineligibility_reason,
+        "source_episode_success_verified": source_success_verified,
     }
     if len(episode_exports) == 1:
         result.update(episode_exports[0])
@@ -1265,7 +1520,9 @@ def materialize_lerobot_dataset(
 
 __all__ = [
     "ACTION_NAMES",
+    "BASE_POSE_NAMES",
     "BASE_VELOCITY_NAMES",
+    "CONTROL_ACTION_SCHEMA",
     "DWA_CSV_COLUMNS",
     "DwaEpisodeWriter",
     "LEGACY_DWA_CSV_COLUMNS",
@@ -1275,6 +1532,9 @@ __all__ = [
     "STATE_COLUMNS",
     "STATE_NAMES",
     "TCP_POSE_NAMES",
+    "VLA_TRAINING_ACTION_DIMENSION",
+    "VLA_TRAINING_ACTION_NAMES",
+    "VLA_TRAINING_ACTION_SCHEMA",
     "discover_recorded_episodes",
     "materialize_lerobot_dataset",
 ]

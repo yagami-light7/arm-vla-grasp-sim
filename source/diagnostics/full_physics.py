@@ -178,24 +178,57 @@ class FullPhysicsVerifier:
         xy_error = math.hypot(object_xyz[0] - target_xyz[0], object_xyz[1] - target_xyz[1])
         z_error = abs(object_xyz[2] - target_xyz[2])
         linear_speed = _linear_speed(state.object_velocity)
+        try:
+            validation_config = _place_validation_config(
+                episode_spec,
+                default_xy_tolerance_m=self.place_xy_tolerance_m,
+                default_z_tolerance_m=self.place_z_tolerance_m,
+            )
+        except (TypeError, ValueError) as exc:
+            return VerificationResult(
+                success=False,
+                failure_reason="place_validation_config_invalid",
+                metadata={
+                    "reason": "place_validation_config_invalid",
+                    "detail": str(exc),
+                },
+            )
+        xy_tolerance = validation_config["place_xy_tolerance_m"]
+        z_tolerance = validation_config["place_z_tolerance_m"]
+        region = validation_config["placement_region_world"]
+        region_contains_object_center = None
+        if region is not None:
+            region_contains_object_center = bool(
+                region["x_min"] <= float(object_xyz[0]) <= region["x_max"]
+                and region["y_min"] <= float(object_xyz[1]) <= region["y_max"]
+            )
         success = (
-            xy_error <= self.place_xy_tolerance_m
-            and z_error <= self.place_z_tolerance_m
+            xy_error <= xy_tolerance
+            and z_error <= z_tolerance
             and linear_speed <= self.place_linear_velocity_tolerance_mps
+            and region_contains_object_center is not False
         )
         return VerificationResult(
             success=success,
             failure_reason="" if success else "object_out_of_place",
             metadata={
-                "validation_mode": "object_final_pose_and_stability",
+                "validation_mode": (
+                    "object_final_pose_region_and_stability"
+                    if region is not None
+                    else "object_final_pose_and_stability"
+                ),
                 "object_pose": state.object_pose,
                 "place_target_pose": episode_spec.place_target_pose,
                 "place_xy_error_m": xy_error,
                 "place_z_error_m": z_error,
                 "object_linear_speed_mps": linear_speed,
-                "place_xy_tolerance_m": self.place_xy_tolerance_m,
-                "place_z_tolerance_m": self.place_z_tolerance_m,
+                "place_xy_tolerance_m": xy_tolerance,
+                "place_z_tolerance_m": z_tolerance,
                 "place_linear_velocity_tolerance_mps": self.place_linear_velocity_tolerance_mps,
+                "placement_region_world": region,
+                "placement_region_contains_object_center": (
+                    region_contains_object_center
+                ),
                 "gripper_open_apply_count": open_count,
             },
         )
@@ -209,3 +242,70 @@ def _linear_speed(velocity: tuple[float, ...] | None) -> float:
     if velocity is None or len(velocity) < 3:
         return 0.0
     return math.sqrt(sum(float(value) ** 2 for value in velocity[:3]))
+
+
+def _place_validation_config(
+    episode_spec: EpisodeSpec,
+    *,
+    default_xy_tolerance_m: float,
+    default_z_tolerance_m: float,
+) -> dict[str, object]:
+    """解析任务级放置容差与可选的世界坐标安全区域。"""
+
+    raw_place = (episode_spec.raw_task or {}).get("place") or {}
+    if not isinstance(raw_place, dict):
+        raise TypeError("task.place 必须是对象")
+    xy_tolerance = _positive_finite_float(
+        raw_place.get("place_xy_tolerance", default_xy_tolerance_m),
+        field_name="task.place.place_xy_tolerance",
+    )
+    z_tolerance = _positive_finite_float(
+        raw_place.get("place_z_tolerance", default_z_tolerance_m),
+        field_name="task.place.place_z_tolerance",
+    )
+    raw_region = raw_place.get("placement_region")
+    region: dict[str, float] | None = None
+    if raw_region is not None:
+        if not isinstance(raw_region, dict):
+            raise TypeError("task.place.placement_region 必须是对象")
+        bound_keys = ("x_min", "x_max", "y_min", "y_max")
+        configured_keys = [key for key in bound_keys if key in raw_region]
+        if configured_keys and len(configured_keys) != len(bound_keys):
+            raise ValueError("task.place.placement_region 的 XY 边界必须完整配置")
+        if configured_keys:
+            if str(raw_region.get("frame", "world")) != "world":
+                raise ValueError("task.place.placement_region 当前只支持 world frame")
+            region = {
+                key: _finite_float(
+                    raw_region[key],
+                    field_name=f"task.place.placement_region.{key}",
+                )
+                for key in bound_keys
+            }
+            if region["x_min"] >= region["x_max"]:
+                raise ValueError("task.place.placement_region x_min 必须小于 x_max")
+            if region["y_min"] >= region["y_max"]:
+                raise ValueError("task.place.placement_region y_min 必须小于 y_max")
+    return {
+        "place_xy_tolerance_m": xy_tolerance,
+        "place_z_tolerance_m": z_tolerance,
+        "placement_region_world": region,
+    }
+
+
+def _positive_finite_float(value: object, *, field_name: str) -> float:
+    """要求配置值为有限正数。"""
+
+    parsed = _finite_float(value, field_name=field_name)
+    if parsed <= 0.0:
+        raise ValueError(f"{field_name} 必须大于 0")
+    return parsed
+
+
+def _finite_float(value: object, *, field_name: str) -> float:
+    """严格解析有限浮点数。"""
+
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"{field_name} 必须是有限数值")
+    return parsed

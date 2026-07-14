@@ -1,9 +1,9 @@
 {
-  "project": "arm_vla_pct",
-  "branch": "pct",
-  "goal": "将 flat A* 全局导航替换为 PCT 多楼层规划器，并接入新的 RL locomotion checkpoint 配置。",
-  "current_phase": "phase_113_no_float_stair_diagnosis_and_pick_arrival_fix",
-  "last_updated": "2026-07-11 21:53:50",
+  "project": "arm_vla_liangzhu",
+  "branch": "liangzhu-deploy",
+  "goal": "在良渚单层场景中复用原 pct_multifloor locomotion policy，跑通移动操作 pipeline，并导出可验证的数据。",
+  "current_phase": "phase_126_randomized_full_physics_and_export_verified",
+  "last_updated": "2026-07-14 21:41:41 CST",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -38,7 +38,86 @@
     "yinluyuan_points_preview_confirmed": true,
     "video_preview_visual_ready": true,
     "final_video_visual_ready": false,
-    "tests_passing": true,
+    "tests_passing": false,
+    "liangzhu_manual_place_target_added": true,
+    "liangzhu_manual_table_target_active": false,
+    "liangzhu_active_target_receptacle": "mat_carpet_01",
+    "liangzhu_mat_placement_target_added": true,
+    "liangzhu_mat_collision_geometry_offline_verified": true,
+    "liangzhu_mat_above_scene_floor_offline_verified": true,
+    "liangzhu_mat_safe_placement_region_added": true,
+    "liangzhu_mat_place_region_validation_unit_verified": true,
+    "liangzhu_mat_curobo_proxy_offline_verified": true,
+    "liangzhu_phase0_coke_directly_ahead_offline_verified": false,
+    "liangzhu_fixed_baseline_coke_forward_sector_offline_verified": true,
+    "liangzhu_phase0_coke_floor_support_offline_verified": true,
+    "liangzhu_phase0_mat_floor_support_offline_verified": true,
+    "liangzhu_receptacle_support_openusd_gate_added": true,
+    "liangzhu_receptacle_support_openusd_gate_offline_verified": true,
+    "liangzhu_receptacle_support_runtime_stage_verified": true,
+    "liangzhu_receptacle_support_training_gate_added": true,
+    "liangzhu_receptacle_support_training_gate_unit_verified": true,
+    "liangzhu_mesh_truth_manipulation_targets_added": true,
+    "liangzhu_mesh_truth_target_derivation_unit_verified": true,
+    "liangzhu_mesh_truth_training_gate_added": true,
+    "liangzhu_mesh_truth_training_gate_unit_verified": true,
+    "liangzhu_mesh_truth_pick_runtime_export_verified": true,
+    "liangzhu_mesh_truth_place_runtime_export_verified": true,
+    "liangzhu_mat_runtime_collision_verified": true,
+    "liangzhu_mat_release_stability_verified": true,
+    "liangzhu_preflight_script_added": true,
+    "liangzhu_preflight_unit_tests_passing": true,
+    "liangzhu_phase0_task_added": true,
+    "liangzhu_pct_single_floor_assets_available": true,
+    "liangzhu_pct_offline_plan_verified": true,
+    "liangzhu_coke_to_mat_pct_offline_plan_verified": true,
+    "liangzhu_pct_identity_frame_static_verified": true,
+    "liangzhu_place_collision_support_geometry_verified": true,
+    "liangzhu_curobo_task_support_proxies_added": true,
+    "liangzhu_curobo_task_support_proxies_unit_verified": true,
+    "liangzhu_curobo_runtime_export_verified": true,
+    "liangzhu_host_preflight_ready": true,
+    "liangzhu_dry_run_verified": true,
+    "liangzhu_coke_to_mat_dry_run_verified": true,
+    "liangzhu_batch_dry_run_verified": true,
+    "liangzhu_fixed_proxy_randomization_guard_added": true,
+    "liangzhu_forward_sector_randomization_added": true,
+    "liangzhu_forward_sector_seed_determinism_verified": true,
+    "liangzhu_randomization_dynamic_curobo_proxy_regeneration_added": true,
+    "liangzhu_randomization_dynamic_curobo_proxy_openusd_verified": true,
+    "liangzhu_randomization_pct_seed_sweep_verified": true,
+    "liangzhu_randomization_pct_cli_collision_ply_reused": true,
+    "liangzhu_randomization_real_episode_verified": true,
+    "liangzhu_task_receptacle_pose_before_physics_added": true,
+    "liangzhu_grounded_mat_override_openusd_verified": true,
+    "liangzhu_vla_training_action_export_added": true,
+    "liangzhu_vla_training_action_unit_verified": true,
+    "liangzhu_scene_runtime_task_binding_added": true,
+    "liangzhu_scene_runtime_unit_verified": true,
+    "liangzhu_collision_terrain_wrapper_composition_verified": true,
+    "liangzhu_collision_terrain_wrapper_runtime_guard_added": true,
+    "liangzhu_collision_terrain_wrapper_isaac_import_verified": true,
+    "liangzhu_preflight_asset_checks_passed": true,
+    "liangzhu_runtime_launch_safe": true,
+    "liangzhu_recorded_rgb_requires_full_scene_visual": false,
+    "liangzhu_collision_only_rgb_training_rejected": false,
+    "liangzhu_gaussian_scene_loaded_by_default": false,
+    "liangzhu_overview_camera_default_path": "/World/overview",
+    "liangzhu_overview_image_video_gui_unified": true,
+    "liangzhu_overview_camera_real_capture_verified": true,
+    "liangzhu_no_gaussian_host_preflight_ready": true,
+    "liangzhu_cross_worktree_curobo_reuse_blocked": false,
+    "liangzhu_compatible_shared_curobo_reuse_enabled": true,
+    "liangzhu_compatible_shared_curobo_real_handshake_verified": true,
+    "liangzhu_real_episode_export_verified": true,
+    "liangzhu_real_training_episode_accepted": true,
+    "liangzhu_real_full_physics_verified": true,
+    "liangzhu_front_top_down_grasp_real_verified": true,
+    "liangzhu_carry_nav_terminal_handoff_fixed": true,
+    "liangzhu_place_position_tolerance_real_verified": true,
+    "liangzhu_place_verification_summary_added": true,
+    "liangzhu_lerobot_final_gate_metadata_synced": true,
+    "liangzhu_real_full_pipeline_repeat_verified": false,
     "sage_multifloor_asset_pipeline_added": true,
     "sage_multifloor_ply_renamed": true,
     "sage_multifloor_usdz_available": true,
@@ -469,7 +548,29 @@
     "pct_locomotion_checkpoint_expected_actor_obs_dim": 260,
     "pct_locomotion_task_action_dim": "12 leg actions + 0-dim arm command action term",
     "pct_locomotion_fixed_goal_smoke_flags": "--no-randomize-task --no-randomize-base-goal",
-    "pct_collision_ply": "source/scene/multifloor/ply/3dgs_collision.ply"
+    "pct_collision_ply": "source/scene/multifloor/ply/3dgs_collision.ply",
+    "liangzhu_scene_usda": "source/scene/liangzhu/liangzhu.usda",
+    "liangzhu_runtime_manifest": "source/scene/liangzhu/runtime_asset_manifest.json",
+    "liangzhu_task": "tasks/nav_pick_place_cola_liangzhu_pct.json",
+    "liangzhu_placement_target": "tasks/liangzhu_placement_target.json",
+    "liangzhu_pct_tomogram": "source/scene/liangzhu/pct/liangzhu_single_floor.pickle",
+    "liangzhu_pct_walkable": "source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy",
+    "liangzhu_pct_coord_mode": "identity",
+    "liangzhu_pct_assets_git_ignored": true,
+    "liangzhu_collision_ply": "/mnt/sage_data/ply/Liangzhu/liangzhu_collision.ply",
+    "liangzhu_collision_ply_sha256": "85c2a2e745905eb9e83cc46c8f68e1706431658598d783c94f022f8131ad78de",
+    "liangzhu_locomotion_checkpoint": "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
+    "liangzhu_cola_asset": "source/scene/objects/cola/MesaTask-10K/MesaTask_Assets/can/0364ab96f338493c972248102b462aa4/usd/0364ab96f338493c972248102b462aa4.usd",
+    "liangzhu_active_target_receptacle_id": "mat_carpet_01",
+    "liangzhu_active_target_receptacle_prim": "/World/carpet",
+    "liangzhu_active_target_support_prim": "/World/carpet/material",
+    "liangzhu_carpet_usd": "source/scene/objects/carpet.usd",
+    "liangzhu_carpet_usd_sha256": "817ff5412fedeb712ad23e8f137d698d3247f2416831bbfebfe376ab7b8cfd04",
+    "liangzhu_mat_place_pose_world": {
+      "x": -0.4375161874288581,
+      "y": 5.111811405946711,
+      "z": -0.08441445076861078
+    }
   },
   "pct_codebase_notes": {
     "coordinate_rule": "pct_x=-sim_x, pct_y=-sim_y, pct_z=sim_z",
@@ -489,7 +590,195 @@
     "runtime_server_protocol": "stdin/stdout JSON",
     "runtime_uses_external_pct_api": false,
     "local_tomogram_path": "source/scene/multifloor/mutifloor.pickle",
-    "local_walkable_path": "source/scene/multifloor/mutifloor_ply_walkable.npy"
+    "local_walkable_path": "source/scene/multifloor/mutifloor_ply_walkable.npy",
+    "liangzhu_coordinate_rule": "identity; statically verified from collision PLY support points, runtime overlay pending"
+  },
+  "preflight": {
+    "worktree_verified": true,
+    "background_isaac_process_killed": false,
+    "cuda_available": true,
+    "cuda_diagnostic": "宿主机 CUDA 可用；此前沙盒探测因隔离环境显示 unavailable，详见 cuda_sandbox_available。",
+    "cuda_sandbox_available": false,
+    "cuda_host_available": true,
+    "cuda_host_diagnostic": "宿主机 nvidia-smi 与 Torch 检查通过：NVIDIA GeForce RTX 4060 Laptop GPU，Torch 2.7.0+cu128，CUDA runtime 12.8，device_count=1。",
+    "host_preflight_command": "ready_with_compatible_shared_curobo",
+    "host_preflight_report": "/tmp/liangzhu_cola_to_mat_full_physics_preflight_shared_curobo_ready_v2.json",
+    "host_preflight_asset_checks_passed": true,
+    "host_preflight_ready_for_real_full_physics": true,
+    "host_preflight_runtime_launch_safe": true,
+    "active_background_processes": [
+      {
+        "pid": 28191,
+        "worktree": "/home/light/workspace/arm_vla_pct",
+        "process": "scripts/curobo/grasp_planner_server.py",
+        "status_at_check": "running",
+        "allowed_shared_service": true,
+        "blocking": false,
+        "ping_ok": true,
+        "required_capabilities_verified": true,
+        "reused_compatible": true,
+        "ownership": "external_shared_service",
+        "shutdown_allowed": false,
+        "killed": false
+      }
+    ],
+    "runtime_blocking_process_count": 0,
+    "real_isaac_smoke": "passed_full_randomized_episode",
+    "real_isaac_smoke_reason": "seed=7 真实 Isaac/PhysX + PCT + pct_multifloor policy + CuRobo episode 已完成 nav2pick、pick、nav2place、place、验证和 LeRobot 导出。",
+    "real_isaac_smoke_output": "/mnt/sage_data/outputs/arm_vla_liangzhu/phase126_front_carry_terminal_seed7_attempt14/episode_000000/summary.json",
+    "cpu_dry_run": "passed",
+    "cpu_dry_run_output": "/tmp/liangzhu_cola_to_mat_phase0_dry_run_mesh_bbox_corrected/episode_000000/summary.json",
+    "cpu_dry_run_state_count": 17,
+    "cpu_dry_run_success_semantics": "control_flow_only",
+    "cpu_dry_run_training_eligible": false,
+    "batch_dry_run": "not_rerun_after_target_change",
+    "batch_dry_run_output": null,
+    "pct_offline_probe": "passed",
+    "pct_offline_probe_report": "/tmp/liangzhu_cola_to_mat_pct_plan_probe.json",
+    "pct_offline_probe_start_to_pick": {
+      "waypoint_count": 2,
+      "slice_start": 1,
+      "slice_end": 1,
+      "snap_start_dist": 0,
+      "snap_end_dist": 0
+    },
+    "pct_offline_probe_pick_to_mat": {
+      "waypoint_count": 2,
+      "slice_start": 1,
+      "slice_end": 1,
+      "snap_start_dist": 0,
+      "snap_end_dist": 0
+    },
+    "liangzhu_active_placement_target": "tasks/liangzhu_placement_target.json",
+    "liangzhu_target_receptacle_id": "mat_carpet_01",
+    "liangzhu_target_receptacle_prim_path": "/World/carpet",
+    "liangzhu_target_support_prim_path": "/World/carpet/material",
+    "liangzhu_mat_place_target_pose_world": {
+      "position_xyz": [
+        -0.4375161874288581,
+        5.111811405946711,
+        -0.08441445076861078
+      ],
+      "orientation_quaternion_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "asset_scale_xyz": [
+        0.03,
+        0.03,
+        0.03
+      ],
+      "asset_units_resolve_rotate_x_deg": 90.0
+    },
+    "liangzhu_mat_placement_region_world": {
+      "x_min": -0.48569129097665625,
+      "x_max": -0.3893410838810599,
+      "y_min": 5.082934329921819,
+      "y_max": 5.140688481971604,
+      "z_surface": -0.13805943095382933,
+      "object_footprint_radius_m": 0.03,
+      "edge_clearance_m": 0.01
+    },
+    "liangzhu_mat_target_validation": {
+      "scene_usda_transform_matches": true,
+      "mat_collision_api_offline_verified": true,
+      "mat_bbox_geometry_verified": true,
+      "mat_support_z": -0.13805943095382933,
+      "object_bbox_center_to_min_z_m": 0.05364498018521855,
+      "object_bbox_extent_source": "composed_stage_usd_world_bbox_at_authored_upright_pose",
+      "mat_top_above_scene_floor_m": 0.015167029135043558,
+      "object_footprint_fits_safe_region": true,
+      "curobo_support_proxy_configuration_verified": true,
+      "curobo_support_proxy_runtime_verified": true,
+      "physx_mat_collision_verified": true,
+      "release_stability_verified": true
+    },
+    "liangzhu_phase0_spatial_preconditions": {
+      "coke_in_front_distance_m": 1.2670848206112482,
+      "coke_heading_error_rad": 0.0,
+      "coke_floor_supported_offline": true,
+      "mat_floor_supported_offline": true
+    },
+    "liangzhu_receptacle_support_openusd_report": "/tmp/liangzhu_mat_receptacle_support_mesh_bbox_corrected.json",
+    "liangzhu_receptacle_support_openusd_validation": {
+      "mesh_count": 1,
+      "collision_enabled_count": 1,
+      "rigid_body_api_count": 0,
+      "static_support_verified": true,
+      "placement_region_verified": true,
+      "curobo_proxy_geometry_matches": true,
+      "curobo_proxy_max_abs_error_m": 0.0,
+      "runtime_stage_verified": true
+    },
+    "runtime_assets_in_current_worktree": {
+      "flat_nav_map": false,
+      "pct_tomogram": true,
+      "pct_walkable_map": true,
+      "pct_multifloor_checkpoint": true,
+      "liangzhu_scene_usda": true,
+      "liangzhu_collision_usd_external": true,
+      "liangzhu_visual_usdz_external": true,
+      "cola_asset": true,
+      "carpet_usd": true
+    },
+    "task_curobo_world_collision": {
+      "pick_required_count": 1,
+      "place_required_count": 1,
+      "pick_collision_id": "pick:liangzhu_pick_floor_support_phase0",
+      "place_collision_id": "place:liangzhu_mat_support_phase0",
+      "pick_source_prim_path": "/World/PhysicsScene/CollisionScene/LiangzhuCollision",
+      "place_source_prim_path": "/World/carpet/material",
+      "place_source_asset_sha256_matches": true,
+      "padding_mode": "preserve_top",
+      "runtime_export_verified": true
+    },
+    "offline_regression": {
+      "passed": 121,
+      "skipped": 1,
+      "failed": 0
+    },
+    "shared_curobo_regression": {
+      "passed": 45,
+      "skipped": 0,
+      "failed": 0,
+      "sandbox_nvml_warnings": 4,
+      "real_server_ping_verified": true,
+      "manager_reuse_verified": true,
+      "manager_close_preserved_external_server": true
+    },
+    "disk_free_gb": 2.7,
+    "full_episode_estimated_output_gb": 1.1,
+    "real_episode_count": 1,
+    "accepted_training_episode_count": 1,
+    "latest_real_episode": {
+      "output_dir": "/mnt/sage_data/outputs/arm_vla_liangzhu/phase126_front_carry_terminal_seed7_attempt14",
+      "seed": 7,
+      "success": true,
+      "stable_physics_success": true,
+      "pure_physics_success": false,
+      "success_semantics": "stable_physical_execution_with_base_support_lock",
+      "state_count": 17,
+      "duration_steps": 1065,
+      "duration_seconds": 207.29447436332703,
+      "pick_object_tcp_distance_m": 0.019082078388089573,
+      "pick_object_lift_height_m": 0.4946743990459183,
+      "place_xy_error_m": 0.013604008861033629,
+      "place_z_error_m": 0.000019038809898480613,
+      "place_object_linear_speed_mps": 0.00052600624995029,
+      "place_region_contains_object_center": true,
+      "lerobot_frames": 107,
+      "lerobot_camera_keys": [
+        "front",
+        "overview",
+        "wrist"
+      ],
+      "lerobot_validator_errors": 0,
+      "lerobot_validator_warnings": 0,
+      "overview_video_frames": 532,
+      "overview_camera_prim_path": "/World/overview"
+    }
   },
   "progress_log": [
     {
@@ -5446,20 +5735,1033 @@
         "pure-physics 上楼以 phase112 中心线为固定路线，训练或接入包含该楼梯、机械臂姿态和携物负载的 locomotion policy。",
         "用户用 GUI no-float 命令复核规划轨迹、入口弧线和第一阶侧翻；不要再把当前失败归因为 PCT 横切扶手。"
       ]
+    },
+    {
+      "time": "2026-07-12 11:53:12",
+      "summary": "完成 liangzhu-deploy worktree 的 pipeline 前期体检；遵循用户约束未继续启动长时间 Isaac 仿真，也未终止任何后台进程。CPU dry-run 与 PCT 离线真实 server 探针通过；真实 Isaac stage smoke 在启动后因 CUDA/驱动不可用且当前任务场景资产缺失而进入 stage_build_failed。",
+      "files_changed": [
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "当前 worktree 缺少既有 full-physics baseline 需要的 839920/multifloor USD、flat nav_map、PCT tomogram/walkable map 和 pct_multifloor checkpoint。",
+          "root_cause": "这些运行时大资产受 .gitignore 保护，没有随 worktree 进入当前目录；本机其他工作区存在部分只读资产，但不能把它们当作当前 worktree 已配置完成。",
+          "fix": "本轮只完成资产盘点，没有复制大型文件、没有建立 symlink，也没有修改其他 worktree；project.json 记录为 preflight 阻塞。",
+          "prevention": "恢复真实运行前先准备显式的 runtime asset manifest，并逐项检查 scene、nav_map、PCT map、checkpoint 和对象资产，不满足时不启动长仿真。"
+        },
+        {
+          "problem": "Isaac Sim 真实 stage smoke 无法进入 build_stage 后的场景验证。",
+          "root_cause": "nvidia-smi 无法连接 NVIDIA driver；Torch 报 cuda_available=false、device_count=0，Kit 日志同时报告 no CUDA-capable device、NVML_DRIVER_NOT_LOADED；此外当前 apple task 指向的 scene USD 不存在。",
+          "fix": "停止继续运行真实 pipeline，保留 /tmp/arm_vla_liangzhu_sim_smoke.c2dR1u 诊断输出；未执行 kill、GPU reset 或任何后台进程清理。",
+          "prevention": "后续先由用户/系统恢复 CUDA 会话，再运行 nvidia-smi 和 Torch probe；确认资产完整后才运行 simulation_smoke、navigation_carry_smoke 和 full_physics。"
+        },
+        {
+          "problem": "当前仓库的可运行完成任务仍是 apple/multifloor，不是 AGENTS.md 定义的 Liangzhu coke-to-table。",
+          "root_cause": "现有 task JSON、runtime prim 约定和 PCT 资产默认路径仍指向 839920/multifloor；source/scene/liangzhu/liangzhu.usda 目前只提供外部 visual/collision composition，尚无 coke、table、placement region 和 Liangzhu task spec 接入。",
+          "fix": "本轮不伪造 Liangzhu pipeline 已完成；将该差异列为下一阶段必须先解决的接口工作。",
+          "prevention": "在复现旧 apple baseline 与开发 Liangzhu coke-to-table 之间明确任务边界，不能把旧任务成功报告为 Liangzhu 感知、抓取或放置成功。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "PYTHONDONTWRITEBYTECODE=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B scripts/pipeline/run_full_physics_pipeline.py --task-json tasks/nav_pick_place_apple_contact.json --output-dir /tmp/arm_vla_liangzhu_dry_run --seed 0 --no-randomize-task --no-randomize-base-goal --dry-run",
+          "result": "passed",
+          "note": "控制流完成；success=true 仅表示 dry-run 状态机通过，不代表物理任务成功；LeRobot recording 在 dry-run 中关闭。"
+        },
+        {
+          "command": "scripts/navigation/probe_pct_plan.py --task-json tasks/nav_pick_place_apple_multifloor_pct.json --pct-server-script scripts/navigation/pct_grid_server.py --pct-tomogram-path /home/light/workspace/arm_vla_pct/source/scene/multifloor/mutifloor.pickle --pct-walkable-path /home/light/workspace/arm_vla_pct/source/scene/multifloor/mutifloor_ply_walkable.npy",
+          "result": "passed",
+          "note": "只读使用本机外部 PCT 资产；start_to_pick 2 点，pick_to_place 70 点，slice 9->15，未启动 Isaac Sim。"
+        },
+        {
+          "command": "真实 Isaac simulation_smoke（headless）",
+          "result": "failed",
+          "note": "输出 /tmp/arm_vla_liangzhu_sim_smoke.c2dR1u；summary.json 的 failure_reason=stage_build_failed，events.jsonl 记录 scene USD 不存在；Kit 同时报告 no CUDA-capable device。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/navigation tests/test_full_physics_pipeline.py tests/test_full_physics_lerobot.py tests/test_lerobot_validator.py tests/test_full_physics_batch.py tests/test_episode_schema.py",
+          "result": "failed",
+          "note": "123 passed、8 failed；失败均为当前 worktree 缺失 nav_map/PCT runtime assets，未发现新的控制逻辑回归。"
+        },
+        {
+          "command": "只读检查 /home/light/workspace/arm_vla_pct/outputs/headless_validation_phase105_full_pipeline_repeat",
+          "result": "passed",
+          "note": "既有 phase105 产物 summary 显示 stable_physics_success=true；LeRobot validation_report 显示 1 episode、845 帧、0 error、0 warning。该产物属于其他 worktree 的历史运行，不计入本次采集。"
+        }
+      ],
+      "data_results": {
+        "episodes_generated": 0,
+        "episodes_accepted": 0,
+        "success_rate": null,
+        "validation_report": "本次没有启动真实数据采集；仅核对既有 phase105 报告。"
+      },
+      "next_steps": [
+        "等待用户/系统恢复 NVIDIA driver 与 CUDA；不触碰当前或其他 worktree 中的后台 Isaac Sim 进程。",
+        "准备并确认当前 worktree 的 runtime asset manifest，优先复现已验证的 pct_multifloor apple baseline；完整录制前先确认磁盘空间大于单轮约 1.1GB。",
+        "明确是否先复现旧 apple/multifloor 导出，还是立即补齐 Liangzhu coke-to-table task/spec、场景 prim 和 PCT 单层资产；两者不能混用验收口径。"
+      ]
+    },
+    {
+      "time": "2026-07-12 12:07:07 CST",
+      "summary": "确认宿主机 CUDA 正常，并将用户手动标注的 cola 桌面放置位姿固化为 Liangzhu 前期固定目标；新增只读 full-physics preflight 和回归测试。遵循用户约束未启动第二个 Isaac Sim，也未终止正在运行的 PID 34668。",
+      "files_changed": [
+        "project.json",
+        "scripts/README.md",
+        "scripts/pipeline/preflight_full_physics.py",
+        "tasks/liangzhu_placement_target.json",
+        "tests/test_full_physics_preflight.py",
+        "tests/test_liangzhu_placement_target.py"
+      ],
+      "problems": [
+        {
+          "problem": "此前沙盒内 CUDA 探测为 false，与用户实际宿主机状态不一致。",
+          "root_cause": "沙盒没有暴露 NVIDIA driver/device；宿主机检查与沙盒检查使用了不同的进程隔离环境。",
+          "fix": "宿主机只读检查确认 nvidia-smi、Torch CUDA runtime 12.8 和单张 RTX 4060 Laptop GPU 均可用；保留沙盒结果作为环境差异记录，不再把它作为宿主机 CUDA 故障。",
+          "prevention": "真实 Isaac 验收必须在宿主机 CUDA 会话中执行；preflight 同时记录 CUDA 结果和执行环境。"
+        },
+        {
+          "problem": "用户只提供了桌面上的 cola 最终位姿，尚未提供可验证的桌子 prim、碰撞支撑和地面初始位姿。",
+          "root_cause": "当前 Liangzhu USDA 是 visual/collision 外部组合，文本层只有 /World/cola，没有可确认的 table 语义 prim。",
+          "fix": "新增 tasks/liangzhu_placement_target.json，精确记录 position、identity quaternion、scale 和 rotateX:unitsResolve=90；未把未验证的桌面信息伪装成完整 EpisodeSpec。",
+          "prevention": "补齐桌子 prim/placement region、地面初始 cola pose 和单层 PCT 地图后，才生成可运行的 Liangzhu task 并启动真实采集。"
+        },
+        {
+          "problem": "当前已有 PID 34668 正在其他 worktree 运行 apple/multifloor pipeline。",
+          "root_cause": "用户要求后台 Isaac Sim 运行期间不杀进程，也不应通过重复启动争抢 GPU。",
+          "fix": "preflight 只读报告该 PID；host preflight 命令因平台额度拒绝而未重复尝试，不影响已完成的宿主机 GPU probe。",
+          "prevention": "等待该运行结束或由用户明确授权后，再安排下一次真实 Isaac pipeline。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B -m pytest -q tests/test_full_physics_preflight.py tests/test_liangzhu_placement_target.py",
+          "result": "passed",
+          "note": "4 passed；覆盖 /World/cola marker、缺失桌子/碰撞 marker、缺失 PCT 资产阻塞和手动放置位姿逐项一致性。沙盒 Torch NVML warning 不影响测试结果。"
+        },
+        {
+          "command": "PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B -m py_compile scripts/pipeline/preflight_full_physics.py tests/test_full_physics_preflight.py tests/test_liangzhu_placement_target.py",
+          "result": "passed",
+          "note": "新增 preflight、manifest 测试语法检查通过。"
+        },
+        {
+          "command": "sandbox preflight --no-require-cuda",
+          "result": "blocked_expected",
+          "note": "正确报告当前 worktree 缺少 multifloor scene 和磁盘约 1.408 GiB；未启动或终止 Isaac。"
+        },
+        {
+          "command": "host nvidia-smi + Torch CUDA probe",
+          "result": "passed",
+          "note": "host CUDA available=true、device_count=1；这是宿主机 GPU 检查，不是沙盒结果。"
+        }
+      ],
+      "data_results": {
+        "episodes_generated": 0,
+        "episodes_accepted": 0,
+        "success_rate": null,
+        "validation_report": "本轮未启动新的物理采集；仅固化 place target 并完成静态/preflight 验证。"
+      },
+      "next_steps": [
+        "不要杀 PID 34668；待其运行结束后再安排当前 worktree 的 host-side Isaac smoke。",
+        "补齐 Liangzhu 地面初始 cola pose、桌子 prim/碰撞或明确桌面几何、单层 PCT tomogram/walkable 和 task base goals。",
+        "将 tasks/liangzhu_placement_target.json 的 pose 转换为完整 task 的 place.place_pose_world，并在真实 release/settle 后验证桌面支撑与稳定性。"
+      ]
+    },
+    {
+      "time": "2026-07-13 14:20:40 CST",
+      "summary": "完成 Liangzhu Phase 0 固定 coke-to-table 的真实运行前准备：当前 worktree 已具备任务、单层 PCT 资产、identity 坐标标定、手动桌面目标、局部 CuRobo 支撑代理、pct_multifloor checkpoint、严格数据门禁和 10 维 VLA action 导出。宿主机 preflight、PCT 真实 server 离线规划、固定任务/批量 dry-run 与相关回归通过；因后台仍有 CuRobo server 和 Isaac Sim，遵循用户要求没有启动或终止任何仿真进程，真实物理 episode 与数据导出仍为 0。",
+      "files_changed": [
+        "project.json",
+        "scripts/README.md",
+        "scripts/navigation/build_pct_multifloor_assets.py",
+        "scripts/navigation/probe_pct_plan.py",
+        "scripts/pipeline/preflight_full_physics.py",
+        "scripts/pipeline/run_full_physics_batch.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "scripts/scene/validate_placement_support.py",
+        "source/data/lerobot_converter.py",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/pipeline/state_machine.py",
+        "source/recording/__init__.py",
+        "source/recording/jsonl_recorder.py",
+        "source/recording/lerobot_dataset.py",
+        "source/recording/lerobot_validator.py",
+        "source/recording/training_action.py",
+        "source/scene/liangzhu/runtime_asset_manifest.json",
+        "source/scene/placement_support.py",
+        "source/simulation/isaaclab_runtime.py",
+        "source/tasks/randomizer.py",
+        "tasks/liangzhu_placement_target.json",
+        "tasks/nav_pick_place_cola_liangzhu_pct.json",
+        "tests/navigation/test_pct_asset_build.py",
+        "tests/test_full_physics_batch.py",
+        "tests/test_full_physics_lerobot.py",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_full_physics_preflight.py",
+        "tests/test_full_physics_randomization.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "tests/test_liangzhu_placement_target.py",
+        "tests/test_liangzhu_task.py",
+        "tests/test_placement_support.py"
+      ],
+      "problems": [
+        {
+          "problem": "良渚 collision PLY 可以用于建图，但当前环境没有 Open3D，原 builder 无法生成 PCT tomogram/walkable。",
+          "root_cause": "资产构建脚本把 Open3D 当成必选依赖，没有针对标准 binary triangle PLY 的轻量读取和表面积采样路径。",
+          "fix": "增加确定性 NumPy binary PLY fallback，并固定随机种子；从良渚 collision PLY 生成 shape=[6,275,443] 的单层资产，离线 PCT server 对 nav2pick/nav2place 均返回 slice 1、零吸附的同层路径。",
+          "prevention": "builder 回归同时覆盖 Open3D 可选依赖、三角形表面积采样和固定 seed；PCT probe 报告必须保留 path_3d、slice 与 snap 距离。"
+        },
+        {
+          "problem": "用户标注的是物体最终中心点，而场景没有独立桌子语义 prim，不能直接证明桌面支撑或 CuRobo 碰撞有效。",
+          "root_cause": "良渚 physics collision 由单个合并 mesh prim 提供；现有 CuRobo AABB 导出会过滤大于 2m 的整体碰撞体，桌面可能完全缺失。",
+          "fix": "collision PLY 垂直射线确认目标下方 support z=0.5898932057m、face=264396、中心净空 0.0537467943m；为 pick floor 和 place table 增加带 PLY hash/face/normal 来源的 required 有向 cuboid，preserve_top 膨胀不会抬高标定支撑面。",
+          "prevention": "任务代理优先进入 CuRobo world，required 代理若缺失或被 max_obstacles 截断会直接失败；manifest 继续把桌子语义 prim、runtime world export、真实避碰和 release stability 标为未验证。"
+        },
+        {
+          "problem": "原 LeRobot action 是 11 维控制命令，不能满足用户要求的底盘位姿、base-frame TCP 位姿和单夹爪值 10 维训练动作；dry-run/smoke 也可能被 success=true 误认为训练数据。",
+          "root_cause": "数据层没有区分控制目标与训练动作，也没有统一验证物理执行来源、相机同步、末帧动作和 batch 合并资格。",
+          "fix": "新增 base_xyyaw_tcp_base_rpy_gripper_v1：action[t] 对齐下一同步帧实际执行位姿，末帧 hold_current_pose；原 11 维命令保留为 control.action。writer/validator/converter/batch 统一要求物理来源和 training_quality_gate，通过前不会进入主数据集。",
+          "prevention": "schema/version/frame/unit/alignment/action names 均写入 metadata；非法 TCP、非有限值、错误维度、未验证 success、dry-run 和 smoke 都会被拒绝。"
+        },
+        {
+          "problem": "batch 默认随机化会移动 pick/place 目标，但 Phase 0 局部碰撞代理仍停留在固定点，可能静默生成目标与 CuRobo world 不一致的轨迹。",
+          "root_cause": "CLI 随机化默认值覆盖了任务中的 Phase 0 固定语义，randomizer 不了解任务级 collision proxy。",
+          "fix": "Phase 0 single/batch 命令显式传 --no-randomize-task --no-randomize-base-goal；prepare_episode_spec 检测到固定 proxy 与目标随机化组合时在采样前直接失败。",
+          "prevention": "在实现按 sampled target 重建 proxy 前禁止该组合；2-episode dry-run 已确认两轮坐标保持固定且训练质量门禁均拒绝。"
+        },
+        {
+          "problem": "沙盒 NVML/CUDA 不可见，且其他 worktree 的 Isaac/CuRobo 进程与当前工作共享 GPU。",
+          "root_cause": "沙盒驱动隔离与宿主机状态不同；并发启动可能争抢 GPU，用户明确要求不杀现有进程。",
+          "fix": "在宿主机只读 preflight 确认 Torch 2.7.0+cu128、CUDA 12.8、RTX 4060、PCT/checkpoint/代理资产 READY；只报告 PID 28191 的 CuRobo server 和 PID 254681 的 Isaac Sim，没有终止或启动任何进程。",
+          "prevention": "后续真实命令前先复跑 host preflight；存在其他 worktree 运行时继续只做 PCT probe、dry-run 和离线测试。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "host preflight_full_physics.py with Liangzhu PCT/checkpoint/external assets",
+          "result": "passed",
+          "note": "READY；CUDA=true，free=8.542GiB，collision PLY hash 匹配，pick/place required collision proxy 各 1 个；报告 /tmp/liangzhu_full_physics_preflight_host_current.json。"
+        },
+        {
+          "command": "probe_pct_plan.py --pct-coord-mode identity --cross-floor-*=off",
+          "result": "passed",
+          "note": "planned=true；start_to_pick 与 pick_to_place 均 2 点、slice 1->1、snap=0、无 warning；报告 /tmp/liangzhu_pct_plan_probe_final.json。"
+        },
+        {
+          "command": "validate_placement_support.py with Liangzhu collision PLY",
+          "result": "passed",
+          "note": "geometry_verified=true；support z=0.5898932057m、face=264396、hash 一致；报告 /tmp/liangzhu_placement_support_final.json。"
+        },
+        {
+          "command": "final targeted pytest: LeRobot/validator/batch/preflight/randomization/Liangzhu/PCT builder/IsaacLab collision",
+          "result": "passed",
+          "note": "90 passed、1 skipped；唯一 warning 是沙盒 NVML 不可见。"
+        },
+        {
+          "command": "targeted pipeline CLI/dry-run tests",
+          "result": "passed",
+          "note": "5 passed；覆盖最终 dry-run 训练门禁、identity CLI 和 startup status。"
+        },
+        {
+          "command": "randomization/batch/Liangzhu regression",
+          "result": "passed",
+          "note": "27 passed；固定 collision proxy 与目标随机化冲突会直接失败。"
+        },
+        {
+          "command": "tests/test_full_physics_pipeline.py",
+          "result": "known_failures",
+          "note": "41 passed、4 failed；四项均使用旧 tasks/nav_pick_place_apple_contact.json 的缺失 flat nav_map，A* factory 按既有严格规则拒绝，不是本轮 Liangzhu/PCT/export 回归。"
+        },
+        {
+          "command": "Liangzhu single dry-run and 2-episode fixed batch dry-run",
+          "result": "passed_diagnostic_only",
+          "note": "17-state 控制流完成；success_semantics=control_flow_only，pure/stable physics=false，training_quality_gate=false，未生成训练 episode。"
+        }
+      ],
+      "data_results": {
+        "episodes_generated": 0,
+        "episodes_accepted": 0,
+        "success_rate": null,
+        "training_action_schema": "base_xyyaw_tcp_base_rpy_gripper_v1",
+        "training_action_dimension": 10,
+        "control_action_dimension": 11,
+        "validation_report": "仅完成离线导出单测与 dry-run 门禁；尚未运行真实 Liangzhu Isaac full-physics，因此没有可验收 LeRobot episode。"
+      },
+      "next_steps": [
+        "确认其他 worktree 的 GPU/Isaac/CuRobo 进程结束后，先执行单 episode headless Phase 0 命令，不直接启动 10 episode 批采集。",
+        "真实 handoff 时核对 checkpoint load、PCT path overlay、pick/place world_collision_export.task_collision_ids、CuRobo workspace、抓取保持和 release/settle；失败时按阶段调参，不放宽训练门禁。",
+        "单次物理成功后运行 LeRobot validator，确认 10 维 action、11 维 control.action、视频/时间戳/帧数和 training_quality_gate；随后才用固定任务 batch 收集。",
+        "Phase 1 随机化前实现 collision proxy 随 sampled target/placement region 同步重建，并补充桌子语义 prim 或完整桌面几何；当前 guard 不允许静默随机化。",
+        "完成控制闭环后再从 sim_ground_truth 切到 RGB-D；当前结果不得描述为视觉检测成功。"
+      ]
+    },
+    {
+      "time": "2026-07-13 14:50:22 CST",
+      "summary": "将用户手动标注点继续作为 Phase 0 固定桌面放置目标，并补齐真实运行前的场景 prim、视觉数据与并发安全门禁。良渚 task 现在显式绑定嵌套 collision/visual prim，关闭旧 Yinluyuan F2 地面代理；录制 RGB 时加载完整视觉层并解除 VisualScene 隐藏，collision-only 帧不得进入 VLA 训练集。宿主机资产/CUDA 检查通过，但其他 worktree 的 CuRobo 与 Isaac runtime 仍在运行，因此 runtime idle gate 按预期阻止启动；未终止或复用任何外部进程，真实 episode 仍为 0。",
+      "files_changed": [
+        "project.json",
+        "scripts/README.md",
+        "scripts/pipeline/preflight_full_physics.py",
+        "scripts/pipeline/run_full_physics_batch.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "source/manipulation/planner_server_process.py",
+        "source/navigation/adapters/terrain_utils.py",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/recording/jsonl_recorder.py",
+        "source/recording/lerobot_dataset.py",
+        "source/recording/training_action.py",
+        "source/scene/liangzhu/runtime_asset_manifest.json",
+        "source/simulation/__init__.py",
+        "source/simulation/isaac_runtime.py",
+        "source/simulation/isaaclab_runtime.py",
+        "source/simulation/scene_runtime.py",
+        "tasks/nav_pick_place_cola_liangzhu_pct.json",
+        "tests/navigation/test_locomotion_policy_config.py",
+        "tests/test_collision_terrain_wrapper.py",
+        "tests/test_curobo_planner_server_process.py",
+        "tests/test_full_physics_batch.py",
+        "tests/test_full_physics_preflight.py",
+        "tests/test_liangzhu_task.py",
+        "tests/test_scene_runtime.py"
+      ],
+      "problems": [
+        {
+          "problem": "IsaacLab runtime 的默认 terrain/visual prim 和 pct_multifloor 地面代理仍属于旧多楼层场景，直接运行良渚会找不到 collision 或错误叠加 F2 通行面。",
+          "root_cause": "运行配置只按 policy profile 选择旧默认值，没有任务级 scene runtime 约定；良渚实际 prim 位于 /World/PhysicsScene/CollisionScene/LiangzhuCollision 与 /World/VisualScene/GaussianScene。",
+          "fix": "新增 task.scene_runtime 统一解析器并接入 IsaacLab 与 simulation-smoke；良渚显式声明两个嵌套 prim 且 collision_floor_proxy_profile=null，旧任务未配置时完整保留原默认行为。",
+          "prevention": "preflight 同时检查 task/CLI collision 一致性、typed USDA marker 和 visual prim；真实 runtime metadata 仍需在首个 Isaac smoke 中验收。"
+        },
+        {
+          "problem": "良渚 VisualScene 在主 USDA 中被标为 invisible，且 pct_multifloor auto 模式原本只显示 collision，可能导出结构完整但不适合训练的 RGB。",
+          "root_cause": "视觉 wrapper 只控制 active，没有覆盖视觉 prim 祖先的 visibility；auto 选择也没有区分导航 smoke 与启用相机的数据录制。",
+          "fix": "视觉 sublayer 对 /World/VisualScene/GaussianScene 逐级写 inherited visibility；启用相机录制时 auto 选择 full，并新增 training_visual_source_verified 门禁，VLA task 的 collision-only RGB 会被拒绝。",
+          "prevention": "正式单 episode 使用 --navigation-visual-mode full；summary、manifest 和 batch 合并同时要求真实物理来源与完整视觉来源。"
+        },
+        {
+          "problem": "旧 CuRobo manager 会复用任意兼容的 localhost:8765 server，功能不兼容时甚至会发送 shutdown，可能影响其他 worktree。",
+          "root_cause": "capabilities 已返回 workspace，但 client 只检查三个 feature 标志，没有校验 workspace 所有权。",
+          "fix": "复用现在同时要求 resolved workspace 等于当前 worktree；不匹配或功能不足时只报错并保留外部 server，禁止 shutdown/reuse/restart。宿主机只读查询确认当前 server 不属于 Liangzhu worktree。",
+          "prevention": "preflight 默认 require_idle_runtime；报告区分 asset_checks_passed 与 runtime_launch_safe，只有二者均通过才启动 Isaac。"
+        },
+        {
+          "problem": "simulation-smoke 重置物体时会清空整个 xform stack，删除可乐资产的 rotateX:unitsResolve=90。",
+          "root_cause": "轻量 runtime 把任务 RPY 当成最终模型旋转，而正式 IsaacLab runtime 已按根 Orient + 资产模型转换的语义处理。",
+          "fix": "轻量 runtime 只更新 translate/orient，保留 scale、unitsResolve 和原 xformOpOrder，使两个 runtime 的可乐姿态语义一致。",
+          "prevention": "回归测试明确禁止 ClearXformOpOrder/RemoveProperty，并检查 unitsResolve 保留报告。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "host preflight_full_physics.py with require_idle_runtime",
+          "result": "blocked_expected",
+          "note": "asset_checks_passed=true、CUDA=true、free=8.344GiB、runtime_launch_safe=false；检测到 arm_vla_pct 的 PID 28191 CuRobo server 与 PID 270252 Isaac Sim，报告 /tmp/liangzhu_full_physics_preflight_idle_gate.json，未终止进程。"
+        },
+        {
+          "command": "read-only localhost CuRobo ping/capabilities with expected Liangzhu workspace",
+          "result": "passed",
+          "note": "ping=true、same_workspace_and_features=false；验证外部 server 会被所有权门禁拒绝。"
+        },
+        {
+          "command": "targeted offline regression for runtime/visual/CuRobo/export/navigation/manipulation",
+          "result": "passed",
+          "note": "142 passed、1 skipped；3 个 warning 仅为沙盒 NVML 不可见。"
+        },
+        {
+          "command": "Liangzhu fixed Phase 0 dry-run with full visual request",
+          "result": "passed_diagnostic_only",
+          "note": "17 状态控制流完成；固定 place target 未漂移，training_visual_source_verified=false、training_quality_gate_passed=false、lerobot_training_eligible=false，输出 /tmp/liangzhu_phase0_dry_run_scene_runtime_gate。"
+        },
+        {
+          "command": "AST, JSON and git diff --check",
+          "result": "passed",
+          "note": "新增 runtime/preflight/visual gate 代码语法、任务/manifest/project JSON 与 whitespace 检查通过。"
+        }
+      ],
+      "data_results": {
+        "episodes_generated": 0,
+        "episodes_accepted": 0,
+        "success_rate": null,
+        "training_action_schema": "base_xyyaw_tcp_base_rpy_gripper_v1",
+        "training_action_dimension": 10,
+        "control_action_dimension": 11,
+        "validation_report": "本轮只强化 scene runtime、完整 RGB 与并发启动门禁；由于其他 worktree runtime 存在，没有启动真实 Liangzhu Isaac，因此没有新的 LeRobot episode。"
+      },
+      "next_steps": [
+        "保持 PID 28191 和 PID 270252 不受影响；待外部 runtime 由其所有者结束后复跑 host preflight，必须同时满足 asset_checks_passed=true 与 runtime_launch_safe=true。",
+        "先运行 simulation-smoke 验证嵌套 collision prim、可乐 unitsResolve/scale、相机与 reset，再运行单 episode full visual headless，不直接批采集。",
+        "真实 episode 中核对 scene_runtime_settings、collision_floor_proxy_report.profile=null、world_collision_export.task_collision_ids、PCT overlay、CuRobo 抓放和 release settle。",
+        "物理成功后执行 LeRobot validator，要求 10D action、11D control.action、完整 RGB/时间戳、training_visual_source_verified=true 与 training_quality_gate_passed=true；通过后才进入固定任务 batch。"
+      ]
+    },
+    {
+      "time": "2026-07-13 15:20:02 CST",
+      "summary": "修复良渚 collision terrain wrapper 的 USD 类型遮蔽：旧 wrapper 在强层写死 Xform，会把直接引用的 Liangzhu Mesh 组合成无网格的 Xform。现改为不写 typeName，并在 TerrainImporter 创建前二次打开组合层验证 mesh。SAGE OpenUSD 对真实良渚资产确认根 prim 为 Mesh、167792 个顶点且保留 CollisionAPI。宿主机 CUDA 与资产检查通过，但 arm_vla_pct 的 CuRobo/Isaac 仍在运行，因此按门禁未启动 scene smoke 或真实 episode。",
+      "files_changed": [
+        "project.json",
+        "scripts/README.md",
+        "source/navigation/adapters/terrain_utils.py",
+        "source/scene/liangzhu/runtime_asset_manifest.json",
+        "source/simulation/isaaclab_runtime.py",
+        "tests/test_collision_terrain_wrapper.py",
+        "tests/test_isaaclab_navigation_runtime.py"
+      ],
+      "problems": [
+        {
+          "problem": "collision wrapper 的引用目标是 Mesh，但 wrapper 根 prim 被显式声明为 Xform，OpenUSD 最终只遍历到一个无 Mesh 几何的 Xform。",
+          "root_cause": "强层 typeName 覆盖了引用 prim 的 Mesh typeName；CollisionAPI 属性仍会组合进来，容易造成看似存在碰撞 API、实际没有网格的假阳性。",
+          "fix": "wrapper 根 prim 改为 untyped def，让引用源决定 Mesh/Xform 类型；IsaacLab 在 TerrainImporterCfg 前调用 _validate_scene_collision 复验组合后的 /scene_collision，并记录 collision_terrain_wrapper_report。",
+          "prevention": "单元测试禁止重新写入 def Xform；真实资产用 SAGE OpenUSD 验证 type、mesh、顶点和 CollisionAPI；运行时再次要求 mesh_count>0，失败即停止。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/sage/bin/python OpenUSD inspect /tmp/go2_x5_collision_terrain_69811e159c74.usda",
+          "result": "passed",
+          "note": "default prim=/scene_collision、type=Mesh、is_mesh=true、mesh_count=1、vertex_count=167792、CollisionAPI=true。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_collision_terrain_wrapper.py tests/test_isaaclab_navigation_runtime.py -q",
+          "result": "passed",
+          "note": "49 passed、1 skipped。base Python 没有 pytest，Isaac 环境未禁用插件自动加载时会误载 ROS Python 3.10 插件；禁用第三方插件后目标测试正常通过。"
+        },
+        {
+          "command": "python -m py_compile source/navigation/adapters/terrain_utils.py source/simulation/isaaclab_runtime.py tests/test_collision_terrain_wrapper.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "相关实现与测试语法通过。"
+        },
+        {
+          "command": "host preflight_full_physics.py with explicit Liangzhu assets and require_idle_runtime",
+          "result": "blocked_expected",
+          "note": "CUDA=true、asset_checks_passed=true、free=7.813GiB；PID 28191 CuRobo server 与 PID 278774 Isaac Sim 均属于 arm_vla_pct，runtime_launch_safe=false；报告 /tmp/liangzhu_full_physics_preflight_after_wrapper_fix_explicit.json，未终止任何进程。"
+        },
+        {
+          "command": "Liangzhu simulation-smoke / real full-physics / LeRobot validator",
+          "result": "not_run",
+          "note": "其他 worktree runtime 尚未结束，按用户要求和 idle gate 不并发启动。"
+        }
+      ],
+      "data_results": {
+        "episodes_generated": 0,
+        "episodes_accepted": 0,
+        "success_rate": null,
+        "validation_report": "碰撞 wrapper 已完成离线真实资产组合验证，但尚未完成 Isaac TerrainImporter、完整物理 episode 或 LeRobot 训练数据验收。"
+      },
+      "next_steps": [
+        "保持 PID 28191 和 PID 278774 不受影响；外部 runtime 结束后用显式资产路径复跑 host preflight，要求 asset_checks_passed 与 runtime_launch_safe 同时为 true。",
+        "先运行 scene/reset smoke，检查 collision_terrain_wrapper_report.mesh_count>0、collision_floor_proxy_report.profile=null、可乐 unitsResolve/scale 和 reset。",
+        "scene smoke 通过后再运行单个 full visual Phase 0 episode，并围绕用户固定 place target 验证 CuRobo 放置、释放稳定性和 PhysX 桌面支撑。",
+        "物理成功后运行 LeRobot validator；通过 10D action、11D control action、RGB/帧/时间戳和 training quality gate 后才增加 batch。"
+      ]
+    },
+    {
+      "time": "2026-07-13 15:48:23 CST",
+      "summary": "按用户最新目标将 Phase 0 从可乐放桌面切换为把场景中现有可乐搬到 /World/carpet 垫子。实际组合场景中 /World/carpet/material 是静态碰撞 Mesh；放置目标使用碰撞世界包围盒中心而非位于边缘的 carpet 根 translate，并按可乐足迹与边缘余量生成安全 placement region。固定任务、CuRobo 垫子支撑代理、成功区域判定、preflight 资产哈希、PCT 两段规划和 dry-run 均已切换到垫子。宿主机资产与 CUDA 检查通过；最新 idle gate 检测到 arm_vla_pct 的 CuRobo、stair-locomotion Isaac 和 PCT 三个进程，因此遵循用户要求未终止、复用或并发启动，真实物理 episode 与验收数据仍为 0。",
+      "files_changed": [
+        "project.json",
+        "scripts/README.md",
+        "scripts/pipeline/preflight_full_physics.py",
+        "source/diagnostics/full_physics.py",
+        "source/scene/liangzhu/runtime_asset_manifest.json",
+        "tasks/liangzhu_placement_target.json",
+        "tasks/nav_pick_place_cola_liangzhu_pct.json",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_full_physics_preflight.py",
+        "tests/test_liangzhu_placement_target.py",
+        "tests/test_liangzhu_task.py"
+      ],
+      "problems": [
+        {
+          "problem": "用户新增垫子的根 prim translate 位于垫子边缘，不能直接作为可乐放置中心。",
+          "root_cause": "/World/carpet 是带 payload 的 Xform；实际支撑几何位于 /World/carpet/material，世界包围盒中心为 (-0.437516, 5.111811)，根 translate 的 y=5.042934。",
+          "fix": "用 OpenUSD 组合场景计算碰撞 Mesh 世界包围盒；以顶面中心加可乐支撑半高生成目标中心 z，并按 0.03m 足迹半径和 0.01m 边缘余量内缩得到安全区域。",
+          "prevention": "receptacle 目标必须来自实际支撑碰撞几何，不得把父 Xform 原点或视觉中心静默当成放置点。"
+        },
+        {
+          "problem": "旧 place success 只比较单一目标点容差，不能严格证明可乐仍位于指定垫子内部。",
+          "root_cause": "validator 没有读取 task 的 placement_region，也没有使用 task 级 place_xy_tolerance/place_z_tolerance。",
+          "fix": "verify_place_success 读取 task 阈值并检查 world-frame placement region；配置非法时结构化返回 place_validation_config_invalid。",
+          "prevention": "真实 release/settle 必须同时通过目标位姿容差、区域包含和稳定性，dry-run 不得进入训练数据集。"
+        },
+        {
+          "problem": "另一个 worktree 仍有 CuRobo/Isaac/PCT runtime，当前 worktree 不能安全启动自己的完整 runtime。",
+          "root_cause": "最新复查中 PID 28191、296402、298053 的 cwd 均属于 /home/light/workspace/arm_vla_pct。",
+          "fix": "host preflight 只读报告这些进程并令 runtime_launch_safe=false；pipeline server manager 会拒绝跨 worktree 复用。",
+          "prevention": "不终止用户进程；只有 idle gate 通过后才依次运行 scene smoke 和单个真实 episode。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/sage/bin/python OpenUSD inspect Liangzhu composed scene carpet/coke geometry",
+          "result": "passed",
+          "note": "/World/carpet/material 为 CollisionAPI Mesh；bbox=0.176350×0.137754×0.000399m，顶面 z=-0.138059m；顶面比场景地面高 0.015167m。"
+        },
+        {
+          "command": "probe_pct_plan.py --task-json tasks/nav_pick_place_cola_liangzhu_pct.json",
+          "result": "passed",
+          "note": "start->pick 与 pick->mat base 均得到 2 点 same_floor_direct 路径，slice 1->1，起终点 snap 均为 0；报告 /tmp/liangzhu_cola_to_mat_pct_plan_probe.json。"
+        },
+        {
+          "command": "run_full_physics_pipeline.py --dry-run with fixed coke-to-mat Phase 0 task",
+          "result": "passed_control_flow_only",
+          "note": "17-state 链路完成；success_semantics=control_flow_only、pure_physics_success=false、training_quality_gate=false、LeRobot training eligible=false；报告 /tmp/liangzhu_cola_to_mat_phase0_dry_run/episode_000000/summary.json。"
+        },
+        {
+          "command": "Liangzhu mat/runtime/export targeted pytest suite",
+          "result": "passed",
+          "note": "113 passed、1 skipped；3 条 NVML warning 来自沙盒 GPU 隔离，不是宿主机 CUDA 故障。"
+        },
+        {
+          "command": "host preflight_full_physics.py for fixed coke-to-mat task with require_idle_runtime",
+          "result": "blocked_expected",
+          "note": "asset_checks_passed=true、CUDA=true、RTX 4060、Torch 2.7.0+cu128、free=7.432GiB；carpet USD SHA256 匹配。检测到 arm_vla_pct PID 28191 CuRobo、PID 296402 stair-locomotion Isaac 与 PID 298053 PCT server，runtime_launch_safe=false；报告 /tmp/liangzhu_cola_to_mat_full_physics_preflight.json。"
+        },
+        {
+          "command": "Liangzhu simulation-smoke / real coke-to-mat full-physics / LeRobot validator",
+          "result": "not_run",
+          "note": "外部 CuRobo/Isaac/PCT runtime 尚未结束，按用户要求和 idle gate 不并发启动。"
+        }
+      ],
+      "data_results": {
+        "episodes_generated": 0,
+        "episodes_accepted": 0,
+        "success_rate": null,
+        "training_action_dimension": 10,
+        "control_action_dimension": 11,
+        "validation_report": "只完成垫子目标的真实资产几何、PCT、dry-run 和导出门禁离线验证；尚未完成 Isaac/PhysX/CuRobo 真实执行，因此没有可验收 LeRobot episode。"
+      },
+      "next_steps": [
+        "保持 PID 28191、296402、298053 不受影响；外部 runtime 由其所有者结束后复跑 host preflight，要求 asset_checks_passed=true 且 runtime_launch_safe=true。",
+        "先运行 scene/reset smoke，检查 collision_terrain_wrapper_report.mesh_count>0、/World/carpet/material PhysX collision、可乐 unitsResolve/scale、机器人 articulation 和 reset。",
+        "scene smoke 通过后运行一个 full visual 固定 coke-to-mat episode；核对 PCT、pct_multifloor policy、CuRobo pick/place、垫子区域包含、release settle 和回撤。",
+        "真实物理成功后运行 LeRobot validator；只有 10D action、11D control action、完整 RGB/帧/时间戳和 training quality gate 全部通过才开始 batch。"
+      ]
+    },
+    {
+      "time": "2026-07-13 16:15:55 CST",
+      "summary": "根据用户补充的 Phase 0 空间前提，将任务明确为‘机器狗正前方地面可乐 -> 地面垫子/毯子’：机器人初始 yaw 与到可乐方位角完全一致，可乐距机器人 1.26708m；可乐和垫子均有离线地面支撑证据。新增 task-driven receptacle support gate，在轻量 Isaac scene smoke 创建 World 前检查完整 stage，在 IsaacLab 导航 runtime 中同时检查源 USDA 和 visual sublayer 后的当前 stage；要求 /World/carpet/material 是启用碰撞的静态 Mesh、placement region 和 CuRobo proxy 与真实组合包围盒一致。该报告已加入 LeRobot 训练质量门禁。真实 OpenUSD 资产检查与离线回归通过，但外部 arm_vla_pct runtime 仍在运行，因此没有启动 Isaac、没有终止外部进程，真实 episode/accepted 数据仍为 0。",
+      "files_changed": [
+        "project.json",
+        "scripts/README.md",
+        "scripts/pipeline/preflight_full_physics.py",
+        "scripts/scene/validate_task_receptacle_support.py",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/recording/jsonl_recorder.py",
+        "source/recording/training_action.py",
+        "source/scene/liangzhu/runtime_asset_manifest.json",
+        "source/simulation/__init__.py",
+        "source/simulation/isaac_runtime.py",
+        "source/simulation/isaaclab_runtime.py",
+        "source/simulation/receptacle_support.py",
+        "tasks/liangzhu_placement_target.json",
+        "tasks/nav_pick_place_cola_liangzhu_pct.json",
+        "tests/test_full_physics_preflight.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "tests/test_liangzhu_placement_target.py",
+        "tests/test_liangzhu_task.py",
+        "tests/test_scene_runtime.py"
+      ],
+      "problems": [
+        {
+          "problem": "用户进一步限定可乐必须位于机器狗面前，且可乐与垫子/毯子都在地上。",
+          "root_cause": "旧任务虽然坐标恰好满足该条件，但没有把方位误差、距离和两类地面支撑写成可回归前提。",
+          "fix": "任务新增 phase0_spatial_preconditions；离线计算机器人 yaw=物体方位角=1.0644767769rad、heading_error=0、距离=1.2670848m，并记录可乐地面支撑和垫子高于场景地面 0.015167m。",
+          "prevention": "固定 Phase 0 坐标改动必须通过正前方与地面支撑测试，后续随机化不得静默破坏本轮 smoke 前提。"
+        },
+        {
+          "problem": "preflight 只能证明 carpet 文件与文本 prim 存在，不能证明 Isaac 实际组合 stage 中有可用静态碰撞支撑。",
+          "root_cause": "垫子不在 terrain wrapper 中，而是随完整场景 visual sublayer 进入 IsaacLab stage；只检查源文件 hash 无法覆盖 sublayer deactivation、payload 加载或 CollisionAPI 漂移。",
+          "fix": "新增 receptacle_support 模块与 OpenUSD CLI；IsaacSimulationRuntime 在 World 初始化前检查，IsaacLabNavigationRuntime 在源 USD 和 visual sublayer stage 两处检查 Mesh、collisionEnabled、RigidBodyAPI、bbox、placement region 和 CuRobo proxy。",
+          "prevention": "support_runtime_validation_required=true 时任一检查失败即停止；旧任务未配置该字段时保持兼容。"
+        },
+        {
+          "problem": "即使垫子运行时碰撞报告缺失，旧训练质量门禁只检查物理来源和完整 RGB。",
+          "root_cause": "training_quality_success_verified 尚未包含任务 receptacle 支撑来源。",
+          "fix": "新增 training_receptacle_support_verified；真实任务必须有 runtime-stage geometry_verified、启用碰撞、静态支撑、区域和 required CuRobo proxy 报告，缺失时以 task_receptacle_support_runtime_not_verified 拒绝导出。",
+          "prevention": "负向测试确认 CuRobo proxy bbox 漂移 1cm 或报告缺失都会被拒绝，dry-run 继续不能进入训练集。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/data/conda_envs/sage/bin/python -B scripts/scene/validate_task_receptacle_support.py --task-json tasks/nav_pick_place_cola_liangzhu_pct.json",
+          "result": "passed",
+          "note": "组合 stage 中 support_loaded=true、mesh=1、collisionEnabled=1、RigidBodyAPI=0、region=true、proxy geometry=true、max_abs_error=0；报告 /tmp/liangzhu_mat_receptacle_support.json。机器人装饰 rotor/head 的既有 unresolved visual reference warning 未影响实际垫子、可乐或 articulation 物理组合。"
+        },
+        {
+          "command": "Liangzhu mat/runtime/export targeted pytest suite",
+          "result": "passed",
+          "note": "121 passed、1 skipped；覆盖正前方/地面前提、两种 runtime 接入顺序、preflight、训练门禁、recorder 拒绝原因和 1cm stale proxy 拒绝。3 条 NVML warning 来自沙盒隔离。"
+        },
+        {
+          "command": "run_full_physics_pipeline.py --dry-run --no-randomize-task --no-randomize-base-goal",
+          "result": "passed_control_flow_only",
+          "note": "更新后的指令和空间前提完成 17 状态；pure_physics_success=false、lerobot_training_eligible=false、skip_reason=physical_execution_provenance_not_verified；输出 /tmp/liangzhu_cola_to_mat_phase0_dry_run_runtime_support_gate。"
+        },
+        {
+          "command": "host preflight_full_physics.py with require_idle_runtime and receptacle support config",
+          "result": "blocked_expected",
+          "note": "asset_checks_passed=true、CUDA=true、RTX 4060、Torch 2.7.0+cu128、free=7.212GiB，且新 support gate configured/required/static 均为 true；PID 28191、301808、302363 属于 arm_vla_pct，runtime_launch_safe=false，未终止。"
+        },
+        {
+          "command": "py_compile, JSON parse and git diff --check",
+          "result": "passed",
+          "note": "新增 runtime/recording/CLI/测试语法、任务/manifest/project JSON 和 whitespace 检查通过。"
+        },
+        {
+          "command": "Liangzhu scene smoke / real coke-to-mat full-physics / LeRobot validator",
+          "result": "not_run",
+          "note": "外部 Isaac/CuRobo/PCT runtime 尚未结束，遵循用户约束未并发启动。"
+        }
+      ],
+      "data_results": {
+        "episodes_generated": 0,
+        "episodes_accepted": 0,
+        "success_rate": null,
+        "training_action_dimension": 10,
+        "control_action_dimension": 11,
+        "validation_report": "正前方地面可乐与地面垫子前提、组合支撑和训练门禁已离线验证；尚缺真实 Isaac/PhysX/CuRobo episode 和 LeRobot validator 证据。"
+      },
+      "next_steps": [
+        "保持 PID 28191、301808、302363 不受影响；外部 runtime 空闲后复跑 host preflight，必须同时满足 assets_ready 与 runtime_launch_safe。",
+        "运行 scene/reset smoke，并要求 task_receptacle_support_runtime_stage_report.geometry_verified=true、static_support_verified=true、collision_enabled_count>0。",
+        "再运行单个 full visual episode，验证可乐真实在前方可见、地面抓取、携物、毯子释放/稳定和回撤。",
+        "最后运行 LeRobot validator；training_receptacle_support、完整 RGB、10D/11D action、帧/时间戳和物理来源全部通过后才批采集。"
+      ]
+    },
+    {
+      "time": "2026-07-13 16:49:35 CST",
+      "summary": "按用户确认将 Phase 0 操作目标明确切换为仿真 Mesh/PhysX 真值：抓取 TCP 由可乐当前 Mesh 尺寸与 live PhysX 中心生成；放置目标由当前 stage 中 /World/carpet/material 的支撑 bbox 顶面、安全 placement region 中心、抓取前可乐 bbox 半高及当前 TCP-to-object offset 生成。人工 place_pose_world 仅作为漂移审计基准。新增运行时报告和 LeRobot 质量门禁，禁止缺少 Mesh-truth pick/place 证据的成功轨迹进入训练集。目标相关测试、dry-run 与 OpenUSD 支撑检查通过；宿主机只剩 arm_vla_pct 的 PID 28191 CuRobo server，正式 preflight 因 idle gate 返回 BLOCKED，所以尚未启动真实 Isaac，episode/accepted 仍为 0。",
+      "files_changed": [
+        "project.json",
+        "scripts/README.md",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/recording/jsonl_recorder.py",
+        "source/recording/training_action.py",
+        "source/scene/liangzhu/runtime_asset_manifest.json",
+        "source/simulation/isaaclab_runtime.py",
+        "tasks/nav_pick_place_cola_liangzhu_pct.json",
+        "tests/test_full_physics_lerobot.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "tests/test_liangzhu_task.py",
+        "tests/test_scene_runtime.py"
+      ],
+      "problems": [
+        {
+          "problem": "place target 虽由垫子 Mesh 离线标定，但运行时仍直接读取 task 中的静态 place_pose_world。",
+          "root_cause": "export_current_curobo_place_inputs 只读取 EpisodeSpec 静态目标，没有在 CuRobo handoff 时重新组合支撑 Mesh、抓取前物体尺寸和当前物体/TCP 相对偏移。",
+          "fix": "新增 Mesh-truth place 推导器和严格 source contract；运行时重新检查 receptacle support stage，以安全区中心和支撑 bbox 顶面生成 XYZ，并用抓取前 live bbox 半高补偿物体中心。静态点漂移、物体尺寸漂移或非 live PhysX 中心都会立即失败。",
+          "prevention": "任务显式声明 mesh_truth_manipulation_targets.required=true；pick/place export 均记录 visual_localization_used=false、bbox/source 和一致性报告。"
+        },
+        {
+          "problem": "仅有物理成功、完整 RGB 和垫子碰撞报告，仍不能证明 CuRobo 实际使用了 Mesh 真值目标。",
+          "root_cause": "旧 training quality gate 没有检查 current-state pick/place target export。",
+          "fix": "新增 training_mesh_truth_manipulation_targets_verified；要求 pick source=sim_object_bbox_side、pick/place bbox center 为 live PhysX、place XYZ 为 runtime_mesh_truth，且 CuRobo desired_final_object_center 与推导值一致。缺失时以 mesh_truth_manipulation_targets_not_verified 拒绝导出。",
+          "prevention": "正向/负向单测覆盖缺报告、视觉替代、支撑/尺寸/静态标注漂移和 recorder 拒绝原因。"
+        },
+        {
+          "problem": "当前是否可以启动真实 pipeline。",
+          "root_cause": "宿主机 Isaac 与 PCT 已退出，但 /home/light/workspace/arm_vla_pct 的 CuRobo server PID 28191 仍占用共享服务端口并违反当前 worktree 的 runtime idle/ownership gate。",
+          "fix": "只读 host preflight 报告 assets_ready=true、CUDA=true、free=7.138GiB、background_processes=1、runtime_launch_safe=false；未终止、复用或绕过外部 server。",
+          "prevention": "PID 28191 由其所有者正常结束后先重跑 preflight；只有 runtime_launch_safe=true 才启动 scene smoke。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "targeted Mesh-truth runtime/task/training/LeRobot pytest suite",
+          "result": "passed",
+          "note": "74 passed、1 skipped；覆盖 Mesh 目标推导、runtime export 顺序、任务合同、训练门禁和 recorder 拒绝原因。"
+        },
+        {
+          "command": "expanded Liangzhu/runtime/export regression suite",
+          "result": "partially_passed_with_known_legacy_fixture_gap",
+          "note": "198 passed、1 skipped；4 个旧 apple/A* factory 测试因仓库缺少 source/scene/839920/nav_map/map.json 失败，失败发生在导航组件创建前，与本轮 Mesh 真值改动无关，项目 tests_passing 继续保持 false。"
+        },
+        {
+          "command": "run_full_physics_pipeline.py --dry-run for Mesh-truth coke-to-mat task",
+          "result": "passed_control_flow_only",
+          "note": "17 状态完成；pure_physics_success=false，dry-run 不生成运行时 Mesh export，也不进入训练集；输出 /tmp/liangzhu_cola_to_mat_phase0_dry_run_mesh_truth_gate/episode_000000/summary.json。"
+        },
+        {
+          "command": "SAGE OpenUSD validate_task_receptacle_support.py",
+          "result": "passed",
+          "note": "mat support mesh=1、collisionEnabled=1、RigidBodyAPI=0、region/proxy=true、max_abs_error=0；报告 /tmp/liangzhu_mat_receptacle_support_mesh_truth.json。既有 rotor/head decorative visual reference warning 未影响目标支撑验证。"
+        },
+        {
+          "command": "host preflight_full_physics.py with runtime idle gate",
+          "result": "blocked_expected",
+          "note": "assets_ready=true、CUDA=true、RTX 4060、free=7.138GiB；仅检测到 arm_vla_pct PID 28191 CuRobo server，runtime_launch_safe=false；报告 /tmp/liangzhu_cola_to_mat_full_physics_preflight_mesh_truth.json。"
+        }
+      ],
+      "data_results": {
+        "episodes_generated": 0,
+        "episodes_accepted": 0,
+        "success_rate": null,
+        "training_action_dimension": 10,
+        "control_action_dimension": 11,
+        "validation_report": "Mesh/PhysX 真值操作目标和对应训练门禁已完成离线验证；尚缺真实 Isaac/PhysX/CuRobo pick/place export、完整 episode 和 LeRobot validator 证据。"
+      },
+      "next_steps": [
+        "保持 PID 28191 不受影响；其所有者正常结束后立即复跑 host preflight，要求 assets_ready=true 且 runtime_launch_safe=true。",
+        "先运行 scene/reset smoke，验收 collision terrain wrapper、机器人 articulation、可乐 reset 和 mat runtime-stage collision/support report。",
+        "scene smoke 通过后运行一个 full visual 固定 episode，重点核对 mesh_truth_pick_target_report、mesh_truth_place_target_report、PCT/pct_multifloor policy、CuRobo workspace、抓取保持和垫子 release/settle。",
+        "物理成功后运行 LeRobot validator；只有 Mesh-truth target gate、receptacle gate、完整 RGB、10D/11D action、帧/时间戳和物理来源全部通过才开始 batch。"
+      ]
+    },
+    {
+      "time": "2026-07-13 17:29:31 CST",
+      "summary": "继续审计运行时 Mesh 真值后，修正了可乐放置几何的两个真实运行隐患：组合 stage 中可乐 authored upright Mesh bbox 半高实际为 0.05364498018521855m，而旧基线误用了 spawn 中心到倾斜地面支撑点的 0.05374679430209828m，二者相差 0.101814mm；垫面最终中心 Z 已据此改为 -0.08441445076861078m。动态 bbox 现在保留 Mesh 中心相对刚体原点偏移并随 live PhysX pose 旋转；静态标注严格核对离线标定半高，运行目标则使用本 episode live bbox，因此容差内的 settle 变化不会被静态 1um 门禁误拒。当前任务针对性测试、OpenUSD 支撑检查、dry-run 均通过。宿主机 CUDA/资产正常，但 arm_vla_pct 又在运行 PID 334667 Isaac、335318 PCT 与 28191 CuRobo，故按 idle gate 未启动本 worktree 的真实仿真，真实/accepted episode 仍为 0。",
+      "files_changed": [
+        "project.json",
+        "source/scene/liangzhu/runtime_asset_manifest.json",
+        "source/simulation/isaaclab_runtime.py",
+        "tasks/liangzhu_placement_target.json",
+        "tasks/nav_pick_place_cola_liangzhu_pct.json",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "tests/test_liangzhu_placement_target.py",
+        "tests/test_liangzhu_task.py"
+      ],
+      "problems": [
+        {
+          "problem": "静态 mat place Z 与真实运行时可乐 Mesh 半高存在约 0.102mm 漂移，会超过配置的 1e-6m 标注一致性阈值。",
+          "root_cause": "旧基线把可乐 spawn 中心到场景倾斜地面碰撞点的距离当成可乐 Mesh bbox center-to-min-z；前者包含地面采样和 authored pose 差异，不是物体几何半高。",
+          "fix": "从实际组合 USD bbox min/max 计算半高 0.05364498018521855m，更新 placement target、task、manifest 和回归测试；保留 pick.center_to_support_m 作为独立的 spawn 地面支撑证据。",
+          "prevention": "放置几何使用明确字段 expected_object_bbox_center_to_min_z_m，并测试其与 pick spawn 支撑距离不同；禁止跨语义复用 center_to_support 数值。"
+        },
+        {
+          "problem": "动态物体 bbox 曾隐含假设刚体原点等于 Mesh bbox 中心，且静态标注门禁会拒绝容差内的 live bbox settle 变化。",
+          "root_cause": "旧实现只把 authored AABB 平移到 live rigid origin，没有保留 Mesh 中心偏移/旋转；place helper 又直接用 live extent 与静态 pose 做 1um 比较，和 2mm object extent 容差冲突。",
+          "fix": "新增 authored AABB -> rigid local -> live PhysX pose 变换；静态 pose 与离线 expected extent 严格比较，CuRobo runtime XYZ 使用 live extent，并单独记录 runtime-to-configured 误差。",
+          "prevention": "单测覆盖非零 Mesh 中心偏移、90度旋转和 1mm 合法 settle 变化；live bbox source 仍必须是 live_physx_object_pose。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 Isaac Python pytest targeted Liangzhu Mesh/runtime/task/preflight/LeRobot suite",
+          "result": "passed",
+          "note": "85 passed、1 skipped；3 条 NVML warning 来自沙盒隔离。默认 base Python 无 pytest，Isaac Python 自动加载 ROS launch_testing 时缺 lark，因此显式关闭无关第三方插件后运行仓库测试。"
+        },
+        {
+          "command": "expanded navigation/pipeline/runtime/export regression suite",
+          "result": "partially_passed_with_known_legacy_fixture_gap",
+          "note": "172 passed、1 skipped；仍仅有 4 个旧 apple/A* factory 测试因缺少 source/scene/839920/nav_map/map.json 失败，与本轮 bbox 修正无关。"
+        },
+        {
+          "command": "SAGE OpenUSD validate_task_receptacle_support.py after Mesh bbox calibration",
+          "result": "passed",
+          "note": "support mesh=1、collisionEnabled=1、static=true、placement region/proxy=true、max_abs_error=0；报告 /tmp/liangzhu_mat_receptacle_support_mesh_bbox_corrected.json。"
+        },
+        {
+          "command": "run_full_physics_pipeline.py --dry-run for corrected coke-to-mat task",
+          "result": "passed_control_flow_only",
+          "note": "17 状态完成；success_semantics=control_flow_only、pure_physics_success=false、training eligible=false；报告 /tmp/liangzhu_cola_to_mat_phase0_dry_run_mesh_bbox_corrected/episode_000000/summary.json。"
+        },
+        {
+          "command": "host preflight_full_physics.py with corrected task and idle gate",
+          "result": "blocked_expected",
+          "note": "asset_checks_passed=true、CUDA=true、RTX 4060、Torch 2.7.0+cu128、free=7.029GiB；检测到 arm_vla_pct PID 28191/334667/335318，runtime_launch_safe=false；报告 /tmp/liangzhu_cola_to_mat_full_physics_preflight_mesh_bbox_corrected.json。"
+        },
+        {
+          "command": "JSON parse, py_compile and git diff --check",
+          "result": "passed",
+          "note": "任务、placement target、manifest、project JSON 可解析；runtime/测试语法与 whitespace 检查通过。"
+        },
+        {
+          "command": "Liangzhu scene/reset smoke, real full-physics episode and LeRobot validator",
+          "result": "not_run",
+          "note": "其他 worktree 的 Isaac/CuRobo/PCT 正在运行；遵循用户要求和独占门禁，未终止、复用或并发启动。"
+        }
+      ],
+      "data_results": {
+        "episodes_generated": 0,
+        "episodes_accepted": 0,
+        "success_rate": null,
+        "training_action_dimension": 10,
+        "control_action_dimension": 11,
+        "validation_report": "真实 Mesh 半高与动态 bbox 语义已校准并离线回归；尚缺空闲宿主机上的 Isaac/PhysX/CuRobo 执行及 LeRobot validator 证据。"
+      },
+      "next_steps": [
+        "保持 PID 28191、334667、335318 不受影响；外部任务正常结束后重跑 host preflight，必须 runtime_launch_safe=true。",
+        "先把 scene/reset smoke 输出到 /mnt/sage_data/outputs/arm_vla_liangzhu，核对 runtime-stage support、articulation、可乐 live bbox 与 unitsResolve。",
+        "随后运行一个 full visual 固定 episode，检查 Mesh truth pick/place report、PCT、pct_multifloor policy、CuRobo 抓放、release settle 和回撤。",
+        "物理成功后运行 LeRobot validator；全部质量门禁通过后再开始 batch。"
+      ]
+    },
+    {
+      "time": "2026-07-13 22:12:03 CST",
+      "summary": "根据用户确认，将 PID 28191 CuRobo planner server 作为兼容共享服务处理，而不是按 worktree 名称阻塞。真实 ping 显示该服务具备 side-grasp retreat、split pregrasp 和 single-retime split-pregrasp 三项必需能力；本 worktree 的 lifecycle manager 已实际复用该服务，并在 close 后确认没有发送 shutdown。preflight schema v2 现在只把其他 Isaac/PCT、多个 CuRobo 或能力不兼容的 CuRobo 计为阻塞项。宿主机新版 preflight 返回 READY：CUDA/资产通过、共享服务 1 个、blocking_process_count=0、runtime_launch_safe=true。可以开始真实单 episode，但本轮尚未启动 Isaac，真实/accepted episode 仍为 0。",
+      "files_changed": [
+        "project.json",
+        "scripts/README.md",
+        "scripts/pipeline/preflight_full_physics.py",
+        "source/manipulation/planner_server_process.py",
+        "tests/test_curobo_planner_server_process.py",
+        "tests/test_full_physics_preflight.py"
+      ],
+      "problems": [
+        {
+          "problem": "兼容的外部 CuRobo server 被 runtime idle gate 误判为阻塞项。",
+          "root_cause": "旧判断把 server 所在 worktree 与当前 worktree 是否相同作为复用条件，无法表达 CuRobo 是协议兼容共享服务的部署方式。",
+          "fix": "复用条件改为真实 ping 加必需 capabilities；单个兼容 CuRobo 从 blocking_processes 移入 allowed_processes。lifecycle manager 只清理自己启动的子进程，外部共享服务即使不兼容也只报错并保留，绝不 shutdown/restart。",
+          "prevention": "新增跨 worktree 兼容复用、不兼容服务阻塞、严格 workspace 诊断和外部服务生命周期保护测试；preflight 报告显式记录 ownership=external_shared_service 与 shutdown_allowed=false。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 Isaac Python focused CuRobo/preflight/batch/LeRobot/scene regression",
+          "result": "passed",
+          "note": "45 passed；4 条 NVML warning 仅来自沙盒隔离。"
+        },
+        {
+          "command": "real CuroboPlannerServerProcess start/close against 127.0.0.1:8765",
+          "result": "passed",
+          "note": "reused_existing=true、compatibility_check=required_capabilities、shared_server_preserved=true；PID 28191 保持运行。"
+        },
+        {
+          "command": "host preflight_full_physics.py schema v2 with fixed coke-to-mat task",
+          "result": "ready",
+          "note": "asset_checks_passed=true、CUDA=true、RTX 4060、Torch 2.7.0+cu128、free=2.7GiB、allowed shared CuRobo=1、blocking=0、runtime_launch_safe=true；报告 /tmp/liangzhu_cola_to_mat_full_physics_preflight_shared_curobo_ready_v2.json。"
+        },
+        {
+          "command": "Liangzhu scene/reset smoke, real full-physics episode and LeRobot validator",
+          "result": "not_run",
+          "note": "本轮完成共享服务门禁修正与直跑准备，没有代替用户启动真实 Isaac。"
+        }
+      ],
+      "data_results": {
+        "episodes_generated": 0,
+        "episodes_accepted": 0,
+        "success_rate": null,
+        "training_action_dimension": 10,
+        "control_action_dimension": 11,
+        "validation_report": "真实运行门禁已放行；尚缺 Isaac/PhysX/CuRobo 完整执行与 LeRobot validator 证据。"
+      },
+      "next_steps": [
+        "将单个真实 full visual 固定 episode 输出到 /mnt/sage_data/outputs/arm_vla_liangzhu；pipeline 复用 PID 28191 且不关闭它。",
+        "核对 runtime-stage support、Mesh truth pick/place、PCT/pct_multifloor policy、抓取保持、垫子 release/settle 和机械臂回撤。",
+        "物理成功后运行 LeRobot validator；全部质量门禁通过后再扩大 batch。"
+      ]
+    },
+    {
+      "time": "2026-07-13 23:56:29 CST",
+      "summary": "按用户给定的机器人 translate 完成 Phase 1 前向扇区联合随机化：机器人 XYZ 固定为 (-1.4849319648011197, 5.126136502764003, 0.29281728532721385)，yaw 在 ±30° 内采样；可乐与地垫分别在机器人前向 ±35° 扇区内独立采样位置和 yaw，并用旋转地垫足迹距离拒绝可乐初始位于地垫上。每个 episode 同步更新 object spawn、地垫 stage pose、placement region、Mesh-truth place target、pick/place base goal 与两阶段 CuRobo 支撑代理；地垫 pose 在 PhysX 前应用，并用 collision PLY 对可乐和地垫中心/四角做地面探测。默认视觉改为 collision，不加载 GaussianScene，image/video/GUI overview 统一优先 /World/overview。50 个随机 seed 的几何和 PCT 路径离线 sweep、随机地垫 OpenUSD 组合验证、2 episode dry-run 与 136 项定向回归通过；本轮没有启动或终止 Isaac/CuRobo，真实/accepted episode 仍为 0。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "scripts/README.md",
+        "scripts/pipeline/run_full_physics_batch.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "source/diagnostics/randomization_debug.py",
+        "source/pipeline/config.py",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/recording/overview_video_recorder.py",
+        "source/scene/liangzhu/runtime_asset_manifest.json",
+        "source/simulation/isaac_runtime.py",
+        "source/simulation/isaaclab_runtime.py",
+        "source/simulation/task_scene_pose.py",
+        "source/simulation/viewport.py",
+        "source/tasks/forward_sector_randomization.py",
+        "source/tasks/randomizer.py",
+        "tasks/liangzhu_placement_target.json",
+        "tasks/nav_pick_place_cola_liangzhu_pct.json",
+        "tests/test_full_physics_randomization.py",
+        "tests/test_liangzhu_placement_target.py",
+        "tests/test_liangzhu_task.py",
+        "tests/test_scene_runtime.py",
+        "tests/test_simulation_viewport.py"
+      ],
+      "problems": [
+        {
+          "problem": "旧良渚任务的固定 CuRobo 支撑代理会与随机化后的可乐和地垫坐标失配。",
+          "root_cause": "旧通用 randomizer 只移动 object/place XY，不会移动静态地垫 prim、placement region 或任务级 CuRobo cuboid。",
+          "fix": "新增 robot_forward_sector_v1 联合采样器，一次生成完整 episode layout，并从 collision PLY 支撑面和地垫局部 bbox 重建 pick floor proxy、旋转 mat proxy、world AABB 审计值及导航交接点。",
+          "prevention": "randomization.synchronization 逐项记录同步结果；运行时 receptacle support gate 会把动态 proxy world bbox 与组合 stage 实际 bbox 比较，漂移超过 1e-6m 立即失败。"
+        },
+        {
+          "problem": "原 authored 地垫静态悬在地面上方约 13–16mm，且随机化只改任务点不能改变 PhysX 支撑体。",
+          "root_cause": "地垫是 static CollisionAPI，不会靠重力落地；runtime 在 PhysX 初始化前没有任务级静态 receptacle pose 覆盖。",
+          "fix": "新增统一 task.place.receptacle_pose_world 解析/应用链路；固定 baseline 与每个随机 episode 均按地面最高探测点、地垫厚度和 0.2mm 底部净空计算根位姿，并在支撑检查和 initialize_physics 前写入 stage。",
+          "prevention": "OpenUSD 检查同时要求地垫 Mesh/Collision/static、placement region、support surface 和动态 CuRobo proxy 一致。"
+        },
+        {
+          "problem": "pipeline 默认会因 RGB 录制选择 full Gaussian，并且 GUI/video/image 对 overview 相机的默认选择不一致。",
+          "root_cause": "CLI 默认 navigation visual mode 为 auto，recording 会把 auto 提升为 full；GUI 默认 Camera0，视频动态发现相机，runtime 只直接导出 front/wrist。",
+          "fix": "默认改为 collision；新增 authored /World/overview sensor 并统一 recording、video 和 viewport path；fixed camera mode 为默认，显式 auto/full 仍保留。训练视觉门禁改为要求 front/wrist/overview 同步可用，不再把 GaussianScene 当必要条件。",
+          "prevention": "配置校验要求 image/video overview path 一致；summary 记录 Gaussian 策略、overview report 和三路 camera capture 完整性。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "50-seed forward-sector geometry/support sweep",
+          "result": "passed",
+          "note": "50/50 布局生成成功；可乐与地垫均位于对应前向扇区，可乐足迹不与地垫重叠，地垫五点地面高度变化均不超过 0.006m。"
+        },
+        {
+          "command": "50-seed Liangzhu PCT start->pick->place offline sweep",
+          "result": "passed",
+          "note": "100/100 路径请求成功，snap_start_dist 与 snap_end_dist 最大值均为 0，waypoint 数范围 2..2；轻量 PCT server 已正常 close。"
+        },
+        {
+          "command": "SAGE OpenUSD randomized seed 7 receptacle support validation",
+          "result": "passed",
+          "note": "task pose applied、support/region/proxy 均 verified；动态旋转 mat proxy 与组合 bbox 最大误差 6.24e-9m，GaussianScene 未加载。"
+        },
+        {
+          "command": "run_full_physics_pipeline.py --dry-run --num-episodes 2 --seed 7",
+          "result": "passed_control_flow_only",
+          "note": "两个 seed 都完成 17 状态；summary 正确记录固定 robot XYZ、随机 yaw/cola/mat、ground support、task_randomization_mode 和 sampled base goals。dry-run 不代表物理成功或训练数据验收。"
+        },
+        {
+          "command": "env -u LIANGZHU_COLLISION_PLY run_full_physics_pipeline.py --pct-collision-ply-path ... --dry-run --seed 9",
+          "result": "passed_control_flow_only",
+          "note": "未设置 task 环境变量时，随机化器成功复用 PCT CLI collision PLY 路径并完成 17 状态，消除了 preflight 与实际启动参数不一致的风险。"
+        },
+        {
+          "command": "targeted randomization/camera/runtime/task/export pytest regression",
+          "result": "passed",
+          "note": "136 passed、1 skipped；覆盖随机布局同步、缺 PLY 立即失败、默认 no-Gaussian、fixed overview、stage pose 顺序、Mesh-truth/receptacle 训练门禁。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 Isaac Python pytest tests -q",
+          "result": "partially_passed_with_known_legacy_asset_gaps",
+          "note": "382 passed、1 skipped、9 failed；失败仅来自旧 apple/A* fixture 缺少 source/scene/839920/nav_map/map.json，以及旧 multifloor PCT tomogram/walkable 资产缺失。良渚随机化、相机、任务、runtime、导出相关测试均通过。"
+        },
+        {
+          "command": "host preflight_full_physics.py without Gaussian required-file",
+          "result": "ready",
+          "note": "宿主机（非沙盒）CUDA=true、assets_ready=true、free=2.479GiB；检测到 1 个能力兼容共享 CuRobo server，blocking_process_count=0、runtime_launch_safe=true。pipeline 只会复用且不会关闭该服务。报告 /tmp/liangzhu_forward_sector_preflight_host.json。"
+        },
+        {
+          "command": "Liangzhu real Isaac randomized full-physics episode",
+          "result": "not_run",
+          "note": "遵循用户要求，本轮只做离线准备，不启动或终止任何 Isaac/CuRobo runtime。"
+        }
+      ],
+      "data_results": {
+        "episodes_generated": 0,
+        "episodes_accepted": 0,
+        "success_rate": null,
+        "training_action_dimension": 10,
+        "control_action_dimension": 11,
+        "validation_report": "联合随机化、地面支撑、PCT 可达与 no-Gaussian/overview 采集合同已离线验证；尚缺真实 Isaac/PhysX/CuRobo 随机 episode 和 LeRobot validator 证据。"
+      },
+      "next_steps": [
+        "先运行单个 seed=7 的真实随机 scene/reset smoke，核对 robot yaw、可乐/地垫 stage pose、runtime support、overview sensor 和 collision-only GUI。",
+        "再运行同 seed 的完整 PCT + pct_multifloor policy + CuRobo episode，核对动态 world collision export、抓取保持、地垫 release/settle 和回撤。",
+        "物理成功后运行 LeRobot validator；三路 RGB、10D/11D action、Mesh truth、receptacle 和时间戳门禁全部通过后再扩大 batch。"
+      ]
+    },
+    {
+      "time": "2026-07-14 21:41:41 CST",
+      "summary": "完成 seed=7 良渚随机任务的真实全链路验证。针对抓取后 nav2place 在目标附近原地踏步的问题，保留远端已验证的全向终端控制，仅在携物阶段进入近场、最终 yaw 已合格但 XY 尚有残差时锁存前向重定位；大角度先原地转向，进入位置容差后持续输出零速度等待底盘稳定。pick 保持 0.05m，place 使用实机策略可稳定达到的 0.12m 底盘交接容差。attempt14 完成 17 状态并真实执行 top-down pick、携物导航、place、release/settle、回撤和导出；放置 XY 误差 0.013604m、Z 误差 0.000019m、速度 0.000526m/s，目标中心位于随机地垫安全区域。LeRobot 导出 107 帧、front/overview/wrist 三路 5Hz 视频、10D VLA action 与 11D control action，validator 为 0 error/0 warning。共享 127.0.0.1:8765 CuRobo server 全程复用且最终 ping 正常。",
+      "files_changed": [
+        "project.json",
+        "scripts/curobo/03_plan_grasp_trajectory.py",
+        "source/diagnostics/navigation.py",
+        "source/manipulation/curobo_robot_config.py",
+        "source/navigation/adapters/yaw_align.py",
+        "source/navigation/executor.py",
+        "source/pipeline/config.py",
+        "source/pipeline/factory.py",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/pipeline/navigation_smoke.py",
+        "source/pipeline/state_machine.py",
+        "source/recording/jsonl_recorder.py",
+        "source/robot/go2_x5/curobo/go2_x5_arm.yml",
+        "tasks/nav_pick_place_cola_liangzhu_pct.json",
+        "tests/test_full_physics_lerobot.py",
+        "tests/test_full_physics_manipulation.py",
+        "tests/test_full_physics_navigation.py",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_liangzhu_task.py",
+        "tests/test_yaw_align.py"
+      ],
+      "problems": [
+        {
+          "problem": "pick 成功后 nav2place 在目标约 0.10m 附近持续踏步，状态机无法进入 place。",
+          "root_cause": "原终端控制在 final yaw 已满足时仍输出低速横移，pct_multifloor locomotion policy 无法可靠跟踪；尝试直接前进又形成固定半径绕圈，进入 0.05m 后还会因底盘未稳定重新发出运动命令。",
+          "fix": "加入携物近场前向重定位锁存：先纯转向至 0.20rad 内再前进；pose 合格但速度未稳定时输出 navigation_settling 零命令；place 单独使用 0.12m 底盘交接容差，pick 仍为 0.05m。",
+          "prevention": "增加原始卡死轨迹、锁存越界、纯转向、稳定等待和 pick/place 分离容差回归测试；summary 显式记录两个容差。"
+        },
+        {
+          "problem": "当前 worktree 的 CuRobo YAML 仍引用 /home/light/workspace/arm_vla，存在跨 worktree 资产漂移。",
+          "root_cause": "CuRobo 会相对其 content/assets 解析路径，简单改成相对路径并不能稳定定位当前仓库。",
+          "fix": "YAML 改存仓库相对路径，并新增 workspace-aware loader，在调用 CuRobo 前解析为当前 worktree 的 asset_root_path 和 urdf_path；真实 top-down 规划探针和完整 pick/place 均通过。",
+          "prevention": "单测要求解析后路径位于当前仓库且文件存在，禁止回退到其他 arm_vla worktree。"
+        },
+        {
+          "problem": "导出阶段发生在最终 summary 写入前，内嵌 conversion 快照曾保留 source success=false，且 summary 未直接保存 place validator 结果。",
+          "root_cause": "最终物理质量门禁只回写 manifest/info 顶层，未同步内嵌 validation info；状态机只保存 pick_verification_result。",
+          "fix": "最终 close 时递归同步 manifest、info、validation report 与 summary 内嵌导出门禁；新增 place_verification_result 并对 attempt14 元数据完成回填。",
+          "prevention": "LeRobot 回归测试同时检查 summary、manifest、info 和 validation details 的最终训练资格一致性。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "real randomized full-physics seed=7 attempt14",
+          "result": "passed",
+          "note": "startup_status=completed、exit_code=0；17 状态完整，stable_physics_success=true、physical_navigation_success=true、physical_manipulation_success=true、training_quality_gate_passed=true。输出 /mnt/sage_data/outputs/arm_vla_liangzhu/phase126_front_carry_terminal_seed7_attempt14。"
+        },
+        {
+          "command": "LeRobot validator on attempt14/episode_000000/lerobot_dataset",
+          "result": "passed",
+          "note": "1 episode、107 rows、3 个 107-frame 5Hz 视频、0 error、0 warning；manifest/info/summary 均 training_eligible=true、vla_training_eligible=true。"
+        },
+        {
+          "command": "real current-state CuRobo top-down pick re-probe",
+          "result": "passed",
+          "note": "pregrasp、approach、reverse lift、return home 全部成功，6 segments，结果 /tmp/liangzhu_attempt10_reprobe_pick_plan.json。"
+        },
+        {
+          "command": "targeted pipeline/navigation/manipulation/export regression",
+          "result": "partially_passed_with_known_legacy_asset_gaps",
+          "note": "119 passed、5 failed；5 个失败都来自旧 apple/A* fixture 缺少 source/scene/839920/nav_map/map.json，新增良渚导航、CuRobo 路径、place summary 和 LeRobot 门禁测试通过。"
+        },
+        {
+          "command": "shared CuRobo planner_server_ping 127.0.0.1:8765 after run",
+          "result": "passed",
+          "note": "返回 true；pipeline 复用了外部服务且未停止或重启。"
+        }
+      ],
+      "data_results": {
+        "real_debug_attempt_count": 4,
+        "episodes_generated": 1,
+        "episodes_accepted": 1,
+        "accepted_success_rate": 1.0,
+        "training_action_dimension": 10,
+        "control_action_dimension": 11,
+        "dataset_frames": 107,
+        "dataset_camera_keys": [
+          "front",
+          "overview",
+          "wrist"
+        ],
+        "overview_video_frames": 532,
+        "output_size_mb": 192,
+        "validation_report": "valid=true；episode_count=1、row_count=107、error_count=0、warning_count=0。"
+      },
+      "next_steps": [
+        "用当前配置再运行多个独立 seed，至少形成 10 个完整 episode 的成功率、失败原因和导航交接误差统计。",
+        "在保持 0.12m place 交接容差的前提下先验证批量稳定性，再决定是否通过更强 final alignment 收紧到 0.08–0.10m。",
+        "单独建立关闭 manipulation base/support lock 的严格物理基线；当前 accepted episode 可用于训练，但 pure_physics_success=false。",
+        "固定 sim_ground_truth 专家闭环稳定后，再接入 RGB-D 目标定位，避免把真值闭环误报为视觉感知成功。"
+      ]
     }
   ],
   "open_questions": [
-    "是否将当前 --pct-stair-float 稳定版定义为阶段性交付，还是继续以 pure_physics_success=true 为目标训练新的携物上楼 locomotion policy？",
-    "是否继续投入原生 3DGS GUI/最终机器人前景与 3DGS 背景逐帧合成；该工作不阻塞 collision 模式下的数据采集 pipeline？"
+    "当前 0.12m nav2place 底盘交接容差已在 seed=7 成功，批量稳定后是否通过 final alignment 将其收紧到 0.08–0.10m？",
+    "严格物理基线应优先关闭 support-joint lock，还是同时关闭 manipulation base lock？两者需要分别统计抓放成功率。",
+    "完成至少 10 个真实随机 seed 的成功率统计后，是先扩大机器人 yaw/物体半径范围，还是优先加入光照、相机噪声与遮挡随机化？"
   ],
   "known_limitations": [
-    "PCT stair-float 是显式启用、默认关闭的临时上楼方案：楼梯段会冻结底盘并沿 path_3d 写入 root pose，因此 phase104/105 的 stable_physics_success=true，但 pure_physics_success=false。",
-    "当前 pct_multifloor checkpoint 是 12 维 dog-only policy；要获得纯足端动力学的携物上楼能力，仍需训练或接入针对楼梯和机械臂负载的新 locomotion policy。",
-    "当前 PCT 全局路径完整保存在 NavPlan.metadata[\"path_3d\"]，普通局部执行仍主要由 DWA 消费 XY waypoints；z/slice 只在 stair-float 等多楼层专用逻辑中使用。",
-    "navigation collision 模式为避免 NuRec/PhysX 同进程的 CUDA external semaphore 问题会停用 /World/gauss；原生高质量 3DGS GUI 渲染和最终前景合成视频仍未完成。",
-    "Isaac Sim 5.1 的 USD 0.24.5 不包含 ParticleField3DGaussianSplat schema，当前环境不能通过安全启用扩展直接获得原生 3DGS ParticleField。",
+    "目前只有 seed=7 的 1 个 accepted 真实随机 episode；这证明链路可运行，但还不能代表批量成功率或随机分布鲁棒性。",
+    "当前 perception_mode=sim_ground_truth；抓取和放置 TCP 直接使用运行时 Mesh/PhysX 真值，RGB 仅用于 VLA 记录，不能描述为 RGB-D 目标检测或视觉定位成功。",
+    "attempt14 使用 manipulation base lock 与 support-joint lock，因此 stable_physics_success=true 但 pure_physics_success=false；后续仍需建立无锁严格物理成功率。",
+    "nav2place 当前使用 0.12m 底盘位置交接容差，pick 仍为 0.05m；该值来自一次真实成功轨迹，尚需多 seed 统计后决定是否收紧。",
+    "当前只验证了可乐 top-down 抓取和地垫放置这一种资产/任务组合，尚未覆盖桌面放置、其他物体尺寸或多目标实例选择。",
     "任务没有可用 flat nav_map 时会显式禁用 PCT 到 A* fallback；PCT server 或资产失败会直接报错，不会静默回退。",
-    "phase104/105 每轮完整录制约占 1.1GB；当前工作盘约剩 6.3GB，继续批量采集前仍应清理历史 outputs。",
-    "phase104/105 启动期间仍有 Go2-X5 rotor visual unresolved-reference 警告，但不影响 collision 模式下的完整状态链、物理验证和 LeRobot 导出。"
+    "良渚 PCT tomogram/walkable 和大型 scene/checkpoint 资产为本地 ignored/runtime 文件，不应加入 Git；其他机器必须按 manifest 重新准备。",
+    "source/scene/objects/carpet.usd、carpet.glb 与纹理是用户提供的本地大型未跟踪资产；当前任务依赖其固定 SHA256，不能把它们误当作已提交资产。",
+    "默认不加载 GaussianScene；/World/overview、front、wrist 三路真实取帧和导出已验证，但 collision-only 视觉质量仍需结合后续 VLA 训练效果评估。",
+    "系统盘空间较紧，批量输出必须继续写入 /mnt/sage_data；attempt14 约 192MB，批量前仍应监控剩余容量。",
+    "本轮定向回归为 119 passed、5 failed；失败均来自旧 apple/A* fixture 缺少 source/scene/839920/nav_map/map.json。良渚新增测试通过，但仓库 tests_passing 仍保持 false。",
+    "共享 CuRobo server 属于其他 worktree 的外部服务；兼容性握手和本轮复用已验证，pipeline 不拥有其生命周期，批量运行前仍需 ping。"
   ]
 }

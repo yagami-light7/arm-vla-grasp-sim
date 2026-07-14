@@ -366,6 +366,7 @@ def create_navigation_components(
             )
             else None
         ),
+        carry_position_tolerance=nav.place_position_tolerance,
         carry_path_deviation_limit=(
             nav.pct_carry_path_deviation_limit
             if (
@@ -426,6 +427,7 @@ def create_navigation_components(
     )
     verifier = NavigationEpisodeVerifier(
         position_tolerance=nav.final_position_tolerance,
+        place_position_tolerance=nav.place_position_tolerance,
         yaw_tolerance=nav.final_yaw_tolerance,
         linear_velocity_tolerance=nav.stable_linear_velocity,
         angular_velocity_tolerance=nav.stable_angular_velocity,

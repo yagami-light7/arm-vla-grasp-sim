@@ -12,6 +12,10 @@ import numpy as np
 
 from source.interfaces import EpisodeSpec, RobotAction, SimulationState
 from source.simulation.action_applier import NamedJointActionApplier
+from source.simulation.receptacle_support import (
+    inspect_task_receptacle_support_stage,
+)
+from source.simulation.scene_runtime import resolve_scene_runtime_settings
 
 
 @dataclass(frozen=True)
@@ -25,6 +29,7 @@ class IsaacSimulationConfig:
     collision_prim_path: str = "/World/scene_collision"
     table_prim_candidates: tuple[str, ...] = ("/World/table",)
     camera_prim_candidates: tuple[str, ...] = (
+        "/World/overview",
         "/World/Camera_main",
         "/World/camera_main",
     )
@@ -181,6 +186,12 @@ class IsaacSimulationRuntime:
         self._stage = stage
         self._object_root_path = episode_spec.object_prim_path
         activation_report = self._activate_required_prims(episode_spec)
+        from source.simulation.task_scene_pose import apply_task_receptacle_pose
+
+        receptacle_pose_report = apply_task_receptacle_pose(
+            stage,
+            episode_spec.raw_task,
+        )
         object_pose_report = self._apply_initial_object_pose(episode_spec)
         stage_report = self._inspect_stage(episode_spec)
         randomization_debug_report = None
@@ -234,6 +245,7 @@ class IsaacSimulationRuntime:
         self._metadata.update(
             {
                 "simulation_ready": True,
+                "task_receptacle_pose_report": receptacle_pose_report,
                 "scene_usd": str(scene_usd),
                 "world_count": 1,
                 "opened_stage_count": 1,
@@ -243,6 +255,9 @@ class IsaacSimulationRuntime:
                 "tcp_prim_path": self._tcp_prim_path,
                 "camera_prim_path": self._camera_prim_path,
                 "stage_report": stage_report,
+                "task_receptacle_support_runtime_stage_report": stage_report[
+                    "task_receptacle_support_report"
+                ],
                 "activation_report": activation_report,
                 "object_pose_setup_report": object_pose_after_physics_report,
                 "object_pose_setup_before_physics_report": object_pose_report,
@@ -813,19 +828,16 @@ class IsaacSimulationRuntime:
             raise RuntimeError(f"object prim is not xformable: {episode_spec.object_prim_path}")
 
         xformable = UsdGeom.Xformable(prim)
+        ordered_ops_before = list(xformable.GetOrderedXformOps())
         saved_scale = None
-        op_order_before = [op.GetOpName() for op in xformable.GetOrderedXformOps()]
-        for op in xformable.GetOrderedXformOps():
+        op_order_before = [op.GetOpName() for op in ordered_ops_before]
+        for op in ordered_ops_before:
             if op.GetOpType() == UsdGeom.XformOp.TypeScale and op.Get() is not None:
                 saved_scale = tuple(float(value) for value in op.Get())
                 break
 
-        # 初始任务位姿必须是绝对位姿，不能叠加在资产已有旋转操作上。
-        xformable.ClearXformOpOrder()
-        for attr in list(prim.GetAttributes()):
-            if attr.GetName().startswith("xformOp:") or attr.GetName() == "xformOpOrder":
-                prim.RemoveProperty(attr.GetName())
-        xformable = UsdGeom.Xformable(prim)
+        # task RPY 对应资产根 Orient。scale、unitsResolve 等模型坐标转换必须
+        # 原样保留，确保 simulation-smoke 与 IsaacLab runtime 使用相同姿态语义。
         translate_op = _get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeTranslate)
         orient_op = _get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeOrient)
         pose7 = _pose7_from_rpy(episode_spec.object_initial_pose)
@@ -837,31 +849,34 @@ class IsaacSimulationRuntime:
             orient_op.Set(Gf.Quatd(pose7[3], Gf.Vec3d(*pose7[4:])))
         else:
             orient_op.Set(Gf.Quatf(pose7[3], Gf.Vec3f(*pose7[4:])))
-        ordered_ops = [translate_op, orient_op]
-        if saved_scale is not None:
-            scale_op = _get_or_add_xform_op(xformable, UsdGeom.XformOp.TypeScale)
-            if scale_op.GetPrecision() == UsdGeom.XformOp.PrecisionDouble:
-                scale_op.Set(Gf.Vec3d(*saved_scale))
-            else:
-                scale_op.Set(Gf.Vec3f(*saved_scale))
-            ordered_ops.append(scale_op)
-        xformable.SetXformOpOrder(ordered_ops)
+        op_order_after = [op.GetOpName() for op in xformable.GetOrderedXformOps()]
         return {
             "applied": True,
             "object_prim_path": episode_spec.object_prim_path,
             "pose_wxyz": pose7,
             "xform_op_order_before": op_order_before,
-            "xform_op_order_after": [op.GetOpName() for op in ordered_ops],
+            "xform_op_order_after": op_order_after,
             "preserved_scale": saved_scale,
+            "reset_xform_stack": False,
+            "units_resolve_preserved": any(
+                "unitsResolve" in name for name in op_order_after
+            ),
         }
 
     def _inspect_stage(self, episode_spec: EpisodeSpec) -> dict[str, Any]:
         from pxr import Usd, UsdGeom, UsdPhysics
 
-        collision_root = self._stage.GetPrimAtPath(self._config.collision_prim_path)
+        scene_runtime = resolve_scene_runtime_settings(
+            episode_spec.raw_task,
+            default_collision_prim_path=self._config.collision_prim_path,
+            default_visual_prim_path="/World/gauss",
+            default_collision_floor_proxy_profile=None,
+        )
+        collision_prim_path = str(scene_runtime["collision_prim_path"])
+        collision_root = self._stage.GetPrimAtPath(collision_prim_path)
         if not collision_root.IsValid():
             raise RuntimeError(
-                f"collision prim does not exist: {self._config.collision_prim_path}"
+                f"collision prim does not exist: {collision_prim_path}"
             )
         collision_mesh_count = 0
         collision_api_count = 0
@@ -871,7 +886,7 @@ class IsaacSimulationRuntime:
         if collision_mesh_count == 0 or collision_api_count == 0:
             raise RuntimeError(
                 "scene collision payload is empty; verify the /mnt/sage_data mount "
-                f"for {self._config.collision_prim_path}"
+                f"for {collision_prim_path}"
             )
 
         camera_path = None
@@ -894,18 +909,25 @@ class IsaacSimulationRuntime:
                 for candidate in self._config.table_prim_candidates
                 if self._stage.GetPrimAtPath(candidate).IsValid()
             ),
-            self._config.collision_prim_path,
+            collision_prim_path,
         )
         object_prim = self._stage.GetPrimAtPath(episode_spec.object_prim_path or "")
         if not object_prim.IsValid():
             raise RuntimeError(f"object prim does not exist: {episode_spec.object_prim_path}")
+        receptacle_support_report = inspect_task_receptacle_support_stage(
+            self._stage,
+            episode_spec.raw_task,
+            source="isaac_sim_open_stage",
+        )
         return {
-            "collision_prim_path": self._config.collision_prim_path,
+            "collision_prim_path": collision_prim_path,
+            "scene_runtime_settings": scene_runtime,
             "collision_mesh_count": collision_mesh_count,
             "collision_api_count": collision_api_count,
             "table_support_prim_path": table_path,
             "camera_prim_path": camera_path,
             "object_prim_path": episode_spec.object_prim_path,
+            "task_receptacle_support_report": receptacle_support_report,
         }
 
     def _resolve_articulation_root(self) -> str:

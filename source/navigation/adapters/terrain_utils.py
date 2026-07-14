@@ -16,6 +16,29 @@ def _top_level_child_name(prim_path: str) -> str | None:
     return parts[1]
 
 
+def _visual_visibility_override_lines(prim_path: str) -> list[str]:
+    """在强层中逐级解除视觉 prim 及其祖先的 inherited visibility。"""
+
+    parts = [part for part in prim_path.strip("/").split("/") if part]
+    if len(parts) < 2 or parts[0] != "World":
+        raise ValueError(f"visual prim path 必须位于 /World 下: {prim_path}")
+    lines: list[str] = []
+    indent = "    "
+    for depth, part in enumerate(parts[1:], start=1):
+        current_indent = indent * depth
+        lines.extend(
+            [
+                f'{current_indent}over "{part}"',
+                f"{current_indent}{{",
+                f'{current_indent}{indent}token visibility = "inherited"',
+            ]
+        )
+    for depth in range(len(parts) - 1, 0, -1):
+        lines.append(f"{indent * depth}}}")
+    lines.append("")
+    return lines
+
+
 def _yinluyuan_f2_floor_proxy_lines() -> list[str]:
     """生成 Yinluyuan 二楼导航走廊的不可见平滑碰撞体。"""
 
@@ -84,6 +107,7 @@ def write_collision_terrain_wrapper(
     prim_path: str = "/World/scene_collision",
     *,
     floor_proxy_profile: str | None = None,
+    source_prim_is_mesh: bool = False,
 ) -> Path:
     """写入只引用碰撞子树、并可选附加平滑通行面的 USD layer。"""
 
@@ -92,7 +116,10 @@ def write_collision_terrain_wrapper(
     if floor_proxy_profile not in supported_profiles:
         raise ValueError(f"未知碰撞地面代理 profile: {floor_proxy_profile}")
     digest = hashlib.sha256(
-        f"{scene_usd}:{prim_path}:{floor_proxy_profile}".encode("utf-8")
+        (
+            f"{scene_usd}:{prim_path}:{floor_proxy_profile}:"
+            f"source_prim_is_mesh={source_prim_is_mesh}"
+        ).encode("utf-8")
     ).hexdigest()[:12]
     wrapper = Path("/tmp") / f"go2_x5_collision_terrain_{digest}.usda"
     lines = [
@@ -101,11 +128,33 @@ def write_collision_terrain_wrapper(
         '    defaultPrim = "scene_collision"',
         ")",
         "",
-        'def Xform "scene_collision" (',
-        f"    prepend references = @{scene_usd}@<{prim_path}>",
-        ")",
-        "{",
     ]
+    if source_prim_is_mesh:
+        # TerrainImporter 总会先把 USD default prim 定义成 Xform。若 default prim
+        # 直接引用 Mesh，其强类型会把 Mesh 类型覆盖掉，RayCaster 最终看不到任何
+        # Mesh。这里保留 Xform default prim，并把源 Mesh 放到稳定的子 prim。
+        lines.extend(
+            [
+                'def Xform "scene_collision"',
+                "{",
+                '    def Mesh "collision_mesh" (',
+                f"        prepend references = @{scene_usd}@<{prim_path}>",
+                "    )",
+                "    {",
+                "    }",
+                "",
+            ]
+        )
+    else:
+        # 对 Xform 碰撞根保持原有组合结构，避免改变多 Mesh 旧场景的层级。
+        lines.extend(
+            [
+                'def "scene_collision" (',
+                f"    prepend references = @{scene_usd}@<{prim_path}>",
+                ")",
+                "{",
+            ]
+        )
     if floor_proxy_profile == "yinluyuan_f2":
         lines.extend(_yinluyuan_f2_floor_proxy_lines())
     lines.extend(["}", ""])
@@ -165,6 +214,7 @@ def write_visual_prim_wrapper(
                 "",
             ]
         )
+    lines.extend(_visual_visibility_override_lines(prim_path))
     lines.extend(["}", ""])
     wrapper.write_text(
         "\n".join(lines),
@@ -231,6 +281,8 @@ def write_visual_sublayer_wrapper(
                 "",
             ]
         )
+    if include_visual_prim:
+        lines.extend(_visual_visibility_override_lines(prim_path))
     lines.extend(["}", ""])
     wrapper.write_text("\n".join(lines), encoding="utf-8")
     return wrapper

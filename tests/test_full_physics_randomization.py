@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import copy
 import math
+import os
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts.pipeline.run_full_physics_pipeline import _build_parser, _keep_gui_open
 from source.diagnostics import randomization_debug_spec
@@ -14,14 +16,43 @@ from source.pipeline import (
     FullPhysicsConfig,
     RandomizationSettings,
 )
+from source.pipeline.factory import (
+    _manipulation_settings_for_episode,
+    _navigation_settings_for_episode,
+)
 from source.tasks import JsonTaskProvider, episode_spec_from_dict, prepare_episode_spec
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TASK_PATH = PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json"
+LIANGZHU_TASK_PATH = PROJECT_ROOT / "tasks/nav_pick_place_cola_liangzhu_pct.json"
 
 
 class FullPhysicsRandomizationTest(unittest.TestCase):
+    def test_liangzhu_task_requires_precise_stable_navigation_handoff(self) -> None:
+        episode = JsonTaskProvider().load(LIANGZHU_TASK_PATH)
+        settings = _navigation_settings_for_episode(
+            FullPhysicsConfig(
+                task_json=LIANGZHU_TASK_PATH,
+                output_dir=Path("/tmp/test-liangzhu-navigation-settings"),
+            ).navigation,
+            episode,
+        )
+
+        self.assertEqual(settings.final_position_tolerance, 0.05)
+        self.assertEqual(settings.final_yaw_tolerance, 0.15)
+        self.assertTrue(settings.require_yaw_alignment)
+        self.assertTrue(settings.require_stable_base)
+
+        manipulation = _manipulation_settings_for_episode(
+            FullPhysicsConfig(
+                task_json=LIANGZHU_TASK_PATH,
+                output_dir=Path("/tmp/test-liangzhu-navigation-settings"),
+            ).manipulation,
+            episode,
+        )
+        self.assertTrue(manipulation.reuse_pick_grasp_orientation_for_place)
+
     def test_cli_randomization_and_visualization_defaults(self) -> None:
         args = _build_parser().parse_args(
             ["--task-json", str(TASK_PATH), "--dry-run"]
@@ -31,6 +62,9 @@ class FullPhysicsRandomizationTest(unittest.TestCase):
         self.assertTrue(args.randomize_base_goal)
         self.assertFalse(args.show_randomization_debug)
         self.assertFalse(args.keep_window_open)
+        self.assertEqual(args.navigation_visual_mode, "collision")
+        self.assertEqual(args.overview_camera_mode, "fixed")
+        self.assertEqual(args.overview_camera_prim_path, "/World/overview")
 
     def test_keep_gui_open_updates_until_window_closes(self) -> None:
         class FakeApp:
@@ -47,6 +81,170 @@ class FullPhysicsRandomizationTest(unittest.TestCase):
         _keep_gui_open(app)
 
         self.assertEqual(app.update_count, 3)
+
+    def test_liangzhu_forward_sector_randomization_is_synchronized(self) -> None:
+        """良渚布局必须同步重建起点、物体、地垫、导航点和碰撞代理。"""
+
+        support = {
+            "collision_ply": "/tmp/unit-test-collision.ply",
+            "collision_ply_env": "LIANGZHU_COLLISION_PLY",
+            "collision_ply_expected_sha256": "unit-test",
+            "query_ceiling_z": 2.0,
+            "cola": {
+                "xy": [0.0, 0.0],
+                "z": -0.15,
+                "face_index": 7,
+                "normal_xyz": [0.0, 0.0, 1.0],
+            },
+            "mat": {
+                "probes": [],
+                "floor_min_z": -0.15,
+                "floor_max_z": -0.15,
+                "height_variation_m": 0.0,
+                "max_height_variation_m": 0.006,
+            },
+            "geometry_verified": True,
+        }
+        base = JsonTaskProvider().load(LIANGZHU_TASK_PATH)
+        settings = RandomizationSettings(
+            enabled=True,
+            collision_ply_path=Path("/tmp/unit-test-collision.ply"),
+            base_goal=BaseGoalRandomizationSettings(enabled=True),
+        )
+
+        with mock.patch(
+            "source.tasks.forward_sector_randomization._apply_support_geometry",
+            return_value=support,
+        ) as support_probe:
+            first = prepare_episode_spec(
+                base,
+                episode_id=3,
+                seed=41,
+                settings=settings,
+            )
+            repeated = prepare_episode_spec(
+                base,
+                episode_id=3,
+                seed=41,
+                settings=settings,
+            )
+            different = prepare_episode_spec(
+                base,
+                episode_id=4,
+                seed=42,
+                settings=settings,
+            )
+
+        self.assertEqual(
+            support_probe.call_args_list[0].kwargs["config"]["collision_ply_path"],
+            "/tmp/unit-test-collision.ply",
+        )
+
+        self.assertEqual(first.raw_task, repeated.raw_task)
+        self.assertNotEqual(first.raw_task, different.raw_task)
+        task = first.raw_task
+        sample = task["randomization"]["sample"]
+        config = task["randomization"]["forward_sector"]
+        self.assertEqual(
+            [task["start"][key] for key in ("x", "y", "z")],
+            config["robot_translate_xyz"],
+        )
+        self.assertGreaterEqual(
+            math.degrees(task["start"]["yaw"]),
+            config["robot_yaw_range_deg"][0],
+        )
+        self.assertLessEqual(
+            math.degrees(task["start"]["yaw"]),
+            config["robot_yaw_range_deg"][1],
+        )
+        for target_name in ("cola", "mat"):
+            self.assertLessEqual(
+                abs(math.degrees(sample[target_name]["relative_angle_rad"])),
+                config["sector_half_angle_deg"],
+            )
+        self.assertFalse(sample["cola_overlaps_mat_footprint"])
+        self.assertGreaterEqual(
+            sample["cola_mat_footprint_clearance_m"],
+            sample["required_cola_mat_clearance_m"],
+        )
+        self.assertTrue(all(task["randomization"]["synchronization"].values()))
+        self.assertEqual(
+            task["pick"]["base_goal"]["x"],
+            sample["pick_base_goal"]["x"],
+        )
+        self.assertEqual(
+            task["place"]["base_goal"]["x"],
+            sample["place_base_goal"]["x"],
+        )
+        for phase, target_name in (("pick", "cola"), ("place", "mat")):
+            goal = task[phase]["base_goal"]
+            target = sample[target_name]
+            target_bearing = math.atan2(
+                target["y"] - goal["y"],
+                target["x"] - goal["x"],
+            )
+            target_bearing_base = math.atan2(
+                math.sin(target_bearing - goal["yaw"]),
+                math.cos(target_bearing - goal["yaw"]),
+            )
+            self.assertAlmostEqual(target_bearing_base, 0.0)
+            self.assertEqual(goal["target_region_in_base"], "front")
+            self.assertEqual(goal["final_alignment_mode"], "face_target")
+            self.assertAlmostEqual(
+                sample[f"{phase}_base_goal"]["target_bearing_base_rad"],
+                0.0,
+            )
+        self.assertEqual(sample["place_base_goal"]["approach_origin"], "pick_base_goal")
+        pick_to_mat_bearing = math.atan2(
+            sample["mat"]["y"] - sample["pick_base_goal"]["y"],
+            sample["mat"]["x"] - sample["pick_base_goal"]["x"],
+        )
+        self.assertAlmostEqual(
+            sample["place_base_goal"]["approach_bearing_world_rad"],
+            pick_to_mat_bearing,
+        )
+        self.assertEqual(config["base_approach_angle_noise_deg"], 0.0)
+        self.assertEqual(
+            task["place"]["receptacle_pose_world"],
+            sample["mat_root_pose_world"],
+        )
+        self.assertEqual(
+            task["place"]["curobo_world_collision"]["cuboids_world"][0][
+                "center_xyz"
+            ][:2],
+            [sample["mat"]["x"], sample["mat"]["y"]],
+        )
+        mat_proxy_source = task["place"]["curobo_world_collision"][
+            "cuboids_world"
+        ][0]["source"]
+        self.assertEqual(len(mat_proxy_source["world_bbox_min_xyz"]), 3)
+        self.assertEqual(len(mat_proxy_source["world_bbox_max_xyz"]), 3)
+        self.assertAlmostEqual(
+            mat_proxy_source["world_bbox_max_xyz"][2],
+            task["place"]["placement_region"]["z_surface"],
+        )
+        debug_spec = randomization_debug_spec(task)
+        self.assertEqual(
+            debug_spec["forward_sector"]["origin_xyz"],
+            tuple(config["robot_translate_xyz"]),
+        )
+        self.assertEqual(
+            debug_spec["forward_sector"]["robot_yaw_rad"],
+            sample["robot_yaw_rad"],
+        )
+
+    def test_liangzhu_randomization_requires_collision_ply_configuration(self) -> None:
+        """缺少碰撞 PLY 是配置错误，不能通过重复采样静默掩盖。"""
+
+        base = JsonTaskProvider().load(LIANGZHU_TASK_PATH)
+        with mock.patch.dict(os.environ, {"LIANGZHU_COLLISION_PLY": ""}):
+            with self.assertRaisesRegex(ValueError, "LIANGZHU_COLLISION_PLY"):
+                prepare_episode_spec(
+                    base,
+                    episode_id=3,
+                    seed=41,
+                    settings=RandomizationSettings(enabled=True),
+                )
 
     def test_randomized_episode_is_deterministic_and_preserves_goal_offsets(self) -> None:
         base = JsonTaskProvider().load(TASK_PATH)

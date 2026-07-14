@@ -29,6 +29,7 @@ from scripts.pipeline.run_full_physics_batch import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TASK_PATH = PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json"
+LIANGZHU_TASK_PATH = PROJECT_ROOT / "tasks/nav_pick_place_cola_liangzhu_pct.json"
 PICK_PLAN = (
     PROJECT_ROOT
     / "outputs/random_pick_place_dataset/apple_pick_place_contact/episode_0000"
@@ -76,6 +77,14 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertIn("--randomize-task", command)
         self.assertIn("--randomize-base-goal", command)
         self.assertIn("--headless", command)
+        self.assertEqual(
+            command[command.index("--navigation-visual-mode") + 1],
+            "collision",
+        )
+        self.assertEqual(
+            command[command.index("--overview-camera-prim-path") + 1],
+            "/World/overview",
+        )
         self.assertNotIn("--auto-start-curobo-server", command)
         self.assertNotIn("--lock-base-during-manipulation", command)
         self.assertNotIn("--lock-support-joints-during-manipulation", command)
@@ -109,6 +118,67 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertIn("--no-randomize-base-goal", command)
         self.assertIn("--no-headless", command)
         self.assertIn("--show-randomization-debug", command)
+
+    def test_batch_forwards_liangzhu_pct_and_policy_assets(self) -> None:
+        """批采集入口必须能复用单 episode 的良渚 PCT/locomotion 配置。"""
+
+        args = _build_parser().parse_args(
+            [
+                "--task-json",
+                str(LIANGZHU_TASK_PATH),
+                "--output-dir",
+                "/tmp/liangzhu_batch_test",
+                "--global-planner",
+                "pct",
+                "--pct-no-fallback",
+                "--pct-coord-mode",
+                "identity",
+                "--pct-server-script",
+                "scripts/navigation/pct_grid_server.py",
+                "--pct-tomogram-path",
+                "source/scene/liangzhu/pct/liangzhu_single_floor.pickle",
+                "--pct-walkable-path",
+                "source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy",
+                "--pct-collision-ply-path",
+                "/mnt/sage_data/ply/Liangzhu/liangzhu_collision.ply",
+                "--pct-cross-floor-gateway",
+                "none",
+                "--pct-cross-floor-stair-exit",
+                "none",
+                "--pct-cross-floor-stair-midpoint",
+                "none",
+                "--policy-profile",
+                "pct_multifloor",
+                "--locomotion-checkpoint",
+                "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
+                "--require-locomotion-checkpoint",
+                "--navigation-visual-mode",
+                "full",
+            ]
+        )
+
+        command = _build_child_command(args, episode_index=0).command
+
+        self.assertEqual(command[command.index("--global-planner") + 1], "pct")
+        self.assertIn("--pct-no-fallback", command)
+        self.assertEqual(command[command.index("--pct-coord-mode") + 1], "identity")
+        self.assertEqual(
+            command[command.index("--policy-profile") + 1],
+            "pct_multifloor",
+        )
+        self.assertIn("--require-locomotion-checkpoint", command)
+        self.assertEqual(
+            command[command.index("--navigation-visual-mode") + 1],
+            "full",
+        )
+        self.assertEqual(
+            command[command.index("--pct-cross-floor-gateway") + 1],
+            "none",
+        )
+        self.assertEqual(
+            command[command.index("--pct-collision-ply-path") + 1],
+            "/mnt/sage_data/ply/Liangzhu/liangzhu_collision.ply",
+        )
 
     def test_batch_forwards_video_recording_arguments(self) -> None:
         args = _build_parser().parse_args(
@@ -183,6 +253,9 @@ class FullPhysicsBatchTest(unittest.TestCase):
         )
         success_summary = {
             "success": True,
+            "training_quality_gate_passed": True,
+            "success_semantics": "physical_execution",
+            "execution_provenance_verified": True,
             "task_config": {
                 "randomization": {
                     "object_xy_randomization": {
@@ -237,6 +310,9 @@ class FullPhysicsBatchTest(unittest.TestCase):
             elapsed_seconds=7.0,
         )
 
+        self.assertTrue(success_result.training_quality_gate_passed)
+        self.assertFalse(failed_result.training_quality_gate_passed)
+
         plain = _format_result_table(
             [success_result, failed_result],
             color_enabled=False,
@@ -250,6 +326,7 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertIn("随机化 Pick / Place XY", plain)
         self.assertIn("随机化 BaseGoal / 相对目标", plain)
         self.assertIn("Pipeline 成功", plain)
+        self.assertIn("训练质量门禁", plain)
         self.assertIn("失败 State", plain)
         self.assertIn("LeRobot 数据路径", plain)
         self.assertIn("Episode 耗时", plain)
@@ -265,6 +342,7 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertIn("plan_place", plain)
         self.assertIn("lerobot_manifest.json", plain)
         self.assertIn("1m05s", plain)
+        self.assertIn("通过", plain)
         self.assertIn("\033[36m", colored)
         self.assertIn("\033[35m", colored)
         self.assertIn("\033[32m", colored)

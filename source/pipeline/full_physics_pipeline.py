@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 import traceback
 from typing import Any
@@ -157,8 +158,8 @@ class FullPhysicsPipeline:
             video_summary = _close_video("success" if summary["success"] else "failed")
             if video_summary is not None:
                 summary["overview_video"] = video_summary
-            self.recorder.close(summary)
-            return summary
+            summary_path = self.recorder.close(summary)
+            return json.loads(summary_path.read_text(encoding="utf-8"))
         except BaseException as exc:
             interrupted = isinstance(exc, KeyboardInterrupt)
             video_summary = _close_video("interrupted" if interrupted else "failed")
@@ -311,6 +312,59 @@ class FullPhysicsPipeline:
             and not any(provenance.values())
         )
         stable_physics_success = bool(success and full_physics and provenance_verified)
+        vla_training_action_requested = bool(
+            isinstance(self.episode_spec.raw_task.get("training_action"), dict)
+            and self.episode_spec.raw_task["training_action"].get("enabled", False)
+        )
+        visual_scene_report = final_state.metadata.get("visual_scene_report")
+        camera_capture_report = final_state.metadata.get("camera_capture_report")
+        overview_camera_report = final_state.metadata.get("overview_camera_report")
+        required_camera_keys = (
+            set(self.config.recording.camera_keys)
+            if self.config.recording.enabled
+            else set()
+        )
+        available_camera_keys = set(
+            camera_capture_report.get("available_camera_keys", ())
+            if isinstance(camera_capture_report, dict)
+            else ()
+        )
+        camera_capture_complete = bool(
+            isinstance(camera_capture_report, dict)
+            and required_camera_keys.issubset(available_camera_keys)
+        )
+        overview_camera_verified = bool(
+            "overview" not in required_camera_keys
+            or (
+                isinstance(overview_camera_report, dict)
+                and overview_camera_report.get("enabled") is True
+                and overview_camera_report.get("prim_path")
+                == self.config.recording.overview_camera_prim_path
+            )
+        )
+        training_visual_source_verified = bool(
+            not vla_training_action_requested
+            or (
+                isinstance(visual_scene_report, dict)
+                and visual_scene_report.get("loaded") is True
+                and camera_capture_complete
+                and overview_camera_verified
+            )
+        )
+        training_visual_policy = {
+            "gaussian_scene_required": False,
+            "gaussian_scene_enabled": bool(
+                isinstance(visual_scene_report, dict)
+                and visual_scene_report.get("scene_visual_enabled") is True
+            ),
+            "required_camera_keys": sorted(required_camera_keys),
+            "available_camera_keys": sorted(available_camera_keys),
+            "camera_capture_complete": camera_capture_complete,
+            "overview_camera_verified": overview_camera_verified,
+            "overview_camera_prim_path": (
+                self.config.recording.overview_camera_prim_path
+            ),
+        }
         simulation_report = {
             key: final_state.metadata.get(key)
             for key in (
@@ -324,11 +378,19 @@ class FullPhysicsPipeline:
                 "camera_prim_path",
                 "front_camera_report",
                 "wrist_camera_report",
+                "overview_camera_report",
                 "camera_capture_report",
                 "gripper_collision_patch_report",
                 "apple_collision_patch_report",
                 "stage_report",
                 "visual_scene_report",
+                "task_receptacle_support_source_report",
+                "task_receptacle_support_runtime_stage_report",
+                "task_receptacle_pose_report",
+                "last_current_state_curobo_pick_export",
+                "last_current_state_curobo_place_export",
+                "last_mesh_truth_pick_target_report",
+                "last_mesh_truth_place_target_report",
                 "viewport_report",
                 "object_pose_setup_report",
                 "object_pose_setup_before_physics_report",
@@ -417,6 +479,11 @@ class FullPhysicsPipeline:
                     else "xy_only"
                 ),
                 "position_tolerance": self.config.navigation.final_position_tolerance,
+                "place_position_tolerance": (
+                    self.config.navigation.place_position_tolerance
+                    if self.config.navigation.place_position_tolerance is not None
+                    else self.config.navigation.final_position_tolerance
+                ),
                 "goal_z_tolerance": self.config.navigation.goal_z_tolerance,
                 "yaw_alignment_required": self.config.navigation.require_yaw_alignment,
                 "base_stability_required": self.config.navigation.require_stable_base,
@@ -439,6 +506,36 @@ class FullPhysicsPipeline:
         place_base_goal_sample = base_goal_randomization.get("place")
         place_base_goal_sample = (
             place_base_goal_sample if isinstance(place_base_goal_sample, dict) else {}
+        )
+        forward_sector_sample = randomization.get("sample")
+        forward_sector_sample = (
+            forward_sector_sample
+            if isinstance(forward_sector_sample, dict)
+            else {}
+        )
+
+        def _forward_sector_goal_sample(stage_name: str) -> list[float] | None:
+            sample = forward_sector_sample.get(f"{stage_name}_base_goal")
+            if not isinstance(sample, dict):
+                return None
+            try:
+                return [
+                    float(sample["x"]),
+                    float(sample["y"]),
+                    float(sample["yaw"]),
+                ]
+            except (KeyError, TypeError, ValueError):
+                return None
+
+        pick_base_goal_sampled = pick_base_goal_sample.get(
+            "sampled_base_goal_xyyaw",
+        ) or _forward_sector_goal_sample("pick")
+        place_base_goal_sampled = place_base_goal_sample.get(
+            "sampled_base_goal_xyyaw",
+        ) or _forward_sector_goal_sample("place")
+        base_goal_randomization_enabled = bool(
+            base_goal_randomization.get("enabled", False)
+            or forward_sector_sample.get("base_goal_randomized", False)
         )
         return {
             "episode_id": self.episode_spec.episode_id,
@@ -501,17 +598,14 @@ class FullPhysicsPipeline:
                 self.config.manipulation.lock_support_joints_during_manipulation
             ),
             "execution_provenance_verified": provenance_verified,
+            "training_visual_source_verified": training_visual_source_verified,
+            "training_visual_policy": training_visual_policy,
             "simulation_report": simulation_report,
             "navigation_acceptance": navigation_acceptance,
-            "base_goal_randomization_enabled": bool(
-                base_goal_randomization.get("enabled", False)
-            ),
-            "pick_base_goal_sampled": pick_base_goal_sample.get(
-                "sampled_base_goal_xyyaw",
-            ),
-            "place_base_goal_sampled": place_base_goal_sample.get(
-                "sampled_base_goal_xyyaw",
-            ),
+            "task_randomization_mode": randomization.get("mode"),
+            "base_goal_randomization_enabled": base_goal_randomization_enabled,
+            "pick_base_goal_sampled": pick_base_goal_sampled,
+            "place_base_goal_sampled": place_base_goal_sampled,
             "pick_base_goal_fallback_used": bool(
                 pick_base_goal_sample.get("fallback_used", False)
             ),

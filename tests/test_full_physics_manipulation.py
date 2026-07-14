@@ -16,8 +16,10 @@ from source.manipulation.current_state_curobo import (
     build_curobo_state_payload,
     build_arm_place_target_payload,
     build_side_grasp_target_payload,
+    build_top_down_grasp_target_payload,
     pose_to_matrix,
 )
+from source.manipulation.curobo_robot_config import load_workspace_robot_config
 from source.manipulation.curobo_adapter import (
     CuroboJsonManipulationPlanner,
     CuroboPlanFormatError,
@@ -28,6 +30,73 @@ from source.manipulation.grasp_pipeline import GraspPipeline, GraspPipelineConfi
 
 
 class FullPhysicsManipulationTest(unittest.TestCase):
+    def test_curobo_robot_config_resolves_assets_from_current_workspace(self) -> None:
+        workspace = Path(__file__).resolve().parents[1]
+        yaml_path = workspace / "source/robot/go2_x5/curobo/go2_x5_arm.yml"
+
+        config = load_workspace_robot_config(workspace, robot_yaml=yaml_path)
+        kinematics = config["kinematics"]
+
+        self.assertEqual(
+            Path(kinematics["asset_root_path"]),
+            workspace / "source/robot/go2_x5",
+        )
+        self.assertEqual(
+            Path(kinematics["urdf_path"]),
+            workspace / "source/robot/go2_x5/curobo/go2_x5_arm.urdf",
+        )
+        self.assertNotIn(
+            "/home/light/workspace/arm_vla/",
+            yaml_path.read_text(encoding="utf-8"),
+        )
+
+    def test_top_down_uses_one_shot_when_shared_server_lacks_reverse_lift(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            target_path = root / "target.json"
+            target_path.write_text(
+                json.dumps(
+                    {
+                        "source": {"grasp_mode": "top_down"},
+                        "diagnostics": {
+                            "target_workspace_base": {
+                                "grasp": {"xy_radius_m": 0.4},
+                                "pregrasp": {"radius_3d_m": 0.5},
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            task = GraspTask(
+                object_prim_path="/World/cola",
+                state_json=str(root / "state.json"),
+                target_json=str(target_path),
+                plan_json=str(root / "plan.json"),
+            )
+            pipeline = GraspPipeline(GraspPipelineConfig(workspace=root))
+            expected = {"summary": {"all_motion_segments_success": True}}
+            with (
+                patch.object(
+                    pipeline,
+                    "_server_supports_top_down_reverse_lift",
+                    return_value=False,
+                ),
+                patch.object(pipeline, "_try_server", return_value=True) as server,
+                patch.object(
+                    pipeline,
+                    "_run_one_shot_planner",
+                    return_value=expected,
+                ) as one_shot,
+            ):
+                result = pipeline.plan(task)
+
+        self.assertEqual(result, expected)
+        server.assert_not_called()
+        one_shot.assert_called_once()
+
     def test_curobo_state_payload_records_world_collision_metadata(self) -> None:
         payload = build_curobo_state_payload(
             q_arm=[0.0] * 6,
@@ -732,6 +801,36 @@ class FullPhysicsManipulationTest(unittest.TestCase):
         self.assertLess(grasp_z, source["bbox_world"]["max_xyz"][2])
         self.assertAlmostEqual(payload["gripper"]["close_m"], 0.0)
 
+    def test_top_down_grasp_descends_from_above_with_tcp_x_axis_down(self) -> None:
+        payload = build_top_down_grasp_target_payload(
+            object_prim_path="/World/cola",
+            T_world_base=pose_to_matrix(
+                (0.0, 0.0, 0.35),
+                (1.0, 0.0, 0.0, 0.0),
+            ),
+            bbox_min=(-0.03, -0.48, 0.0),
+            bbox_max=(0.03, -0.42, 0.107),
+            bbox_center=(0.0, -0.45, 0.0535),
+            bbox_size=(0.06, 0.06, 0.107),
+        )
+
+        source = payload["source"]
+        grasp = payload["poses"]["grasp"]
+        pregrasp = payload["poses"]["pregrasp"]
+        lift = payload["poses"]["lift"]
+        grasp_matrix = pose_to_matrix(
+            grasp["position_xyz"],
+            grasp["quaternion_wxyz"],
+        )
+        self.assertEqual(source["type"], "sim_object_bbox_top_down")
+        self.assertEqual(source["grasp_mode"], "top_down")
+        self.assertAlmostEqual(source["world_grasp_pose"]["position_xyz"][2], 0.072)
+        self.assertAlmostEqual(pregrasp["position_xyz"][2] - grasp["position_xyz"][2], 0.10)
+        self.assertAlmostEqual(lift["position_xyz"][2] - grasp["position_xyz"][2], 0.10)
+        self.assertAlmostEqual(grasp_matrix[0, 0], 0.0, places=7)
+        self.assertAlmostEqual(grasp_matrix[1, 0], 0.0, places=7)
+        self.assertAlmostEqual(grasp_matrix[2, 0], -1.0, places=7)
+
     def test_arm_place_target_aligns_object_center_not_tcp_to_task_xyz(self) -> None:
         payload = build_arm_place_target_payload(
             object_prim_path="/World/apple",
@@ -1000,6 +1099,62 @@ class FullPhysicsManipulationTest(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "禁止 lift_object"):
                 planner.plan_pick(_state(), None)  # type: ignore[arg-type]
+
+    def test_current_state_planner_accepts_vertical_lift_for_top_down_pick(self) -> None:
+        class FakeCurrentStateSimulation:
+            def export_current_curobo_pick_inputs(self, *, output_dir, episode_spec, state):
+                del episode_spec, state
+                output_path = Path(output_dir)
+                output_path.mkdir(parents=True, exist_ok=True)
+                state_json = output_path / "pick_state.json"
+                target_json = output_path / "pick_target.json"
+                state_json.write_text("{}", encoding="utf-8")
+                target_json.write_text("{}", encoding="utf-8")
+                return {
+                    "state_json": state_json,
+                    "target_json": target_json,
+                    "object_prim_path": "/World/cola",
+                    "pick_target": {
+                        "source": {"grasp_mode": "top_down"},
+                    },
+                }
+
+        def lift_runner(task):
+            payload = _pick_payload()
+            payload["grasp_mode"] = "top_down"
+            payload["segments"][-2] = _motion_segment(
+                "lift_object",
+                [
+                    (0.2, 0.21, 0.22, 0.23, 0.24, 0.25),
+                    (0.3, 0.31, 0.32, 0.33, 0.34, 0.35),
+                ],
+            )
+            Path(task.plan_json).write_text(json.dumps(payload), encoding="utf-8")
+            return payload
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            planner = CurrentStateCuroboPlanner(
+                simulation=FakeCurrentStateSimulation(),
+                config=CurrentStateCuroboPlannerConfig(
+                    output_dir=root / "online",
+                    project_root=root,
+                    place_plan_json=None,
+                    use_planner_server=False,
+                ),
+                plan_runner=lift_runner,
+            )
+
+            plan = planner.plan_pick(_state(), None)  # type: ignore[arg-type]
+
+        self.assertEqual(
+            plan.metadata["current_state_pick_strategy"]["expected"],
+            "vertical_lift_after_top_down_grasp",
+        )
+        self.assertEqual(
+            plan.metadata["current_state_pick_strategy"]["grasp_mode"],
+            "top_down",
+        )
 
 
 def _drain_executor(executor: SegmentedArmExecutor):

@@ -31,6 +31,44 @@ def _xy_range(
     return (x_min, x_max), (y_min, y_max)
 
 
+def _forward_sector_spec(
+    randomization: dict[str, Any],
+) -> dict[str, Any] | None:
+    """解析 episode 实际使用的机器人前向扇区。"""
+
+    if randomization.get("mode") != "robot_forward_sector_v1":
+        return None
+    config = randomization.get("forward_sector")
+    sample = randomization.get("sample")
+    if not isinstance(config, dict) or not isinstance(sample, dict):
+        return None
+    try:
+        robot_xyz = tuple(float(value) for value in config["robot_translate_xyz"])
+        robot_yaw = float(sample["robot_yaw_rad"])
+        half_angle = math.radians(float(config["sector_half_angle_deg"]))
+        cola_radius = tuple(float(value) for value in config["cola_radius_range_m"])
+        mat_radius = tuple(float(value) for value in config["mat_radius_range_m"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if (
+        len(robot_xyz) != 3
+        or len(cola_radius) != 2
+        or len(mat_radius) != 2
+        or not all(
+            math.isfinite(value)
+            for value in (*robot_xyz, robot_yaw, half_angle, *cola_radius, *mat_radius)
+        )
+    ):
+        return None
+    return {
+        "origin_xyz": robot_xyz,
+        "robot_yaw_rad": robot_yaw,
+        "sector_half_angle_rad": half_angle,
+        "cola_radius_range_m": cola_radius,
+        "mat_radius_range_m": mat_radius,
+    }
+
+
 def randomization_debug_spec(raw_task: dict[str, Any]) -> dict[str, Any]:
     """提取与 episode 采样结果一致的可视化描述。"""
 
@@ -44,6 +82,7 @@ def randomization_debug_spec(raw_task: dict[str, Any]) -> dict[str, Any]:
         "usd_purpose": "default",
         "physics_enabled": False,
         "collision_enabled": False,
+        "forward_sector": _forward_sector_spec(randomization),
         "pick": {
             "xy_range": _xy_range(randomization, "object_xy_randomization"),
             "pose_world": pick_pose,
@@ -54,6 +93,82 @@ def randomization_debug_spec(raw_task: dict[str, Any]) -> dict[str, Any]:
             "pose_world": place_pose,
             "color_rgb": (0.1, 0.4, 1.0),
         },
+    }
+
+
+def _sector_outline_points(
+    *,
+    origin_xy: tuple[float, float],
+    yaw_rad: float,
+    half_angle_rad: float,
+    radius_range_m: tuple[float, float],
+    z: float,
+) -> list[tuple[float, float, float]]:
+    """生成闭合扇环轮廓，用于显示实际可采样区域。"""
+
+    inner_radius, outer_radius = radius_range_m
+    angles = [
+        -half_angle_rad + 2.0 * half_angle_rad * index / 24.0
+        for index in range(25)
+    ]
+
+    def _point(radius: float, angle: float) -> tuple[float, float, float]:
+        world_angle = yaw_rad + angle
+        return (
+            origin_xy[0] + radius * math.cos(world_angle),
+            origin_xy[1] + radius * math.sin(world_angle),
+            z,
+        )
+
+    inner = [_point(inner_radius, angle) for angle in angles]
+    outer = [_point(outer_radius, angle) for angle in reversed(angles)]
+    return [*inner, *outer, inner[0]]
+
+
+def _create_forward_sector_guides(
+    stage: Any,
+    spec: dict[str, Any] | None,
+    *,
+    z: float,
+) -> dict[str, Any]:
+    """创建可乐与地垫的前向扇环 guide。"""
+
+    if spec is None:
+        return {"created": False, "reason": "forward_sector_not_configured"}
+    from pxr import UsdGeom
+
+    root_path = "/World/RandomizationDebug/ForwardSector"
+    UsdGeom.Xform.Define(stage, root_path)
+    origin = tuple(float(value) for value in spec["origin_xyz"][:2])
+    yaw = float(spec["robot_yaw_rad"])
+    half_angle = float(spec["sector_half_angle_rad"])
+    paths: dict[str, str] = {}
+    for name, radius_key, color in (
+        ("Cola", "cola_radius_range_m", (0.1, 1.0, 0.2)),
+        ("Mat", "mat_radius_range_m", (0.1, 0.4, 1.0)),
+    ):
+        path = f"{root_path}/{name}Region"
+        _create_curve(
+            stage,
+            path,
+            _sector_outline_points(
+                origin_xy=origin,
+                yaw_rad=yaw,
+                half_angle_rad=half_angle,
+                radius_range_m=tuple(spec[radius_key]),
+                z=z,
+            ),
+            color,
+            width=0.016,
+        )
+        paths[name.lower()] = path
+    return {
+        "created": True,
+        "root_prim_path": root_path,
+        "region_prim_paths": paths,
+        **spec,
+        "physics_enabled": False,
+        "collision_enabled": False,
     }
 
 
@@ -145,8 +260,17 @@ def create_randomization_debug(stage: Any, raw_task: dict[str, Any]) -> dict[str
     if stage.GetPrimAtPath(root_path).IsValid():
         stage.RemovePrim(root_path)
     UsdGeom.Xform.Define(stage, root_path)
+    guide_z = min(
+        float(spec["pick"]["pose_world"].get("z", 0.0)),
+        float(spec["place"]["pose_world"].get("z", 0.0)),
+    ) + 0.02
     report = {
         **spec,
+        "forward_sector": _create_forward_sector_guides(
+            stage,
+            spec["forward_sector"],
+            z=guide_z,
+        ),
         "pick": _create_group(stage, name="Pick", spec=spec["pick"]),
         "place": _create_group(stage, name="Place", spec=spec["place"]),
     }

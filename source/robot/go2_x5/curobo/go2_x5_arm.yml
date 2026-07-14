@@ -1,6 +1,6 @@
 kinematics:
   add_object_link: false
-  asset_root_path: /home/light/workspace/arm_vla/source/robot/go2_x5
+  asset_root_path: source/robot/go2_x5
   base_link: arm_base_link
   collision_link_names: &id001
   - arm_base_link
@@ -471,6 +471,6 @@ kinematics:
     - arm_link6
   tool_frames:
   - grasp_tcp_link
-  urdf_path: /home/light/workspace/arm_vla/source/robot/go2_x5/curobo/go2_x5_arm.urdf
+  urdf_path: source/robot/go2_x5/curobo/go2_x5_arm.urdf
   use_external_assets: false
   use_global_cumul: true

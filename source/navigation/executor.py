@@ -85,6 +85,7 @@ class DwaNavExecutor:
         carry_max_linear_velocity: float | None = None,
         carry_max_angular_velocity: float | None = None,
         carry_max_linear_accel: float | None = None,
+        carry_position_tolerance: float | None = None,
         carry_path_deviation_limit: float | None = None,
         carry_initial_alignment_path_deviation_limit: float | None = None,
         carry_path_recovery_deviation_limit: float | None = None,
@@ -130,6 +131,8 @@ class DwaNavExecutor:
             and carry_max_infeasible_recomputes < 1
         ):
             raise ValueError("携物导航连续无可行轨迹上限必须至少为 1。")
+        if carry_position_tolerance is not None and carry_position_tolerance <= 0.0:
+            raise ValueError("携物导航位置容差必须为正数。")
         if (
             carry_initial_alignment_path_deviation_limit is not None
             and carry_initial_alignment_path_deviation_limit <= 0.0
@@ -186,6 +189,11 @@ class DwaNavExecutor:
         self.carry_max_linear_velocity = carry_max_linear_velocity
         self.carry_max_angular_velocity = carry_max_angular_velocity
         self.carry_max_linear_accel = carry_max_linear_accel
+        self.carry_position_tolerance = (
+            None
+            if carry_position_tolerance is None
+            else float(carry_position_tolerance)
+        )
         self.carry_path_deviation_limit = carry_path_deviation_limit
         self.carry_initial_alignment_path_deviation_limit = (
             carry_initial_alignment_path_deviation_limit
@@ -223,6 +231,7 @@ class DwaNavExecutor:
             float(self.dwa_config.goal_tolerance),
         )
         self.position_tolerance = float(position_tolerance)
+        self._active_position_tolerance = self.position_tolerance
         self.yaw_tolerance = float(yaw_tolerance)
         self.terminal_pose_config = terminal_pose_config or TerminalPoseConfig(
             position_tolerance=min(0.08, self.position_tolerance),
@@ -267,6 +276,10 @@ class DwaNavExecutor:
         self._last_body_velocity = (0.0, 0.0, 0.0)
         self._distance_to_goal: float | None = None
         self._yaw_error: float | None = None
+        self._terminal_translation_heading_error: float | None = None
+        self._terminal_control_mode: str | None = None
+        self._carry_forward_translation_active = False
+        self._carry_forward_translation_activation_reason: str | None = None
         self._last_dwa_debug: DWADebug | None = None
         self._dwa_compute_count = 0
         self._dwa_hold_count = 0
@@ -322,6 +335,11 @@ class DwaNavExecutor:
         self._carry_mode = (
             plan.metadata.get("execution_phase") == "carry_nav_to_place"
         )
+        self._active_position_tolerance = (
+            float(self.carry_position_tolerance)
+            if self._carry_mode and self.carry_position_tolerance is not None
+            else self.position_tolerance
+        )
         self._active_require_yaw_alignment = bool(
             plan.metadata.get("require_yaw_alignment", self.require_yaw_alignment)
         )
@@ -331,7 +349,21 @@ class DwaNavExecutor:
         self._active_terminal_pose_config = replace(
             self.terminal_pose_config,
             yaw_tolerance=self._active_yaw_tolerance,
+            prefer_forward_translation=False,
         )
+        if self._carry_mode:
+            carry_linear_limit = float(self._active_dwa_config.max_linear_velocity)
+            self._active_terminal_pose_config = replace(
+                self._active_terminal_pose_config,
+                max_vx=min(
+                    float(self._active_terminal_pose_config.max_vx),
+                    carry_linear_limit,
+                ),
+                max_vy=min(
+                    float(self._active_terminal_pose_config.max_vy),
+                    carry_linear_limit,
+                ),
+            )
         self.plan = plan
         self._controller = DWAController(
             path_world=path_world,
@@ -352,6 +384,10 @@ class DwaNavExecutor:
         self._last_body_velocity = (0.0, 0.0, 0.0)
         self._distance_to_goal = None
         self._yaw_error = None
+        self._terminal_translation_heading_error = None
+        self._terminal_control_mode = None
+        self._carry_forward_translation_active = False
+        self._carry_forward_translation_activation_reason = None
         self._last_dwa_debug = None
         self._dwa_compute_count = 0
         self._dwa_hold_count = 0
@@ -368,6 +404,15 @@ class DwaNavExecutor:
         self._require_plan()
         if self.is_done(state):
             return self._zero_action()
+        if self._phase == "settling":
+            # 到达位姿但实测速度尚未衰减时必须持续发零命令；旧逻辑会在
+            # 同一 tick 重新进入 terminal controller，把机器人再次推出容差。
+            self._last_command = (0.0, 0.0, 0.0)
+            return RobotAction(
+                base_velocity=self._last_command,
+                source="navigation_settling",
+                metadata=self._action_metadata(),
+            )
 
         pose = self._pose_xyyaw(state)
         body_velocity = self._body_velocity(state, pose[2])
@@ -375,10 +420,34 @@ class DwaNavExecutor:
         stair_float_action = self._compute_stair_float_action(state, pose)
         if stair_float_action is not None:
             return stair_float_action
+        terminal_position_tolerance = float(
+            self._active_terminal_pose_config.position_tolerance
+        )
+        if (
+            self._carry_mode
+            and not self._carry_forward_translation_active
+            and terminal_position_tolerance < distance <= self.terminal_start_distance
+            and abs(yaw_error) <= self._active_yaw_tolerance
+        ):
+            # 保留已验证的大角度 holonomic 对准；只在最终 yaw 已合格、但
+            # XY 仍卡在验收半径外时，切换到“朝位置误差转向并前进”。
+            self._carry_forward_translation_active = True
+            self._carry_forward_translation_activation_reason = (
+                "final_yaw_aligned_with_xy_residual"
+            )
+        elif (
+            self._carry_forward_translation_active
+            and distance <= terminal_position_tolerance
+        ):
+            # 位置收敛后交回普通 terminal controller 做最终 yaw polish。
+            self._carry_forward_translation_active = False
         next_phase = (
             "terminal_pose"
             if self._active_require_yaw_alignment
-            and distance <= self.terminal_start_distance
+            and (
+                distance <= self.terminal_start_distance
+                or self._carry_forward_translation_active
+            )
             else "dwa"
         )
         if next_phase != self._phase:
@@ -391,16 +460,33 @@ class DwaNavExecutor:
                 pose,
                 (self.plan.goal.x, self.plan.goal.y),
             )
+            self._terminal_translation_heading_error = math.atan2(
+                body_goal_y,
+                body_goal_x,
+            )
+            self._terminal_control_mode = (
+                "carry_forward_translation"
+                if self._carry_forward_translation_active
+                else "final_pose"
+            )
+            terminal_pose_config = replace(
+                self._active_terminal_pose_config,
+                prefer_forward_translation=(
+                    self._carry_forward_translation_active
+                ),
+            )
             command = compute_terminal_pose_command(
                 body_goal_x=body_goal_x,
                 body_goal_y=body_goal_y,
                 yaw_error=yaw_error,
                 distance_to_goal=distance,
-                config=self._active_terminal_pose_config,
+                config=terminal_pose_config,
             )
             self._last_dwa_debug = None
             self._command_recomputed_this_tick = True
         else:
+            self._terminal_translation_heading_error = None
+            self._terminal_control_mode = None
             if self._controller is None:
                 raise RuntimeError("DWA 控制器尚未初始化。")
             should_recompute = (
@@ -468,7 +554,7 @@ class DwaNavExecutor:
         yaw_ok = (
             not self._active_require_yaw_alignment
         ) or abs(yaw_error) <= self._active_yaw_tolerance
-        if distance <= self.position_tolerance and yaw_ok:
+        if distance <= self._active_position_tolerance and yaw_ok:
             if not self._completion_velocity_is_stable(body_velocity):
                 # 严格诊断模式才等待速度衰减；默认导航 handoff 只看 XY。
                 self._done = False
@@ -506,7 +592,19 @@ class DwaNavExecutor:
             "pose_xyyaw": self._last_pose,
             "distance_to_goal": self._distance_to_goal,
             "yaw_error": self._yaw_error,
-            "position_tolerance": self.position_tolerance,
+            "terminal_translation_heading_error": (
+                self._terminal_translation_heading_error
+            ),
+            "terminal_control_mode": self._terminal_control_mode,
+            "carry_forward_translation_active": (
+                self._carry_forward_translation_active
+            ),
+            "carry_forward_translation_activation_reason": (
+                self._carry_forward_translation_activation_reason
+            ),
+            "position_tolerance": self._active_position_tolerance,
+            "configured_position_tolerance": self.position_tolerance,
+            "carry_position_tolerance": self.carry_position_tolerance,
             "yaw_tolerance": self._active_yaw_tolerance,
             "yaw_alignment_required": self._active_require_yaw_alignment,
             "acceptance_mode": (
@@ -1027,7 +1125,7 @@ class DwaNavExecutor:
         if self._distance_to_goal is None:
             return False
         tolerance = max(
-            float(self.position_tolerance),
+            float(self._active_position_tolerance),
             float(self.pick_near_goal_handoff_tolerance_m),
         )
         self._near_goal_stall_handoff_tolerance = tolerance
@@ -1057,6 +1155,16 @@ class DwaNavExecutor:
             "tick_index": self._tick_index,
             "distance_to_goal": self._distance_to_goal,
             "yaw_error": self._yaw_error,
+            "terminal_translation_heading_error": (
+                self._terminal_translation_heading_error
+            ),
+            "terminal_control_mode": self._terminal_control_mode,
+            "carry_forward_translation_active": (
+                self._carry_forward_translation_active
+            ),
+            "carry_forward_translation_activation_reason": (
+                self._carry_forward_translation_activation_reason
+            ),
             "measured_body_velocity": self._last_body_velocity,
             "yaw_alignment_required": self._active_require_yaw_alignment,
             "stall_detected": self._stall_detected,

@@ -15,13 +15,19 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import open3d as o3d
 from scipy.ndimage import binary_dilation, binary_fill_holes
+
+try:
+    import open3d as o3d
+except ModuleNotFoundError:  # 当前 Isaac 环境允许使用确定性 NumPy fallback。
+    o3d = None
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if os.fspath(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, os.fspath(PROJECT_ROOT))
+
+from source.scene.placement_support import load_binary_triangle_ply  # noqa: E402
 
 DEFAULT_COLLISION_PLY = PROJECT_ROOT / "source/scene/multifloor/ply/3dgs_collision.ply"
 DEFAULT_TOMOGRAM = PROJECT_ROOT / "source/scene/multifloor/mutifloor.pickle"
@@ -42,7 +48,11 @@ def main() -> int:
         raise RuntimeError(f"collision PLY 不能是软链接: {collision_ply}")
 
     t0 = time.time()
-    points = _load_collision_points(collision_ply, sample_points=int(args.sample_points))
+    points, sampling_backend = _load_collision_points(
+        collision_ply,
+        sample_points=int(args.sample_points),
+        random_seed=int(args.random_seed),
+    )
     points = _filter_points(points, z_min=args.z_min, z_max=args.z_max)
     grid = _make_grid(points, resolution=float(args.resolution), slice_dh=float(args.slice_dh), padding=float(args.padding))
     has_surface = _voxelize(points, grid)
@@ -64,6 +74,8 @@ def main() -> int:
         "output_tomogram": str(output_tomogram),
         "output_walkable": str(output_walkable),
         "sample_points": int(args.sample_points),
+        "sampling_backend": sampling_backend,
+        "random_seed": int(args.random_seed),
         "point_count_after_filter": int(len(points)),
         "resolution": float(args.resolution),
         "slice_dh": float(args.slice_dh),
@@ -105,20 +117,65 @@ class _Grid:
         self.offset = np.array([self.dimx // 2, self.dimy // 2], dtype=np.int32)
 
 
-def _load_collision_points(path: Path, *, sample_points: int) -> np.ndarray:
-    mesh = o3d.io.read_triangle_mesh(os.fspath(path))
-    if mesh.is_empty():
-        raise RuntimeError(f"collision mesh 为空: {path}")
+def _load_collision_points(
+    path: Path,
+    *,
+    sample_points: int,
+    random_seed: int,
+) -> tuple[np.ndarray, str]:
+    """优先使用 Open3D；缺失时对 binary triangle PLY 做确定性面积采样。"""
+
+    if o3d is not None:
+        mesh = o3d.io.read_triangle_mesh(os.fspath(path))
+        if mesh.is_empty():
+            raise RuntimeError(f"collision mesh 为空: {path}")
+        if sample_points <= 0:
+            vertices = np.asarray(mesh.vertices, dtype=np.float32)
+            if len(vertices) == 0:
+                raise RuntimeError("collision mesh 没有 vertex")
+            return vertices, "open3d_vertices"
+        sampled = mesh.sample_points_uniformly(number_of_points=sample_points)
+        points = np.asarray(sampled.points, dtype=np.float32)
+        if len(points) == 0:
+            raise RuntimeError("collision mesh 采样后没有点")
+        return points, "open3d_uniform_surface"
+
+    vertices, face_indices = load_binary_triangle_ply(path)
+    vertices_f32 = np.asarray(vertices, dtype=np.float32)
+    if len(vertices_f32) == 0:
+        raise RuntimeError("collision mesh 没有 vertex")
     if sample_points <= 0:
-        vertices = np.asarray(mesh.vertices, dtype=np.float32)
-        if len(vertices) == 0:
-            raise RuntimeError("collision mesh 没有 vertex")
-        return vertices
-    sampled = mesh.sample_points_uniformly(number_of_points=sample_points)
-    points = np.asarray(sampled.points, dtype=np.float32)
-    if len(points) == 0:
-        raise RuntimeError("collision mesh 采样后没有点")
-    return points
+        return vertices_f32, "numpy_binary_ply_vertices"
+
+    triangles = vertices_f32[face_indices]
+    first_edges = triangles[:, 1] - triangles[:, 0]
+    second_edges = triangles[:, 2] - triangles[:, 0]
+    areas = np.linalg.norm(np.cross(first_edges, second_edges), axis=1) * 0.5
+    valid = np.isfinite(areas) & (areas > 1.0e-12)
+    if not bool(np.any(valid)):
+        raise RuntimeError("collision mesh 没有有效三角面")
+    valid_triangles = triangles[valid]
+    probabilities = areas[valid].astype(np.float64)
+    probabilities /= probabilities.sum()
+    rng = np.random.default_rng(int(random_seed))
+    selected = rng.choice(
+        len(valid_triangles),
+        size=int(sample_points),
+        replace=True,
+        p=probabilities,
+    )
+    sampled_triangles = valid_triangles[selected]
+    first_random = np.sqrt(rng.random(int(sample_points), dtype=np.float32))
+    second_random = rng.random(int(sample_points), dtype=np.float32)
+    weight_a = 1.0 - first_random
+    weight_b = first_random * (1.0 - second_random)
+    weight_c = first_random * second_random
+    points = (
+        weight_a[:, None] * sampled_triangles[:, 0]
+        + weight_b[:, None] * sampled_triangles[:, 1]
+        + weight_c[:, None] * sampled_triangles[:, 2]
+    ).astype(np.float32)
+    return points, "numpy_binary_ply_area_sampling"
 
 
 def _filter_points(points: np.ndarray, *, z_min: float | None, z_max: float | None) -> np.ndarray:
@@ -228,6 +285,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--slice-dh", type=float, default=0.50, help="tomogram slice 高度，单位米。")
     parser.add_argument("--padding", type=float, default=2.0, help="XY 边界外扩，单位米。")
     parser.add_argument("--sample-points", type=int, default=1_500_000, help="从 collision mesh 采样的点数。")
+    parser.add_argument("--random-seed", type=int, default=0, help="NumPy PLY fallback 的确定性采样 seed。")
     parser.add_argument("--dilation-radius", type=int, default=1, help="walkable XY 膨胀半径，单位 grid cell。")
     parser.add_argument("--max-wall-slices", type=int, default=15, help="同一 XY 跨越超过该 slice 数时视为墙面。")
     parser.add_argument("--z-min", type=float, default=None, help="可选最低 z 过滤。")

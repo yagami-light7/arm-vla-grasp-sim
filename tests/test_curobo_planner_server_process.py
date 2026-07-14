@@ -112,10 +112,7 @@ class CuroboPlannerServerProcessTest(unittest.TestCase):
         shutdown.assert_called_once()
         process.wait.assert_called_once_with(timeout=5.0)
 
-    def test_incompatible_existing_server_is_restarted(self) -> None:
-        process = Mock()
-        process.pid = 456
-        process.poll.return_value = None
+    def test_incompatible_existing_server_is_preserved_and_blocks_start(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             server_script = root / "scripts/curobo/grasp_planner_server.py"
@@ -131,7 +128,7 @@ class CuroboPlannerServerProcessTest(unittest.TestCase):
             )
             with patch(
                 "source.manipulation.planner_server_process.planner_server_ping",
-                side_effect=[True, False],
+                return_value=True,
             ), patch(
                 "source.manipulation.planner_server_process.planner_server_supports_required_features",
                 return_value=False,
@@ -140,13 +137,40 @@ class CuroboPlannerServerProcessTest(unittest.TestCase):
                 return_value=True,
             ) as shutdown, patch(
                 "source.manipulation.planner_server_process.subprocess.Popen",
-                return_value=process,
             ) as popen:
-                manager.start()
+                with self.assertRaisesRegex(RuntimeError, "拒绝 shutdown/reuse/restart"):
+                    manager.start()
 
-        shutdown.assert_called_once()
-        popen.assert_called_once()
-        self.assertTrue(manager.start_report["restarted_incompatible_existing"])
+        shutdown.assert_not_called()
+        popen.assert_not_called()
+        self.assertTrue(manager.start_report["existing_server_preserved"])
+
+    def test_capabilities_allow_shared_server_unless_strict_workspace_requested(self) -> None:
+        socket_context = Mock()
+        socket_client = Mock()
+        socket_context.__enter__ = Mock(return_value=socket_client)
+        socket_context.__exit__ = Mock(return_value=False)
+        socket_client.makefile.return_value.readline.return_value = json.dumps(
+            {
+                "ok": True,
+                "features": {
+                    "side_grasp_retreat_to_pregrasp": True,
+                    "split_pregrasp_motion": True,
+                    "single_retime_split_pregrasp": True,
+                },
+                "workspace": "/home/light/workspace/arm_vla_pct",
+            }
+        )
+        with patch(
+            "source.manipulation.planner_server_process.socket.create_connection",
+            return_value=socket_context,
+        ):
+            self.assertTrue(planner_server_supports_required_features())
+            self.assertFalse(
+                planner_server_supports_required_features(
+                    expected_workspace="/home/light/workspace/arm_vla_liangzhu"
+                )
+            )
 
 
 if __name__ == "__main__":

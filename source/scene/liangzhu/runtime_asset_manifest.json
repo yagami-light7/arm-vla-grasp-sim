@@ -1,0 +1,276 @@
+{
+  "schema_version": "liangzhu_runtime_assets_v3",
+  "scene_profile": "liangzhu_single_floor",
+  "scene_usda": "source/scene/liangzhu/liangzhu.usda",
+  "scene_runtime": {
+    "collision_prim_path": "/World/PhysicsScene/CollisionScene/LiangzhuCollision",
+    "visual_prim_path": "/World/VisualScene/GaussianScene",
+    "collision_floor_proxy_profile": null,
+    "legacy_yinluyuan_f2_floor_proxy_disabled": true,
+    "default_navigation_visual_mode": "collision",
+    "gaussian_scene_loaded_by_default": false,
+    "overview_camera_prim_path": "/World/overview",
+    "overview_camera_outside_gaussian_subtree_offline_verified": true,
+    "configuration_unit_verified": true,
+    "preflight_text_marker_verified": true,
+    "runtime_resolution_verified": false
+  },
+  "scene_collision": {
+    "path_env": "LIANGZHU_COLLISION_USD",
+    "composed_prim_path": "/World/PhysicsScene/CollisionScene/LiangzhuCollision",
+    "physics_collision_api_observed": true,
+    "payload_mesh_marker_verified": true,
+    "terrain_wrapper_composition": {
+      "authored_root_type_opinion": null,
+      "composed_root_type": "Mesh",
+      "mesh_count": 1,
+      "vertex_count": 167792,
+      "collision_api_count": 1,
+      "offline_openusd_verified": true,
+      "ancestor_world_transform_identity_verified": true,
+      "wrapper_world_transform_matches_source": true,
+      "runtime_preimport_validation_added": true,
+      "isaac_terrain_import_verified": false
+    },
+    "runtime_load_verified": false
+  },
+  "visual_scene": {
+    "path_env": "LIANGZHU_VISUAL_USDZ",
+    "composed_prim_path": "/World/VisualScene/GaussianScene",
+    "package_members_verified": [
+      "default.usda",
+      "gauss.usda",
+      "liangzhu.nurec"
+    ],
+    "loaded_by_default": false,
+    "explicit_enable_mode": "--navigation-visual-mode full",
+    "runtime_load_verified": false
+  },
+  "robot": {
+    "profile": "go2_x5",
+    "scene_reference_path": "source/robot/go2_x5/urdf/go2_x5/go2_x5.usd",
+    "asset_exists": true,
+    "offline_composition": {
+      "visual_mesh_count_with_instance_proxies": 35,
+      "collision_api_count": 36,
+      "rigid_body_api_count": 40,
+      "articulation_root_count": 1,
+      "revolute_joint_count": 18,
+      "prismatic_joint_count": 2,
+      "verified": true
+    },
+    "runtime_articulation_verified": false
+  },
+  "objects": {
+    "cola_01": {
+      "prim_path": "/World/cola",
+      "asset_path": "source/scene/objects/cola/MesaTask-10K/MesaTask_Assets/can/0364ab96f338493c972248102b462aa4/usd/0364ab96f338493c972248102b462aa4.usd",
+      "texture_path": "source/scene/objects/cola/MesaTask-10K/MesaTask_Assets/can/0364ab96f338493c972248102b462aa4/usd/textures/0364ab96f338493c972248102b462aa4_texture0.png",
+      "asset_and_texture_exist": true,
+      "stage_composition_offline_verified": true,
+      "stage_visual_mesh_count": 1,
+      "stage_collision_api_count": 1,
+      "stage_rigid_body_api_count": 1,
+      "stage_mass_api_count": 1,
+      "xform_units_resolve_preserved_offline": true,
+      "runtime_rigid_body_verified": false
+    }
+  },
+  "receptacles": {
+    "mat_carpet_01": {
+      "class": "floor_mat",
+      "aliases": ["mouse_mat", "mouse_pad", "mat", "carpet"],
+      "prim_path": "/World/carpet",
+      "collision_prim_path": "/World/carpet/material",
+      "asset_path": "source/scene/objects/carpet.usd",
+      "asset_sha256": "817ff5412fedeb712ad23e8f137d698d3247f2416831bbfebfe376ab7b8cfd04",
+      "asset_exists": true,
+      "static_collision_api_offline_verified": true,
+      "world_bbox_min_xyz": [
+        -0.5256912909766562,
+        5.042934329921819,
+        -0.1511698018711953
+      ],
+      "world_bbox_max_xyz": [
+        -0.34934108388105994,
+        5.180688481971604,
+        -0.1507709268939391
+      ],
+      "support_surface_z": -0.1507709268939391,
+      "task_pose_override_before_physics": true,
+      "mat_bottom_clearance_above_highest_floor_m": 0.0002,
+      "runtime_stage_validation_gate_added": true,
+      "runtime_collision_verified": false,
+      "release_stability_verified": false
+    }
+  },
+  "manipulation_targets": {
+    "mode": "sim_mesh_truth",
+    "visual_localization_required": false,
+    "pick_tcp_source": "runtime_live_object_bbox",
+    "pick_grasp_mode": "top_down",
+    "pick_tcp_local_x_direction": "arm_base_link_-z",
+    "top_down_reverse_approach_lift": true,
+    "top_down_curobo_plan_probe_target_region": "front",
+    "top_down_curobo_plan_probe_standoff_range_m": [0.35, 0.39],
+    "top_down_curobo_plan_probe_verified": true,
+    "place_tcp_source": "runtime_receptacle_bbox_plus_pick_object_bbox_plus_current_tcp_offset",
+    "place_reuses_pick_top_down_orientation": true,
+    "configured_place_pose_role": "offline_geometry_consistency_baseline",
+    "mesh_truth_derivation_unit_verified": true,
+    "runtime_pick_export_verified": false,
+    "runtime_place_export_verified": false
+  },
+  "pct": {
+    "source_collision_ply_env": "LIANGZHU_COLLISION_PLY",
+    "source_collision_ply_sha256": "85c2a2e745905eb9e83cc46c8f68e1706431658598d783c94f022f8131ad78de",
+    "tomogram_path": "source/scene/liangzhu/pct/liangzhu_single_floor.pickle",
+    "walkable_path": "source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy",
+    "server_script": "scripts/navigation/pct_grid_server.py",
+    "coord_mode": "identity",
+    "offset_xy": [0.0, 0.0],
+    "scale_xy": [1.0, 1.0],
+    "robot_root_to_floor_m": 0.45,
+    "build_parameters": {
+      "resolution": 0.2,
+      "slice_dh": 0.5,
+      "padding": 1.0,
+      "sample_points": 1000000,
+      "random_seed": 0,
+      "dilation_radius": 1,
+      "max_wall_slices": 3,
+      "z_min": -0.5,
+      "z_max": 1.5
+    },
+    "offline_probe": {
+      "coord_mode": "identity",
+      "cross_floor_constraints_disabled": true,
+      "valid_slice": 1,
+      "slice_z": 0.0,
+      "start_to_pick_status": "ok",
+      "start_to_pick_snap_start_dist": 0,
+      "start_to_pick_snap_end_dist": 0,
+      "pick_to_place_status": "ok",
+      "pick_to_place_snap_start_dist": 0,
+      "pick_to_place_snap_end_dist": 0,
+      "runtime_navigation_verified": false
+    }
+  },
+  "locomotion": {
+    "policy_profile": "pct_multifloor",
+    "checkpoint_path": "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
+    "checkpoint_exists": true,
+    "checkpoint_runtime_load_verified": false
+  },
+  "frame_calibration": {
+    "status": "static_geometry_verified_runtime_pending",
+    "coord_mode": "identity",
+    "evidence": [
+      {
+        "name": "robot_start_floor",
+        "world_xy": [-1.4849319648011197, 5.126136502764003],
+        "robot_root_z": 0.29281728532721385,
+        "robot_yaw_runtime_range_deg": [-30.0, 30.0],
+        "robot_translate_fixed_by_task": true
+      },
+      {
+        "name": "phase0_coke_in_forward_sector_on_floor",
+        "robot_start_xy": [-1.4849319648011197, 5.126136502764003],
+        "robot_start_yaw_rad": 0.0,
+        "object_world_xy": [-0.64, 5.6],
+        "object_bearing_world_rad": 0.511120222919071,
+        "heading_error_rad": 0.511120222919071,
+        "sector_half_angle_rad": 0.6108652381980153,
+        "distance_m": 0.9687397169288612,
+        "collision_support_z": -0.13462198378754056,
+        "object_center_z": -0.08087518948544228
+      },
+      {
+        "name": "mat_carpet_place_target",
+        "world_xy": [-0.4375161874288581, 5.111811405946711],
+        "scene_floor_support_z": -0.15136980187119528,
+        "mat_support_surface_z": -0.1507709268939391,
+        "mat_top_above_scene_floor_m": 0.0005988749772561862,
+        "object_center_z": -0.09712594670872055,
+        "object_bbox_center_to_min_z_m": 0.05364498018521855,
+        "object_extent_source": "composed_stage_usd_world_bbox_at_authored_upright_pose"
+      }
+    ],
+    "runtime_path_overlay_verified": false
+  },
+  "collision_relationship": {
+    "visual_scene_is_physics_collision": false,
+    "physics_collision_is_curobo_world": false,
+    "physics_collision_layout": "single_merged_collision_prim",
+    "active_target_receptacle": "mat_carpet_01",
+    "semantic_mat_prim_verified": true,
+    "task_local_curobo_support_proxies": {
+      "config_path": "tasks/nav_pick_place_cola_liangzhu_pct.json",
+      "pick_collision_id": "pick:liangzhu_pick_floor_support_phase0",
+      "place_collision_id": "place:liangzhu_mat_support_phase0",
+      "pick_source": "collision_ply_support_face_proxy",
+      "place_source": "usd_collision_world_bbox_proxy",
+      "padding_mode": "preserve_top",
+      "configuration_unit_verified": true,
+      "runtime_export_verified": false,
+      "curobo_plan_avoidance_verified": false
+    },
+    "note": "pick cuboid 来自良渚地面 PLY；place cuboid 来自 /World/carpet/material 实际碰撞包围盒。PhysX 仍需在真实 smoke 中确认垫子碰撞与释放稳定性。"
+  },
+  "randomization": {
+    "phase": 1,
+    "mode": "robot_forward_sector_v1",
+    "target_randomization_enabled": true,
+    "robot_translate_fixed_xyz": [-1.4849319648011197, 5.126136502764003, 0.29281728532721385],
+    "robot_yaw_range_deg": [-30.0, 30.0],
+    "sector_half_angle_deg": 35.0,
+    "cola_radius_range_m": [0.7, 1.15],
+    "mat_radius_range_m": [0.85, 1.3],
+    "cola_mat_initial_overlap_rejected": true,
+    "collision_ply_ground_probe_required": true,
+    "base_goal_randomization_enabled": true,
+    "pick_base_standoff_range_m": [0.35, 0.39],
+    "place_base_standoff_range_m": [0.35, 0.39],
+    "target_region_in_base": "front",
+    "final_alignment_mode": "face_target",
+    "place_approach_origin": "pick_base_goal",
+    "dynamic_proxy_regeneration_implemented": true,
+    "episode_stage_receptacle_pose_sync_implemented": true,
+    "offline_seed_sweep_count": 50,
+    "offline_seed_sweep_verified": true,
+    "pct_plan_seed_sweep_count": 50,
+    "pct_plan_request_count": 100,
+    "pct_plan_seed_sweep_verified": true,
+    "pct_plan_max_snap_distance_m": 0.0,
+    "front_50_seed_sweep_report": "/tmp/liangzhu_front_50_seed_sweep.json",
+    "randomized_openusd_proxy_bbox_verified": true,
+    "runtime_randomized_episode_verified": false,
+    "note": "每个 episode 同步更新机器人 yaw、可乐、地垫、placement region、正面对准目标的导航终态和 pick/place CuRobo 支撑代理；place goal 从 pick base goal 朝地垫生成。"
+  },
+  "data_export": {
+    "schema_version": "full_physics_lerobot_v2.1.2",
+    "training_action_schema": "base_xyyaw_tcp_base_rpy_gripper_v1",
+    "training_action_dimension": 10,
+    "training_action_alignment": "next_sample_executed_pose",
+    "terminal_action": "hold_current_pose",
+    "base_pose_frame": "world",
+    "tcp_pose_frame": "base_frame",
+    "control_action_schema": "base_velocity_arm_joint_gripper_targets_v1",
+    "control_action_dimension": 11,
+    "offline_conversion_unit_verified": true,
+    "dry_run_training_gate_verified": true,
+    "gaussian_scene_required_for_training": false,
+    "synchronized_rgb_camera_gate_unit_verified": true,
+    "collision_mode_rgb_training_eligible": true,
+    "overview_camera_prim_path": "/World/overview",
+    "overview_camera_image_video_gui_shared": true,
+    "task_place_tolerance_override_supported": true,
+    "placement_region_gate_unit_verified": true,
+    "receptacle_runtime_support_training_gate_added": true,
+    "receptacle_runtime_support_training_gate_unit_verified": true,
+    "mesh_truth_manipulation_target_training_gate_added": true,
+    "mesh_truth_manipulation_target_training_gate_unit_verified": true,
+    "real_episode_export_verified": false,
+    "real_episode_training_eligible_verified": false
+  }
+}
