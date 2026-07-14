@@ -1778,7 +1778,7 @@ class IsaacLabNavigationRuntime:
         )
 
     def _show_only_task_object(self, stage: Any, episode_spec: EpisodeSpec) -> dict[str, Any]:
-        """复用 baseline 语义：隐藏 apple/orange/bottle 中的非任务物体。"""
+        """只保留任务物体，并停用非任务物体的渲染与物理。"""
 
         from pxr import Usd, UsdGeom
 
@@ -1787,13 +1787,20 @@ class IsaacLabNavigationRuntime:
             self._hidden_distractor_root_paths = ()
             return {"applied": False, "reason": "object_prim_path_missing"}
 
+        object_prim = stage.GetPrimAtPath(object_prim_path)
+        if object_prim.IsValid() and not object_prim.IsActive():
+            object_prim.SetActive(True)
+
         object_prefix = object_prim_path.rstrip("/") + "/"
         keywords = ("apple", "orange", "bottle")
         candidate_roots: list[str] = []
         hidden_paths: list[str] = []
         shown_paths: list[str] = []
+        deactivated_roots: list[str] = []
 
-        for prim in stage.Traverse():
+        # 第二次调用发生在 collision patch 之后；TraverseAll 才能重新发现
+        # 首次调用中已经停用的干扰物，并持续保留规划排除根路径。
+        for prim in stage.TraverseAll():
             prim_path = str(prim.GetPath())
             if prim_path == object_prim_path or prim_path.startswith(object_prefix):
                 continue
@@ -1812,8 +1819,12 @@ class IsaacLabNavigationRuntime:
                 if child.IsA(UsdGeom.Imageable):
                     UsdGeom.Imageable(child).MakeInvisible()
                     hidden_paths.append(child_path)
+            if root_prim.IsActive():
+                root_prim.SetActive(False)
+            if not root_prim.IsActive():
+                deactivated_roots.append(root_path)
 
-        for prim in stage.Traverse():
+        for prim in stage.TraverseAll():
             prim_path = str(prim.GetPath())
             if prim_path == object_prim_path or prim_path.startswith(object_prefix):
                 if prim.IsA(UsdGeom.Imageable):
@@ -1828,6 +1839,8 @@ class IsaacLabNavigationRuntime:
             "shown_paths": shown_paths,
             "hidden_root_paths": hidden_root_paths,
             "hidden_paths": hidden_paths,
+            "deactivated_root_paths": deactivated_roots,
+            "distractor_physics_disabled": len(deactivated_roots) == len(hidden_root_paths),
             "planner_collision_exclusion_enabled": True,
         }
 

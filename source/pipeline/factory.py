@@ -127,6 +127,15 @@ def create_full_physics_pipeline(
                 settle_to_segment_start_skip_error_tolerance=0.005,
                 post_motion_hold_duration=post_motion_hold_duration,
                 post_motion_joint_error_tolerance=post_motion_joint_error_tolerance,
+                place_release_joint_error_tolerance=(
+                    full_physics_config.manipulation.place_release_joint_error_tolerance
+                ),
+                place_release_joint_velocity_tolerance=(
+                    full_physics_config.manipulation.place_release_joint_velocity_tolerance
+                ),
+                place_release_stability_window_duration=(
+                    full_physics_config.manipulation.place_release_stability_window_duration_s
+                ),
                 fail_on_strict_post_motion_state_unavailable=True,
                 require_close_progress_for_motion=True,
                 post_open_release_settle_duration=(

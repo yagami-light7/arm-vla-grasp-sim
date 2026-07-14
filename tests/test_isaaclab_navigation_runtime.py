@@ -628,6 +628,30 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
             builder_source.index("wrapped = RslRlVecEnvWrapper"),
         )
 
+    def test_show_only_task_object_deactivates_physical_distractors(self) -> None:
+        try:
+            from pxr import Usd
+        except ImportError:
+            self.skipTest("当前 Python 环境没有 OpenUSD pxr")
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.DefinePrim("/World", "Xform")
+        distractor = stage.DefinePrim("/World/apple", "Xform")
+        task_object = stage.DefinePrim("/World/apple_01", "Xform")
+        runtime = object.__new__(IsaacLabNavigationRuntime)
+        runtime._hidden_distractor_root_paths = ()
+        episode = type("Episode", (), {"object_prim_path": "/World/apple_01"})()
+
+        first_report = runtime._show_only_task_object(stage, episode)
+        second_report = runtime._show_only_task_object(stage, episode)
+
+        self.assertFalse(distractor.IsActive())
+        self.assertTrue(task_object.IsActive())
+        self.assertEqual(first_report["deactivated_root_paths"], ["/World/apple"])
+        self.assertEqual(second_report["deactivated_root_paths"], ["/World/apple"])
+        self.assertTrue(second_report["distractor_physics_disabled"])
+        self.assertEqual(runtime._hidden_distractor_root_paths, ("/World/apple",))
+
     def test_runtime_reads_front_and_wrist_camera_images(self) -> None:
         class FakeSensor:
             def __init__(self, value: int):

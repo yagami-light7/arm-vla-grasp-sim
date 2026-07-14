@@ -959,11 +959,27 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             )
             self.assertAlmostEqual(
                 pipeline.machine.arm_executor.config.place_approach_motion_time_scale,
-                1.00,
+                1.50,
             )
             self.assertAlmostEqual(
                 pipeline.machine.arm_executor.config.place_retreat_motion_time_scale,
                 1.00,
+            )
+            self.assertAlmostEqual(
+                pipeline.machine.arm_executor.config.place_release_joint_error_tolerance,
+                0.025,
+            )
+            self.assertAlmostEqual(
+                pipeline.machine.arm_executor.config.place_release_joint_velocity_tolerance,
+                0.03,
+            )
+            self.assertAlmostEqual(
+                pipeline.machine.arm_executor.config.place_release_stability_window_duration,
+                0.30,
+            )
+            self.assertIn(
+                "approach_to_place",
+                pipeline.machine.arm_executor.config.unskippable_post_motion_hold_segments,
             )
             self.assertAlmostEqual(
                 pipeline.machine.arm_executor.config.arm_command_dt,
@@ -1271,6 +1287,89 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         no_retreat = verifier.verify_pick_success(no_retreat_state, spec)
         self.assertFalse(no_retreat.success)
         self.assertEqual(no_retreat.failure_reason, "object_not_retreated")
+
+    def test_full_physics_verifier_rejects_place_release_ejection(self) -> None:
+        spec = JsonTaskProvider().load(
+            PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json"
+        )
+        verifier = FullPhysicsVerifier(NavigationEpisodeVerifier())
+        target_xyz = tuple(float(value) for value in spec.place_target_pose[:3])
+        stable_state = SimulationState(
+            step_index=200,
+            timestamp=4.0,
+            robot_root_pose=(0.0, 0.0, 0.35, 1.0, 0.0, 0.0, 0.0),
+            robot_root_velocity=(0.0,) * 6,
+            object_pose=(*target_xyz, 1.0, 0.0, 0.0, 0.0),
+            object_velocity=(0.0,) * 6,
+            metadata={
+                "gripper_open_apply_count": 40,
+                "place_open_apply_count_delta": 35,
+                "place_release_observed": True,
+                "place_release_object_pose": (*target_xyz, 1.0, 0.0, 0.0, 0.0),
+                "place_expected_release_object_center": target_xyz,
+                "place_release_velocity_sample_count": 80,
+                "place_peak_object_linear_speed_mps": 0.04,
+                "place_peak_object_horizontal_speed_mps": 0.02,
+                "place_peak_object_angular_speed_rps": 0.40,
+                "place_max_horizontal_displacement_m": 0.01,
+            },
+        )
+
+        stable = verifier.verify_place_success(stable_state, spec)
+        ejected = verifier.verify_place_success(
+            replace(
+                stable_state,
+                metadata={
+                    **stable_state.metadata,
+                    "place_peak_object_linear_speed_mps": 0.62,
+                    "place_peak_object_horizontal_speed_mps": 0.47,
+                    "place_peak_object_angular_speed_rps": 40.8,
+                    "place_max_horizontal_displacement_m": 0.063,
+                },
+            ),
+            spec,
+        )
+        released_too_high = verifier.verify_place_success(
+            replace(
+                stable_state,
+                metadata={
+                    **stable_state.metadata,
+                    "place_release_object_pose": (
+                        target_xyz[0],
+                        target_xyz[1],
+                        target_xyz[2] + 0.045,
+                        1.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                    ),
+                },
+            ),
+            spec,
+        )
+
+        self.assertTrue(stable.success)
+        self.assertEqual(
+            stable.metadata["validation_mode"],
+            "contact_release_pose_dynamics_and_final_stability",
+        )
+        self.assertFalse(ejected.success)
+        self.assertEqual(ejected.failure_reason, "place_release_ejected")
+        self.assertFalse(released_too_high.success)
+        self.assertEqual(released_too_high.failure_reason, "place_release_pose_error")
+
+        non_finite_pose = verifier.verify_place_success(
+            replace(stable_state, object_pose=(float("nan"), *stable_state.object_pose[1:])),
+            spec,
+        )
+        non_finite_velocity = verifier.verify_place_success(
+            replace(stable_state, object_velocity=(float("inf"), 0.0, 0.0, 0.0, 0.0, 0.0)),
+            spec,
+        )
+        self.assertFalse(non_finite_pose.success)
+        self.assertEqual(non_finite_pose.failure_reason, "object_out_of_place")
+        self.assertFalse(non_finite_velocity.success)
+        self.assertEqual(non_finite_velocity.failure_reason, "place_dynamics_unavailable")
 
     def test_full_physics_mode_reports_stable_success_with_lock_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

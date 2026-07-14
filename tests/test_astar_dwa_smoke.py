@@ -914,7 +914,7 @@ class AStarDwaSmokeTest(unittest.TestCase):
         self.assertIsNone(status["dwa_limits"]["large_heading_creep_velocity"])
         self.assertEqual(status["dwa_limits"]["max_infeasible_recomputes"], 8)
 
-    def test_pct_physical_pre_stair_carry_avoids_policy_standing_velocity_deadzone(self) -> None:
+    def test_pct_physical_flat_carry_avoids_policy_standing_velocity_deadzone(self) -> None:
         grid = OccupancyGridMap(
             np.zeros((80, 80), dtype=bool),
             0.1,
@@ -996,8 +996,9 @@ class AStarDwaSmokeTest(unittest.TestCase):
         self.assertAlmostEqual(with_float_action.base_velocity[0], 0.25)
 
         with_float._stair_float_started = True
+        with_float._stair_float_done = True
         post_float_action = with_float.compute_action(state)
-        self.assertAlmostEqual(post_float_action.base_velocity[0], 0.05)
+        self.assertAlmostEqual(post_float_action.base_velocity[0], 0.25)
 
         class FixedTurningController:
             def compute_command(self, pose, velocity):
@@ -2279,6 +2280,79 @@ class AStarDwaSmokeTest(unittest.TestCase):
         self.assertNotIn("navigation_full_body_joint_lock", final_release.metadata)
         self.assertNotIn("navigation_support_joint_lock", final_release.metadata)
         self.assertTrue(final_release.metadata["navigation_stair_float_completed"])
+
+    def test_pct_carry_initial_turn_rotation_recovers_only_once(self) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((80, 80), dtype=bool),
+            0.05,
+            (-1.0, -1.0, 0.0),
+        )
+        path_3d = ((0.0, 0.0, 0.0), (1.0, 0.0, 1.0))
+        plan = NavPlan(
+            goal=NavGoal(x=1.0, y=0.0, z=1.0, yaw=0.0),
+            waypoints=((0.0, 0.0), (1.0, 0.0)),
+            metadata={
+                "planner": "pct",
+                "path_3d": path_3d,
+                "slice_start": 0,
+                "slice_end": 4,
+                "execution_phase": "carry_nav_to_place",
+            },
+        )
+        executor = DwaNavExecutor(
+            grid_map=grid,
+            dwa_config=DWAConfig(control_dt=0.05),
+            stall_window_steps=4,
+            stall_min_progress_m=0.05,
+        )
+        executor.reset(plan)
+        executor._last_dwa_debug = DWADebug(
+            target_index=1,
+            target_point=(1.0, 0.0),
+            distance_to_target=0.18,
+            distance_to_goal=1.0,
+            heading_error=-0.876,
+            clearance=0.40,
+            score=1.0,
+            reached_goal=False,
+            near_goal_tracking=False,
+            sampled_candidates=21,
+            feasible_candidates=14,
+            collision_rejections=0,
+            path_deviation_rejections=7,
+            best_linear_velocity=0.105,
+            best_angular_velocity=-0.30,
+            path_distance=0.105,
+            path_deviation_limit_used=0.12,
+            initial_alignment_active=False,
+            path_recovery_active=False,
+            window_linear_velocity=0.105,
+            window_angular_velocity=-0.30,
+            velocity_window_source="command",
+        )
+        poses = (0.0, 0.015, 0.030, 0.049)
+        body_velocity = (0.009, 0.0, -0.319)
+        command = (0.105, 0.0, -0.30)
+
+        for x in poses:
+            executor._update_stall((x, 0.0, 0.0), body_velocity, command)
+
+        first_status = executor.status()
+        self.assertFalse(first_status["stall_detected"])
+        self.assertEqual(first_status["stall_recovery_count"], 1)
+        self.assertEqual(
+            first_status["last_stall_recovery_reason"],
+            "pct_initial_turn_rotation",
+        )
+        self.assertTrue(first_status["pct_initial_turn_stall_recovery_used"])
+
+        for x in poses:
+            executor._update_stall((x, 0.0, 0.0), body_velocity, command)
+
+        second_status = executor.status()
+        self.assertTrue(second_status["stall_detected"])
+        self.assertEqual(second_status["failure_reason"], "nav_collision")
+        self.assertEqual(second_status["stall_recovery_count"], 1)
 
     def test_pct_carry_stops_after_repeated_collision_only_windows(self) -> None:
         grid = OccupancyGridMap(

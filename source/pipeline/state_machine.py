@@ -767,6 +767,7 @@ class FullPhysicsStateMachine:
         self.pick_planner_result: dict[str, Any] = {}
         self.pick_executor_status: dict[str, Any] = {}
         self.pick_verification_result: dict[str, Any] = {}
+        self.place_verification_result: dict[str, Any] = {}
         self.export_result: dict[str, Any] = {}
         self._carry_gripper_target: dict[str, Any] | None = None
         self._carry_arm_home_target: dict[str, Any] | None = None
@@ -774,6 +775,23 @@ class FullPhysicsStateMachine:
         self._pick_peak_object_lift_height_m: float | None = None
         self._pick_peak_object_pose: tuple[float, ...] | None = None
         self._pick_peak_step_index: int | None = None
+        self._place_opening_started = False
+        self._place_opening_step_index: int | None = None
+        self._place_opening_object_pose: tuple[float, ...] | None = None
+        self._place_expected_object_tcp_offset: tuple[float, float, float] | None = None
+        self._place_pre_release_object_tcp_offset_report: dict[str, Any] = {}
+        self._place_release_observed = False
+        self._place_release_step_index: int | None = None
+        self._place_release_object_pose: tuple[float, ...] | None = None
+        self._place_release_gripper_open_progress: float | None = None
+        self._place_expected_release_object_center: tuple[float, float, float] | None = None
+        self._place_expected_release_center_source = "unavailable"
+        self._place_open_apply_count_baseline = 0
+        self._place_release_velocity_sample_count = 0
+        self._place_peak_object_linear_speed_mps: float | None = None
+        self._place_peak_object_horizontal_speed_mps: float | None = None
+        self._place_peak_object_angular_speed_rps: float | None = None
+        self._place_max_horizontal_displacement_m: float | None = None
         self._episode_reset_applied = False
         self._object_settle_elapsed_steps = 0
         self._object_settle_stable_steps = 0
@@ -845,12 +863,29 @@ class FullPhysicsStateMachine:
             "pick_planner_result": dict(self.pick_planner_result),
             "pick_executor_status": dict(self.pick_executor_status),
             "pick_verification_result": dict(self.pick_verification_result),
+            "place_verification_result": dict(self.place_verification_result),
             "lerobot_export": dict(self.export_result),
             "carry_gripper_target": dict(self._carry_gripper_target or {}),
             "carry_arm_home_target": dict(self._carry_arm_home_target or {}),
             "pick_peak_object_lift_height_m": self._pick_peak_object_lift_height_m,
             "pick_peak_object_pose": self._pick_peak_object_pose,
             "pick_peak_step_index": self._pick_peak_step_index,
+            "place_opening_started": self._place_opening_started,
+            "place_opening_step_index": self._place_opening_step_index,
+            "place_pre_release_object_tcp_offset_report": dict(
+                self._place_pre_release_object_tcp_offset_report
+            ),
+            "place_release_observed": self._place_release_observed,
+            "place_release_step_index": self._place_release_step_index,
+            "place_release_object_pose": self._place_release_object_pose,
+            "place_peak_object_linear_speed_mps": self._place_peak_object_linear_speed_mps,
+            "place_peak_object_horizontal_speed_mps": (
+                self._place_peak_object_horizontal_speed_mps
+            ),
+            "place_peak_object_angular_speed_rps": self._place_peak_object_angular_speed_rps,
+            "place_max_horizontal_displacement_m": (
+                self._place_max_horizontal_displacement_m
+            ),
         }
 
     def _handle_state(
@@ -1612,6 +1647,14 @@ class FullPhysicsStateMachine:
                         place_return_home_report,
                     )
                 )
+        plan, stable_release_report = self._configure_stable_place_release(plan)
+        self.latest_planner_result = {
+            **self.latest_planner_result,
+            "trajectory_points": len(plan.joint_trajectory),
+            "stable_place_release": stable_release_report,
+            **plan.metadata,
+        }
+        self._reset_place_release_tracking(observation, plan)
         visualization_event = self._visualize_planned_trajectory(
             plan,
             trajectory_type="manipulation",
@@ -1626,7 +1669,295 @@ class FullPhysicsStateMachine:
         return RobotAction.idle(source="place_plan"), events
 
     def _exec_place(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
-        return self._execute_arm(observation, PipelineState.VERIFY_PLACE_SUCCESS)
+        self._update_place_release_tracking(observation)
+        action, events = self._execute_arm(
+            observation,
+            PipelineState.VERIFY_PLACE_SUCCESS,
+        )
+        if action.metadata.get("event_marker") == "gripper_open":
+            offset_report = self._place_object_tcp_offset_report(observation)
+            self._place_pre_release_object_tcp_offset_report = offset_report
+            if (
+                observation.metadata.get("execution_provenance_verified") is True
+                and not offset_report.get("within_tolerance", False)
+            ):
+                events = [event for event in events if event.name != "gripper_open"]
+                events.extend(
+                    self._fail(
+                        "place_object_slipped_before_release",
+                        observation,
+                        offset_report,
+                    )
+                )
+                return RobotAction.idle(source="place_release_blocked"), events
+            self._begin_place_opening_tracking(observation)
+        if (
+            not self._place_release_observed
+            and action.metadata.get("segment_name") == "open_gripper"
+            and action.metadata.get("gripper_phase") == "hold"
+        ):
+            open_progress = _gripper_motion_progress(observation, action)
+            if open_progress is not None and open_progress >= 0.80:
+                self._mark_place_release_observed(observation, open_progress)
+                events.append(
+                    self._event(
+                        "place_release_observed",
+                        observation.step_index,
+                        {
+                            "gripper_open_progress": open_progress,
+                            "observation_timing": "after_open_move_before_hold_action",
+                        },
+                    )
+                )
+        return action, events
+
+    def _configure_stable_place_release(
+        self,
+        plan: ArmPlan,
+    ) -> tuple[ArmPlan, dict[str, Any]]:
+        """把 pick 验证后的轻夹持目标和任务等待时间写入 place plan。"""
+
+        metadata = dict(plan.metadata)
+        raw_place = dict((self.episode_spec.raw_task or {}).get("place") or {})
+        settle_steps = max(0, int(raw_place.get("settle_steps", 0) or 0))
+        metadata["place_release_settle_steps"] = settle_steps
+
+        carry_target = dict(self._carry_gripper_target or {})
+        joint_names = tuple(
+            str(value) for value in carry_target.get("gripper_joint_names") or ()
+        )
+        joint_positions = tuple(
+            float(value)
+            for value in carry_target.get("gripper_joint_positions") or ()
+        )
+        inherited = bool(
+            joint_names
+            and len(joint_names) == len(joint_positions)
+            and all(math.isfinite(value) for value in joint_positions)
+        )
+        hold_source = str(
+            carry_target.get("hold_position_source") or "carry_target_unavailable"
+        )
+        if inherited:
+            metadata["place_closed_gripper_hold"] = {
+                "gripper_joint_names": joint_names,
+                "gripper_joint_positions": joint_positions,
+                "source": hold_source,
+            }
+
+        report = {
+            "carry_preload_inherited": inherited,
+            "carry_preload_source": hold_source,
+            "gripper_joint_names": joint_names,
+            "gripper_joint_positions": joint_positions,
+            "release_settle_steps": settle_steps,
+            "release_settle_duration_s": settle_steps * 0.02,
+            "release_clearance_min_m": (
+                self.config.manipulation.place_release_clearance_min_m
+            ),
+            "release_joint_error_tolerance": (
+                self.config.manipulation.place_release_joint_error_tolerance
+            ),
+            "release_joint_velocity_tolerance": (
+                self.config.manipulation.place_release_joint_velocity_tolerance
+            ),
+            "release_object_tcp_offset_tolerance_m": (
+                self.config.manipulation.place_release_object_tcp_offset_tolerance_m
+            ),
+        }
+        return replace(plan, metadata=metadata), report
+
+    def _reset_place_release_tracking(
+        self,
+        observation: SimulationState,
+        plan: ArmPlan,
+    ) -> None:
+        self.place_verification_result = {}
+        self._place_opening_started = False
+        self._place_opening_step_index = None
+        self._place_opening_object_pose = None
+        self._place_expected_object_tcp_offset = _object_tcp_offset(observation)
+        self._place_pre_release_object_tcp_offset_report = {}
+        self._place_release_observed = False
+        self._place_release_step_index = None
+        self._place_release_object_pose = None
+        self._place_release_gripper_open_progress = None
+        self._place_open_apply_count_baseline = int(
+            observation.metadata.get("gripper_open_apply_count", 0) or 0
+        )
+        self._place_release_velocity_sample_count = 0
+        self._place_peak_object_linear_speed_mps = None
+        self._place_peak_object_horizontal_speed_mps = None
+        self._place_peak_object_angular_speed_rps = None
+        self._place_max_horizontal_displacement_m = None
+
+        current_state_replan = plan.metadata.get("current_state_replan")
+        export_report = (
+            current_state_replan.get("export_report")
+            if isinstance(current_state_replan, dict)
+            else None
+        )
+        release_center = (
+            export_report.get("release_object_center_world")
+            if isinstance(export_report, dict)
+            else None
+        )
+        parsed_center = _finite_xyz(release_center)
+        if parsed_center is not None:
+            self._place_expected_release_object_center = parsed_center
+            self._place_expected_release_center_source = "current_state_curobo_export"
+            return
+        fallback = _finite_xyz(self.episode_spec.place_target_pose)
+        self._place_expected_release_object_center = fallback
+        self._place_expected_release_center_source = (
+            "episode_place_target" if fallback is not None else "unavailable"
+        )
+
+    def _place_object_tcp_offset_report(
+        self,
+        observation: SimulationState,
+    ) -> dict[str, Any]:
+        """检查 place 下放后物体是否仍保持规划时的 TCP 相对位置。"""
+
+        expected = self._place_expected_object_tcp_offset
+        actual = _object_tcp_offset(observation)
+        tolerance = float(
+            self.config.manipulation.place_release_object_tcp_offset_tolerance_m
+        )
+        if expected is None or actual is None:
+            return {
+                "available": False,
+                "within_tolerance": False,
+                "reason": "object_or_tcp_pose_unavailable",
+                "expected_object_tcp_offset_xyz": expected,
+                "actual_object_tcp_offset_xyz": actual,
+                "tolerance_m": tolerance,
+            }
+        delta = tuple(
+            actual_value - expected_value
+            for actual_value, expected_value in zip(actual, expected)
+        )
+        drift = math.sqrt(sum(value * value for value in delta))
+        return {
+            "available": True,
+            "within_tolerance": drift <= tolerance,
+            "expected_object_tcp_offset_xyz": expected,
+            "actual_object_tcp_offset_xyz": actual,
+            "offset_delta_xyz": delta,
+            "offset_drift_m": drift,
+            "tolerance_m": tolerance,
+        }
+
+    def _begin_place_opening_tracking(self, observation: SimulationState) -> None:
+        """从渐进开夹首帧开始统计动力学，但此时尚不宣告物理释放。"""
+
+        if self._place_opening_started:
+            return
+        self._place_opening_started = True
+        self._place_opening_step_index = int(observation.step_index)
+        self._place_opening_object_pose = (
+            tuple(float(value) for value in observation.object_pose)
+            if observation.object_pose is not None
+            else None
+        )
+        self._place_max_horizontal_displacement_m = 0.0
+        self._update_place_release_tracking(observation)
+
+    def _mark_place_release_observed(
+        self,
+        observation: SimulationState,
+        gripper_open_progress: float,
+    ) -> None:
+        """夹爪达到足够开度后记录物理释放位姿。"""
+
+        self._place_release_observed = True
+        self._place_release_step_index = int(observation.step_index)
+        self._place_release_object_pose = (
+            tuple(float(value) for value in observation.object_pose)
+            if observation.object_pose is not None
+            else None
+        )
+        self._place_release_gripper_open_progress = float(gripper_open_progress)
+
+    def _update_place_release_tracking(self, observation: SimulationState) -> None:
+        if not self._place_opening_started:
+            return
+        if observation.object_velocity is not None and len(observation.object_velocity) >= 6:
+            vx, vy, vz, wx, wy, wz = (
+                float(value) for value in observation.object_velocity[:6]
+            )
+            if all(math.isfinite(value) for value in (vx, vy, vz, wx, wy, wz)):
+                linear_speed = math.sqrt(vx * vx + vy * vy + vz * vz)
+                horizontal_speed = math.hypot(vx, vy)
+                angular_speed = math.sqrt(wx * wx + wy * wy + wz * wz)
+                self._place_release_velocity_sample_count += 1
+                self._place_peak_object_linear_speed_mps = max(
+                    self._place_peak_object_linear_speed_mps or 0.0,
+                    linear_speed,
+                )
+                self._place_peak_object_horizontal_speed_mps = max(
+                    self._place_peak_object_horizontal_speed_mps or 0.0,
+                    horizontal_speed,
+                )
+                self._place_peak_object_angular_speed_rps = max(
+                    self._place_peak_object_angular_speed_rps or 0.0,
+                    angular_speed,
+                )
+        if observation.object_pose is None or self._place_opening_object_pose is None:
+            return
+        horizontal_displacement = math.hypot(
+            float(observation.object_pose[0]) - self._place_opening_object_pose[0],
+            float(observation.object_pose[1]) - self._place_opening_object_pose[1],
+        )
+        self._place_max_horizontal_displacement_m = max(
+            self._place_max_horizontal_displacement_m or 0.0,
+            horizontal_displacement,
+        )
+
+    def _place_release_tracking_metadata(
+        self,
+        observation: SimulationState,
+    ) -> dict[str, Any]:
+        open_count = int(observation.metadata.get("gripper_open_apply_count", 0) or 0)
+        return {
+            "place_opening_started": self._place_opening_started,
+            "place_opening_step_index": self._place_opening_step_index,
+            "place_release_observed": self._place_release_observed,
+            "place_release_step_index": self._place_release_step_index,
+            "place_release_object_pose": self._place_release_object_pose,
+            "place_release_gripper_open_progress": (
+                self._place_release_gripper_open_progress
+            ),
+            "place_pre_release_object_tcp_offset_report": dict(
+                self._place_pre_release_object_tcp_offset_report
+            ),
+            "place_expected_release_object_center": (
+                self._place_expected_release_object_center
+            ),
+            "place_expected_release_center_source": (
+                self._place_expected_release_center_source
+            ),
+            "place_open_apply_count_baseline": self._place_open_apply_count_baseline,
+            "place_open_apply_count_delta": max(
+                0,
+                open_count - self._place_open_apply_count_baseline,
+            ),
+            "place_release_velocity_sample_count": (
+                self._place_release_velocity_sample_count
+            ),
+            "place_peak_object_linear_speed_mps": (
+                self._place_peak_object_linear_speed_mps
+            ),
+            "place_peak_object_horizontal_speed_mps": (
+                self._place_peak_object_horizontal_speed_mps
+            ),
+            "place_peak_object_angular_speed_rps": (
+                self._place_peak_object_angular_speed_rps
+            ),
+            "place_max_horizontal_displacement_m": (
+                self._place_max_horizontal_displacement_m
+            ),
+        }
 
     def _visualize_planned_trajectory(
         self,
@@ -1666,11 +1997,27 @@ class FullPhysicsStateMachine:
         self,
         observation: SimulationState,
     ) -> tuple[RobotAction, list[PipelineEvent]]:
-        result = self.verifier.verify_place_success(observation, self.episode_spec)
+        self._update_place_release_tracking(observation)
+        verification_observation = replace(
+            observation,
+            metadata={
+                **observation.metadata,
+                **self._place_release_tracking_metadata(observation),
+            },
+        )
+        result = self.verifier.verify_place_success(
+            verification_observation,
+            self.episode_spec,
+        )
+        self.place_verification_result = {
+            "success": bool(result.success),
+            "failure_reason": result.failure_reason,
+            **result.metadata,
+        }
         if not result.success:
             return RobotAction.idle(source="verify_place_success"), self._fail(
                 result.failure_reason or "object_out_of_place",
-                observation,
+                verification_observation,
                 result.metadata,
             )
         place_success_event = (
@@ -1846,6 +2193,9 @@ class FullPhysicsStateMachine:
             self._carry_gripper_target = None
             # pick 开头会先打开夹爪，不能因此清除已由 pick plan 建立的 carry home 目标。
             # 机械臂目标是否生效由 carry 状态集合控制，与夹爪 release 生命周期解耦。
+            return
+        if self.state == PipelineState.EXEC_PLACE:
+            # place 只消费 pick 验证出的低内力 preload，不能把它重记成规划中的零开度。
             return
         if command != self.gripper.command_close() and marker != "gripper_close":
             return
@@ -2620,3 +2970,70 @@ def _metadata_tuple(metadata: dict[str, Any], key: str) -> tuple[Any, ...] | Non
     if isinstance(value, list):
         return tuple(value)
     return (value,)
+
+
+def _finite_xyz(values: Any) -> tuple[float, float, float] | None:
+    if not isinstance(values, (tuple, list)) or len(values) < 3:
+        return None
+    xyz = tuple(float(value) for value in values[:3])
+    if not all(math.isfinite(value) for value in xyz):
+        return None
+    return (xyz[0], xyz[1], xyz[2])
+
+
+def _object_tcp_offset(
+    observation: SimulationState,
+) -> tuple[float, float, float] | None:
+    object_xyz = _finite_xyz(observation.object_pose)
+    tcp_xyz = _finite_xyz(observation.tcp_pose)
+    if object_xyz is None or tcp_xyz is None:
+        return None
+    return tuple(
+        object_value - tcp_value
+        for object_value, tcp_value in zip(object_xyz, tcp_xyz)
+    )
+
+
+def _gripper_motion_progress(
+    observation: SimulationState,
+    action: RobotAction,
+) -> float | None:
+    """根据真实关节开度计算夹爪从起点到打开目标的最小进度。"""
+
+    metadata = action.metadata
+    joint_names = tuple(str(value) for value in metadata.get("gripper_joint_names", ()))
+    q_start = tuple(float(value) for value in metadata.get("gripper_start_positions", ()))
+    q_target = tuple(
+        float(value) for value in metadata.get("gripper_final_target_positions", ())
+    )
+    all_joint_names = tuple(str(value) for value in observation.metadata.get("joint_names", ()))
+    if (
+        not joint_names
+        or len(q_start) != len(joint_names)
+        or len(q_target) != len(joint_names)
+        or not all_joint_names
+        or not observation.joint_positions
+    ):
+        return None
+    try:
+        joint_indices = tuple(all_joint_names.index(name) for name in joint_names)
+    except ValueError:
+        return None
+    if any(index >= len(observation.joint_positions) for index in joint_indices):
+        return None
+
+    progress_values: list[float] = []
+    for index, start, target in zip(joint_indices, q_start, q_target):
+        span = target - start
+        if start >= target - 0.002:
+            progress_values.append(1.0)
+            continue
+        if abs(span) <= 1.0e-9:
+            continue
+        actual = float(observation.joint_positions[index])
+        if not math.isfinite(actual):
+            return None
+        progress_values.append(max(0.0, min(1.0, (actual - start) / span)))
+    if not progress_values:
+        return None
+    return min(progress_values)

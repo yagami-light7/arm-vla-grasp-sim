@@ -192,10 +192,15 @@ class ManipulationSettings:
     pick_approach_motion_time_scale: float = 0.50
     # place 携物段对齐稳定 baseline。pick 仍可保持 2 倍速，place 三段不再使用全局 2 倍速。
     place_move_to_pre_place_motion_time_scale: float = 1.00
-    place_approach_motion_time_scale: float = 1.00
+    place_approach_motion_time_scale: float = 1.50
     place_retreat_motion_time_scale: float = 1.00
     arm_post_motion_hold_duration_s: float = 0.75
     arm_post_motion_joint_error_tolerance: float = 0.030
+    # 松爪前使用独立的严格位置与速度门，不能继承 PCT profile 的宽松通用容差。
+    place_release_joint_error_tolerance: float = 0.025
+    place_release_joint_velocity_tolerance: float = 0.03
+    place_release_stability_window_duration_s: float = 0.30
+    place_release_object_tcp_offset_tolerance_m: float = 0.02
     # 对齐 video baseline：松爪后先保持释放位姿，让苹果在桌面稳定，再执行退臂。
     place_release_settle_duration_s: float = 0.50
     # 对齐稳定 baseline 的 nav->pick handoff：只停驻并锁住已有姿态，不改变底盘站高。
@@ -215,7 +220,7 @@ class ManipulationSettings:
     return_home_after_place: bool = True
     place_return_home_duration_s: float = 1.20
     place_return_home_skip_tolerance: float = 0.01
-    # 对齐 baseline arm-place：轻放时物体中心只高于目标 1.0 cm。
+    # 单楼层稳定 baseline 保留 10 mm 低高度沉降，避免闭合夹爪把苹果压进桌面后再退臂拖走。
     place_release_clearance_min_m: float = 0.010
     place_pre_clearance_min_m: float = 0.06
     hold_arm_home_during_carry: bool = True
@@ -562,6 +567,16 @@ class FullPhysicsConfig:
             raise ValueError("arm_post_motion_hold_duration_s must be positive")
         if self.manipulation.arm_post_motion_joint_error_tolerance < 0.0:
             raise ValueError("arm_post_motion_joint_error_tolerance must be non-negative")
+        if self.manipulation.place_release_joint_error_tolerance < 0.0:
+            raise ValueError("place_release_joint_error_tolerance must be non-negative")
+        if self.manipulation.place_release_joint_velocity_tolerance < 0.0:
+            raise ValueError("place_release_joint_velocity_tolerance must be non-negative")
+        if self.manipulation.place_release_stability_window_duration_s <= 0.0:
+            raise ValueError("place_release_stability_window_duration_s must be positive")
+        if self.manipulation.place_release_object_tcp_offset_tolerance_m < 0.0:
+            raise ValueError(
+                "place_release_object_tcp_offset_tolerance_m must be non-negative"
+            )
         if self.manipulation.place_release_settle_duration_s < 0.0:
             raise ValueError("place_release_settle_duration_s must be non-negative")
         if self.manipulation.base_lock_settle_steps < 0:

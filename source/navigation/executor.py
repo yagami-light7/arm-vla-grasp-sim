@@ -60,6 +60,8 @@ PCT_POST_STAIR_FLOAT_STALL_RECOVERY_PROGRESS_RATIO = 0.90
 PCT_POST_STAIR_FLOAT_STALL_RECOVERY_LINEAR_SPEED_MPS = 0.04
 PCT_CARRY_STALL_RECOVERY_PROGRESS_RATIO = 0.90
 PCT_CARRY_STALL_RECOVERY_LINEAR_SPEED_MPS = 0.01
+PCT_CARRY_INITIAL_TURN_MIN_HEADING_ERROR_RAD = 0.45
+PCT_CARRY_INITIAL_TURN_MIN_ANGULAR_SPEED_RAD_S = 0.10
 
 
 class DwaNavExecutor:
@@ -282,6 +284,7 @@ class DwaNavExecutor:
         self._stall_detected = False
         self._stall_recovery_count = 0
         self._last_stall_recovery_reason: str | None = None
+        self._pct_initial_turn_stall_recovery_used = False
         self._stall_diagnostics = self.stall_detector.diagnostics()
         self._last_command = (0.0, 0.0, 0.0)
         self._last_pose: tuple[float, float, float] | None = None
@@ -388,6 +391,7 @@ class DwaNavExecutor:
         self._stall_detected = False
         self._stall_recovery_count = 0
         self._last_stall_recovery_reason = None
+        self._pct_initial_turn_stall_recovery_used = False
         self._stall_diagnostics = self.stall_detector.diagnostics()
         self._last_command = (0.0, 0.0, 0.0)
         self._last_pose = None
@@ -475,25 +479,32 @@ class DwaNavExecutor:
                 self._dwa_hold_count += 1
                 command = self._last_command
 
-        no_float_activation_vx = min(
+        carry_gait_activation_vx = min(
             PCT_NO_FLOAT_CARRY_GAIT_ACTIVATION_VX,
             float(self._active_dwa_config.max_linear_velocity),
+        )
+        minimum_feasible_candidates = (
+            0
+            if self._last_dwa_debug is None
+            else max(
+                1,
+                int(math.ceil(float(self._last_dwa_debug.sampled_candidates) * 0.50)),
+            )
         )
         if (
             self._phase == "dwa"
             and self._carry_mode
-            and (
-                not self.stair_float_enabled
-                or not self._stair_float_started
-            )
             and self._last_dwa_debug is not None
             and abs(float(self._last_dwa_debug.heading_error)) <= 0.20
-            and 0.0 < float(command[0]) < no_float_activation_vx
+            and not self._last_dwa_debug.path_recovery_active
+            and self._last_dwa_debug.feasible_candidates >= minimum_feasible_candidates
+            and self._last_dwa_debug.collision_rejections == 0
+            and 0.0 < float(command[0]) < carry_gait_activation_vx
         ):
-            # 该策略把 0.08m/s 以下命令解释为站立；物理携物转弯时保持
-            # 最小激活速度，避免 DWA 小速度与策略站立死区互相锁住。
+            # 平地 carry 在 float 前后都必须越过策略站立死区；只有路径可行且
+            # 不处于偏航恢复时才抬高前进速度，避免覆盖 DWA 的安全恢复限速。
             command = (
-                no_float_activation_vx,
+                carry_gait_activation_vx,
                 float(command[1]),
                 float(command[2]),
             )
@@ -588,6 +599,9 @@ class DwaNavExecutor:
             "stall": self._stall_status(self._stall_diagnostics),
             "stall_recovery_count": self._stall_recovery_count,
             "last_stall_recovery_reason": self._last_stall_recovery_reason,
+            "pct_initial_turn_stall_recovery_used": (
+                self._pct_initial_turn_stall_recovery_used
+            ),
             "dwa_compute": self._dwa_compute_status(),
             "dwa_limits": self._active_dwa_limits(),
             "local_refinement": self._local_refinement_report,
@@ -1276,6 +1290,17 @@ class DwaNavExecutor:
             float(self.stall_detector.min_progress_m)
             * self.stall_recovery_progress_ratio
         )
+        if self._pct_initial_turn_rotation_is_recovering(
+            diagnostics,
+            body_velocity,
+            command,
+        ):
+            # PCT 首路点的大角度转向只续期一次；若下一窗口仍无进展则正常失败。
+            self._pct_initial_turn_stall_recovery_used = True
+            self._reset_stall_after_motion_recovery(
+                "pct_initial_turn_rotation"
+            )
+            return
         if (
             self._carry_mode
             and diagnostics.max_displacement_m >= recovery_progress
@@ -1314,6 +1339,53 @@ class DwaNavExecutor:
         self._success = False
         self._failure_reason = "nav_collision"
         self._phase = "stalled"
+
+    def _pct_initial_turn_rotation_is_recovering(
+        self,
+        diagnostics: StallDiagnostics,
+        body_velocity: tuple[float, float, float],
+        command: tuple[float, float, float],
+    ) -> bool:
+        """识别 PCT 携物首路点仍在正确转向的阈值边界窗口。"""
+
+        debug = self._last_dwa_debug
+        if (
+            not self._carry_mode
+            or self._pct_initial_turn_stall_recovery_used
+            or self.plan is None
+            or self.plan.metadata.get("planner") != "pct"
+            or not _pct_plan_is_multifloor(self.plan)
+            or self._stair_float_started
+            or debug is None
+            or int(debug.target_index) != 1
+        ):
+            return False
+        minimum_feasible_candidates = max(
+            1,
+            int(math.ceil(float(debug.sampled_candidates) * 0.50)),
+        )
+        minimum_progress = (
+            float(self.stall_detector.min_progress_m)
+            * PCT_CARRY_STALL_RECOVERY_PROGRESS_RATIO
+        )
+        heading_error = float(debug.heading_error)
+        commanded_wz = float(command[2])
+        measured_wz = float(body_velocity[2])
+        return (
+            diagnostics.max_displacement_m >= minimum_progress
+            and debug.sampled_candidates > 0
+            and debug.feasible_candidates >= minimum_feasible_candidates
+            and debug.collision_rejections == 0
+            and abs(heading_error)
+            >= PCT_CARRY_INITIAL_TURN_MIN_HEADING_ERROR_RAD
+            and float(command[0]) >= self.stall_detector.min_forward_command
+            and abs(commanded_wz)
+            >= PCT_CARRY_INITIAL_TURN_MIN_ANGULAR_SPEED_RAD_S
+            and abs(measured_wz)
+            >= PCT_CARRY_INITIAL_TURN_MIN_ANGULAR_SPEED_RAD_S
+            and heading_error * commanded_wz > 0.0
+            and heading_error * measured_wz > 0.0
+        )
 
     def _carry_near_threshold_motion_is_recovering(
         self,
@@ -1428,6 +1500,11 @@ class DwaNavExecutor:
             "failed": bool(self._failure_reason),
             "failure_reason": self._failure_reason,
             "stall": self._stall_status(self._stall_diagnostics),
+            "stall_recovery_count": self._stall_recovery_count,
+            "last_stall_recovery_reason": self._last_stall_recovery_reason,
+            "pct_initial_turn_stall_recovery_used": (
+                self._pct_initial_turn_stall_recovery_used
+            ),
             "dwa_compute": self._dwa_compute_status(),
             "dwa_limits": self._active_dwa_limits(),
             "local_refinement": self._local_refinement_report,

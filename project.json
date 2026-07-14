@@ -2,8 +2,8 @@
   "project": "arm_vla_pct",
   "branch": "pct",
   "goal": "将 flat A* 全局导航替换为 PCT 多楼层规划器，并接入新的 RL locomotion checkpoint 配置。",
-  "current_phase": "phase_174_curobo_path_module_relocation",
-  "last_updated": "2026-07-13 21:41:06",
+  "current_phase": "phase_185_float_pipeline_stable_place_verified",
+  "last_updated": "2026-07-14 14:54:40",
   "status": {
     "portable_script_paths_updated": true,
     "curobo_runtime_path_resolution_added": true,
@@ -364,9 +364,16 @@
     "pct_float_camera6_camera7_camera8_order_fixed": true,
     "pct_float_camera_schedule_offline_full_route_verified": true,
     "pct_float_camera_schedule_full_real_reverification_pending": true,
-    "pct_float_pipeline_stably_reproducible": false,
-    "pct_latest_full_rerun_failed_on_f2_dwa_collision": true,
+    "pct_float_pipeline_stably_reproducible": true,
+    "pct_latest_full_rerun_failed_on_f2_dwa_collision": false,
     "pct_local_gauss_loading_deferred_to_server": true,
+    "pct_place_distractor_physics_disabled": true,
+    "pct_place_release_safety_gate_added": true,
+    "pct_place_three_consecutive_runs_verified": true,
+    "pct_phase183_full_pipeline_verified": true,
+    "pct_phase184_full_pipeline_verified": true,
+    "pct_phase185_full_pipeline_verified": true,
+    "pct_float_pipeline_final_acceptance_complete": true,
     "pct_final_acceptance_complete": false
   },
   "local_assets": {
@@ -6616,15 +6623,93 @@
         "部署时在固定 Isaac Lab commit 的外部目录先执行 patch --dry-run，再应用 URDF importer 补丁。",
         "用户手动 git add 时确认新增 source/manipulation/curobo_paths.py，且不要把旧 source/curobo_paths.py 重新加入。"
       ]
+    },
+    {
+      "time": "2026-07-14 14:54:40",
+      "summary": "修复 Float pipeline 的 F2 导航恢复和 place 释放稳定性，停用非任务物体的真实 PhysX 物理，并用完全相同的默认命令连续完成 phase183、phase184、phase185 三轮完整 pick、Float 跨楼层、place、视频和 LeRobot 导出。",
+      "files_changed": [
+        "source/diagnostics/full_physics.py",
+        "source/manipulation/arm_executor.py",
+        "source/navigation/executor.py",
+        "source/pipeline/config.py",
+        "source/pipeline/factory.py",
+        "source/pipeline/state_machine.py",
+        "source/simulation/isaaclab_runtime.py",
+        "tests/test_astar_dwa_smoke.py",
+        "tests/test_full_physics_manipulation.py",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "Float 完成后 F2 偶发低速停滞或 DWA 初始转向恢复反复触发，完整 pipeline 不能稳定到达 place。",
+          "root_cause": "Float 释放后的平地段没有继续保证携物 gait activation floor，且 PCT 初始转向停滞恢复缺少严格的一次性和阶段门控。",
+          "fix": "在安全条件下把携物 gait activation floor 延续到 Float 后 F2 平地段，并把 PCT initial-turn stall reset 收紧为一次性、阶段和状态共同门控。",
+          "prevention": "保留覆盖 Float 后 F2、低速携物和重复恢复抑制的 executor 单测；完整验收必须从 pick 一直运行到 place，而不是只做 carry smoke。"
+        },
+        {
+          "problem": "place 阶段机械臂曾在苹果尚未稳定时打开夹爪，苹果可能被下压、拖拽或甩离桌面。",
+          "root_cause": "旧执行会重新构造零位夹爪挤压目标，approach hold 可被宽松位置误差提前跳过，释放判定没有完整稳定窗口、真实开指进度和物体相对 TCP 漂移门控。",
+          "fix": "复用 pick 后实测携物预紧位置；approach_to_place 强制完成收敛等待；用 0.30 秒关节位置窗口计算真实稳定速度；仅在夹爪真实打开进度达到阈值时记录释放，并增加释放前 object-TCP 漂移及释放后速度、位移和最终姿态验证。place 释放高度恢复为桌面上方 10 mm。",
+          "prevention": "以后修改 place 轨迹或夹爪时同时验证打开前、释放瞬间和撤离后三个窗口，并以物体动力学和最终画面作为必要验收，不再只依据 executor done。"
+        },
+        {
+          "problem": "多楼层场景中的非任务 /World/apple 虽被隐藏并从 cuRobo 障碍中排除，但仍可能保留刚体和碰撞，造成不可见的 place 干扰。",
+          "root_cause": "_show_only_task_object 只调用 MakeInvisible，没有停用 USD prim；视觉隐藏不等于 PhysX 物理禁用。",
+          "fix": "任务物体固定为 /World/apple_01 并保持 active；对 /World/apple、bottle 等非任务根使用 SetActive(False)，使用 TraverseAll 保证 collision patch 后再次调用时仍可发现并记录这些根。三轮启动日志均只对 apple_01 应用苹果碰撞补丁。",
+          "prevention": "非任务资产的过滤必须同时检查可见性、active 状态、刚体/碰撞参与和规划排除；新增 OpenUSD 单测验证连续调用仍保持任务物体 active、干扰物 inactive。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest tests/test_astar_dwa_smoke.py tests/test_full_physics_manipulation.py tests/test_full_physics_pipeline.py tests/test_isaaclab_navigation_runtime.py -q",
+          "result": "passed",
+          "note": "183 passed, 2 skipped；skip 为普通 Python 环境缺少 OpenUSD pxr，真实 Isaac Sim 三轮运行已覆盖对应路径。"
+        },
+        {
+          "command": "python -m py_compile <navigation/manipulation/pipeline/runtime changed files>",
+          "result": "passed",
+          "note": "导航、机械臂、验证器、state machine、IsaacLab runtime 和入口脚本语法检查通过。"
+        },
+        {
+          "command": "python scripts/pipeline/run_full_physics_pipeline.py --headless --pct-multifloor --output-dir <phase183>",
+          "result": "passed",
+          "note": "完整状态链到 done；place 最终 XY/Z 误差 2.79/0.65 mm，最大水平位移 2.51 mm，最终线速度 0.00082 m/s，LeRobot 可训练。"
+        },
+        {
+          "command": "python scripts/pipeline/run_full_physics_pipeline.py --headless --pct-multifloor --output-dir <phase184>",
+          "result": "passed",
+          "note": "完整状态链到 done；place 最终 XY/Z 误差 0.72/0.76 mm，最大水平位移 3.02 mm，最终线速度 0.00057 m/s，LeRobot 可训练。"
+        },
+        {
+          "command": "python scripts/pipeline/run_full_physics_pipeline.py --headless --pct-multifloor --output-dir <phase185>",
+          "result": "passed",
+          "note": "完整状态链到 done；place 最终 XY/Z 误差 0.25/0.75 mm，最大水平位移 0.96 mm，最终线速度 0.00026 m/s，LeRobot 可训练。"
+        },
+        {
+          "command": "ffmpeg 抽取 phase183-185 place 释放后和最终帧并人工核对",
+          "result": "passed",
+          "note": "三轮苹果均独立留在目标台面，夹爪撤离后未拖拽、未飞出、未与不可见干扰物堆叠。"
+        },
+        {
+          "command": "完整 no-float stair pipeline",
+          "result": "not_run",
+          "note": "本轮用户要求验收默认 Float pipeline 和 place 稳定性；no-float 低层 policy 上楼仍是独立未完成能力，不用 Float 三轮结果替代。"
+        }
+      ],
+      "next_steps": [
+        "将默认 Float pipeline 作为当前稳定复现基线；后续修改导航、place 或场景物体过滤时至少保留一次完整回归。",
+        "若继续推进纯物理跨楼层，单独训练或接入带机械臂负载的楼梯 locomotion policy，并用 --no-pct-stair-float 验收。",
+        "迁移服务器后先复跑默认命令，再单独启用 Gauss 做渲染压力测试。"
+      ]
     }
   ],
-  "open_questions": [
-    "是否将当前 --pct-stair-float 作为能力已验证但尚未稳定复现的阶段版本，还是先完成 F2 净空/DWA 修复和连续三轮验收后再交付？"
-  ],
+  "open_questions": [],
   "known_limitations": [
-    "phase161 是完整 Float pipeline 的单次成功记录，不是稳定性证明；phase171 的同默认命令在 F2 因约 3cm 墙侧漂移跨入膨胀障碍格并触发 nav_collision，当前必须保持 pct_float_pipeline_stably_reproducible=false。",
-    "最终 Camera0-8 schedule 已通过完整成功轨迹离线回放，且真实复跑验证到 Camera6；由于本轮 F2 导航提前失败，Camera7/8 尚未在最终规则下完成同一次真实全链路验收。",
-    "PCT 稳定预设现在默认启用 stair-float；可用 --no-pct-stair-float 显式运行完整 no-float pipeline。stair-float 楼梯段会冻结底盘并沿 path_3d 写入 root pose，因此 phase161 的 stable_physics_success=true，但 pure_physics_success=false。",
+    "phase183、phase184、phase185 已用相同默认命令和 seed=0 连续三轮完整成功，足以作为当前场景的稳定复现基线；尚未覆盖多 seed、随机化 place 目标或更换资产后的统计稳定性。",
+    "最终 Camera0-8 schedule 已在 phase183、phase184、phase185 三轮完整成功运行中覆盖，三路视频均正常导出；每轮编码统计仍有 1 个 dropped frame。",
+    "PCT 稳定预设默认启用 stair-float；可用 --no-pct-stair-float 显式运行完整 no-float pipeline。stair-float 楼梯段会冻结底盘并沿 path_3d 写入 root pose，因此 phase183-185 的 stable_physics_success=true，但 pure_physics_success=false。",
     "独立 --stair-locomotion-smoke 在 phase168 已补齐出口后的 F2 收尾段并真实导出 Camera3 图像/视频，但机器人仍在约 (1.72,5.88) 处停滞，低层 policy 上楼能力仍未验收；Camera5 自动切换仅通过 z>=1.8m 调度测试，尚未由真实上段运动触发。",
     "当前 pct_multifloor checkpoint 是 12 维 dog-only policy；要获得纯足端动力学的携物上楼能力，仍需训练或接入针对楼梯和机械臂负载的新 locomotion policy。",
     "当前 PCT 全局路径完整保存在 NavPlan.metadata[\"path_3d\"]，普通局部执行仍主要由 DWA 消费 XY waypoints；z/slice 只在 stair-float 等多楼层专用逻辑中使用。",
@@ -6632,6 +6717,6 @@
     "Isaac Sim 5.1 的 USD 0.24.5 不包含 ParticleField3DGaussianSplat schema，当前环境不能通过安全启用扩展直接获得原生 3DGS ParticleField。",
     "任务没有可用 flat nav_map 时会显式禁用 PCT 到 A* fallback；PCT server 或资产失败会直接报错，不会静默回退。",
     "开启 overview/front/wrist 三路 25Hz 视频、5Hz 原始图像和 LeRobot 导出的 phase161 约占 1.9GB；后续重型运行应直接写入 /mnt/sage_data/outputs。",
-    "phase161 启动期间仍有 Go2-X5 rotor visual unresolved-reference 警告，但不影响 collision 模式下的完整状态链、物理验证、视频和 LeRobot 导出。"
+    "phase183-185 启动期间仍有 Go2-X5 rotor visual unresolved-reference 警告，但不影响 collision 模式下的完整状态链、物理验证、视频和 LeRobot 导出。"
   ]
 }

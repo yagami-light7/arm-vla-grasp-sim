@@ -6,6 +6,7 @@ import json
 import math
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from source.interfaces import ArmPlan, EpisodeSpec, NavGoal, SimulationState
@@ -487,6 +488,13 @@ class FullPhysicsManipulationTest(unittest.TestCase):
                 ],
             ),
             *payload["segments"],
+            _motion_segment(
+                "return_home_after_place",
+                [
+                    (0.1, 0.11, 0.12, 0.13, 0.14, 0.15),
+                    (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                ],
+            ),
         ]
         plan = arm_plan_from_curobo_payload(payload)
         executor = SegmentedArmExecutor(
@@ -516,6 +524,7 @@ class FullPhysicsManipulationTest(unittest.TestCase):
         self.assertEqual(scale_by_segment["move_to_pre_place"], 1.0)
         self.assertEqual(scale_by_segment["approach_to_place"], 1.0)
         self.assertEqual(scale_by_segment["retreat_place"], 1.0)
+        self.assertEqual(scale_by_segment["return_home_after_place"], 1.0)
 
     def test_place_pre_open_segments_hold_gripper_closed_without_close_segment(self) -> None:
         payload = _place_payload()
@@ -566,6 +575,194 @@ class FullPhysicsManipulationTest(unittest.TestCase):
         )
         self.assertTrue(
             all(action.metadata.get("gripper_hold_after_close") for action in pre_open_motion_actions)
+        )
+
+    def test_place_pre_open_segments_use_verified_carry_preload(self) -> None:
+        plan = arm_plan_from_curobo_payload(_place_payload())
+        plan.metadata["place_closed_gripper_hold"] = {
+            "gripper_joint_names": ("arm_joint7", "arm_joint8"),
+            "gripper_joint_positions": (0.021, 0.023),
+            "source": "verified_contact_preload",
+        }
+        executor = SegmentedArmExecutor(
+            BinaryGripperController(),
+            config=SegmentedArmExecutorConfig(
+                sim_dt=0.02,
+                arm_command_dt=0.02,
+                settle_to_segment_start_duration=0.0,
+                post_motion_hold_duration=0.0,
+                gripper_move_duration=0.02,
+                gripper_hold_duration=0.0,
+            ),
+        )
+        executor.reset(plan)
+
+        actions = _drain_executor(executor)
+        first_open_index = next(
+            index
+            for index, action in enumerate(actions)
+            if action.metadata.get("segment_name") == "open_gripper"
+        )
+        pre_open_actions = [
+            action
+            for action in actions[:first_open_index]
+            if action.metadata.get("segment_name") == "approach_to_place"
+        ]
+
+        self.assertTrue(pre_open_actions)
+        self.assertTrue(all(action.gripper_command == "close" for action in pre_open_actions))
+        self.assertTrue(
+            all(
+                tuple(action.metadata.get("gripper_joint_positions", ()))
+                == (0.021, 0.023)
+                for action in pre_open_actions
+            )
+        )
+
+    def test_place_release_wait_is_unskippable_and_rejects_moving_arm(self) -> None:
+        plan = arm_plan_from_curobo_payload(_place_payload())
+        executor = SegmentedArmExecutor(
+            BinaryGripperController(),
+            config=SegmentedArmExecutorConfig(
+                sim_dt=0.05,
+                arm_command_dt=0.05,
+                settle_to_segment_start_duration=0.0,
+                post_motion_hold_duration=0.10,
+                place_release_stability_window_duration=0.10,
+                gripper_move_duration=0.05,
+                gripper_hold_duration=0.0,
+                final_motion_hold_duration=0.0,
+            ),
+        )
+        executor.reset(plan)
+        target = (0.4, 0.41, 0.42, 0.43, 0.44, 0.45)
+        state = _state_with_all_joints((*target, 0.02, 0.02))
+        while executor.status()["current_segment"] != {
+            "name": "approach_to_place",
+            "type": "post_motion_hold",
+        }:
+            executor.compute_action(state)
+
+        first_hold = executor.compute_action(state)
+        second_hold = executor.compute_action(state)
+        moving_state = replace(
+            state,
+            joint_positions=tuple(value + 0.004 for value in target) + (0.02, 0.02),
+            joint_velocities=(0.0,) * 8,
+        )
+        failed_action = executor.compute_action(moving_state)
+
+        self.assertEqual(first_hold.metadata["segment_type"], "post_motion_hold")
+        self.assertEqual(second_hold.metadata["segment_type"], "post_motion_hold")
+        self.assertEqual(failed_action.source, "arm_place_failed")
+        self.assertTrue(executor.status()["failed"])
+        self.assertEqual(executor.status()["failure_reason"], "arm_place_release_not_stable")
+        failure = executor.status()["failure_metadata"]
+        self.assertEqual(
+            failure["post_motion_hold_velocity_source"],
+            "joint_position_window_peak_delta",
+        )
+        self.assertGreater(failure["final_velocity"], failure["velocity_tolerance"])
+
+    def test_place_release_ignores_inconsistent_contact_velocity_when_position_is_stable(self) -> None:
+        plan = arm_plan_from_curobo_payload(_place_payload())
+        executor = SegmentedArmExecutor(
+            BinaryGripperController(),
+            config=SegmentedArmExecutorConfig(
+                sim_dt=0.05,
+                arm_command_dt=0.05,
+                settle_to_segment_start_duration=0.0,
+                post_motion_hold_duration=0.10,
+                place_release_stability_window_duration=0.10,
+                gripper_move_duration=0.05,
+                gripper_hold_duration=0.0,
+                final_motion_hold_duration=0.0,
+            ),
+        )
+        executor.reset(plan)
+        target = (0.4, 0.41, 0.42, 0.43, 0.44, 0.45)
+        state = _state_with_all_joints((*target, 0.02, 0.02))
+        while executor.status()["current_segment"] != {
+            "name": "approach_to_place",
+            "type": "post_motion_hold",
+        }:
+            executor.compute_action(state)
+
+        executor.compute_action(state)
+        executor.compute_action(state)
+        noisy_velocity_state = replace(
+            state,
+            joint_velocities=(0.2,) * 6 + (0.0, 0.0),
+        )
+        next_action = executor.compute_action(noisy_velocity_state)
+
+        self.assertFalse(executor.status()["failed"])
+        self.assertEqual(next_action.metadata["segment_name"], "open_gripper")
+        report = executor.status()["strict_post_motion_wait_reports"][-1]
+        self.assertTrue(report["post_motion_hold_converged"])
+        self.assertEqual(
+            report["post_motion_hold_velocity_source"],
+            "joint_position_window_peak_delta",
+        )
+        self.assertEqual(report["post_motion_hold_position_derived_velocity"], 0.0)
+        self.assertEqual(report["post_motion_hold_reported_state_velocity"], 0.2)
+
+    def test_place_release_rejects_incomplete_stability_window(self) -> None:
+        plan = arm_plan_from_curobo_payload(_place_payload())
+        executor = SegmentedArmExecutor(
+            BinaryGripperController(),
+            config=SegmentedArmExecutorConfig(
+                sim_dt=0.05,
+                arm_command_dt=0.05,
+                settle_to_segment_start_duration=0.0,
+                post_motion_hold_duration=0.10,
+                place_release_stability_window_duration=0.30,
+                fail_on_strict_post_motion_state_unavailable=True,
+                gripper_move_duration=0.05,
+                gripper_hold_duration=0.0,
+                final_motion_hold_duration=0.0,
+            ),
+        )
+        executor.reset(plan)
+        target = (0.4, 0.41, 0.42, 0.43, 0.44, 0.45)
+        state = _state_with_all_joints((*target, 0.02, 0.02))
+
+        while not executor.is_done(state):
+            executor.compute_action(state)
+
+        status = executor.status()
+        self.assertTrue(status["failed"])
+        self.assertEqual(status["failure_reason"], "arm_place_release_not_stable")
+        self.assertFalse(
+            status["failure_metadata"]["post_motion_hold_stability_window_complete"]
+        )
+
+    def test_place_release_uses_task_settle_steps(self) -> None:
+        plan = arm_plan_from_curobo_payload(_place_payload())
+        plan.metadata["place_release_settle_steps"] = 7
+        executor = SegmentedArmExecutor(
+            BinaryGripperController(),
+            config=SegmentedArmExecutorConfig(
+                sim_dt=0.02,
+                settle_to_segment_start_duration=0.0,
+                post_motion_hold_duration=0.0,
+                gripper_move_duration=0.02,
+                gripper_hold_duration=0.0,
+                post_open_release_settle_duration=0.04,
+            ),
+        )
+        executor.reset(plan)
+
+        actions = _drain_executor(executor)
+        release_settle_actions = [
+            action
+            for action in actions
+            if action.metadata.get("segment_type") == "post_open_release_settle"
+        ]
+
+        self.assertEqual(len(release_settle_actions), 7)
+        self.assertTrue(
+            all(action.metadata["task_release_settle_steps"] == 7 for action in release_settle_actions)
         )
 
     def test_place_plan_emits_gripper_open_event_without_internal_world_step(self) -> None:
