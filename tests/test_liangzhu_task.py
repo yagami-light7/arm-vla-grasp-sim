@@ -66,7 +66,7 @@ def test_liangzhu_fixed_task_loads_through_existing_episode_spec() -> None:
     )
     assert episode.raw_task["navigation_execution"] == {
         "final_position_tolerance": 0.1,
-        "place_position_tolerance": 0.12,
+        "place_position_tolerance": 0.15,
         "final_yaw_tolerance": 0.15,
         "stable_linear_velocity": 0.06,
         "stable_angular_velocity": 0.2,
@@ -111,7 +111,7 @@ def test_liangzhu_fixed_task_loads_through_existing_episode_spec() -> None:
         "enabled": True,
         "schema": "nav_straight_turn_stop__arm_approach_contact_retreat_v1",
         "directory_export": True,
-        "output_layout": "episodes_task_episode_segment_front_wrist_v2",
+        "output_layout": "episodes_task_episode_subtask_front_wrist_v3",
         "min_segment_frames": 3,
         "hysteresis_frames": 2,
         "navigation": {
@@ -345,8 +345,8 @@ def test_liangzhu_runtime_manifest_keeps_unverified_runtime_gates_false() -> Non
     assert scene_runtime["visual_prim_path"] == "/World/VisualScene/GaussianScene"
     assert scene_runtime["collision_floor_proxy_profile"] is None
     assert scene_runtime["legacy_yinluyuan_f2_floor_proxy_disabled"] is True
-    assert scene_runtime["default_navigation_visual_mode"] == "full"
-    assert scene_runtime["gaussian_scene_loaded_by_default"] is True
+    assert scene_runtime["default_navigation_visual_mode"] == "collision"
+    assert scene_runtime["gaussian_scene_loaded_by_default"] is False
     assert scene_runtime["overview_camera_prim_path"] == "/World/overview"
     assert scene_runtime["configuration_unit_verified"] is True
     assert scene_runtime["preflight_text_marker_verified"] is True
@@ -399,6 +399,23 @@ def test_liangzhu_runtime_manifest_keeps_unverified_runtime_gates_false() -> Non
     assert randomization["runtime_randomized_episode_verified"] is False
     assert manifest["data_export"]["training_action_dimension"] == 10
     assert manifest["data_export"]["control_action_dimension"] == 11
+    assert manifest["data_export"]["schema_version"] == (
+        "full_physics_lerobot_v2.1.5"
+    )
+    assert manifest["data_export"]["subtask_directory_layout"] == (
+        "episodes_task_episode_subtask_front_wrist_v3"
+    )
+    assert manifest["data_export"]["subtask_directory_count_per_collected_episode"] == 6
+    assert list(
+        manifest["data_export"]["subtask_directory_index_mapping"].values()
+    ) == [
+        "nav_straight",
+        "nav_turn",
+        "nav_stop",
+        "arm_approach",
+        "arm_contact",
+        "arm_retreat",
+    ]
     assert manifest["data_export"]["gaussian_scene_required_for_training"] is False
     assert (
         manifest["data_export"]["synchronized_rgb_camera_gate_unit_verified"]

@@ -50,6 +50,8 @@ PCT_STAIR_FLOAT_DOG_STAND_JOINT_POSITIONS = (
     -1.5,
 )
 PCT_INFEASIBLE_ROTATION_RECOVERY_HEADING_TOLERANCE = 0.45
+PCT_CARRY_CLOSE_GOAL_ROTATE_IN_PLACE_ANGLE = 0.35
+PCT_CARRY_CLOSE_GOAL_ROTATE_IN_PLACE_DISTANCE = 0.80
 
 
 class DwaNavExecutor:
@@ -62,6 +64,7 @@ class DwaNavExecutor:
         dwa_config: DWAConfig | None = None,
         *,
         grid_map: OccupancyGridMap | None = None,
+        carry_grid_map: OccupancyGridMap | None = None,
         multifloor_grid_map: OccupancyGridMap | None = None,
         post_stair_grid_map: OccupancyGridMap | None = None,
         multifloor_protected_obstacle_map: OccupancyGridMap | None = None,
@@ -105,6 +108,8 @@ class DwaNavExecutor:
     ) -> None:
         if grid_map is not None and map_json is not None:
             raise ValueError("map_json 与 grid_map 只能提供一个。")
+        if carry_grid_map is not None and grid_map is None:
+            raise ValueError("carry_grid_map 需要同时提供 grid_map。")
         if local_clearance_radius < 0.0:
             raise ValueError("local_clearance_radius 不能为负数。")
         if terminal_start_distance <= 0.0:
@@ -168,6 +173,9 @@ class DwaNavExecutor:
 
         self.map_json = None if map_json is None else str(Path(map_json).expanduser().resolve())
         self._single_floor_raw_map = grid_map
+        self._carry_single_floor_raw_map = (
+            carry_grid_map if carry_grid_map is not None else grid_map
+        )
         self._multifloor_raw_map = multifloor_grid_map
         self._post_stair_raw_map = post_stair_grid_map
         self._multifloor_protected_obstacle_map = (
@@ -350,6 +358,14 @@ class DwaNavExecutor:
             self.terminal_pose_config,
             yaw_tolerance=self._active_yaw_tolerance,
             prefer_forward_translation=False,
+            # Carry navigation may use a wider, task-validated place
+            # acceptance radius than the generic terminal controller.  Keep
+            # both layers synchronized so XY recovery yields to yaw polish as
+            # soon as the actual place tolerance has been reached.
+            position_acceptance_tolerance=max(
+                float(self.terminal_pose_config.position_acceptance_tolerance),
+                float(self._active_position_tolerance),
+            ),
         )
         if self._carry_mode:
             carry_linear_limit = float(self._active_dwa_config.max_linear_velocity)
@@ -460,10 +476,16 @@ class DwaNavExecutor:
         terminal_position_tolerance = float(
             self._active_terminal_pose_config.position_tolerance
         )
+        terminal_translation_entry_tolerance = max(
+            terminal_position_tolerance,
+            float(self._active_position_tolerance),
+        )
         if (
             self._carry_mode
             and not self._carry_forward_translation_active
-            and terminal_position_tolerance < distance <= self.terminal_start_distance
+            and terminal_translation_entry_tolerance
+            < distance
+            <= self.terminal_start_distance
             and abs(yaw_error) <= self._active_yaw_tolerance
         ):
             # 保留已验证的大角度 holonomic 对准；只在最终 yaw 已合格、但
@@ -474,9 +496,11 @@ class DwaNavExecutor:
             )
         elif (
             self._carry_forward_translation_active
-            and distance <= terminal_position_tolerance
+            and distance <= self._active_position_tolerance
         ):
-            # 位置收敛后交回普通 terminal controller 做最终 yaw polish。
+            # 进入任务实际验收半径后立刻交回普通 terminal controller 做
+            # 最终 yaw polish。继续追逐内部 0.08 m 精调半径会让底盘绕过
+            # 已经有效的 place 位姿，并在近目标形成稳定圆周轨迹。
             self._carry_forward_translation_active = False
         next_phase = (
             "terminal_pose"
@@ -804,10 +828,22 @@ class DwaNavExecutor:
     def _select_local_map(self, plan: NavPlan) -> None:
         """按 PCT 路径是否跨楼层选择对应的二维避障投影。"""
 
-        selected = self._single_floor_raw_map
+        carry_mode = plan.metadata.get("execution_phase") == "carry_nav_to_place"
+        selected = (
+            self._carry_single_floor_raw_map
+            if carry_mode
+            else self._single_floor_raw_map
+        )
         multifloor = _pct_plan_is_multifloor(plan)
         self._map_selection_report = {
             "multifloor": multifloor,
+            "carry_mode": carry_mode,
+            "map_variant": (
+                "carry_without_task_object_keepout"
+                if carry_mode
+                and self._carry_single_floor_raw_map is not self._single_floor_raw_map
+                else "default"
+            ),
             "obstacle_inflate_radius_m": 0.0,
             "route_corridor_radius_m": None,
             "route_cells_cleared": 0,
@@ -925,6 +961,24 @@ class DwaNavExecutor:
             ),
             "enforce_path_deviation_limit": True,
         }
+        if not _pct_plan_is_multifloor(plan):
+            # Long/cross-floor routes retain smooth creeping turns, but a
+            # same-floor final carry approach must align before enabling the
+            # policy's 0.25 m/s minimum gait.  This prevents short place paths
+            # from arcing past the goal and being reported later as a
+            # collision stall.
+            updates.update(
+                {
+                    "close_goal_rotate_in_place_angle": min(
+                        PCT_CARRY_CLOSE_GOAL_ROTATE_IN_PLACE_ANGLE,
+                        float(self.dwa_config.rotate_in_place_angle),
+                    ),
+                    "close_goal_rotate_in_place_distance": (
+                        PCT_CARRY_CLOSE_GOAL_ROTATE_IN_PLACE_DISTANCE
+                    ),
+                    "close_goal_large_heading_creep_velocity": 0.0,
+                }
+            )
         if self.carry_max_linear_velocity is not None:
             updates["max_linear_velocity"] = min(
                 self.dwa_config.max_linear_velocity,
@@ -1306,8 +1360,17 @@ class DwaNavExecutor:
             "rotate_in_place_angle": float(
                 self._active_dwa_config.rotate_in_place_angle
             ),
+            "close_goal_rotate_in_place_angle": (
+                self._active_dwa_config.close_goal_rotate_in_place_angle
+            ),
+            "close_goal_rotate_in_place_distance": (
+                self._active_dwa_config.close_goal_rotate_in_place_distance
+            ),
             "large_heading_creep_velocity": (
                 self._active_dwa_config.large_heading_creep_velocity
+            ),
+            "close_goal_large_heading_creep_velocity": (
+                self._active_dwa_config.close_goal_large_heading_creep_velocity
             ),
             "consecutive_infeasible_recomputes": int(
                 self._consecutive_infeasible_recomputes

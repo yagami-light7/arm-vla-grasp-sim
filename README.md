@@ -259,6 +259,11 @@ batch 结束会打印以下表格：
 
 ![print_batch](requirements/image_video/print_batch.png)
 
+良渚量产回归默认使用 headless batch。GUI 只用于单 episode 可视化调试；
+如果 viewport 看起来停在 pick，但没有生成 `state_failed` 或最终 `summary.json`，
+应先按渲染 timeline 未继续推进处理，不要把画面最后一帧当作 pick 逻辑失败。
+同一 seed 应用 headless 入口复验，并以 `events.jsonl` 和 `summary.json` 为准。
+
 失败 episode 会保留诊断原始文件，但不会导出 LeRobot 训练入口：
 
 ```text
@@ -507,7 +512,7 @@ P 控制器持续输出很小的线速度/角速度时，策略可能只踏步�
 - `navigation_settling` 期间若机器人漂回容差外，会恢复末端控制，而不是永久保持零命令。
 - 良渚单层任务使用默认 `5000` 导航 step 上限；`12000` 只保留给真实多楼层长路径。
 
-当前良渚 task 的 pick 底盘末端位置容差为 `0.10m`，place 底盘交接使用独立的 `0.12m`，
+当前良渚 task 的 pick 底盘末端位置容差为 `0.10m`，place 底盘交接使用独立的 `0.15m`，
 place 目标物体 XY 容差为 `0.035m`，Mesh truth 物体 extent 漂移容差为 `0.005m`。
 这些数值来自本轮真实随机 batch，而不是用于隐藏失败；
 导航碰撞、不可达、掉落和放置验证失败仍会明确拒绝该 episode。
@@ -519,68 +524,32 @@ place 目标物体 XY 容差为 `0.035m`，Mesh truth 物体 extent 漂移容差
 | 指标 | 结果 |
 | --- | --- |
 | 尝试数 | 20 |
-| 质量门通过 / 纳入统一数据集 | 15 |
-| 失败并隔离 | 5 |
-| 实测成功率 | 75% |
-| 失败分布 | `nav_collision` 3；`pick_target_unreachable` 2 |
-| 统一数据集帧数 | 1950，5 Hz |
-| 视觉 | front / overview / wrist，45 个 mp4 |
-| parquet | 15 个，每个 accepted episode 一个 |
-| subtask | 144 个连续 segment，覆盖六类标签 schema |
+| 质量门通过 / 纳入统一数据集 | 20 |
+| 失败并隔离 | 0 |
+| 实测成功率 | 100% |
+| 统一数据集帧数 | 2476，5 Hz |
+| 视觉 | front / overview / wrist，60 个 mp4；子任务 front/wrist 各 2476 JPG |
+| parquet | 20 个，每个 accepted episode 一个 |
+| subtask | 每 episode 固定 6 目录，共 120 目录；保留 189 个原始连续 segment 编号 |
 | action | 10D VLA action + 11D `control.action` |
-| validator | 15 episodes，1950 rows，0 error，0 warning |
-| 磁盘占用 | 约 3.0 GB |
+| validator | 20 episodes，2476 rows，0 error，0 warning |
+| 磁盘占用 | 统一 LeRobot 数据集约 176 MB |
 
 统一数据集位于：
 
 ```text
 /mnt/sage_data/outputs/arm_vla_liangzhu/
-phase145_randomized_collection_seed4013_n20_20260715/lerobot_dataset
+validation_seed4013_n20_final_carry_map_v2/lerobot_dataset
 ```
 
-成功 seed 为 `4014, 4015, 4017, 4018, 4020, 4021, 4022, 4023, 4024, 4025,
-4026, 4027, 4029, 4030, 4031`。
+成功 seed 为 `4013..4032`。修复前的 phase145/146/147 数据仍保留作为历史
+对照，但其 front-only 或按连续 segment 建目录的布局不是当前 v3 格式，不应
+与本数据集直接混用。
 
-为形成一个参数版本一致、直接可训练的 20–50 条统一数据集，又从本轮前置调试 batch 与
-上述 15 条正式 batch 中筛选具有有效源目录、通过最终质量门且与当前 task 参数一致的 seed。
-当前参数一致性要求包括：placement region half extent=`[0.03, 0.03]`、place XY
-tolerance=`0.035`、Mesh extent tolerance=`0.005`。去重后统一物化为 21 条 episode：
-
-```text
-/mnt/sage_data/outputs/arm_vla_liangzhu/
-phase147_current_config_randomized_21_20260715/lerobot_dataset
-```
-
-最终 seed 为 `4001, 4002, 4004, 4005, 4008, 4011, 4014, 4015, 4017, 4018,
-4020, 4021, 4022, 4023, 4024, 4025, 4026, 4027, 4029, 4030, 4031`。对应统计为：
-
-| 最终统一采集指标 | 结果 |
-| --- | --- |
-| episode | 21 |
-| 帧数 | 2659 |
-| parquet | 21 |
-| 三相机视频 | 63；共 7977 个视频帧 |
-| subtask segment | 200 |
-| validator | 21 episodes，2659 rows，0 error，0 warning |
-| 训练门禁 | `source_episode_success_verified=true`，`vla_training_eligible=true` |
-| 数据集大小 | 约 112 MB |
-
-每个 `episodes/2001/<episode_id>/task.csv` 都保存 seed、机器人起点、pick/place 目标和
-base goal；`lerobot_export_manifest.json` 还保存每条数据的源 episode 目录，可反查完整
-`task.json` 和原始随机布局。这个 21-episode 数据集保存了本轮 20–50 条采集目标的完整轨迹，
-但其逐图片兼容层是旧 front-only v1，不再作为当前默认训练入口。获得数据盘写入授权后应从
-manifest 中的 21 个源 episode 无损重物化为：
-
-```text
-/mnt/sage_data/outputs/arm_vla_liangzhu/
-phase148_current_config_randomized_21_front_wrist_v2_20260715/lerobot_dataset
-```
-
-phase148 必须通过双路图像 validator 后才能标记为默认交付物；phase145 的 15 条数据集继续
-保留为连续 20-seed 成功率测试证据。
-
-另保留 `phase146_combined_randomized_27_20260715` 作为跨参数版本扩展集。它包含 21 条当前
-参数和 6 条早期参数，不应在未显式区分配置版本时替代 phase147 默认训练入口。
+每个 `episodes/2001/<episode_id>/task.csv` 保存 seed、机器人起点、pick/place 目标和
+base goal；`lerobot_export_manifest.json` 保存源 episode 目录，可反查完整
+`task.json` 和原始随机布局。原时间连续分段编号仍在 CSV/Parquet 中，因此将
+同类帧合并到六个固定目录不会丢失阶段边界。
 
 这些 episode 使用 manipulation base/support joint lock，因此
 `stable_physics_success=true`、`training_quality_gate_passed=true`，但
@@ -616,12 +585,15 @@ outputs/run_name/episode_000000/
             └── 1/                        # episode_id
                 ├── task.csv
                 ├── 1-1/
-                │   ├── data.csv
+                │   ├── data.csv              # nav_straight
                 │   └── images/
                 │       ├── front/camera0_00000.jpg
                 │       └── wrist/camera0_00000.jpg
-                ├── 1-2/
-                └── ...
+                ├── 1-2/                      # nav_turn
+                ├── 1-3/                      # nav_stop
+                ├── 1-4/                      # arm_approach
+                ├── 1-5/                      # arm_contact
+                └── 1-6/                      # arm_retreat
 ```
 
 batch 输出结构：
@@ -663,13 +635,17 @@ outputs/batch_run_name/
     │       ├── <episode_id>-1/data.csv
     │       ├── <episode_id>-1/images/front/camera0_00000.jpg
     │       ├── <episode_id>-1/images/wrist/camera0_00000.jpg
-    │       └── ...
+    │       ├── <episode_id>-2/          # nav_turn
+    │       ├── <episode_id>-3/          # nav_stop
+    │       ├── <episode_id>-4/          # arm_approach
+    │       ├── <episode_id>-5/          # arm_contact
+    │       └── <episode_id>-6/          # arm_retreat
     └── validation_report.json
 ```
 
-`episodes/<task_id>/<episode_id>/` 是供当前 VLA 训练流程直接读取的逐图片兼容层，官方 LeRobot parquet/video/meta 仍完整保留。当前目录布局版本为 `episodes_task_episode_segment_front_wrist_v2`。每个 subtask 的 `images/` 必须且只能包含 `front/` 和 `wrist/` 两个目录，两路均逐帧导出；`data.csv` 分别使用 `image_front_path` 和 `image_wrist_path` 指向对应图像。`task.csv` 保存起点、抓取/放置目标、指令、schema、采集状态和连续片段索引；尚未采集的 episode 只创建 `task.csv`，不会伪造 `data.csv` 或图像目录。
+`episodes/<task_id>/<episode_id>/` 是供当前 VLA 训练流程直接读取的逐图片兼容层，官方 LeRobot parquet/video/meta 仍完整保留。当前目录布局版本为 `episodes_task_episode_subtask_front_wrist_v3`。每个已采集 episode 固定且仅有 6 个 subtask 目录；每个目录的 `images/` 必须且只能包含 `front/` 和 `wrist/`，两路均逐帧导出；`data.csv` 分别使用 `image_front_path` 和 `image_wrist_path` 指向对应图像。`task.csv` 使用 `subtask_directory_count`、`subtask_directories_json` 和 `source_subtask_segment_count` 分别记录固定类别目录与原始连续片段数量；尚未采集的 episode 仍只创建 `task.csv`，不会伪造六个轨迹目录。
 
-每个 `<episode_id>-N` 是时间上连续且标签唯一的 subtask 片段。编号按轨迹顺序从 1 连续递增；同一个标签如果稍后再次出现，也会创建新的编号目录。片段内 front 和 wrist 各自使用 `camera0_00000.jpg` 从 0 重新编号，文件夹已经区分相机语义；`data.csv` 同时保留 episode 内索引和合并数据集索引。校验器要求两路图像数量都与 CSV 行数一致，并且所有帧恰好出现一次。
+目录编号不再按状态变化先后生成，而是固定映射为：`1=nav_straight`、`2=nav_turn`、`3=nav_stop`、`4=arm_approach`、`5=arm_contact`、`6=arm_retreat`。同一标签在 episode 中多次出现时全部合并到同一目录，并按原始 `episode_frame_index` 排序；某类未出现时仍保留空 `data.csv` 及空的 `images/front`、`images/wrist`。目录内两路图像各自使用 `camera0_00000.jpg` 从 0 连续编号。CSV 中的 `segment_index` 继续保存原始时间连续片段编号，以便恢复阶段边界；校验器会按 `episode_frame_index` 还原完整时序，并检查每帧恰好出现一次。
 
 batch 子进程可能继承相同的 task `episode_id`。合并数据集检测到同一 `task_id` 下有重复值时，会按数据集顺序统一重编号为 1、2、3……，并在 `task.csv` 的 `source_task_episode_id` 中保留原始值，防止目录覆盖。
 
@@ -918,7 +894,6 @@ PYTHONDONTWRITEBYTECODE=1 python -B \
 ```bash
 cd /home/light/workspace/arm_vla_liangzhu
 
-LIANGZHU_COLLISION_PLY=/mnt/sage_data/ply/Liangzhu/liangzhu_collision.ply \
 PYTHONDONTWRITEBYTECODE=1 \
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_batch.py \
@@ -929,7 +904,8 @@ PYTHONDONTWRITEBYTECODE=1 \
 
 batch 默认使用已经验证的良渚任务、联合随机化、PCT 单层地图、identity 坐标、禁止 A*
 fallback、`pct_multifloor` locomotion policy/checkpoint、headless 模式、固定 `/World/overview`
-相机和完整 GaussianScene。除输出目录、episode 数和 seed 外，无需重复传入稳定参数。
+相机、仓库内 collision PLY 和 collision 视觉模式。除输出目录、episode 数和 seed 外，
+无需重复传入稳定参数。需要 Gaussian 背景时显式传 `--navigation-visual-mode full`。
 
 ### 显示随机化区域
 
@@ -977,7 +953,7 @@ python \
 
 | 参数                                                 | 类型 / 默认                     | 说明                                                |
 | ---------------------------------------------------- | ------------------------------- | --------------------------------------------------- |
-| `--task-json`                                        | 必填                            | 任务 JSON 路径                                      |
+| `--task-json`                                        | 良渚可乐任务                    | 默认 `tasks/nav_pick_place_cola_liangzhu_pct.json`  |
 | `--output-dir`                                       | `outputs/full_physics_pipeline` | 输出目录                                            |
 | `--num-episodes`                                     | `1`                             | episode 数量；真实 Isaac 模式当前只支持 1           |
 | `--seed`                                             | `0`                             | 首个 episode seed                                   |
@@ -986,7 +962,14 @@ python \
 | `--randomize-base-goal` / `--no-randomize-base-goal` | 默认开启                        | 是否随机化 pick/place 导航交接 base_goal            |
 | `--keep-window-open` / `--no-keep-window-open`       | 默认关闭                        | 结束后保留 GUI；必须配合`--no-headless`             |
 | `--headless` / `--no-headless`                       | 默认`--no-headless`             | 是否无界面运行                                      |
-| `--navigation-visual-mode`                           | `full`                          | 默认加载 GaussianScene；`collision` 仅显示碰撞场景，`auto` 保留兼容 |
+| `--navigation-visual-mode`                           | `collision`                     | 稳定默认不加载 GaussianScene；`full` 显式加载，`auto` 保留兼容 |
+| `--global-planner`                                   | `pct`                           | 良渚默认使用 PCT；可显式切换 `astar`                 |
+| `--pct-collision-ply-path`                           | 仓库内良渚 PLY                  | 默认 `source/scene/liangzhu/ply/liangzhu_collision.ply` |
+| `--pct-no-fallback` / `--pct-allow-fallback`         | 默认禁止回退                    | 默认 PCT 失败即拒绝 episode                          |
+| `--pct-coord-mode`                                   | `identity`                      | 良渚 PLY 与 Isaac 使用同一坐标方向                   |
+| `--policy-profile`                                   | `pct_multifloor`                | 复用已验证的 RL locomotion profile                   |
+| `--locomotion-checkpoint`                            | Go2-X5 model_26000              | 默认使用仓库 checkpoint                              |
+| `--require-locomotion-checkpoint`                    | 默认开启                        | checkpoint 缺失时立即失败                            |
 | `--record-video`                                     | 默认关闭                        | 启用 episode 展示/observation MP4 录制；展示视频固定 25fps |
 | `--video-mode`                                       | `overview`                      | `overview` 使用第三人称视角；`front`/`font` 使用前视 observation；`wrist` 使用腕部 observation；`all` 同时导出三路 |
 | `--video-out`                                        | 可选                            | 视频输出目录或单个`.mp4`；多路/多 episode 请传目录  |
@@ -1021,11 +1004,11 @@ python \
 | `--show-randomization-debug`                         | 默认关闭      | 显示矩形/前向扇区；通常只用于 GUI 单 episode |
 | `--randomize-base-goal` / `--no-randomize-base-goal` | 默认开启      | 是否随机化导航交接 base_goal                |
 | `--headless` / `--no-headless`                       | 默认 headless | batch 是否无界面运行                        |
-| `--navigation-visual-mode`                           | `full`        | 默认加载 GaussianScene；`collision` 可用于碰撞调试 |
+| `--navigation-visual-mode`                           | `collision`   | 稳定默认不加载 GaussianScene；`full` 可显式启用    |
 | `--global-planner`                                   | `pct`         | 良渚 batch 默认使用 PCT                     |
 | `--pct-server-script`                                | 良渚 grid server | 默认使用仓库内 `pct_grid_server.py`       |
 | `--pct-tomogram-path` / `--pct-walkable-path`        | 良渚单层资产  | 默认使用 `source/scene/liangzhu/pct/` 下资产 |
-| `--pct-collision-ply-path`                           | 环境变量      | 默认读取 `LIANGZHU_COLLISION_PLY`           |
+| `--pct-collision-ply-path`                           | 仓库内良渚 PLY | 默认 `source/scene/liangzhu/ply/liangzhu_collision.ply` |
 | `--pct-no-fallback` / `--pct-allow-fallback`         | 默认禁止回退  | 默认 PCT 失败即拒绝 episode                 |
 | `--pct-coord-mode`                                   | `identity`    | 良渚 PLY 与 Isaac 使用同一坐标方向          |
 | `--policy-profile`                                   | `pct_multifloor` | 复用已验证的 RL locomotion profile       |

@@ -65,6 +65,91 @@ _TERMINAL_HOLD_STATES = frozenset(
     }
 )
 
+# The navigation executor and verifier observe adjacent physics frames.  A
+# successful zero-command handoff can therefore drift by a few millimetres or
+# retain a small residual velocity before manipulation locks and settles the
+# base.  Keep this allowance deliberately small and require an explicit
+# executor success so it cannot turn a genuinely unreachable goal into a pass.
+_NAV_HANDOFF_POSITION_MARGIN_M = 0.005
+_NAV_HANDOFF_Z_MARGIN_M = 0.010
+_NAV_HANDOFF_YAW_MARGIN_RAD = 0.010
+_NAV_HANDOFF_LINEAR_SPEED_MARGIN_MPS = 0.010
+_NAV_HANDOFF_ANGULAR_SPEED_MARGIN_RADPS = 0.020
+
+
+def _accept_successful_navigation_handoff_drift(
+    result: VerificationResult,
+    executor_status: dict[str, Any] | None,
+    *,
+    phase: str,
+) -> VerificationResult:
+    """Accept only tiny one-frame drift after the executor already succeeded."""
+
+    if result.success or not isinstance(executor_status, dict):
+        return result
+    if executor_status.get("success") is not True:
+        return result
+    if executor_status.get("failed") is True:
+        return result
+
+    metadata = dict(result.metadata)
+    checks = {
+        "position": float(metadata.get("goal_distance", math.inf))
+        <= float(metadata.get("position_tolerance", 0.0))
+        + _NAV_HANDOFF_POSITION_MARGIN_M,
+        "z": (
+            not bool(metadata.get("z_check_enabled"))
+            or float(metadata.get("goal_z_error", math.inf))
+            <= float(metadata.get("goal_z_tolerance", 0.0))
+            + _NAV_HANDOFF_Z_MARGIN_M
+        ),
+        "yaw": (
+            not bool(metadata.get("yaw_alignment_required"))
+            or float(metadata.get("yaw_error", math.inf))
+            <= float(metadata.get("yaw_tolerance", 0.0))
+            + _NAV_HANDOFF_YAW_MARGIN_RAD
+        ),
+        "linear_speed": (
+            not bool(metadata.get("base_stability_required"))
+            or float(metadata.get("linear_speed", math.inf))
+            <= float(metadata.get("linear_velocity_tolerance", 0.0))
+            + _NAV_HANDOFF_LINEAR_SPEED_MARGIN_MPS
+        ),
+        "angular_speed": (
+            not bool(metadata.get("base_stability_required"))
+            or float(metadata.get("angular_speed", math.inf))
+            <= float(metadata.get("angular_velocity_tolerance", 0.0))
+            + _NAV_HANDOFF_ANGULAR_SPEED_MARGIN_RADPS
+        ),
+    }
+    if not all(checks.values()):
+        return result
+    return VerificationResult(
+        success=True,
+        failure_reason="",
+        metadata={
+            **metadata,
+            "navigation_verifier_override": (
+                "successful_executor_one_frame_drift_margin"
+            ),
+            "navigation_handoff_phase": phase,
+            "navigation_handoff_margin_checks": checks,
+            "navigation_handoff_margins": {
+                "position_m": _NAV_HANDOFF_POSITION_MARGIN_M,
+                "z_m": _NAV_HANDOFF_Z_MARGIN_M,
+                "yaw_rad": _NAV_HANDOFF_YAW_MARGIN_RAD,
+                "linear_speed_mps": _NAV_HANDOFF_LINEAR_SPEED_MARGIN_MPS,
+                "angular_speed_radps": (
+                    _NAV_HANDOFF_ANGULAR_SPEED_MARGIN_RADPS
+                ),
+            },
+            "executor_distance_to_goal": executor_status.get(
+                "distance_to_goal"
+            ),
+            "executor_yaw_error": executor_status.get("yaw_error"),
+        },
+    )
+
 
 def _vector_norm(values: tuple[float, ...] | list[float], *, limit: int | None = None) -> float:
     subset = values[:limit] if limit is not None else values
@@ -1133,6 +1218,11 @@ class FullPhysicsStateMachine:
         observation: SimulationState,
     ) -> tuple[RobotAction, list[PipelineEvent]]:
         result = self.verifier.verify_pick_reachable(observation, self.episode_spec)
+        result = _accept_successful_navigation_handoff_drift(
+            result,
+            self.latest_executor_status,
+            phase="pick",
+        )
         if not result.success:
             handoff_status = dict(self.latest_executor_status or {})
             if handoff_status.get("near_goal_stall_handoff") is True:
@@ -1424,6 +1514,11 @@ class FullPhysicsStateMachine:
         observation: SimulationState,
     ) -> tuple[RobotAction, list[PipelineEvent]]:
         result = self.verifier.verify_place_reachable(observation, self.episode_spec)
+        result = _accept_successful_navigation_handoff_drift(
+            result,
+            self.latest_executor_status,
+            phase="place",
+        )
         if not result.success:
             return RobotAction.idle(source="verify_place_reachable"), self._fail(
                 result.failure_reason or "place_target_unreachable",

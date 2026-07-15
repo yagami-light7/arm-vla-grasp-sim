@@ -2,8 +2,8 @@
   "project": "arm_vla_liangzhu",
   "branch": "liangzhu-deploy",
   "goal": "在良渚单层场景中复用原 pct_multifloor locomotion policy，跑通移动操作 pipeline，并导出可验证的数据。",
-  "current_phase": "phase_149_gaussian_default_and_liangzhu_batch_defaults_verified",
-  "last_updated": "2026-07-15 11:04:25 CST",
+  "current_phase": "phase_152_randomized_20_of_20_pipeline_and_v3_dataset_verified",
+  "last_updated": "2026-07-15 19:03:02 CST",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -101,11 +101,16 @@
     "liangzhu_runtime_launch_safe": true,
     "liangzhu_recorded_rgb_requires_full_scene_visual": false,
     "liangzhu_collision_only_rgb_training_rejected": false,
-    "liangzhu_gaussian_scene_loaded_by_default": true,
-    "liangzhu_full_pipeline_gaussian_default_added": true,
-    "liangzhu_batch_gaussian_default_added": true,
+    "liangzhu_gaussian_scene_loaded_by_default": false,
+    "liangzhu_full_pipeline_gaussian_default_added": false,
+    "liangzhu_batch_gaussian_default_added": false,
     "liangzhu_batch_stable_defaults_added": true,
     "liangzhu_batch_minimal_command_unit_verified": true,
+    "liangzhu_single_stable_defaults_added": true,
+    "liangzhu_single_minimal_command_dry_run_verified": true,
+    "liangzhu_batch_minimal_command_dry_run_verified": true,
+    "liangzhu_collision_visual_stable_default": true,
+    "liangzhu_repository_collision_ply_default_added": true,
     "liangzhu_overview_camera_default_path": "/World/overview",
     "liangzhu_overview_image_video_gui_unified": true,
     "liangzhu_overview_camera_real_capture_verified": true,
@@ -144,6 +149,21 @@
     "liangzhu_subtask_front_wrist_csv_paths_added": true,
     "liangzhu_subtask_front_wrist_validator_added": true,
     "liangzhu_subtask_front_wrist_unit_verified": true,
+    "liangzhu_subtask_fixed_six_directory_layout_v3_added": true,
+    "liangzhu_subtask_repeated_labels_grouped_by_class": true,
+    "liangzhu_subtask_empty_class_directories_preserved": true,
+    "liangzhu_subtask_fixed_six_directory_validator_added": true,
+    "liangzhu_subtask_fixed_six_directory_unit_verified": true,
+    "liangzhu_carry_phase_specific_local_map_added": true,
+    "liangzhu_carry_stale_task_object_keepout_removed": true,
+    "liangzhu_seed4028_carry_regression_real_verified": true,
+    "liangzhu_seed4032_carry_regression_real_verified": true,
+    "liangzhu_randomized_batch_20_of_20_accepted": true,
+    "liangzhu_randomized_batch_latest_success_rate": 1.0,
+    "liangzhu_v3_real_dataset_20_episode_exported": true,
+    "liangzhu_v3_real_dataset_validator_verified": true,
+    "liangzhu_v3_real_dataset_front_wrist_verified": true,
+    "liangzhu_gui_pick_display_stall_isolated_from_headless_pipeline": true,
     "liangzhu_phase148_front_wrist_dataset_exported": false,
     "liangzhu_phase148_front_wrist_dataset_validator_verified": false,
     "liangzhu_navigation_command_deadzone_guard_added": true,
@@ -588,7 +608,7 @@
     "liangzhu_pct_walkable": "source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy",
     "liangzhu_pct_coord_mode": "identity",
     "liangzhu_pct_assets_git_ignored": true,
-    "liangzhu_collision_ply": "/mnt/sage_data/ply/Liangzhu/liangzhu_collision.ply",
+    "liangzhu_collision_ply": "source/scene/liangzhu/ply/liangzhu_collision.ply",
     "liangzhu_collision_ply_sha256": "85c2a2e745905eb9e83cc46c8f68e1706431658598d783c94f022f8131ad78de",
     "liangzhu_locomotion_checkpoint": "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
     "liangzhu_cola_asset": "source/scene/objects/cola/MesaTask-10K/MesaTask_Assets/can/0364ab96f338493c972248102b462aa4/usd/0364ab96f338493c972248102b462aa4.usd",
@@ -697,9 +717,9 @@
         0.0
       ],
       "asset_scale_xyz": [
-        0.03,
-        0.03,
-        0.03
+        0.3,
+        0.2,
+        0.005
       ],
       "asset_units_resolve_rotate_x_deg": 90.0
     },
@@ -7073,29 +7093,218 @@
         "用户可只传 LIANGZHU_COLLISION_PLY、output-dir、num-episodes 和 seed 启动真实 batch。",
         "完成尚待授权的 phase148 front+wrist v2 历史数据重物化；新 batch 会直接采用 v2 格式。"
       ]
+    },
+    {
+      "time": "2026-07-15 14:07:33 CST",
+      "summary": "将良渚已验证运行参数同时固化为单 episode 与 batch CLI 默认值。两个入口现在默认使用良渚可乐任务、联合随机化、PCT、identity 坐标、禁止 A* fallback、仓库内 grid server 与单层地图、无跨楼层约束、pct_multifloor policy、model_26000 checkpoint、checkpoint 必须存在、固定 /World/overview，并以 collision 视觉模式规避 full Gaussian + 三相机在 8GB GPU 上出现的 CUDA 700。collision PLY 默认路径统一为 source/scene/liangzhu/ply/liangzhu_collision.ply，任务随机化配置也直接引用该路径，不再依赖 LIANGZHU_COLLISION_PLY。单次与 batch 最简命令 dry-run 均通过。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "scripts/README.md",
+        "scripts/pipeline/run_full_physics_batch.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "source/scene/liangzhu/runtime_asset_manifest.json",
+        "tasks/nav_pick_place_cola_liangzhu_pct.json",
+        "tests/test_full_physics_batch.py",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_full_physics_randomization.py",
+        "tests/test_liangzhu_task.py"
+      ],
+      "problems": [
+        {
+          "problem": "单 episode 入口仍默认 apple/A*/flat，导致用户省略长参数后在 exec_nav_to_pick 使用错误的低层 profile；batch 也仍依赖外部 collision PLY 环境变量。",
+          "root_cause": "上一阶段只完整固化了 batch profile，单 episode parser 与任务随机化的默认资产来源没有同步。",
+          "fix": "统一两个 parser 的良渚 PCT/policy/checkpoint/视觉默认值，并将 collision PLY 固定为仓库相对路径；保留全部 CLI 显式覆盖选项。",
+          "prevention": "新增单 episode 零参数 profile 断言和 batch 最简命令断言，并实际执行两个最简 dry-run。"
+        },
+        {
+          "problem": "full Gaussian 默认模式曾在 GaussianScene 与 front/wrist/overview 三路 RTX 相机同时启用时触发 CUDA illegal address 700。",
+          "root_cause": "RTX 4060 Laptop 8GB 环境下 full scene 的显存与渲染图负载不适合作为稳定批采集默认值。",
+          "fix": "稳定默认恢复为 collision；需要 Gaussian 背景时仍可显式传 --navigation-visual-mode full。",
+          "prevention": "runtime manifest 与 CLI 默认测试同时断言 collision/no-Gaussian，避免文档与运行参数再次漂移。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "focused pipeline/batch/randomization/Liangzhu/placement regression",
+          "result": "passed_with_known_deselections",
+          "note": "79 passed、4 deselected；4 项 apple factory 测试依赖迁移后缺失的旧 A* nav_map，与本次良渚 CLI 默认值无关。"
+        },
+        {
+          "command": "run_full_physics_pipeline.py --dry-run --output-dir /tmp/liangzhu_cli_defaults_dry_run --seed 5000",
+          "result": "passed",
+          "note": "未传 task/PCT/policy/checkpoint/collision PLY 参数，17 个 pipeline state 完整到 done。"
+        },
+        {
+          "command": "run_full_physics_batch.py --dry-run --output-dir /tmp/liangzhu_batch_cli_defaults_dry_run --num-episodes 1 --seed 5000 --no-color",
+          "result": "passed",
+          "note": "生成的子进程命令包含 collision、PCT、identity、no-fallback、三个跨层 none、仓库 collision PLY、pct_multifloor、model_26000 和 require-checkpoint。"
+        }
+      ],
+      "next_steps": [
+        "用户可只传 output-dir 与 seed 运行单 episode，或额外传 num-episodes 运行 batch；首次真实运行建议先使用一个 seed 验证宿主机 runtime。",
+        "需要 Gaussian 视觉背景时显式传 --navigation-visual-mode full，并单独监控显存与 CUDA 700。",
+        "继续分析既有随机 batch 的 nav_collision 与 pick_target_unreachable，提高 75% 接受率。"
+      ]
+    },
+    {
+      "time": "2026-07-15 14:29:43 CST",
+      "summary": "按用户要求将逐图片子任务目录从时间连续片段改为固定六类聚合。每个已采集 episode 现在恰好生成 6 个目录：episode-1=nav_straight、episode-2=nav_turn、episode-3=nav_stop、episode-4=arm_approach、episode-5=arm_contact、episode-6=arm_retreat。同类标签即使在轨迹中多次出现或跨 nav_to_pick/nav_to_place，也合并到同一目录并保持原 episode_frame_index 顺序；未出现的类别保留空 data.csv 与空 front/wrist 目录。逐帧 segment_index 和 Parquet subtask_segment_index 继续保存原始时间连续片段编号，因此阶段边界与完整时序仍可无损恢复。目录布局升级为 episodes_task_episode_subtask_front_wrist_v3，数据 schema 升级为 full_physics_lerobot_v2.1.5。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "source/recording/lerobot_dataset.py",
+        "source/recording/subtask_export.py",
+        "source/recording/subtask_segmentation.py",
+        "source/scene/liangzhu/runtime_asset_manifest.json",
+        "tasks/nav_pick_place_cola_liangzhu_pct.json",
+        "tests/test_liangzhu_task.py",
+        "tests/test_subtask_contract.py",
+        "tests/test_subtask_export.py"
+      ],
+      "problems": [
+        {
+          "problem": "旧导出器每次 subtask 标签切换都新建目录，同一 nav_straight 等标签会因多次出现而产生多个文件夹，目录数量远大于 6。",
+          "root_cause": "目录物化直接遍历 segmentation 的时间连续 runs，并把 run 的 segment_index 用作目录编号。",
+          "fix": "目录物化改为按固定 SUBTASK_LABELS 顺序遍历六类标签，筛选并聚合同类全部帧；原始 run metadata 仅保留在 CSV 的 segment_index 等字段。",
+          "prevention": "回归测试构造 nav_straight→nav_turn→nav_straight，强制断言两个 nav_straight run 合并进 episode-1，且 episode 根目录集合严格等于 1..6。"
+        },
+        {
+          "problem": "按类别聚合后，目录遍历顺序不再等于 episode 时间顺序，旧 validator 会误报帧乱序。",
+          "root_cause": "旧 validator 依赖按 segment 目录拼接即可重建时间轴。",
+          "fix": "validator 先验证每类目录内部保持源帧顺序，再汇总所有 CSV 行并按 episode_frame_index 排序，与 Parquet 的 frame/task_stage/subtask/segment_index 逐帧对齐。",
+          "prevention": "validator 同时检查六目录固定映射、每帧唯一覆盖、双相机数量、空类别目录、原始 source_segment_indices 和 Parquet 时序一致性。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "focused fixed-six subtask contract/export/Liangzhu regression",
+          "result": "passed",
+          "note": "19 passed；覆盖同类多 run 合并、固定六目录、空类别目录、双相机、缺图拒绝、旧 v1/v2 layout 到 v3 迁移。"
+        },
+        {
+          "command": "focused LeRobot/validator/subtask/batch/randomization/Liangzhu regression",
+          "result": "passed",
+          "note": "61 passed；独立目录按 episode_frame_index 重建后与 Parquet 的 task_stage、subtask 和原始连续 segment_index 完全一致。"
+        },
+        {
+          "command": "python -m py_compile subtask_export/subtask_segmentation/lerobot_dataset and related tests",
+          "result": "passed",
+          "note": "修改文件语法检查通过。"
+        }
+      ],
+      "data_results": {
+        "schema_version": "full_physics_lerobot_v2.1.5",
+        "subtask_directory_layout": "episodes_task_episode_subtask_front_wrist_v3",
+        "subtask_directory_count_per_collected_episode": 6,
+        "directory_index_mapping": {
+          "1": "nav_straight",
+          "2": "nav_turn",
+          "3": "nav_stop",
+          "4": "arm_approach",
+          "5": "arm_contact",
+          "6": "arm_retreat"
+        },
+        "historical_dataset_rematerialized": false
+      },
+      "next_steps": [
+        "后续新导出的成功 episode 会直接使用 v3 固定六目录格式。",
+        "如需使用现有 phase147/phase146 数据训练，应从源 episode 重物化为 v3，并重新运行 LeRobot validator；不要把旧 segment 目录与 v3 混用。",
+        "首次真实 batch 后抽查六个目录的帧数总和、front/wrist 数量和 Parquet 对齐报告。"
+      ]
+    },
+    {
+      "time": "2026-07-15 19:03:02 CST",
+      "summary": "修复良渚随机任务携物 nav-to-place 的过期可乐 keepout 问题，并完成同一组 seed=4013..4032 的 20 条真实 headless full-physics 回归。pick 阶段地图仍把地上可乐初始位置视为障碍；抓取后 carry 阶段改用不含该动态 keepout 的单层地图，同时完整保留 collision PLY 静态障碍。最终 20/20 pipeline 成功、20/20 通过训练质量门，包含历史碰撞回归 seed 4028 和 4032。batch 统一物化为 LeRobot full_physics_lerobot_v2.1.5，共 2476 帧、20 个 episode、120 个固定子任务目录，front/wrist 各 2476 张，validator 为 0 error/0 warning。GUI 曾看起来停在 pick 且未生成终态摘要；同 seed 在 headless 中正常进入 carry/place，因此将其隔离为 viewport/timeline 调试问题，量产验收以 headless events/summary 为准。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "scripts/README.md",
+        "source/navigation/executor.py",
+        "source/pipeline/navigation_smoke.py",
+        "tests/test_astar_dwa_smoke.py"
+      ],
+      "problems": [
+        {
+          "problem": "seed 4032 在成功 pick 后携物导航长时间原地踏步，最终以 nav_collision 失败。",
+          "root_cause": "DWA 携物局部地图仍包含从 task.object_pose_world 投影的可乐初始位置 keepout。可乐已被抓走，但过期障碍仍挡住 place 方向的所有前进 rollout，只剩零速候选。",
+          "fix": "DwaNavExecutor 新增 carry_grid_map 并按 execution_phase 选图；良渚 pick map 保留可乐 keepout，carry map 禁用该 keepout，但仍使用同一 PCT walkable/tomogram/collision PLY 静态障碍。",
+          "prevention": "回归测试强制断言 pick/carry 使用不同 map variant，并对失败 seed 4032 单条真实复验后再运行连续 20-seed batch。"
+        },
+        {
+          "problem": "GUI 显示看起来在 pick 阶段结束。",
+          "root_cause": "该运行没有生成 state_failed 或最终 summary，画面只保留了 viewport 最后一帧；同 seed 在无 GUI 路径上完成 pick、carry 和 place。",
+          "fix": "把 GUI 限定为单条可视化调试，批量默认使用 headless；进度和成败以 events.jsonl、summary.json 及 batch_summary.jsonl 为准。",
+          "prevention": "GUI 卡帧时不再根据最后画面判定状态机失败，先检查终态文件并用同 seed headless 复验。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "real full-physics randomized batch --seed 4013 --num-episodes 20",
+          "result": "passed",
+          "note": "20 attempts、20 success、20 training-quality accepted；seed 4013..4032 无失败，历史回归 seed 4028/4032 成功。"
+        },
+        {
+          "command": "batch LeRobot v2.1.5 materialization and validator",
+          "result": "passed",
+          "note": "20 episodes、2476 rows、120 个固定子任务目录、front/wrist 各 2476 JPG；valid=true、0 error、0 warning。"
+        },
+        {
+          "command": "focused navigation/pipeline/batch/randomization/Liangzhu/subtask regression",
+          "result": "passed_with_known_legacy_fixture_failures",
+          "note": "153 passed、5 failed；5 个失败全部由旧 apple/A* 任务缺少 source/scene/839920/nav_map/map.json 引起，与良渚 PCT 和本轮修改无关。"
+        },
+        {
+          "command": "git diff --check",
+          "result": "passed",
+          "note": "无空白错误。"
+        }
+      ],
+      "data_results": {
+        "output_root": "/mnt/sage_data/outputs/arm_vla_liangzhu/validation_seed4013_n20_final_carry_map_v2",
+        "dataset_root": "/mnt/sage_data/outputs/arm_vla_liangzhu/validation_seed4013_n20_final_carry_map_v2/lerobot_dataset",
+        "schema_version": "full_physics_lerobot_v2.1.5",
+        "episodes_attempted": 20,
+        "episodes_accepted": 20,
+        "accepted_success_rate": 1.0,
+        "dataset_frames": 2476,
+        "subtask_directory_count": 120,
+        "subtask_directory_count_per_episode": 6,
+        "source_segment_count": 189,
+        "front_jpg_count": 2476,
+        "wrist_jpg_count": 2476,
+        "validation_report": "valid=true；episode_count=20、row_count=2476、error_count=0、warning_count=0。",
+        "pure_physics_success": false,
+        "stable_physics_success": true
+      },
+      "next_steps": [
+        "将该 v3 数据集作为当前固定六类/front+wrist 训练入口，旧 phase146/147 数据仅作历史参照。",
+        "扩大随机化范围前继续保留 phase-specific map 诊断，重点观察新的 pick/place 几何是否超出 CuRobo 可达范围。",
+        "单独建立关闭 manipulation base/support-joint lock 的 pure-physics 对照批次，不要与当前 stable-physics 训练数据混用。"
+      ]
     }
   ],
   "open_questions": [
-    "20-seed 正式 batch 的 3 次 nav_collision 应优先通过更保守的携物局部规划参数解决，还是在随机布局采样时增加导航可行性预筛选？",
     "严格物理基线应优先关闭 support-joint lock，还是同时关闭 manipulation base lock？两者需要分别统计抓放成功率。",
-    "现有几何随机化达到 75% 连续 batch 接受率后，是先提高控制成功率，还是保持当前范围并优先加入光照、相机噪声与遮挡随机化？"
+    "现有几何随机化在 20-seed 回归中达到 100% 接受率后，是先扩大几何范围，还是保持当前范围并优先加入光照、相机噪声与遮挡随机化？"
   ],
   "known_limitations": [
-    "phase147 的 21 条默认数据使用旧 front-only subtask 逐图片布局；代码已升级到 front+wrist v2，但 phase148 重物化因 /mnt/sage_data 写入审批连接中断尚未执行，因此当前没有可声明为默认的 v2 真实训练数据入口。",
-    "当前连续 20-seed 正式 batch 接受率为 75%（15/20）；最终已汇总 27 条成功随机 episode，但 3 次 nav_collision 和 2 次 pick_target_unreachable 表明 pipeline 尚未达到高成功率量产标准。",
+    "当前可作为默认 v3 真实训练入口的是 validation_seed4013_n20_final_carry_map_v2/lerobot_dataset；phase146/147 历史数据仍是旧 front-only/连续 segment 目录，不能与 v3 直接混用。",
+    "当前随机范围下连续 20-seed batch 接受率为 100%（20/20）；这只证明 seed 4013..4032 和现有几何范围，扩大可乐/垫子/底盘采样范围后仍需重新统计。",
     "phase146 的 27 条扩展集混合 21 条当前参数与 6 条早期 placement/tolerance 参数；phase147 虽参数一致但仍是旧 front-only 目录，使用历史数据时必须显式区分配置和目录版本。",
     "当前 perception_mode=sim_ground_truth；抓取和放置 TCP 直接使用运行时 Mesh/PhysX 真值，RGB 仅用于 VLA 记录，不能描述为 RGB-D 目标检测或视觉定位成功。",
-    "当前 27 条 accepted episode 使用 manipulation base lock 与 support-joint lock，因此 stable_physics_success=true 但 pure_physics_success=false；后续仍需建立无锁严格物理成功率。",
-    "良渚任务当前 pick 底盘末端位置容差为 0.10m，place 底盘交接容差为 0.12m，place 目标 XY 容差为 0.035m，Mesh extent 漂移容差为 0.005m；这些值已通过本轮 batch，但扩大随机范围前仍应重新统计。",
+    "当前最新 20 条 accepted episode 使用 manipulation base lock 与 support-joint lock，因此 stable_physics_success=true 但 pure_physics_success=false；后续仍需建立无锁严格物理成功率。",
+    "良渚任务当前 pick 底盘末端位置容差为 0.10m，place 底盘交接容差为 0.15m，place 目标 XY 容差为 0.035m，Mesh extent 漂移容差为 0.005m；这些值已通过本轮 batch，但扩大随机范围前仍应重新统计。",
     "当前只验证了可乐 top-down 抓取和地垫放置这一种资产/任务组合，尚未覆盖桌面放置、其他物体尺寸或多目标实例选择。",
     "任务没有可用 flat nav_map 时会显式禁用 PCT 到 A* fallback；PCT server 或资产失败会直接报错，不会静默回退。",
     "良渚 PCT tomogram/walkable 和大型 scene/checkpoint 资产为本地 ignored/runtime 文件，不应加入 Git；其他机器必须按 manifest 重新准备。",
     "source/scene/objects/carpet.usd、carpet.glb 与纹理是用户提供的本地大型未跟踪资产；当前任务依赖其固定 SHA256，不能把它们误当作已提交资产。",
-    "GaussianScene 现已默认加载；这会提高视觉完整性，也会增加显存和渲染开销。需要纯碰撞调试时可显式传 --navigation-visual-mode collision。",
+    "稳定 CLI 默认使用 collision 视觉模式，不加载 GaussianScene；需要 Gaussian 背景时可显式传 --navigation-visual-mode full，但 RTX 4060 Laptop 8GB 上 full + 三路相机曾触发 CUDA illegal address 700。",
+    "GUI 可能在 viewport/timeline 未继续推进时保留 pick 最后一帧；量产 batch 已在 headless 下验证，GUI 卡帧必须用 events.jsonl/summary.json 和同 seed headless 复验区分于状态机失败。",
     "当前 arm_contact 标签来自执行器动作语义、夹爪命令和目标/TCP 运动学启发式，metadata 已明确标记 heuristic_action_and_kinematics；接入可靠接触传感器前不能描述为真实力/触觉接触标签。",
     "attempt14 的真实轨迹只出现 nav_stop 与 nav_turn，没有满足阈值的 nav_straight；这是该条轨迹的运动事实，不是 schema 缺失，六类标签全集由 contract 测试覆盖。",
     "系统盘空间较紧，批量输出必须继续写入 /mnt/sage_data；attempt14 约 192MB，批量前仍应监控剩余容量。",
-    "最近一次 tests/ 全量回归基线为 402 passed、1 skipped、10 failed；9 项失败来自旧 A*/PCT fixture 缺少 map、tomogram 或 walkable 资产，1 项来自现有 liangzhu.usda carpet scale 与旧测试文本预期不一致。当前 141 项 randomization/navigation/batch/LeRobot/subtask/Liangzhu 定向回归全部通过，但仓库 tests_passing 仍保持 false。",
+    "最近一次定向回归为 153 passed、5 failed；5 个失败全部依赖迁移后缺失的旧 apple/A* source/scene/839920/nav_map/map.json，不是良渚 PCT 回归。垫子 scale 配置与测试已统一为 (0.3,0.2,0.005)，但仓库 tests_passing 仍保持 false。",
     "共享 CuRobo server 属于其他 worktree 的外部服务；兼容性握手和本轮复用已验证，pipeline 不拥有其生命周期，批量运行前仍需 ping。"
   ]
 }

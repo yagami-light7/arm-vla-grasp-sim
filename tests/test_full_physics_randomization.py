@@ -66,7 +66,7 @@ class FullPhysicsRandomizationTest(unittest.TestCase):
         self.assertTrue(args.randomize_base_goal)
         self.assertFalse(args.show_randomization_debug)
         self.assertFalse(args.keep_window_open)
-        self.assertEqual(args.navigation_visual_mode, "full")
+        self.assertEqual(args.navigation_visual_mode, "collision")
         self.assertEqual(args.overview_camera_mode, "fixed")
         self.assertEqual(args.overview_camera_prim_path, "/World/overview")
 
@@ -241,14 +241,18 @@ class FullPhysicsRandomizationTest(unittest.TestCase):
         """缺少碰撞 PLY 是配置错误，不能通过重复采样静默掩盖。"""
 
         base = JsonTaskProvider().load(LIANGZHU_TASK_PATH)
-        with mock.patch.dict(os.environ, {"LIANGZHU_COLLISION_PLY": ""}):
-            with self.assertRaisesRegex(ValueError, "LIANGZHU_COLLISION_PLY"):
-                prepare_episode_spec(
-                    base,
-                    episode_id=3,
-                    seed=41,
-                    settings=RandomizationSettings(enabled=True),
-                )
+        raw_task = copy.deepcopy(base.raw_task)
+        forward_sector = raw_task["randomization"]["forward_sector"]
+        forward_sector.pop("collision_ply_path", None)
+        forward_sector.pop("collision_ply_env", None)
+        base_without_collision = episode_spec_from_dict(raw_task)
+        with self.assertRaisesRegex(ValueError, "缺少 collision PLY"):
+            prepare_episode_spec(
+                base_without_collision,
+                episode_id=3,
+                seed=41,
+                settings=RandomizationSettings(enabled=True),
+            )
 
     def test_randomized_episode_is_deterministic_and_preserves_goal_offsets(self) -> None:
         base = JsonTaskProvider().load(TASK_PATH)

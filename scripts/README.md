@@ -24,7 +24,7 @@ Current maintained entrypoints:
   --pct-server-script scripts/navigation/pct_grid_server.py \
   --pct-tomogram-path source/scene/liangzhu/pct/liangzhu_single_floor.pickle \
   --pct-walkable-path source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy \
-  --pct-collision-ply-path "$LIANGZHU_COLLISION_PLY" \
+  --pct-collision-ply-path source/scene/liangzhu/ply/liangzhu_collision.ply \
   --required-file "$LIANGZHU_COLLISION_USD" \
   --required-file source/robot/go2_x5/urdf/go2_x5/go2_x5.usd \
   --required-file source/scene/objects/carpet.usd \
@@ -100,7 +100,7 @@ CuRobo 的 mat-support proxy 未相对实际 USD 几何漂移。
   --pct-server-script scripts/navigation/pct_grid_server.py \
   --pct-tomogram-path source/scene/liangzhu/pct/liangzhu_single_floor.pickle \
   --pct-walkable-path source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy \
-  --pct-collision-ply-path "$LIANGZHU_COLLISION_PLY" \
+  --pct-collision-ply-path source/scene/liangzhu/ply/liangzhu_collision.ply \
   --pct-coord-mode identity \
   --pct-cross-floor-gateway off \
   --pct-cross-floor-stair-exit off \
@@ -144,26 +144,14 @@ CuRobo final object center 必须与 Mesh 推导结果一致。缺少任一证�
 ```bash
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_pipeline.py \
-  --task-json tasks/nav_pick_place_cola_liangzhu_pct.json \
   --output-dir outputs/liangzhu_cola_to_mat_randomized \
-  --global-planner pct \
-  --pct-no-fallback \
-  --pct-coord-mode identity \
-  --pct-server-script scripts/navigation/pct_grid_server.py \
-  --pct-tomogram-path source/scene/liangzhu/pct/liangzhu_single_floor.pickle \
-  --pct-walkable-path source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy \
-  --pct-collision-ply-path "$LIANGZHU_COLLISION_PLY" \
-  --pct-cross-floor-gateway none \
-  --pct-cross-floor-stair-exit none \
-  --pct-cross-floor-stair-midpoint none \
-  --policy-profile pct_multifloor \
-  --locomotion-checkpoint checkpoints/go2_x5/pct_multifloor/model_26000.pt \
-  --require-locomotion-checkpoint \
-  --navigation-visual-mode collision \
-  --overview-camera-mode fixed \
-  --overview-camera-prim-path /World/overview \
+  --seed 1000 \
   --no-headless
 ```
+
+入口默认使用良渚可乐任务、PCT 单层地图、identity 坐标、禁止 fallback、无跨楼层
+约束、`pct_multifloor` policy/checkpoint、仓库内
+`source/scene/liangzhu/ply/liangzhu_collision.ply` 和 collision 视觉模式。
 
 默认 image/video/GUI overview 均优先使用 USDA 中已有的 `/World/overview`。该相机
 位于 GaussianScene 子树之外，因此禁用 Gaussian 后仍可采集。`front`、`wrist`、
@@ -178,41 +166,34 @@ world 更新、垫子 PhysX collision 和轨迹避碰仍需真实 Isaac/CuRobo h
 `perception_mode=sim_ground_truth` 明确表示控制不使用 RGB-D 定位；RGB 只用于数据记录，
 当前结果不能描述为视觉定位成功。
 
-随机化单次通过后，批采集入口使用同一组显式 PCT 与 policy 参数：
+随机化单次通过后，批采集入口复用同一组默认 PCT 与 policy 参数：
 
 ```bash
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_batch.py \
-  --task-json tasks/nav_pick_place_cola_liangzhu_pct.json \
   --output-dir outputs/liangzhu_cola_to_mat_batch \
   --num-episodes 10 \
-  --seed 1000 \
-  --global-planner pct \
-  --pct-no-fallback \
-  --pct-coord-mode identity \
-  --pct-server-script scripts/navigation/pct_grid_server.py \
-  --pct-tomogram-path source/scene/liangzhu/pct/liangzhu_single_floor.pickle \
-  --pct-walkable-path source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy \
-  --pct-collision-ply-path "$LIANGZHU_COLLISION_PLY" \
-  --pct-cross-floor-gateway none \
-  --pct-cross-floor-stair-exit none \
-  --pct-cross-floor-stair-midpoint none \
-  --policy-profile pct_multifloor \
-  --locomotion-checkpoint checkpoints/go2_x5/pct_multifloor/model_26000.pt \
-  --require-locomotion-checkpoint \
-  --navigation-visual-mode collision \
-  --overview-camera-mode fixed \
-  --overview-camera-prim-path /World/overview \
-  --headless
+  --seed 1000
 ```
 
 batch 只会把 `training_quality_gate_passed=true` 的物理 episode 合并到统一
 LeRobot 数据集；普通 `success=true` 但执行来源或数据门禁未通过的轨迹会被拒绝。
-每个随机 episode 会优先复用 `--pct-collision-ply-path` 探测可乐与地垫支撑面；CLI
-未提供时才回退到 task 声明的 `$LIANGZHU_COLLISION_PLY`。随后同步
+每个随机 episode 默认复用仓库内 collision PLY 探测可乐与地垫支撑面；需要使用其他
+点云时可显式传 `--pct-collision-ply-path`。随后同步
 更新机器人 yaw、可乐位姿、地垫 stage 位姿、placement region、pick/place base goal
 和两阶段 CuRobo 支撑代理。任一同步或地面几何门禁失败都会在 Isaac 启动前拒绝该
-episode。真实随机化单 episode 尚未验收前，不要直接扩大到上述 10 episode。
+episode。扩大随机几何范围或加入新物体后，应先用单 episode 验收，再恢复批量采集。
+
+当前已对 seed 4013..4032 运行 20 条 headless full-physics 回归，20/20
+pipeline 成功且 20/20 通过训练质量门。携物 nav-to-place 使用不含“可乐初始
+位置 keepout”的阶段地图；静态 collision PLY 障碍仍保留，避免抓取后已移动
+的可乐在原地留下过期障碍。
+
+统一数据集中每个 episode 恰好有 6 个子任务目录：
+`episode-1` 到 `episode-6` 分别对应 `nav_straight`、`nav_turn`、
+`nav_stop`、`arm_approach`、`arm_contact`、`arm_retreat`。每个目录均保留
+`data.csv` 以及 `images/front` / `images/wrist`；同类多次出现会按原始帧序合并，
+不再按状态切换重复建目录。
 
 Setup, inspection, FK checks, and single-purpose diagnostics live under
 `dev_tools/` so they do not look like required demo steps.

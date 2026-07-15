@@ -729,7 +729,178 @@ class AStarDwaSmokeTest(unittest.TestCase):
             0.18,
         )
         self.assertAlmostEqual(status["dwa_limits"]["rotate_in_place_angle"], 1.60)
+        self.assertIsNone(
+            status["dwa_limits"]["close_goal_rotate_in_place_angle"]
+        )
+        self.assertIsNone(
+            status["dwa_limits"]["close_goal_rotate_in_place_distance"]
+        )
+        self.assertIsNone(
+            status["dwa_limits"]["close_goal_large_heading_creep_velocity"]
+        )
         self.assertEqual(status["dwa_limits"]["max_infeasible_recomputes"], 8)
+
+    def test_pct_carry_short_goal_aligns_before_minimum_forward_gait(self) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((80, 80), dtype=bool),
+            0.05,
+            (-2.0, 3.0, 0.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=-0.675, y=5.032, yaw=0.716),
+            waypoints=(
+                (-0.919, 4.894),
+                (-0.715, 5.025),
+                (-0.675, 5.032),
+            ),
+            metadata={
+                "planner": "pct",
+                "execution_phase": "carry_nav_to_place",
+                "require_yaw_alignment": True,
+                "yaw_tolerance": 0.15,
+            },
+        )
+        executor = DwaNavExecutor(
+            grid_map=grid,
+            dwa_config=DWAConfig(
+                control_dt=0.02,
+                goal_tolerance=0.15,
+                min_active_linear_velocity=0.25,
+                near_goal_min_active_linear_velocity=0.25,
+                max_linear_velocity=0.45,
+                max_linear_accel=2.5,
+                max_angular_velocity=0.50,
+                use_command_velocity_window=True,
+                enforce_min_active_linear_velocity=True,
+                min_active_angular_velocity=0.30,
+                enforce_min_active_angular_velocity=True,
+            ),
+            terminal_start_distance=0.18,
+            position_tolerance=0.18,
+            carry_position_tolerance=0.12,
+            yaw_tolerance=0.15,
+            require_yaw_alignment=True,
+            carry_max_linear_velocity=0.25,
+            carry_max_angular_velocity=0.30,
+            carry_max_linear_accel=1.00,
+            carry_path_deviation_limit=0.14,
+            carry_initial_alignment_path_deviation_limit=0.40,
+            carry_path_recovery_deviation_limit=0.50,
+            carry_max_infeasible_recomputes=8,
+        )
+        executor.reset(plan)
+
+        half_yaw = -0.110
+        action = executor.compute_action(
+            SimulationState(
+                step_index=0,
+                timestamp=0.0,
+                robot_root_pose=(
+                    -0.919,
+                    4.894,
+                    0.194,
+                    math.cos(half_yaw),
+                    0.0,
+                    0.0,
+                    math.sin(half_yaw),
+                ),
+                robot_root_velocity=(0.0,) * 6,
+            )
+        )
+
+        self.assertEqual(action.source, "navigation_dwa")
+        self.assertEqual(float(action.base_velocity[0]), 0.0)
+        self.assertGreater(float(action.base_velocity[2]), 0.0)
+        self.assertAlmostEqual(
+            action.metadata["dwa_limits"]["close_goal_rotate_in_place_angle"],
+            0.35,
+        )
+        self.assertAlmostEqual(
+            action.metadata["dwa_limits"]["close_goal_rotate_in_place_distance"],
+            0.80,
+        )
+        self.assertEqual(
+            action.metadata["dwa_limits"][
+                "close_goal_large_heading_creep_velocity"
+            ],
+            0.0,
+        )
+        self.assertAlmostEqual(
+            action.metadata["dwa"]["rotate_in_place_angle_used"],
+            0.35,
+        )
+
+    def test_pct_carry_short_goal_does_not_reactivate_initial_alignment(self) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((80, 80), dtype=bool),
+            0.05,
+            (-2.0, 3.0, 0.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=-0.612, y=5.133, yaw=0.268),
+            waypoints=(
+                (-1.133, 5.051),
+                # seed 4020 的 PCT 路径经局部网格细化后的首个跟踪点；
+                # 初始 heading error 约 0.15 rad，应立即释放一次性对齐锁。
+                (-0.915245, 5.024866),
+                (-0.615245, 5.124866),
+                (-0.612, 5.133),
+            ),
+            metadata={
+                # Feed the already-refined controller path directly.  Using
+                # planner="pct" here would refine it a second time against
+                # this synthetic empty map and replace it with a direct line.
+                "planner": "pct_refined_fixture",
+                "execution_phase": "carry_nav_to_place",
+            },
+        )
+        executor = DwaNavExecutor(
+            grid_map=grid,
+            dwa_config=DWAConfig(
+                control_dt=0.02,
+                goal_tolerance=0.15,
+                min_active_linear_velocity=0.25,
+                near_goal_min_active_linear_velocity=0.25,
+                max_linear_velocity=0.45,
+                max_linear_accel=2.5,
+                max_angular_velocity=0.50,
+                use_command_velocity_window=True,
+                enforce_min_active_linear_velocity=True,
+                min_active_angular_velocity=0.30,
+                enforce_min_active_angular_velocity=True,
+            ),
+            carry_max_linear_velocity=0.25,
+            carry_max_angular_velocity=0.30,
+            carry_max_linear_accel=1.00,
+            carry_path_deviation_limit=0.14,
+            carry_initial_alignment_path_deviation_limit=0.40,
+            carry_path_recovery_deviation_limit=0.50,
+        )
+        executor.reset(plan)
+        yaw = -0.268
+        action = executor.compute_action(
+            SimulationState(
+                step_index=0,
+                timestamp=0.0,
+                robot_root_pose=(
+                    -1.133,
+                    5.051,
+                    0.196,
+                    math.cos(0.5 * yaw),
+                    0.0,
+                    0.0,
+                    math.sin(0.5 * yaw),
+                ),
+                robot_root_velocity=(0.0,) * 6,
+            )
+        )
+
+        self.assertFalse(action.metadata["dwa"]["initial_alignment_active"])
+        self.assertAlmostEqual(
+            action.metadata["dwa"]["rotate_in_place_angle_used"],
+            1.60,
+        )
+        self.assertEqual(action.source, "navigation_dwa")
 
     def test_pct_carry_stair_float_freezes_base_only_on_stair_segment(self) -> None:
         grid = OccupancyGridMap(
@@ -1852,6 +2023,52 @@ class AStarDwaSmokeTest(unittest.TestCase):
         self.assertFalse(status["done"])
         self.assertEqual(status["stall_recovery_count"], 1)
         self.assertEqual(status["stall"]["sample_count"], 0)
+
+    def test_pct_carry_uses_map_without_stale_task_object_keepout(self) -> None:
+        default_occupancy = np.zeros((40, 40), dtype=bool)
+        default_map = OccupancyGridMap(
+            default_occupancy,
+            0.1,
+            (-1.0, -1.0, 0.0),
+        )
+        obstacle_row, obstacle_col = default_map.world_to_grid(0.4, 0.0)
+        default_occupancy[obstacle_row, obstacle_col] = True
+        default_map = OccupancyGridMap(
+            default_occupancy,
+            0.1,
+            (-1.0, -1.0, 0.0),
+        )
+        carry_map = OccupancyGridMap(
+            np.zeros((40, 40), dtype=bool),
+            0.1,
+            (-1.0, -1.0, 0.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=1.0, y=0.0, yaw=0.0),
+            waypoints=((0.0, 0.0), (1.0, 0.0)),
+            metadata={
+                "planner": "pct",
+                "execution_phase": "carry_nav_to_place",
+            },
+        )
+        executor = DwaNavExecutor(
+            grid_map=default_map,
+            carry_grid_map=carry_map,
+            dwa_config=DWAConfig(
+                control_dt=0.05,
+                max_linear_accel=10.0,
+            ),
+        )
+
+        executor.reset(plan)
+        status = executor.status()
+
+        self.assertTrue(default_map.is_occupied(obstacle_row, obstacle_col))
+        self.assertEqual(
+            status["map_selection"]["map_variant"],
+            "carry_without_task_object_keepout",
+        )
+        self.assertFalse(executor.local_map.is_occupied(obstacle_row, obstacle_col))
 
     def test_pct_route_corridor_preserves_global_hard_obstacles(self) -> None:
         grid = OccupancyGridMap(

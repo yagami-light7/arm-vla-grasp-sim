@@ -45,9 +45,9 @@
       0.0
     ],
     "asset_scale_xyz": [
-      0.03,
-      0.03,
-      0.03
+      0.3,
+      0.2,
+      0.005
     ],
     "asset_units_resolve_rotate_x_deg": 90.0
   },

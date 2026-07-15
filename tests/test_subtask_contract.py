@@ -68,19 +68,23 @@ def _task(*, episode_id: int = 1) -> dict:
     }
 
 
-def test_legacy_front_only_layout_config_migrates_to_front_wrist_v2() -> None:
-    task = _task()
-    task["subtask_segmentation"] = {
-        "enabled": True,
-        "directory_export": True,
-        "output_layout": "episodes_task_episode_segment_v1",
-    }
+def test_legacy_segment_layout_configs_migrate_to_fixed_subtask_v3() -> None:
+    for legacy_layout in (
+        "episodes_task_episode_segment_v1",
+        "episodes_task_episode_segment_front_wrist_v2",
+    ):
+        task = _task()
+        task["subtask_segmentation"] = {
+            "enabled": True,
+            "directory_export": True,
+            "output_layout": legacy_layout,
+        }
 
-    config = validate_subtask_segmentation_config(task)
+        config = validate_subtask_segmentation_config(task)
 
-    assert config is not None
-    assert config.output_layout == SUBTASK_DIRECTORY_LAYOUT
-    assert config.config_source == "task_legacy_layout_migrated"
+        assert config is not None
+        assert config.output_layout == SUBTASK_DIRECTORY_LAYOUT
+        assert config.config_source == "task_legacy_layout_migrated"
 
 
 def test_all_six_labels_preserve_stage_order_and_frame_coverage() -> None:

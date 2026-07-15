@@ -15,8 +15,11 @@ from .training_action import task_requests_vla_training_action
 SUBTASK_SCHEMA_VERSION = (
     "nav_straight_turn_stop__arm_approach_contact_retreat_v1"
 )
-SUBTASK_DIRECTORY_LAYOUT = "episodes_task_episode_segment_front_wrist_v2"
-_LEGACY_SUBTASK_DIRECTORY_LAYOUTS = {"episodes_task_episode_segment_v1"}
+SUBTASK_DIRECTORY_LAYOUT = "episodes_task_episode_subtask_front_wrist_v3"
+_LEGACY_SUBTASK_DIRECTORY_LAYOUTS = {
+    "episodes_task_episode_segment_v1",
+    "episodes_task_episode_segment_front_wrist_v2",
+}
 TASK_STAGES = ("nav_to_pick", "pick", "nav_to_place", "place")
 NAV_SUBTASKS = ("nav_straight", "nav_turn", "nav_stop")
 ARM_SUBTASKS = ("arm_approach", "arm_contact", "arm_retreat")

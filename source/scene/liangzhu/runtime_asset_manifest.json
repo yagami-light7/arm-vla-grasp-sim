@@ -7,8 +7,8 @@
     "visual_prim_path": "/World/VisualScene/GaussianScene",
     "collision_floor_proxy_profile": null,
     "legacy_yinluyuan_f2_floor_proxy_disabled": true,
-    "default_navigation_visual_mode": "full",
-    "gaussian_scene_loaded_by_default": true,
+    "default_navigation_visual_mode": "collision",
+    "gaussian_scene_loaded_by_default": false,
     "overview_camera_prim_path": "/World/overview",
     "overview_camera_outside_gaussian_subtree_offline_verified": true,
     "configuration_unit_verified": true,
@@ -122,7 +122,7 @@
     "runtime_place_export_verified": false
   },
   "pct": {
-    "source_collision_ply_env": "LIANGZHU_COLLISION_PLY",
+    "source_collision_ply_path": "source/scene/liangzhu/ply/liangzhu_collision.ply",
     "source_collision_ply_sha256": "85c2a2e745905eb9e83cc46c8f68e1706431658598d783c94f022f8131ad78de",
     "tomogram_path": "source/scene/liangzhu/pct/liangzhu_single_floor.pickle",
     "walkable_path": "source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy",
@@ -248,7 +248,7 @@
     "note": "每个 episode 同步更新机器人 yaw、可乐、地垫、placement region、正面对准目标的导航终态和 pick/place CuRobo 支撑代理；place goal 从 pick base goal 朝地垫生成。"
   },
   "data_export": {
-    "schema_version": "full_physics_lerobot_v2.1.4",
+    "schema_version": "full_physics_lerobot_v2.1.5",
     "training_action_schema": "base_xyyaw_tcp_base_rpy_gripper_v1",
     "training_action_dimension": 10,
     "training_action_alignment": "next_sample_executed_pose",
@@ -258,7 +258,16 @@
     "control_action_schema": "base_velocity_arm_joint_gripper_targets_v1",
     "control_action_dimension": 11,
     "subtask_schema_version": "nav_straight_turn_stop__arm_approach_contact_retreat_v1",
-    "subtask_directory_layout": "episodes_task_episode_segment_front_wrist_v2",
+    "subtask_directory_layout": "episodes_task_episode_subtask_front_wrist_v3",
+    "subtask_directory_count_per_collected_episode": 6,
+    "subtask_directory_index_mapping": {
+      "1": "nav_straight",
+      "2": "nav_turn",
+      "3": "nav_stop",
+      "4": "arm_approach",
+      "5": "arm_contact",
+      "6": "arm_retreat"
+    },
     "subtask_duplicate_episode_id_policy": "renumber_per_task_from_1_in_dataset_order",
     "task_stages": ["nav_to_pick", "pick", "nav_to_place", "place"],
     "subtask_labels": [

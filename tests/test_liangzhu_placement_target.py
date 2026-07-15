@@ -51,7 +51,7 @@ def test_liangzhu_mat_target_matches_scene_receptacle_transform() -> None:
         "double3 xformOp:translate = "
         "(-0.438209287414772, 5.042934329921819, -0.13822162094644663)"
     ) in scene_text
-    assert "float3 xformOp:scale = (0.2, 0.15, 0.005)" in scene_text
+    assert "float3 xformOp:scale = (0.3, 0.2, 0.005)" in scene_text
     assert MAT_ASSET_PATH.is_file()
 
 

@@ -36,7 +36,10 @@ class DWAConfig:
     speed_bias: float = 0.35
     obstacle_distance_cap: float = 0.5
     rotate_in_place_angle: float = 1.05
+    close_goal_rotate_in_place_angle: float | None = None
+    close_goal_rotate_in_place_distance: float | None = None
     large_heading_creep_velocity: float | None = None
+    close_goal_large_heading_creep_velocity: float | None = None
     close_goal_distance: float = 0.45
     close_goal_speed_limit: float = 0.22
     goal_tracking_distance: float = 0.80
@@ -85,6 +88,7 @@ class DWADebug:
     window_linear_velocity: float
     window_angular_velocity: float
     velocity_window_source: str
+    rotate_in_place_angle_used: float
 
 
 class DWAController:
@@ -174,6 +178,9 @@ class DWAController:
                 velocity_window_source=(
                     "command" if self.config.use_command_velocity_window else "measured"
                 ),
+                rotate_in_place_angle_used=self._rotate_in_place_angle(
+                    distance_to_goal
+                ),
             )
             self._command_window_velocity = (0.0, 0.0)
             return np.zeros(3, dtype=np.float32), debug
@@ -186,15 +193,20 @@ class DWAController:
         distance_to_target = float(np.linalg.norm(delta))
         target_heading = math.atan2(delta[1], delta[0])
         heading_error = _wrap_angle(target_heading - yaw)
+        rotate_in_place_angle = self._rotate_in_place_angle(distance_to_goal)
         current_path_distance = float(
             np.min(self._path_distances(position[None, :]))
         )
         if (
             self._initial_alignment_active
-            and abs(heading_error) <= self.config.rotate_in_place_angle
+            and abs(heading_error) <= rotate_in_place_angle
             and current_path_distance <= self.config.path_deviation_limit
         ):
             self._initial_alignment_active = False
+            # The close-goal gate is only an initial-alignment policy.  Once
+            # that one-shot latch is released, use the normal carry threshold
+            # for both candidate sampling and diagnostics in this same tick.
+            rotate_in_place_angle = self._rotate_in_place_angle(distance_to_goal)
         if (
             not self._initial_alignment_active
             and self.config.path_recovery_deviation_limit is not None
@@ -343,8 +355,30 @@ class DWAController:
             velocity_window_source=(
                 "command" if self.config.use_command_velocity_window else "measured"
             ),
+            rotate_in_place_angle_used=rotate_in_place_angle,
         )
         return best_command, debug
+
+    def _rotate_in_place_angle(self, distance_to_goal: float) -> float:
+        """Return the heading gate used at the current goal distance.
+
+        Short carry paths need a stricter heading gate than long-route corner
+        tracking.  Otherwise the minimum executable forward gait starts while
+        the goal is still far off the body x-axis, and the quadruped can arc
+        past a nearby goal before terminal pose control becomes active.
+        """
+
+        angle = float(self.config.rotate_in_place_angle)
+        close_angle = self.config.close_goal_rotate_in_place_angle
+        close_distance = self.config.close_goal_rotate_in_place_distance
+        if (
+            self._initial_alignment_active
+            and close_angle is not None
+            and close_distance is not None
+            and distance_to_goal <= float(close_distance)
+        ):
+            angle = min(angle, float(close_angle))
+        return angle
 
     def _advance_target(self, position: np.ndarray):
         next_corner = self._next_unpassed_corner()
@@ -426,11 +460,22 @@ class DWAController:
             dt=dt,
         )
 
-        if abs(heading_error) > self.config.rotate_in_place_angle:
+        if abs(heading_error) > self._rotate_in_place_angle(distance_to_goal):
+            configured_creep_velocity = self.config.large_heading_creep_velocity
+            if (
+                self._initial_alignment_active
+                and self.config.close_goal_large_heading_creep_velocity is not None
+                and self.config.close_goal_rotate_in_place_distance is not None
+                and distance_to_goal
+                <= float(self.config.close_goal_rotate_in_place_distance)
+            ):
+                configured_creep_velocity = (
+                    self.config.close_goal_large_heading_creep_velocity
+                )
             creep_velocity = (
                 max(0.08, 0.5 * min_active_linear_velocity)
-                if self.config.large_heading_creep_velocity is None
-                else max(0.0, float(self.config.large_heading_creep_velocity))
+                if configured_creep_velocity is None
+                else max(0.0, float(configured_creep_velocity))
             )
             creep_cap = min(
                 linear_upper,

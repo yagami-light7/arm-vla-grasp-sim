@@ -162,7 +162,7 @@ TCP_POSE_NAMES = (
     "tcp_quat_z",
 )
 
-SCHEMA_VERSION = "full_physics_lerobot_v2.1.4"
+SCHEMA_VERSION = "full_physics_lerobot_v2.1.5"
 CONTROL_ACTION_SCHEMA = "base_velocity_arm_joint_gripper_targets_v1"
 
 

@@ -30,6 +30,9 @@ DEFAULT_LIANGZHU_PCT_WALKABLE = (
 DEFAULT_LIANGZHU_LOCOMOTION_CHECKPOINT = (
     "checkpoints/go2_x5/pct_multifloor/model_26000.pt"
 )
+DEFAULT_LIANGZHU_COLLISION_PLY = (
+    "source/scene/liangzhu/ply/liangzhu_collision.ply"
+)
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -177,9 +180,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--navigation-visual-mode",
         choices=("auto", "collision", "full"),
-        default="full",
+        default="collision",
         help=(
-            "转发物理场景视觉模式；默认 full，加载 GaussianScene。"
+            "转发物理场景视觉模式；稳定默认 collision，full 显式加载 GaussianScene。"
         ),
     )
     parser.add_argument(
@@ -206,9 +209,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--pct-collision-ply-path",
-        default=os.environ.get("LIANGZHU_COLLISION_PLY"),
+        default=DEFAULT_LIANGZHU_COLLISION_PLY,
         help=(
-            "转发 PCT collision PLY 路径；默认读取 LIANGZHU_COLLISION_PLY。"
+            "转发 PCT collision PLY；默认使用仓库内良渚碰撞点云，"
+            "可通过 CLI 显式覆盖。"
         ),
     )
     fallback_group = parser.add_mutually_exclusive_group()

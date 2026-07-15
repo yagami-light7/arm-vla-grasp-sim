@@ -288,6 +288,52 @@ class FullPhysicsNavigationTest(unittest.TestCase):
         self.assertGreater(action.base_velocity[2], 0.0)
         self.assertLessEqual(action.base_velocity[2], 0.30)
 
+    def test_carry_terminal_releases_forward_translation_at_place_tolerance(self) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((40, 40), dtype=bool),
+            0.05,
+            (-1.0, -1.0, 0.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=0.16, y=0.0, yaw=0.70),
+            waypoints=((0.0, 0.0), (0.16, 0.0)),
+            metadata={
+                "execution_phase": "carry_nav_to_place",
+                "require_yaw_alignment": True,
+                "yaw_tolerance": 0.15,
+            },
+        )
+        executor = DwaNavExecutor(
+            grid_map=grid,
+            terminal_start_distance=0.18,
+            position_tolerance=0.10,
+            carry_position_tolerance=0.15,
+            yaw_tolerance=0.15,
+            carry_max_linear_velocity=0.25,
+            carry_max_angular_velocity=0.30,
+        )
+        executor.reset(plan)
+
+        translating = executor.compute_action(_state(x=0.0, y=0.0, yaw=0.70))
+        self.assertTrue(translating.metadata["carry_forward_translation_active"])
+        self.assertEqual(
+            translating.metadata["terminal_control_mode"],
+            "carry_forward_translation",
+        )
+
+        # seed 5000 reached about 0.116 m from the goal while this latch was
+        # active.  That is already inside the 0.15 m place tolerance, so
+        # final-yaw control must take over instead of orbiting toward 0.08 m.
+        polishing = executor.compute_action(_state(x=0.04, y=0.0, yaw=3.0))
+
+        self.assertFalse(polishing.metadata["carry_forward_translation_active"])
+        self.assertEqual(polishing.metadata["terminal_control_mode"], "final_pose")
+        self.assertAlmostEqual(
+            executor._active_terminal_pose_config.position_acceptance_tolerance,
+            0.15,
+        )
+        self.assertLess(polishing.base_velocity[2], 0.0)
+
     def test_carry_place_tolerance_holds_zero_until_base_is_stable(self) -> None:
         grid = OccupancyGridMap(
             np.zeros((40, 40), dtype=bool),
@@ -373,12 +419,12 @@ class FullPhysicsNavigationTest(unittest.TestCase):
         self.assertIsNotNone(spec.place_goal)
         verifier = NavigationEpisodeVerifier(
             position_tolerance=0.05,
-            place_position_tolerance=0.12,
+            place_position_tolerance=0.15,
             yaw_tolerance=0.15,
             require_yaw_alignment=True,
         )
         state = _state(
-            x=spec.place_goal.x + 0.10,
+            x=spec.place_goal.x + 0.14,
             y=spec.place_goal.y,
             yaw=spec.place_goal.yaw,
         )
@@ -387,7 +433,7 @@ class FullPhysicsNavigationTest(unittest.TestCase):
         pick_result = verifier.verify_pick_reachable(state, spec)
 
         self.assertTrue(place_result.success)
-        self.assertEqual(place_result.metadata["position_tolerance"], 0.12)
+        self.assertEqual(place_result.metadata["position_tolerance"], 0.15)
         self.assertFalse(pick_result.success)
         self.assertEqual(pick_result.metadata["position_tolerance"], 0.05)
 

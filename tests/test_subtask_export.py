@@ -1,4 +1,4 @@
-"""Tests for contiguous, single-label subtask directory export."""
+"""Tests for fixed six-label subtask directory export."""
 
 from __future__ import annotations
 
@@ -160,20 +160,44 @@ def _export(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     return output, report
 
 
-def test_repeated_subtask_creates_a_new_contiguous_directory(tmp_path: Path) -> None:
+def test_repeated_subtask_is_merged_into_one_of_six_fixed_directories(
+    tmp_path: Path,
+) -> None:
     output, report = _export(tmp_path)
 
-    assert [segment["subtask"] for segment in report["segments"]] == [
+    assert [subtask["subtask"] for subtask in report["subtasks"]] == [
         "nav_straight",
         "nav_turn",
-        "nav_straight",
+        "nav_stop",
+        "arm_approach",
+        "arm_contact",
+        "arm_retreat",
     ]
-    assert [segment["segment_dir_name"] for segment in report["segments"]] == [
+    assert [subtask["segment_dir_name"] for subtask in report["subtasks"]] == [
         "7-1",
         "7-2",
         "7-3",
+        "7-4",
+        "7-5",
+        "7-6",
     ]
+    assert report["subtask_directory_count"] == 6
+    assert report["subtasks"][0]["source_segment_indices"] == [1, 3]
+    assert report["subtasks"][0]["frame_count"] == 6
+    assert report["subtasks"][1]["source_segment_indices"] == [2]
+    assert report["subtasks"][1]["frame_count"] == 3
+    assert all(
+        subtask["frame_count"] == 0 for subtask in report["subtasks"][2:]
+    )
     episode_root = output / "episodes" / "4" / "7"
+    assert {path.name for path in episode_root.iterdir() if path.is_dir()} == {
+        "7-1",
+        "7-2",
+        "7-3",
+        "7-4",
+        "7-5",
+        "7-6",
+    }
     with (episode_root / "task.csv").open(
         "r", encoding="utf-8", newline=""
     ) as stream:
@@ -182,15 +206,21 @@ def test_repeated_subtask_creates_a_new_contiguous_directory(tmp_path: Path) -> 
     assert task_row["start_base_x"] == "0.0"
     assert task_row["goal_base_x"] == "1.0"
     assert task_row["goal_base_yaw"] == "0.0"
+    assert task_row["subtask_directory_count"] == "6"
+    assert task_row["source_subtask_segment_count"] == "3"
+    assert len(json.loads(task_row["subtask_directories_json"])) == 6
     reconstructed: list[int] = []
     dataset_indices: list[int] = []
-    for segment in report["segments"]:
-        segment_dir = episode_root / str(segment["segment_dir_name"])
+    for subtask in report["subtasks"]:
+        segment_dir = episode_root / str(subtask["segment_dir_name"])
         with (segment_dir / "data.csv").open(
             "r", encoding="utf-8", newline=""
         ) as stream:
             rows = list(csv.DictReader(stream))
-        assert len({(row["task_stage"], row["subtask"]) for row in rows}) == 1
+        assert {row["subtask"] for row in rows} in (
+            set(),
+            {subtask["subtask"]},
+        )
         assert [int(row["subtask_frame_index"]) for row in rows] == list(
             range(len(rows))
         )
@@ -214,18 +244,19 @@ def test_repeated_subtask_creates_a_new_contiguous_directory(tmp_path: Path) -> 
         ]
         reconstructed.extend(int(row["global_frame_index"]) for row in rows)
         dataset_indices.extend(int(row["dataset_global_index"]) for row in rows)
-        for field in (
-            "observation_tcp_x_base",
-            "observation_tcp_y_base",
-            "observation_tcp_z_base",
-            "observation_tcp_roll_base",
-            "observation_tcp_pitch_base",
-            "observation_tcp_yaw_base",
-        ):
-            assert field in rows[0]
-            assert math.isfinite(float(rows[0][field]))
-    assert reconstructed == list(range(9))
-    assert dataset_indices == list(range(20, 29))
+        if rows:
+            for field in (
+                "observation_tcp_x_base",
+                "observation_tcp_y_base",
+                "observation_tcp_z_base",
+                "observation_tcp_roll_base",
+                "observation_tcp_pitch_base",
+                "observation_tcp_yaw_base",
+            ):
+                assert field in rows[0]
+                assert math.isfinite(float(rows[0][field]))
+    assert sorted(reconstructed) == list(range(9))
+    assert sorted(dataset_indices) == list(range(20, 29))
     assert validate_subtask_directory_export(output)["valid"] is True
 
 
@@ -236,7 +267,7 @@ def test_validator_rejects_missing_wrist_image(tmp_path: Path) -> None:
         / "episodes"
         / "4"
         / "7"
-        / str(report["segments"][0]["segment_dir_name"])
+        / str(report["subtasks"][0]["segment_dir_name"])
     )
     next((segment_dir / "images" / "wrist").glob("*.jpg")).unlink()
 
@@ -257,7 +288,7 @@ def test_validator_rejects_mixed_labels_inside_one_subtask_folder(
         / "episodes"
         / "4"
         / "7"
-        / str(report["segments"][0]["segment_dir_name"])
+        / str(report["subtasks"][0]["segment_dir_name"])
         / "data.csv"
     )
     with data_csv.open("r", encoding="utf-8", newline="") as stream:

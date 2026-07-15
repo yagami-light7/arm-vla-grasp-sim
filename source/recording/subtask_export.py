@@ -1,4 +1,4 @@
-"""按 task/episode/连续 subtask 目录导出 VLA CSV 与前视、腕部图像。"""
+"""按 task/episode/固定六类 subtask 目录导出 VLA CSV 与双路图像。"""
 
 from __future__ import annotations
 
@@ -72,8 +72,9 @@ SUBTASK_TASK_COLUMNS = (
     "source_episode_index",
     "seed",
     "frame_count",
-    "subtask_segment_count",
-    "subtask_segments_json",
+    "subtask_directory_count",
+    "subtask_directories_json",
+    "source_subtask_segment_count",
 )
 
 _ACTION_COLUMNS = tuple(f"action_{name}" for name in VLA_TRAINING_ACTION_NAMES)
@@ -145,6 +146,9 @@ SUBTASK_DATA_COLUMNS = (
 
 _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _SUBTASK_IMAGE_CAMERA_KEYS = ("front", "wrist")
+_SUBTASK_DIRECTORY_INDICES = {
+    label: index for index, label in enumerate(SUBTASK_LABELS, start=1)
+}
 
 
 def materialize_subtask_episode(
@@ -195,11 +199,18 @@ def materialize_subtask_episode(
     episode_root.mkdir(parents=True, exist_ok=True)
 
     frames = list(segmentation["frames"])
-    segments = list(segmentation["segments"])
-    segment_reports: list[dict[str, Any]] = []
-    for segment in segments:
-        segment_index = int(segment["segment_index"])
-        segment_dir_name = f"{episode_id}-{segment_index}"
+    source_segments = {
+        int(segment["segment_index"]): dict(segment)
+        for segment in segmentation["segments"]
+    }
+    subtask_reports: list[dict[str, Any]] = []
+    for subtask, subtask_index in _SUBTASK_DIRECTORY_INDICES.items():
+        frame_indices = [
+            frame_index
+            for frame_index, annotation in enumerate(frames)
+            if annotation.get("subtask") == subtask
+        ]
+        segment_dir_name = f"{episode_id}-{subtask_index}"
         segment_dir = episode_root / segment_dir_name
         image_dirs = {
             camera_key: segment_dir / "images" / camera_key
@@ -207,13 +218,19 @@ def materialize_subtask_episode(
         }
         for image_dir in image_dirs.values():
             image_dir.mkdir(parents=True, exist_ok=True)
-        start = int(segment["global_start_frame"])
-        end = int(segment["global_end_frame"])
         data_path = segment_dir / "data.csv"
         with data_path.open("w", encoding="utf-8", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=SUBTASK_DATA_COLUMNS)
             writer.writeheader()
-            for local_index, frame_index in enumerate(range(start, end + 1)):
+            for local_index, frame_index in enumerate(frame_indices):
+                annotation = frames[frame_index]
+                source_segment_index = int(annotation["segment_index"])
+                source_segment = source_segments.get(source_segment_index)
+                if source_segment is None:
+                    raise ValueError(
+                        "subtask frame references missing source segment: "
+                        f"frame={frame_index} segment={source_segment_index}"
+                    )
                 image_name = f"camera0_{local_index:05d}.jpg"
                 for camera_key, image_dir in image_dirs.items():
                     source_image = _camera_image_path(
@@ -236,29 +253,58 @@ def materialize_subtask_episode(
                         instruction=str(task.get("instruction") or ""),
                         row=rows[frame_index],
                         sample=samples[frame_index],
-                        annotation=frames[frame_index],
-                        segment=segment,
+                        annotation=annotation,
+                        segment=source_segment,
                         training_action=training_actions[frame_index],
                         observation_pose=observation_poses[frame_index],
                         control_action=control_actions[frame_index],
                         image_name=image_name,
                     )
                 )
-        segment_reports.append(
+        source_segment_indices = list(
+            dict.fromkeys(
+                int(frames[frame_index]["segment_index"])
+                for frame_index in frame_indices
+            )
+        )
+        task_stages = list(
+            dict.fromkeys(
+                str(frames[frame_index]["task_stage"])
+                for frame_index in frame_indices
+            )
+        )
+        subtask_reports.append(
             {
-                **segment,
+                "subtask_index": subtask_index,
+                "subtask": subtask,
+                "task_stages": task_stages,
+                "frame_count": len(frame_indices),
+                "source_segment_count": len(source_segment_indices),
+                "source_segment_indices": source_segment_indices,
                 "segment_dir_name": segment_dir_name,
                 "relative_path": str(segment_dir.relative_to(root)),
                 "data_csv": str(data_path.relative_to(root)),
-                "image_count": end - start + 1,
+                "image_count": len(frame_indices),
                 "image_counts": {
-                    camera_key: end - start + 1
+                    camera_key: len(frame_indices)
                     for camera_key in _SUBTASK_IMAGE_CAMERA_KEYS
                 },
-                "global_start_index": start,
-                "global_end_index": end,
-                "dataset_global_start_index": global_frame_offset + start,
-                "dataset_global_end_index": global_frame_offset + end,
+                "global_start_index": (
+                    frame_indices[0] if frame_indices else None
+                ),
+                "global_end_index": (
+                    frame_indices[-1] if frame_indices else None
+                ),
+                "dataset_global_start_index": (
+                    global_frame_offset + frame_indices[0]
+                    if frame_indices
+                    else None
+                ),
+                "dataset_global_end_index": (
+                    global_frame_offset + frame_indices[-1]
+                    if frame_indices
+                    else None
+                ),
             }
         )
 
@@ -268,7 +314,8 @@ def materialize_subtask_episode(
         dataset_schema_version=dataset_schema_version,
         episode_index=episode_index,
         frame_count=frame_count,
-        segments=segment_reports,
+        subtasks=subtask_reports,
+        source_segment_count=len(source_segments),
         source_episode_dir=source_dir,
     )
     return {
@@ -285,8 +332,9 @@ def materialize_subtask_episode(
         "global_end_index": frame_count - 1,
         "dataset_global_start_index": global_frame_offset,
         "dataset_global_end_index": global_frame_offset + frame_count - 1,
-        "segment_count": len(segment_reports),
-        "segments": segment_reports,
+        "subtask_directory_count": len(subtask_reports),
+        "source_segment_count": len(source_segments),
+        "subtasks": subtask_reports,
         "frame_counts": dict(segmentation.get("frame_counts", {})),
         "subtask_schema_version": SUBTASK_SCHEMA_VERSION,
         "subtask_directory_layout": SUBTASK_DIRECTORY_LAYOUT,
@@ -320,7 +368,8 @@ def write_subtask_task_stub(
         dataset_schema_version=dataset_schema_version,
         episode_index=episode_index,
         frame_count=0,
-        segments=[],
+        subtasks=[],
+        source_segment_count=0,
         source_episode_dir=None,
     )
 
@@ -429,8 +478,13 @@ def validate_subtask_directory_export(
         "frame_count": sum(
             int(report.get("frame_count", 0)) for report in episode_reports
         ),
-        "segment_count": sum(
-            int(report.get("segment_count", 0)) for report in episode_reports
+        "subtask_directory_count": sum(
+            int(report.get("subtask_directory_count", 0))
+            for report in episode_reports
+        ),
+        "source_segment_count": sum(
+            int(report.get("source_segment_count", 0))
+            for report in episode_reports
         ),
     }
 
@@ -442,7 +496,8 @@ def _write_task_csv(
     dataset_schema_version: str,
     episode_index: int,
     frame_count: int,
-    segments: Sequence[dict[str, Any]],
+    subtasks: Sequence[dict[str, Any]],
+    source_segment_count: int,
     source_episode_dir: Path | None,
 ) -> Path:
     start = _mapping(task.get("start"))
@@ -524,12 +579,13 @@ def _write_task_csv(
         "source_episode_index": episode_index,
         "seed": summary.get("seed", "") if summary else "",
         "frame_count": frame_count,
-        "subtask_segment_count": len(segments),
-        "subtask_segments_json": json.dumps(
-            list(segments),
+        "subtask_directory_count": len(subtasks),
+        "subtask_directories_json": json.dumps(
+            list(subtasks),
             ensure_ascii=False,
             separators=(",", ":"),
         ),
+        "source_subtask_segment_count": source_segment_count,
     }
     task_csv = episode_root / "task.csv"
     with task_csv.open("w", encoding="utf-8", newline="") as stream:
@@ -632,7 +688,8 @@ def _validate_subtask_episode(
         "episode_index": record.get("episode_index"),
         "episode_path": str(episode_path),
         "frame_count": 0,
-        "segment_count": 0,
+        "subtask_directory_count": 0,
+        "source_segment_count": 0,
         "global_indices": [],
         "dataset_global_indices": [],
         "task_stages": [],
@@ -670,77 +727,74 @@ def _validate_subtask_episode(
             "task.csv 的 collection_status 不在正式状态枚举中。",
             task_csv,
         )
-
-    segments = record.get("segments")
-    if not isinstance(segments, list):
+    elif task_rows[0].get("subtask_directory_layout") != SUBTASK_DIRECTORY_LAYOUT:
         _validation_error(
             errors,
-            "invalid_subtask_segments",
-            "subtasks.jsonl 的 segments 必须是列表。",
+            "invalid_subtask_directory_layout",
+            "task.csv 的 subtask_directory_layout 与当前 v3 schema 不一致。",
+            task_csv,
+        )
+
+    if record.get("subtask_directory_layout") != SUBTASK_DIRECTORY_LAYOUT:
+        _validation_error(
+            errors,
+            "invalid_subtask_directory_layout",
+            "subtasks.jsonl 的目录布局与当前 v3 schema 不一致。",
+            task_csv,
+        )
+
+    subtasks = record.get("subtasks")
+    if not isinstance(subtasks, list):
+        _validation_error(
+            errors,
+            "invalid_subtask_directories",
+            "subtasks.jsonl 的 subtasks 必须是六类 subtask 列表。",
             task_csv,
         )
         return report
-    reconstructed_indices: list[int] = []
-    reconstructed_dataset_indices: list[int] = []
-    reconstructed_episode_indices: list[int] = []
-    reconstructed_stages: list[str] = []
-    reconstructed_labels: list[str] = []
-    reconstructed_segment_indices: list[int] = []
+    if len(subtasks) != len(SUBTASK_LABELS):
+        _validation_error(
+            errors,
+            "invalid_subtask_directory_count",
+            f"已采集 episode 必须恰好包含 {len(SUBTASK_LABELS)} 个 subtask 目录。",
+            episode_path,
+        )
+    if int(record.get("subtask_directory_count", -1)) != len(SUBTASK_LABELS):
+        _validation_error(
+            errors,
+            "invalid_subtask_directory_count",
+            "subtasks.jsonl 的 subtask_directory_count 必须为 6。",
+            episode_path,
+        )
+
+    reconstructed_frames: list[tuple[int, int, int, str, str, int]] = []
     episode_id = str(record.get("episode_id") or "")
-    expected_segment_dirs: list[str] = []
-    previous_pair: tuple[str, str] | None = None
-    for expected_order, segment in enumerate(segments, start=1):
-        if not isinstance(segment, dict):
+    expected_segment_dirs = [
+        f"{episode_id}-{index}" for index in range(1, len(SUBTASK_LABELS) + 1)
+    ]
+    for subtask_index, expected_label in enumerate(SUBTASK_LABELS, start=1):
+        subtask = subtasks[subtask_index - 1] if subtask_index <= len(subtasks) else {}
+        if not isinstance(subtask, dict):
             _validation_error(
                 errors,
                 "invalid_subtask_segment",
-                f"segment {expected_order} 必须是对象。",
+                f"subtask {subtask_index} 必须是对象。",
                 task_csv,
             )
             continue
-        expected_dir_name = f"{episode_id}-{expected_order}"
-        segment_dir_name = str(segment.get("segment_dir_name") or "")
-        expected_segment_dirs.append(expected_dir_name)
+        expected_dir_name = f"{episode_id}-{subtask_index}"
+        segment_dir_name = str(subtask.get("segment_dir_name") or "")
         if (
-            int(segment.get("segment_index", -1)) != expected_order
+            int(subtask.get("subtask_index", -1)) != subtask_index
+            or str(subtask.get("subtask") or "") != expected_label
             or segment_dir_name != expected_dir_name
         ):
             _validation_error(
                 errors,
-                "subtask_order_not_continuous",
-                "segment_index 和目录名必须按 episode-id-1、episode-id-2 连续递增。",
+                "invalid_subtask_directory_mapping",
+                "目录必须按固定六类映射为 episode-id-1 到 episode-id-6。",
                 episode_path / segment_dir_name,
             )
-        expected_previous = expected_order - 1 if expected_order > 1 else None
-        expected_next = expected_order + 1 if expected_order < len(segments) else None
-        if (
-            segment.get("previous_segment_index") != expected_previous
-            or segment.get("next_segment_index") != expected_next
-        ):
-            _validation_error(
-                errors,
-                "invalid_subtask_neighbors",
-                "前后子任务编号与时间顺序不一致。",
-                episode_path / segment_dir_name,
-            )
-        expected_stage = str(segment.get("task_stage") or "")
-        expected_label = str(segment.get("subtask") or "")
-        if not _stage_accepts_subtask(expected_stage, expected_label):
-            _validation_error(
-                errors,
-                "invalid_subtask_stage_pair",
-                f"task_stage/subtask 组合非法：{expected_stage}/{expected_label}",
-                episode_path / segment_dir_name,
-            )
-        current_pair = (expected_stage, expected_label)
-        if current_pair == previous_pair:
-            _validation_error(
-                errors,
-                "adjacent_duplicate_subtask_segments",
-                "相邻且标签相同的目录必须合并为一个连续 subtask。",
-                episode_path / segment_dir_name,
-            )
-        previous_pair = current_pair
         segment_dir = episode_path / segment_dir_name
         data_csv = segment_dir / "data.csv"
         if not data_csv.is_file():
@@ -761,8 +815,8 @@ def _validate_subtask_episode(
                     "subtask data.csv 列与 schema 不一致。",
                     data_csv,
                 )
-        expected_count = int(segment.get("frame_count", -1))
-        if len(data_rows) != expected_count or not data_rows:
+        expected_count = int(subtask.get("frame_count", -1))
+        if len(data_rows) != expected_count:
             _validation_error(
                 errors,
                 "subtask_row_count_mismatch",
@@ -771,8 +825,9 @@ def _validate_subtask_episode(
             )
         local_indices: list[int] = []
         episode_indices: list[int] = []
-        segment_pairs: set[tuple[str, str]] = set()
-        row_segment_indices: set[int] = set()
+        row_labels: set[str] = set()
+        row_stages: list[str] = []
+        row_segment_indices: list[int] = []
         for data_row in data_rows:
             try:
                 global_index = int(data_row["global_frame_index"])
@@ -790,16 +845,21 @@ def _validate_subtask_episode(
                 continue
             local_indices.append(local_index)
             episode_indices.append(episode_index)
-            reconstructed_indices.append(global_index)
-            reconstructed_dataset_indices.append(dataset_global_index)
-            reconstructed_episode_indices.append(episode_index)
-            row_segment_indices.add(row_segment_index)
             stage = data_row.get("task_stage", "")
             label = data_row.get("subtask", "")
-            segment_pairs.add((stage, label))
-            reconstructed_stages.append(stage)
-            reconstructed_labels.append(label)
-            reconstructed_segment_indices.append(row_segment_index)
+            row_labels.add(label)
+            row_stages.append(stage)
+            row_segment_indices.append(row_segment_index)
+            reconstructed_frames.append(
+                (
+                    episode_index,
+                    global_index,
+                    dataset_global_index,
+                    stage,
+                    label,
+                    row_segment_index,
+                )
+            )
             if not _stage_accepts_subtask(stage, label):
                 _validation_error(
                     errors,
@@ -845,18 +905,29 @@ def _validate_subtask_episode(
                     "action_gripper_normalized 必须位于 [0, 1]。",
                     data_csv,
                 )
-        if segment_pairs != {(expected_stage, expected_label)}:
+        if row_labels and row_labels != {expected_label}:
             _validation_error(
                 errors,
                 "mixed_subtask_folder",
-                "每个 subtask 文件夹只能包含 metadata 指定的一种 task_stage/subtask。",
+                "每个 subtask 文件夹只能包含固定映射的一种 subtask 标签。",
                 data_csv,
             )
-        if row_segment_indices != {expected_order}:
+        expected_source_segments = list(
+            dict.fromkeys(row_segment_indices)
+        )
+        if list(subtask.get("source_segment_indices") or []) != expected_source_segments:
             _validation_error(
                 errors,
-                "mixed_subtask_segment_index",
-                "每个 subtask 文件夹只能包含自身的 segment_index。",
+                "invalid_subtask_source_segments",
+                "subtask 目录记录的原始时间片段编号与 data.csv 不一致。",
+                data_csv,
+            )
+        expected_task_stages = list(dict.fromkeys(row_stages))
+        if list(subtask.get("task_stages") or []) != expected_task_stages:
+            _validation_error(
+                errors,
+                "invalid_subtask_task_stages",
+                "subtask 目录记录的 task_stage 集合与 data.csv 不一致。",
                 data_csv,
             )
         if local_indices != list(range(len(data_rows))):
@@ -866,15 +937,11 @@ def _validate_subtask_episode(
                 "subtask_frame_index 必须从 0 连续递增。",
                 data_csv,
             )
-        expected_episode_start = int(segment.get("global_start_frame", -1))
-        expected_episode_end = int(segment.get("global_end_frame", -1))
-        if episode_indices != list(
-            range(expected_episode_start, expected_episode_end + 1)
-        ):
+        if episode_indices != sorted(set(episode_indices)):
             _validation_error(
                 errors,
-                "subtask_episode_index_not_continuous",
-                "episode_frame_index 与片段全局起止帧不一致。",
+                "subtask_episode_index_not_in_source_order",
+                "同类 subtask 合并后必须保持原 episode 帧顺序且不得重复。",
                 data_csv,
             )
         image_root = segment_dir / "images"
@@ -902,21 +969,6 @@ def _validate_subtask_episode(
                     camera_dir,
                 )
             report["image_counts"][camera_key] += image_count
-        min_segment_frames = int(
-            _mapping(record.get("segmentation_config")).get(
-                "min_segment_frames", 3
-            )
-        )
-        if (
-            expected_count < min_segment_frames
-            and not segment.get("retained_short_reason")
-        ):
-            _validation_error(
-                errors,
-                "unexplained_short_subtask_segment",
-                f"少于 {min_segment_frames} 帧的片段必须记录 retained_short_reason。",
-                data_csv,
-            )
 
     actual_segment_dirs = sorted(
         path.name for path in episode_path.iterdir() if path.is_dir()
@@ -929,6 +981,22 @@ def _validate_subtask_episode(
             episode_path,
         )
 
+    reconstructed_frames.sort(key=lambda item: item[0])
+    reconstructed_episode_indices = [item[0] for item in reconstructed_frames]
+    reconstructed_indices = [item[1] for item in reconstructed_frames]
+    reconstructed_dataset_indices = [item[2] for item in reconstructed_frames]
+    reconstructed_stages = [item[3] for item in reconstructed_frames]
+    reconstructed_labels = [item[4] for item in reconstructed_frames]
+    reconstructed_segment_indices = [item[5] for item in reconstructed_frames]
+    source_segment_count = len(set(reconstructed_segment_indices))
+    if int(record.get("source_segment_count", -1)) != source_segment_count:
+        _validation_error(
+            errors,
+            "invalid_source_subtask_segment_count",
+            "subtasks.jsonl 的 source_segment_count 与逐帧 segment_index 不一致。",
+            episode_path,
+        )
+
     expected_start = int(record.get("global_start_index", 0))
     expected_count = int(record.get("frame_count", 0))
     if reconstructed_indices != list(
@@ -937,7 +1005,7 @@ def _validate_subtask_episode(
         _validation_error(
             errors,
             "subtask_reconstruction_failed",
-            "按片段顺序重建后存在重复、缺失或乱序帧。",
+            "按 episode_frame_index 重建后存在重复、缺失或乱序帧。",
             episode_path,
         )
     if reconstructed_episode_indices != list(range(expected_count)):
@@ -962,7 +1030,8 @@ def _validate_subtask_episode(
     report.update(
         {
             "frame_count": len(reconstructed_indices),
-            "segment_count": len(segments),
+            "subtask_directory_count": len(subtasks),
+            "source_segment_count": source_segment_count,
             "global_indices": reconstructed_indices,
             "dataset_global_indices": reconstructed_dataset_indices,
             "task_stages": reconstructed_stages,

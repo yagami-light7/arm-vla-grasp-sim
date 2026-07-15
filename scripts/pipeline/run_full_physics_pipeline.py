@@ -13,6 +13,20 @@ from pathlib import Path
 from typing import Any, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_LIANGZHU_TASK_JSON = "tasks/nav_pick_place_cola_liangzhu_pct.json"
+DEFAULT_LIANGZHU_PCT_SERVER_SCRIPT = "scripts/navigation/pct_grid_server.py"
+DEFAULT_LIANGZHU_PCT_TOMOGRAM = (
+    "source/scene/liangzhu/pct/liangzhu_single_floor.pickle"
+)
+DEFAULT_LIANGZHU_PCT_WALKABLE = (
+    "source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy"
+)
+DEFAULT_LIANGZHU_COLLISION_PLY = (
+    "source/scene/liangzhu/ply/liangzhu_collision.ply"
+)
+DEFAULT_LIANGZHU_LOCOMOTION_CHECKPOINT = (
+    "checkpoints/go2_x5/pct_multifloor/model_26000.pt"
+)
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -187,7 +201,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="运行单进程、单 World 的纯物理 nav-pick-place pipeline。",
     )
-    parser.add_argument("--task-json", required=True, help="任务 JSON 路径。")
+    parser.add_argument(
+        "--task-json",
+        default=DEFAULT_LIANGZHU_TASK_JSON,
+        help="任务 JSON 路径；默认使用良渚可乐到鼠标垫随机化任务。",
+    )
     parser.add_argument(
         "--output-dir",
         default="outputs/full_physics_pipeline",
@@ -237,10 +255,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--navigation-visual-mode",
         choices=("auto", "collision", "full"),
-        default="full",
+        default="collision",
         help=(
-            "物理验收视觉模式；默认 full，加载 GaussianScene 并隐藏导航碰撞可视化；"
-            "collision 仅显示碰撞场景，auto 保留旧自适应语义。"
+            "物理验收视觉模式；默认 collision，避免 GaussianScene 多相机 CUDA 700；"
+            "full 显式加载 GaussianScene，auto 保留旧自适应语义。"
         ),
     )
     parser.add_argument(
@@ -349,24 +367,52 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--global-planner",
         choices=("astar", "pct"),
-        default="astar",
-        help="全局导航规划器；默认 astar，pct 使用多楼层 PCT server。",
+        default="pct",
+        help="全局导航规划器；良渚默认使用 PCT，仍可显式切换 astar。",
     )
     parser.add_argument("--pct-planner-root", help="兼容旧外部入口的 PCT 根目录；默认不依赖 external/PCT。")
-    parser.add_argument("--pct-server-script", help="PCT server 脚本路径；PCT 模式默认使用本仓库本地版本。")
-    parser.add_argument("--pct-server-python", help="运行 PCT server 的 Python 解释器。")
-    parser.add_argument("--pct-tomogram-path", help="PCT tomogram pickle 路径。")
-    parser.add_argument("--pct-walkable-path", help="PCT walkable map .npy 路径。")
-    parser.add_argument("--pct-collision-ply-path", help="PCT DWA 局部避障使用的 collision PLY 路径。")
     parser.add_argument(
+        "--pct-server-script",
+        default=DEFAULT_LIANGZHU_PCT_SERVER_SCRIPT,
+        help="PCT server 脚本路径；默认使用仓库内良渚 grid server。",
+    )
+    parser.add_argument("--pct-server-python", help="运行 PCT server 的 Python 解释器。")
+    parser.add_argument(
+        "--pct-tomogram-path",
+        default=DEFAULT_LIANGZHU_PCT_TOMOGRAM,
+        help="PCT tomogram pickle 路径；默认使用良渚单层地图。",
+    )
+    parser.add_argument(
+        "--pct-walkable-path",
+        default=DEFAULT_LIANGZHU_PCT_WALKABLE,
+        help="PCT walkable map；默认使用良渚单层地图。",
+    )
+    parser.add_argument(
+        "--pct-collision-ply-path",
+        default=DEFAULT_LIANGZHU_COLLISION_PLY,
+        help=(
+            "PCT DWA collision PLY；默认使用仓库内良渚碰撞点云，"
+            "可通过 CLI 显式覆盖。"
+        ),
+    )
+    fallback_group = parser.add_mutually_exclusive_group()
+    fallback_group.add_argument(
         "--pct-no-fallback",
         action="store_true",
-        help="PCT 规划失败时不回退 A*，直接报错。",
+        dest="pct_no_fallback",
+        default=True,
+        help="PCT 规划失败时不回退 A*；良渚默认开启。",
+    )
+    fallback_group.add_argument(
+        "--pct-allow-fallback",
+        action="store_false",
+        dest="pct_no_fallback",
+        help="兼容旧任务：允许 PCT 失败时回退 A*。",
     )
     parser.add_argument(
         "--pct-coord-mode",
         choices=("sim_to_pct_180deg", "identity"),
-        default=NavigationSettings().pct_coord_mode,
+        default="identity",
         help=(
             "Isaac 世界坐标到 PCT/PLY 的变换模式；旧多楼层场景使用 "
             "sim_to_pct_180deg，良渚同坐标 PLY 使用 identity。"
@@ -588,17 +634,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "--locomotion-task",
         help="Isaac Lab locomotion task 名称；pct_multifloor 默认使用本地 DogOnly rough task。",
     )
-    parser.add_argument("--locomotion-checkpoint", help="RSL-RL locomotion checkpoint 路径。")
+    parser.add_argument(
+        "--locomotion-checkpoint",
+        default=DEFAULT_LIANGZHU_LOCOMOTION_CHECKPOINT,
+        help="RSL-RL locomotion checkpoint；默认使用已验证的 Go2-X5 model_26000。",
+    )
     parser.add_argument(
         "--policy-profile",
         choices=("flat", "pct_multifloor"),
-        default="flat",
-        help="底层 locomotion policy profile；pct_multifloor 要求提供 checkpoint。",
+        default="pct_multifloor",
+        help="底层 locomotion policy profile；良渚默认 pct_multifloor。",
     )
     parser.add_argument(
         "--require-locomotion-checkpoint",
-        action="store_true",
-        help="要求显式 locomotion checkpoint 存在。",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="要求 locomotion checkpoint 存在；默认开启。",
     )
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument(
@@ -751,15 +802,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     pct_cross_floor_gateway_points = _parse_xyz_points(
         args.pct_cross_floor_gateway,
-        default=NavigationSettings().pct_cross_floor_gateway_points,
+        default=(),
     )
     pct_cross_floor_stair_exit_points = _parse_xyz_points(
         args.pct_cross_floor_stair_exit,
-        default=NavigationSettings().pct_cross_floor_stair_exit_points,
+        default=(),
     )
     pct_cross_floor_stair_midpoint_points = _parse_xyz_points(
         args.pct_cross_floor_stair_midpoint,
-        default=NavigationSettings().pct_cross_floor_stair_midpoint_points,
+        default=(),
     )
 
     config = FullPhysicsConfig(

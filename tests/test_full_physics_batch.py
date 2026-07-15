@@ -45,13 +45,9 @@ PLACE_PLAN = (
 
 class FullPhysicsBatchTest(unittest.TestCase):
     def test_liangzhu_stable_profile_is_the_batch_default(self) -> None:
-        with mock.patch.dict(
-            os.environ,
-            {"LIANGZHU_COLLISION_PLY": "/tmp/liangzhu_collision.ply"},
-        ):
-            args = _build_parser().parse_args(
-                ["--output-dir", "/tmp/liangzhu_default_batch"]
-            )
+        args = _build_parser().parse_args(
+            ["--output-dir", "/tmp/liangzhu_default_batch"]
+        )
 
         episode = _build_child_command(args, episode_index=0)
         command = episode.command
@@ -62,12 +58,12 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertTrue(args.pct_no_fallback)
         self.assertEqual(args.policy_profile, "pct_multifloor")
         self.assertTrue(args.require_locomotion_checkpoint)
-        self.assertEqual(args.navigation_visual_mode, "full")
+        self.assertEqual(args.navigation_visual_mode, "collision")
         self.assertIn("--pct-no-fallback", command)
         self.assertIn("--require-locomotion-checkpoint", command)
         self.assertEqual(
             command[command.index("--pct-collision-ply-path") + 1],
-            "/tmp/liangzhu_collision.ply",
+            str(PROJECT_ROOT / "source/scene/liangzhu/ply/liangzhu_collision.ply"),
         )
         for flag in (
             "--pct-cross-floor-gateway",
@@ -112,7 +108,7 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertIn("--headless", command)
         self.assertEqual(
             command[command.index("--navigation-visual-mode") + 1],
-            "full",
+            "collision",
         )
         self.assertEqual(
             command[command.index("--overview-camera-prim-path") + 1],

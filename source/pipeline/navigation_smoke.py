@@ -283,6 +283,10 @@ def create_navigation_components(
     executor_map_kwargs = (
         {
             "grid_map": _open_pct_local_grid_map(episode_spec, nav),
+            "carry_grid_map": _open_pct_carry_local_grid_map(
+                episode_spec,
+                nav,
+            ),
             "multifloor_grid_map": _open_pct_multifloor_grid_map(
                 episode_spec,
                 nav,
@@ -470,6 +474,21 @@ def _open_pct_local_grid_map(episode_spec: EpisodeSpec, nav) -> OccupancyGridMap
         episode_spec,
         nav,
         z=_local_map_reference_z(episode_spec),
+        include_task_object_keepout=True,
+    )
+
+
+def _open_pct_carry_local_grid_map(
+    episode_spec: EpisodeSpec,
+    nav,
+) -> OccupancyGridMap:
+    """创建夹持导航地图，移除已被抓走目标的过期 keepout。"""
+
+    return _open_pct_grid_map_at_z(
+        episode_spec,
+        nav,
+        z=_local_map_reference_z(episode_spec),
+        include_task_object_keepout=False,
     )
 
 
@@ -488,6 +507,7 @@ def _open_pct_post_stair_grid_map(
         episode_spec,
         nav,
         z=float(episode_spec.place_goal.z),
+        include_task_object_keepout=False,
     )
 
 
@@ -496,6 +516,7 @@ def _open_pct_grid_map_at_z(
     nav,
     *,
     z: float,
+    include_task_object_keepout: bool = True,
 ) -> OccupancyGridMap:
     """按指定世界高度创建 PCT 单楼层局部避障地图。"""
 
@@ -531,7 +552,7 @@ def _open_pct_grid_map_at_z(
         body_obstacle_max_height_m=nav.pct_body_obstacle_max_height_m,
     )
     keepout_centers: list[tuple[float, float]] = []
-    if episode_spec.object_initial_pose is not None:
+    if include_task_object_keepout and episode_spec.object_initial_pose is not None:
         keepout_centers.append(
             (
                 float(episode_spec.object_initial_pose[0]),
@@ -589,17 +610,8 @@ def _open_pct_multifloor_grid_map(
         body_obstacle_min_height_m=nav.pct_body_obstacle_min_height_m,
         body_obstacle_max_height_m=nav.pct_body_obstacle_max_height_m,
     )
-    if episode_spec.object_initial_pose is not None:
-        grid_map = add_circular_keepouts(
-            grid_map,
-            centers_xy=(
-                (
-                    float(episode_spec.object_initial_pose[0]),
-                    float(episode_spec.object_initial_pose[1]),
-                ),
-            ),
-            radius_m=float(nav.pct_task_object_keepout_radius),
-        )
+    # 跨层地图只用于 pick 完成后的 carry 导航。目标物已随机器人
+    # 移动，不能再把它的初始位置保留为静态 keepout。
     return grid_map
 
 

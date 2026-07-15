@@ -43,7 +43,10 @@ from source.pipeline.factory import create_full_physics_pipeline
 from source.pipeline.manipulation_apply_smoke import create_manipulation_apply_smoke_pipeline
 from source.pipeline.manipulation_smoke import create_manipulation_smoke_pipeline
 from source.pipeline.navigation_smoke import _build_dwa_config
-from source.pipeline.state_machine import FullPhysicsStateMachine
+from source.pipeline.state_machine import (
+    FullPhysicsStateMachine,
+    _accept_successful_navigation_handoff_drift,
+)
 from source.recording import JsonlEpisodeRecorder
 from source.simulation import InMemorySimulationRuntime
 from source.tasks import JsonTaskProvider
@@ -53,6 +56,67 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class FullPhysicsPipelineTest(unittest.TestCase):
+    def test_successful_navigation_handoff_accepts_only_bounded_frame_drift(self) -> None:
+        base_metadata = {
+            "goal_distance": 0.100017,
+            "goal_z_error": 0.10,
+            "yaw_error": 0.145,
+            "linear_speed": 0.041,
+            "angular_speed": 0.2072,
+            "position_tolerance": 0.10,
+            "goal_z_tolerance": 0.35,
+            "yaw_tolerance": 0.15,
+            "linear_velocity_tolerance": 0.06,
+            "angular_velocity_tolerance": 0.20,
+            "z_check_enabled": True,
+            "yaw_alignment_required": True,
+            "base_stability_required": True,
+        }
+        failed = VerificationResult(
+            success=False,
+            failure_reason="pick_target_unreachable",
+            metadata=base_metadata,
+        )
+
+        accepted = _accept_successful_navigation_handoff_drift(
+            failed,
+            {
+                "success": True,
+                "failed": False,
+                "distance_to_goal": 0.09998,
+                "yaw_error": 0.146,
+            },
+            phase="pick",
+        )
+
+        self.assertTrue(accepted.success)
+        self.assertEqual(
+            accepted.metadata["navigation_verifier_override"],
+            "successful_executor_one_frame_drift_margin",
+        )
+        self.assertTrue(
+            all(accepted.metadata["navigation_handoff_margin_checks"].values())
+        )
+
+        too_far = VerificationResult(
+            success=False,
+            failure_reason="pick_target_unreachable",
+            metadata={**base_metadata, "goal_distance": 0.106},
+        )
+        rejected = _accept_successful_navigation_handoff_drift(
+            too_far,
+            {"success": True, "failed": False},
+            phase="pick",
+        )
+        self.assertFalse(rejected.success)
+
+        no_executor_success = _accept_successful_navigation_handoff_drift(
+            failed,
+            {"success": False, "failed": False},
+            phase="pick",
+        )
+        self.assertFalse(no_executor_success.success)
+
     def test_numpy_isaacsim_compat_restores_broadcast_to_alias(self) -> None:
         import numpy as np
         import numpy.lib.stride_tricks as stride_tricks
@@ -497,6 +561,43 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertEqual(args.mode, "full_physics")
         self.assertFalse(args.show_planned_trajectories)
 
+    def test_cli_defaults_to_liangzhu_stable_runtime_profile(self) -> None:
+        args = _build_parser().parse_args([])
+
+        self.assertEqual(
+            args.task_json,
+            "tasks/nav_pick_place_cola_liangzhu_pct.json",
+        )
+        self.assertEqual(args.global_planner, "pct")
+        self.assertEqual(args.pct_coord_mode, "identity")
+        self.assertTrue(args.pct_no_fallback)
+        self.assertEqual(
+            args.pct_server_script,
+            "scripts/navigation/pct_grid_server.py",
+        )
+        self.assertEqual(
+            args.pct_tomogram_path,
+            "source/scene/liangzhu/pct/liangzhu_single_floor.pickle",
+        )
+        self.assertEqual(
+            args.pct_walkable_path,
+            "source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy",
+        )
+        self.assertEqual(
+            args.pct_collision_ply_path,
+            "source/scene/liangzhu/ply/liangzhu_collision.ply",
+        )
+        self.assertIsNone(args.pct_cross_floor_gateway)
+        self.assertIsNone(args.pct_cross_floor_stair_exit)
+        self.assertIsNone(args.pct_cross_floor_stair_midpoint)
+        self.assertEqual(args.policy_profile, "pct_multifloor")
+        self.assertEqual(
+            args.locomotion_checkpoint,
+            "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
+        )
+        self.assertTrue(args.require_locomotion_checkpoint)
+        self.assertEqual(args.navigation_visual_mode, "collision")
+
     def test_cli_can_enable_planned_trajectory_visualization(self) -> None:
         args = _build_parser().parse_args(
             [
@@ -536,7 +637,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             args.pct_global_vertical_obstacle_min_slices,
             NavigationSettings().pct_global_vertical_obstacle_min_slices,
         )
-        self.assertEqual(args.pct_coord_mode, NavigationSettings().pct_coord_mode)
+        self.assertEqual(args.pct_coord_mode, "identity")
         self.assertEqual(
             args.pct_cross_floor_vertical_obstacle_min_slices,
             NavigationSettings().pct_cross_floor_vertical_obstacle_min_slices,
