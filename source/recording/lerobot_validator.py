@@ -10,6 +10,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .subtask_export import validate_subtask_directory_export
+from .subtask_segmentation import (
+    SUBTASK_DIRECTORY_LAYOUT,
+    SUBTASK_LABELS,
+    SUBTASK_SCHEMA_VERSION,
+    TASK_STAGES,
+)
 from .training_action import (
     VLA_TRAINING_ACTION_ALIGNMENT,
     VLA_TRAINING_ACTION_DIMENSION,
@@ -319,6 +326,41 @@ def _validate_info(
                     feature=required_feature,
                 )
 
+    if info.get("subtask_segmentation_available") is True:
+        expected_subtask_metadata = {
+            "subtask_schema_version": SUBTASK_SCHEMA_VERSION,
+            "subtask_directory_layout": SUBTASK_DIRECTORY_LAYOUT,
+            "subtask_directory_root": "episodes",
+            "subtask_metadata_path": "meta/subtasks.jsonl",
+            "subtask_duplicate_episode_id_policy": (
+                "renumber_per_task_from_1_in_dataset_order"
+            ),
+            "task_stages": list(TASK_STAGES),
+            "subtask_labels": list(SUBTASK_LABELS),
+        }
+        for key, expected in expected_subtask_metadata.items():
+            if info.get(key) != expected:
+                context.error(
+                    "invalid_subtask_metadata",
+                    f"info.json 的 {key} 必须是 {expected!r}。",
+                )
+        if info.get("subtask_directory_export_available") is not True:
+            context.error(
+                "subtask_directory_export_unavailable",
+                "启用 subtask 切分时必须完成独立目录导出。",
+            )
+        for feature_name in (
+            "task_stage",
+            "subtask",
+            "subtask_segment_index",
+        ):
+            if feature_name not in features:
+                context.error(
+                    "missing_subtask_feature",
+                    f"info.json 缺少 subtask feature：{feature_name}",
+                    feature=feature_name,
+                )
+
     image_features = sorted(
         name for name in features if name.startswith("observation.images.")
     )
@@ -576,6 +618,7 @@ def _validate_episode_table(
     features: dict[str, dict[str, Any]],
     image_features: list[str],
     vla_training_action_available: bool,
+    subtask_segmentation_available: bool,
     context: _ValidationContext,
 ) -> dict[str, Any]:
     row_count = int(table.num_rows)
@@ -732,6 +775,57 @@ def _validate_episode_table(
             path=parquet_path,
             episode_index=episode_index,
         )
+
+    if subtask_segmentation_available:
+        missing_subtask_columns = [
+            name
+            for name in ("task_stage", "subtask", "subtask_segment_index")
+            if name not in column_names
+        ]
+        for name in missing_subtask_columns:
+            context.error(
+                "missing_subtask_parquet_column",
+                f"启用 subtask 切分时 Parquet 缺少列：{name}",
+                path=parquet_path,
+                episode_index=episode_index,
+                feature=name,
+            )
+        if not missing_subtask_columns:
+            task_stages = _column_values(table, "task_stage")
+            subtasks = _column_values(table, "subtask")
+            segment_indices = _column_values(table, "subtask_segment_index")
+            if any(value not in TASK_STAGES for value in task_stages):
+                context.error(
+                    "invalid_task_stage",
+                    "task_stage 包含 schema 之外的标签。",
+                    path=parquet_path,
+                    episode_index=episode_index,
+                    feature="task_stage",
+                )
+            if any(value not in SUBTASK_LABELS for value in subtasks):
+                context.error(
+                    "invalid_subtask",
+                    "subtask 包含 schema 之外的标签。",
+                    path=parquet_path,
+                    episode_index=episode_index,
+                    feature="subtask",
+                )
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value <= 0
+                for value in segment_indices
+            ):
+                context.error(
+                    "invalid_subtask_segment_index",
+                    "subtask_segment_index 必须是正整数。",
+                    path=parquet_path,
+                    episode_index=episode_index,
+                    feature="subtask_segment_index",
+                )
+            episode_report["task_stages"] = task_stages
+            episode_report["subtasks"] = subtasks
+            episode_report["subtask_segment_indices"] = segment_indices
 
     for feature_name in (
         "observation.state",
@@ -893,6 +987,7 @@ def _validate_dataset(dataset_root: Path, context: _ValidationContext) -> dict[s
     data_template = info.get("data_path")
     video_template = info.get("video_path")
     all_global_indices: list[Any] = []
+    parquet_global_indices_by_episode: dict[int, list[Any]] = {}
     all_task_indices: set[int] = set()
     validated_episode_indices: list[int] = []
 
@@ -967,11 +1062,16 @@ def _validate_dataset(dataset_root: Path, context: _ValidationContext) -> dict[s
             vla_training_action_available=(
                 info.get("vla_training_action_available") is True
             ),
+            subtask_segmentation_available=(
+                info.get("subtask_segmentation_available") is True
+            ),
             context=context,
         )
+        episode_global_indices = episode_report.pop("global_indices", [])
+        parquet_global_indices_by_episode[episode_index] = episode_global_indices
         context.episodes.append(episode_report)
         validated_episode_indices.append(episode_index)
-        all_global_indices.extend(episode_report.pop("global_indices", []))
+        all_global_indices.extend(episode_global_indices)
         all_task_indices.update(episode_report.get("task_indices", []))
 
         meta = episodes_meta.get(episode_index)
@@ -1103,6 +1203,86 @@ def _validate_dataset(dataset_root: Path, context: _ValidationContext) -> dict[s
                 path=tasks_path,
             )
 
+    subtask_validation: dict[str, Any] | None = None
+    if info.get("subtask_segmentation_available") is True:
+        subtask_validation = validate_subtask_directory_export(dataset_root)
+        for error in subtask_validation.get("errors", []):
+            context.error(
+                str(error.get("code") or "subtask_validation_failed"),
+                str(error.get("message") or "子任务目录校验失败。"),
+                path=(Path(str(error["path"])) if error.get("path") else None),
+                episode_index=(
+                    int(error["episode_index"])
+                    if isinstance(error.get("episode_index"), int)
+                    else None
+                ),
+            )
+        for warning in subtask_validation.get("warnings", []):
+            context.warning(
+                str(warning.get("code") or "subtask_validation_warning"),
+                str(warning.get("message") or "子任务目录校验警告。"),
+                path=(
+                    Path(str(warning["path"]))
+                    if warning.get("path")
+                    else None
+                ),
+            )
+        custom_by_episode = {
+            int(report["episode_index"]): report
+            for report in subtask_validation.get("episodes", [])
+            if isinstance(report, dict)
+            and isinstance(report.get("episode_index"), int)
+        }
+        for episode_report in context.episodes:
+            episode_index = int(episode_report["episode_index"])
+            custom = custom_by_episode.get(episode_index)
+            if custom is None:
+                context.error(
+                    "missing_subtask_episode_export",
+                    f"episode {episode_index} 缺少独立 subtask 目录。",
+                    episode_index=episode_index,
+                )
+                continue
+            if custom.get("dataset_global_indices") != (
+                parquet_global_indices_by_episode.get(episode_index)
+            ):
+                context.error(
+                    "subtask_parquet_frame_mismatch",
+                    "独立 subtask 目录的 dataset_global_index 与 Parquet 不一致。",
+                    episode_index=episode_index,
+                )
+            if custom.get("task_stages") != episode_report.get("task_stages"):
+                context.error(
+                    "subtask_parquet_stage_mismatch",
+                    "独立 subtask 目录与 Parquet 的 task_stage 不一致。",
+                    episode_index=episode_index,
+                )
+            if custom.get("subtasks") != episode_report.get("subtasks"):
+                context.error(
+                    "subtask_parquet_label_mismatch",
+                    "独立 subtask 目录与 Parquet 的 subtask 标签不一致。",
+                    episode_index=episode_index,
+                )
+            if custom.get("segment_indices") != episode_report.get(
+                "subtask_segment_indices"
+            ):
+                context.error(
+                    "subtask_parquet_segment_index_mismatch",
+                    "独立 subtask 目录与 Parquet 的片段编号不一致。",
+                    episode_index=episode_index,
+                )
+        for custom in subtask_validation.get("episodes", []):
+            if not isinstance(custom, dict):
+                continue
+            for verbose_key in (
+                "global_indices",
+                "dataset_global_indices",
+                "task_stages",
+                "subtasks",
+                "segment_indices",
+            ):
+                custom.pop(verbose_key, None)
+
     return {
         "info": info,
         "fps": fps,
@@ -1110,6 +1290,7 @@ def _validate_dataset(dataset_root: Path, context: _ValidationContext) -> dict[s
         "image_features": image_features,
         "validated_episode_indices": validated_episode_indices,
         "total_rows": len(all_global_indices),
+        "subtask_validation": subtask_validation,
     }
 
 

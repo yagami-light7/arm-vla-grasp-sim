@@ -486,6 +486,9 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             policy_profile="pct_multifloor",
         )
         self.assertTrue(pct_dwa_config.use_command_velocity_window)
+        self.assertTrue(pct_dwa_config.enforce_min_active_linear_velocity)
+        self.assertTrue(pct_dwa_config.enforce_min_active_angular_velocity)
+        self.assertAlmostEqual(pct_dwa_config.min_active_angular_velocity, 0.30)
 
     def test_cli_defaults_to_full_physics_mode(self) -> None:
         args = _build_parser().parse_args(

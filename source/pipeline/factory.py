@@ -22,6 +22,18 @@ from .full_physics_pipeline import FullPhysicsPipeline
 from .navigation_smoke import create_navigation_components
 
 
+def _requires_extended_pct_navigation_limits(
+    config: FullPhysicsConfig,
+    episode_spec: EpisodeSpec,
+) -> bool:
+    """Keep the legacy long horizon for real multifloor scenes only."""
+
+    return (
+        config.locomotion.policy_profile == "pct_multifloor"
+        and episode_spec.raw_task.get("scene_profile") != "liangzhu_single_floor"
+    )
+
+
 def _navigation_settings_for_episode(settings, episode_spec: EpisodeSpec):
     """把任务声明的终点交接精度映射到现有 NavigationSettings。"""
 
@@ -93,6 +105,10 @@ def create_full_physics_pipeline(
     # 完整 pipeline 在 pick 后必须先回到抓取起始姿态，才能释放 root/support lock
     # 并进入 carry nav。这里使用规划 motion 的反向轨迹，不生成无避障 all-zero 直连。
     pct_multifloor = config.locomotion.policy_profile == "pct_multifloor"
+    extended_pct_navigation_limits = _requires_extended_pct_navigation_limits(
+        config,
+        episode_spec,
+    )
     navigation_settings = _navigation_settings_for_episode(
         config.navigation,
         episode_spec,
@@ -110,7 +126,7 @@ def create_full_physics_pipeline(
                 navigation=max(config.limits.navigation, 12000),
                 episode=max(config.limits.episode, 24000),
             )
-            if pct_multifloor
+            if extended_pct_navigation_limits
             else config.limits
         ),
         manipulation=replace(

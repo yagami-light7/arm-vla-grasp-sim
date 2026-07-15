@@ -15,6 +15,18 @@ from PIL import Image
 
 from source.interfaces import StepRecord
 
+from .subtask_segmentation import (
+    SUBTASK_DIRECTORY_LAYOUT,
+    SUBTASK_LABELS,
+    SUBTASK_SCHEMA_VERSION,
+    TASK_STAGES,
+    extract_action_semantics,
+    hydrate_sample_action_semantics,
+    segment_episode_samples,
+    task_requests_subtask_segmentation,
+    validate_subtask_segmentation_config,
+)
+from .subtask_export import materialize_subtask_episode, update_subtask_task_gate
 from .training_action import (
     BASE_POSE_NAMES,
     VLA_TRAINING_ACTION_ALIGNMENT,
@@ -150,7 +162,7 @@ TCP_POSE_NAMES = (
     "tcp_quat_z",
 )
 
-SCHEMA_VERSION = "full_physics_lerobot_v2.1.2"
+SCHEMA_VERSION = "full_physics_lerobot_v2.1.4"
 CONTROL_ACTION_SCHEMA = "base_velocity_arm_joint_gripper_targets_v1"
 
 
@@ -366,6 +378,13 @@ class DwaEpisodeWriter:
             "tcp_pose_valid": state.tcp_pose is not None,
             "gripper_position": float(sum(_joint_values(record)[1]) / 2.0),
             "camera_frames": camera_frames,
+            **extract_action_semantics(
+                {
+                    "source": record.action.source,
+                    "gripper_command": record.action.gripper_command,
+                    "metadata": record.action.metadata,
+                }
+            ),
         }
         with self.samples_path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(sample, ensure_ascii=False, separators=(",", ":")))
@@ -899,6 +918,7 @@ def _feature_metadata(
     fps: float,
     action_names: tuple[str, ...],
     include_control_action: bool,
+    include_subtasks: bool,
 ) -> dict[str, Any]:
     features: dict[str, Any] = {
         "observation.state": {
@@ -945,6 +965,18 @@ def _feature_metadata(
             "shape": [len(ACTION_NAMES)],
             "names": list(ACTION_NAMES),
         }
+    if include_subtasks:
+        features.update(
+            {
+                "task_stage": {"dtype": "string", "shape": [1], "names": None},
+                "subtask": {"dtype": "string", "shape": [1], "names": None},
+                "subtask_segment_index": {
+                    "dtype": "int64",
+                    "shape": [1],
+                    "names": None,
+                },
+            }
+        )
     for camera_key, shape in sorted(camera_shapes.items()):
         features[f"observation.images.{camera_key}"] = {
             "dtype": "video",
@@ -979,6 +1011,7 @@ def materialize_lerobot_dataset(
             list[dict[str, Any]],
             dict[str, Any],
             dict[str, Any] | None,
+            Any,
         ]
     ] = []
     for episode_dir in episodes:
@@ -988,6 +1021,7 @@ def materialize_lerobot_dataset(
             continue
         task = _read_task(task_path)
         training_action_config = validate_vla_training_action_config(task)
+        subtask_config = validate_subtask_segmentation_config(task)
         rows = _read_episode_rows(episode_dir)
         if not rows:
             continue
@@ -997,6 +1031,8 @@ def materialize_lerobot_dataset(
                 f"{episode_dir} data.csv/samples.jsonl length mismatch: "
                 f"{len(rows)} != {len(samples)}"
             )
+        if subtask_config is not None:
+            samples = hydrate_sample_action_semantics(episode_dir, samples)
         valid_episodes.append(
             (
                 episode_dir,
@@ -1008,6 +1044,7 @@ def materialize_lerobot_dataset(
                 samples,
                 task,
                 training_action_config,
+                subtask_config,
             )
         )
 
@@ -1018,9 +1055,16 @@ def materialize_lerobot_dataset(
     )
     requested_modes = {
         task_requests_vla_training_action(task)
-        for _episode_dir, _instruction, _rows, _samples, task, _config in valid_episodes
+        for _episode_dir, _instruction, _rows, _samples, task, _config, _subtask
+        in valid_episodes
     }
     vla_training_action_enabled = requested_modes == {True}
+    requested_subtask_modes = {
+        task_requests_subtask_segmentation(task)
+        for _episode_dir, _instruction, _rows, _samples, task, _config, _subtask
+        in valid_episodes
+    }
+    subtask_segmentation_enabled = requested_subtask_modes == {True}
     action_names = (
         VLA_TRAINING_ACTION_NAMES if vla_training_action_enabled else ACTION_NAMES
     )
@@ -1066,6 +1110,13 @@ def materialize_lerobot_dataset(
         "object_state_names": list(OBJECT_STATE_NAMES),
         "tcp_pose_names": list(TCP_POSE_NAMES),
         "base_velocity_names": list(BASE_VELOCITY_NAMES),
+        "subtask_segmentation_requested": subtask_segmentation_enabled,
+        "subtask_segmentation_available": False,
+        "subtask_directory_export_available": False,
+        "subtask_schema_version": SUBTASK_SCHEMA_VERSION,
+        "subtask_directory_layout": SUBTASK_DIRECTORY_LAYOUT,
+        "task_stages": list(TASK_STAGES),
+        "subtask_labels": list(SUBTASK_LABELS),
     }
     if not valid_episodes:
         return {**report, "failure_reason": "no_recorded_episode_frames"}
@@ -1075,10 +1126,26 @@ def materialize_lerobot_dataset(
             "failure_reason": "mixed_training_action_schemas",
             "vla_training_ineligibility_reason": "mixed_training_action_schemas",
         }
+    if len(requested_subtask_modes) != 1:
+        return {
+            **report,
+            "failure_reason": "mixed_subtask_segmentation_schemas",
+            "vla_training_ineligibility_reason": (
+                "mixed_subtask_segmentation_schemas"
+            ),
+        }
+    if subtask_segmentation_enabled and not vla_training_action_enabled:
+        return {
+            **report,
+            "failure_reason": "subtask_export_requires_vla_training_action",
+            "vla_training_ineligibility_reason": (
+                "subtask_export_requires_vla_training_action"
+            ),
+        }
     if vla_training_action_enabled:
         training_configs = [
             config
-            for *_prefix, config in valid_episodes
+            for *_prefix, config, _subtask_config in valid_episodes
             if config is not None
         ]
         if not training_configs or any(
@@ -1091,6 +1158,38 @@ def materialize_lerobot_dataset(
                     "inconsistent_training_action_config"
                 ),
             }
+    if subtask_segmentation_enabled:
+        subtask_configs = [
+            subtask_config
+            for *_prefix, subtask_config in valid_episodes
+            if subtask_config is not None
+        ]
+        comparable_subtask_configs = [
+            {
+                key: value
+                for key, value in config.metadata().items()
+                if key != "config_source"
+            }
+            for config in subtask_configs
+        ]
+        if not subtask_configs or any(
+            config != comparable_subtask_configs[0]
+            for config in comparable_subtask_configs[1:]
+        ):
+            return {
+                **report,
+                "failure_reason": "inconsistent_subtask_segmentation_config",
+                "vla_training_ineligibility_reason": (
+                    "inconsistent_subtask_segmentation_config"
+                ),
+            }
+    resolved_subtask_episode_ids = (
+        _resolve_subtask_episode_ids(
+            [task for *_prefix, task, _config, _subtask in valid_episodes]
+        )
+        if subtask_segmentation_enabled
+        else []
+    )
 
     try:
         import pyarrow as pa
@@ -1108,7 +1207,15 @@ def materialize_lerobot_dataset(
     meta_dir.mkdir(parents=True, exist_ok=True)
 
     task_index_map: dict[str, int] = {}
-    for _episode_dir, instruction, _rows, _samples, _task, _config in valid_episodes:
+    for (
+        _episode_dir,
+        instruction,
+        _rows,
+        _samples,
+        _task,
+        _config,
+        _subtask_config,
+    ) in valid_episodes:
         task_index_map.setdefault(instruction, len(task_index_map))
     (meta_dir / "task_index_map.json").write_text(
         json.dumps(task_index_map, ensure_ascii=False, indent=2),
@@ -1147,6 +1254,17 @@ def materialize_lerobot_dataset(
             -1,
             pa.field("control.action", pa.list_(pa.float32(), len(ACTION_NAMES))),
         )
+    if subtask_segmentation_enabled:
+        action_field_index = next(
+            index
+            for index, field in enumerate(schema_fields)
+            if field.name == "action"
+        )
+        schema_fields[action_field_index:action_field_index] = [
+            pa.field("task_stage", pa.string()),
+            pa.field("subtask", pa.string()),
+            pa.field("subtask_segment_index", pa.int64()),
+        ]
     schema = pa.schema(schema_fields)
     all_feature_arrays: dict[str, list[np.ndarray]] = {
         "observation.state": [],
@@ -1161,6 +1279,7 @@ def materialize_lerobot_dataset(
     episodes_meta: list[dict[str, Any]] = []
     episode_stats: list[dict[str, Any]] = []
     episode_exports: list[dict[str, Any]] = []
+    subtask_exports: list[dict[str, Any]] = []
     global_frame_index = 0
     shared_camera_keys: set[str] | None = None
     camera_shapes: dict[str, tuple[int, int, int]] = {}
@@ -1171,8 +1290,9 @@ def materialize_lerobot_dataset(
         instruction,
         rows,
         samples,
-        _task,
+        task,
         training_action_config,
+        subtask_config,
     ) in enumerate(valid_episodes):
         chunk_index = episode_index // chunks_size
         states = np.asarray(
@@ -1230,6 +1350,15 @@ def materialize_lerobot_dataset(
         ]
         frame_count = len(rows)
         task_index = task_index_map[instruction]
+        segmentation: Any | None = None
+        if subtask_segmentation_enabled:
+            assert subtask_config is not None
+            segmentation = segment_episode_samples(
+                samples,
+                task,
+                config=subtask_config,
+                fps=dataset_fps,
+            )
         table_payload: dict[str, Any] = {
                 "index": pa.array(
                     range(global_frame_index, global_frame_index + frame_count),
@@ -1274,6 +1403,26 @@ def materialize_lerobot_dataset(
                 control_actions.tolist(),
                 type=pa.list_(pa.float32(), len(ACTION_NAMES)),
             )
+        if segmentation is not None:
+            table_payload.update(
+                {
+                    "task_stage": pa.array(
+                        [frame["task_stage"] for frame in segmentation["frames"]],
+                        type=pa.string(),
+                    ),
+                    "subtask": pa.array(
+                        [frame["subtask"] for frame in segmentation["frames"]],
+                        type=pa.string(),
+                    ),
+                    "subtask_segment_index": pa.array(
+                        [
+                            int(frame["segment_index"])
+                            for frame in segmentation["frames"]
+                        ],
+                        type=pa.int64(),
+                    ),
+                }
+            )
         table = pa.table(
             table_payload,
             schema=schema,
@@ -1315,6 +1464,48 @@ def materialize_lerobot_dataset(
             for sample in samples
         ) or any((episode_dir / "images").rglob("*.jpg"))
         all_raw_images_saved = all_raw_images_saved and raw_images_saved
+        subtask_export: dict[str, Any] | None = None
+        if segmentation is not None:
+            missing_subtask_cameras = {
+                "front",
+                "wrist",
+            }.difference(camera_keys)
+            if missing_subtask_cameras:
+                raise RuntimeError(
+                    f"{episode_dir} subtask directory export requires front and "
+                    f"wrist cameras; missing={sorted(missing_subtask_cameras)}"
+                )
+            assert training_action_config is not None
+            assert subtask_config is not None
+            source_range_values = tuple(
+                float(value)
+                for value in training_action_config[
+                    "source_gripper_joint_range_m"
+                ]
+            )
+            subtask_task = dict(task)
+            subtask_task["_source_task_episode_id"] = task.get("episode_id")
+            subtask_task["episode_id"] = resolved_subtask_episode_ids[
+                episode_index
+            ]
+            subtask_export = materialize_subtask_episode(
+                source_episode_dir=episode_dir,
+                dataset_root=output_path,
+                task=subtask_task,
+                episode_index=episode_index,
+                global_frame_offset=global_frame_index,
+                rows=rows,
+                samples=samples,
+                training_actions=actions,
+                control_actions=control_actions,
+                segmentation=segmentation,
+                dataset_schema_version=SCHEMA_VERSION,
+                source_gripper_joint_range_m=(
+                    source_range_values[0],
+                    source_range_values[1],
+                ),
+            )
+            subtask_exports.append(subtask_export)
         feature_stats = {
             "observation.state": _compute_stats(states),
             "observation.base_velocity": _compute_stats(base_velocities),
@@ -1330,6 +1521,16 @@ def materialize_lerobot_dataset(
                 "episode_index": episode_index,
                 "tasks": [instruction],
                 "length": frame_count,
+                **(
+                    {
+                        "subtask_schema_version": SUBTASK_SCHEMA_VERSION,
+                        "subtask_segment_count": segmentation["segment_count"],
+                        "subtask_frame_counts": segmentation["frame_counts"],
+                        "subtask_segments": segmentation["segments"],
+                    }
+                    if segmentation is not None
+                    else {}
+                ),
                 **_source_episode_metadata(episode_dir),
             }
         )
@@ -1351,6 +1552,11 @@ def materialize_lerobot_dataset(
                 "task_index": task_index,
                 "task_text": instruction,
                 "raw_images_saved": raw_images_saved,
+                **(
+                    {"subtask_export": subtask_export}
+                    if subtask_export is not None
+                    else {}
+                ),
             }
         )
         for key, array in (
@@ -1393,6 +1599,10 @@ def materialize_lerobot_dataset(
     with (meta_dir / "episodes_stats.jsonl").open("w", encoding="utf-8") as stream:
         for payload in episode_stats:
             stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    if subtask_segmentation_enabled:
+        with (meta_dir / "subtasks.jsonl").open("w", encoding="utf-8") as stream:
+            for payload in subtask_exports:
+                stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
     stats = {
         key: _compute_stats(np.concatenate(arrays, axis=0))
@@ -1417,19 +1627,31 @@ def materialize_lerobot_dataset(
         fps=dataset_fps,
         action_names=tuple(action_names),
         include_control_action=vla_training_action_enabled,
+        include_subtasks=subtask_segmentation_enabled,
     )
     source_success_verified = all(
         _source_episode_success_verified(episode_dir)
         for episode_dir, *_rest in valid_episodes
     )
+    subtask_export_available = bool(
+        subtask_segmentation_enabled
+        and len(subtask_exports) == len(valid_episodes)
+    )
     vla_training_eligible = bool(
-        vla_training_action_enabled and source_success_verified
+        vla_training_action_enabled
+        and source_success_verified
+        and (
+            not subtask_segmentation_enabled
+            or subtask_export_available
+        )
     )
     vla_ineligibility_reason = None
     if not vla_training_action_enabled:
         vla_ineligibility_reason = "task_does_not_request_vla_training_action"
     elif not source_success_verified:
         vla_ineligibility_reason = "episode_success_gate_not_verified"
+    elif subtask_segmentation_enabled and not subtask_export_available:
+        vla_ineligibility_reason = "subtask_directory_export_not_available"
     info = {
         "codebase_version": "v2.1",
         "schema_version": SCHEMA_VERSION,
@@ -1469,6 +1691,33 @@ def materialize_lerobot_dataset(
         "tcp_pose_names": list(TCP_POSE_NAMES),
         "tcp_pose_frame": "world",
         "base_velocity_names": list(BASE_VELOCITY_NAMES),
+        "subtask_segmentation_requested": subtask_segmentation_enabled,
+        "subtask_segmentation_available": subtask_segmentation_enabled,
+        "subtask_directory_export_available": subtask_export_available,
+        "subtask_schema_version": SUBTASK_SCHEMA_VERSION,
+        "subtask_directory_layout": SUBTASK_DIRECTORY_LAYOUT,
+        "subtask_directory_root": "episodes",
+        "subtask_metadata_path": "meta/subtasks.jsonl",
+        "subtask_duplicate_episode_id_policy": (
+            "renumber_per_task_from_1_in_dataset_order"
+        ),
+        "task_stages": list(TASK_STAGES),
+        "subtask_labels": list(SUBTASK_LABELS),
+        "subtask_min_segment_frames": (
+            subtask_configs[0].min_segment_frames
+            if subtask_segmentation_enabled
+            else None
+        ),
+        "subtask_hysteresis_frames": (
+            subtask_configs[0].hysteresis_frames
+            if subtask_segmentation_enabled
+            else None
+        ),
+        "contact_label_source": (
+            subtask_configs[0].contact_label_source
+            if subtask_segmentation_enabled
+            else None
+        ),
         "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
         "video_path": (
             "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
@@ -1496,6 +1745,11 @@ def materialize_lerobot_dataset(
         "vla_training_eligible": vla_training_eligible,
         "vla_training_ineligibility_reason": vla_ineligibility_reason,
         "source_episode_success_verified": source_success_verified,
+        "subtask_segmentation_available": subtask_segmentation_enabled,
+        "subtask_directory_export_available": subtask_export_available,
+        "subtask_schema_version": SUBTASK_SCHEMA_VERSION,
+        "subtask_directory_layout": SUBTASK_DIRECTORY_LAYOUT,
+        "subtask_exports": subtask_exports,
     }
     if len(episode_exports) == 1:
         result.update(episode_exports[0])
@@ -1515,7 +1769,39 @@ def materialize_lerobot_dataset(
             if validation_success
             else validation_report.get("failure_reason", "lerobot_validation_failed")
         )
+        if subtask_segmentation_enabled:
+            if not validation_success:
+                update_subtask_task_gate(
+                    output_path,
+                    eligible=False,
+                    reason=result["failure_reason"],
+                )
+            elif source_success_verified:
+                update_subtask_task_gate(
+                    output_path,
+                    eligible=vla_training_eligible,
+                    reason=vla_ineligibility_reason,
+                )
     return result
+
+
+def _resolve_subtask_episode_ids(tasks: list[dict[str, Any]]) -> list[Any]:
+    """避免 batch 子进程重复的 task episode_id 覆盖已有目录。"""
+
+    resolved: list[Any] = [
+        task.get("episode_id", index + 1) for index, task in enumerate(tasks)
+    ]
+    indices_by_task: dict[str, list[int]] = {}
+    for index, task in enumerate(tasks):
+        task_id = str(task.get("task_id", 0))
+        indices_by_task.setdefault(task_id, []).append(index)
+    for indices in indices_by_task.values():
+        path_ids = [str(resolved[index]) for index in indices]
+        if len(path_ids) == len(set(path_ids)):
+            continue
+        for output_episode_id, index in enumerate(indices, start=1):
+            resolved[index] = output_episode_id
+    return resolved
 
 
 __all__ = [

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
 from source.manipulation.current_state_curobo import pose_to_matrix
 from source.navigation.pct_adapter import pct_to_sim_xyz, sim_to_pct_xyz
+from source.pipeline.factory import _requires_extended_pct_navigation_limits
 from source.tasks import JsonTaskProvider
 
 
@@ -38,6 +40,11 @@ def test_liangzhu_fixed_task_loads_through_existing_episode_spec() -> None:
         0.0,
         0.0,
     )
+
+    config = SimpleNamespace(
+        locomotion=SimpleNamespace(policy_profile="pct_multifloor")
+    )
+    assert _requires_extended_pct_navigation_limits(config, episode) is False
     assert episode.instruction == (
         "Pick up the coke can on the floor in front of the robot and place it "
         "on the designated mouse mat on the floor."
@@ -53,8 +60,12 @@ def test_liangzhu_fixed_task_loads_through_existing_episode_spec() -> None:
     assert episode.raw_task["global_planner"] == "pct"
     assert episode.raw_task["policy_profile"] == "pct_multifloor"
     assert episode.raw_task["perception_mode"] == "sim_ground_truth"
+    assert (
+        episode.raw_task["place"]["mesh_truth_target"]["object_extent_tolerance_m"]
+        == 0.005
+    )
     assert episode.raw_task["navigation_execution"] == {
-        "final_position_tolerance": 0.05,
+        "final_position_tolerance": 0.1,
         "place_position_tolerance": 0.12,
         "final_yaw_tolerance": 0.15,
         "stable_linear_velocity": 0.06,
@@ -95,6 +106,24 @@ def test_liangzhu_fixed_task_loads_through_existing_episode_spec() -> None:
         "source_gripper_joint_range_m": [0.0, 0.04],
         "action_alignment": "next_sample_executed_pose",
         "terminal_action": "hold_current_pose",
+    }
+    assert episode.raw_task["subtask_segmentation"] == {
+        "enabled": True,
+        "schema": "nav_straight_turn_stop__arm_approach_contact_retreat_v1",
+        "directory_export": True,
+        "output_layout": "episodes_task_episode_segment_front_wrist_v2",
+        "min_segment_frames": 3,
+        "hysteresis_frames": 2,
+        "navigation": {
+            "stop_command_linear_max_mps": 0.03,
+            "stop_command_angular_max_rps": 0.08,
+            "stop_measured_linear_max_mps": 0.08,
+            "stop_measured_angular_max_rps": 0.20,
+            "turn_command_angular_min_rps": 0.12,
+            "turn_measured_angular_min_rps": 0.25,
+            "turn_yaw_delta_min_rad": 0.03,
+        },
+        "contact_label_source": "heuristic_action_and_kinematics",
     }
 
 
@@ -197,6 +226,10 @@ def test_liangzhu_phase0_coke_is_in_forward_sector_and_both_targets_are_grounded
     ) < 1.0e-12
     assert task["place"]["support_runtime_validation_required"] is True
     assert task["place"]["support_expected_static"] is True
+    assert task["randomization"]["forward_sector"][
+        "placement_region_half_extent_xy_m"
+    ] == [0.03, 0.03]
+    assert task["place"]["place_xy_tolerance"] == 0.035
     mesh_target = task["place"]["mesh_truth_target"]
     assert mesh_target["enabled"] is True
     assert mesh_target["visual_localization_required"] is False
@@ -312,8 +345,8 @@ def test_liangzhu_runtime_manifest_keeps_unverified_runtime_gates_false() -> Non
     assert scene_runtime["visual_prim_path"] == "/World/VisualScene/GaussianScene"
     assert scene_runtime["collision_floor_proxy_profile"] is None
     assert scene_runtime["legacy_yinluyuan_f2_floor_proxy_disabled"] is True
-    assert scene_runtime["default_navigation_visual_mode"] == "collision"
-    assert scene_runtime["gaussian_scene_loaded_by_default"] is False
+    assert scene_runtime["default_navigation_visual_mode"] == "full"
+    assert scene_runtime["gaussian_scene_loaded_by_default"] is True
     assert scene_runtime["overview_camera_prim_path"] == "/World/overview"
     assert scene_runtime["configuration_unit_verified"] is True
     assert scene_runtime["preflight_text_marker_verified"] is True

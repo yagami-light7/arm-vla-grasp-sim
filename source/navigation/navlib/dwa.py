@@ -21,6 +21,7 @@ class DWAConfig:
     max_linear_velocity: float = 0.5
     min_linear_velocity: float = 0.0
     min_active_linear_velocity: float = 0.30
+    min_active_angular_velocity: float = 0.0
     max_angular_velocity: float = 1.0
     max_linear_accel: float = 2.5
     max_angular_accel: float = 3.0
@@ -45,6 +46,11 @@ class DWAConfig:
     path_deviation_limit: float = 0.18
     path_distance_window: int = 80
     use_command_velocity_window: bool = False
+    # Some locomotion policies intentionally stand still for small non-zero
+    # velocity commands.  When enabled, forward tracking samples either zero or
+    # an actually executable gait command instead of lingering in that deadband.
+    enforce_min_active_linear_velocity: bool = False
+    enforce_min_active_angular_velocity: bool = False
     enforce_path_deviation_limit: bool = False
     initial_alignment_path_deviation_limit: float | None = None
     path_recovery_deviation_limit: float | None = None
@@ -451,16 +457,38 @@ class DWAController:
                 )
             )
         else:
-            linear_values = np.linspace(
-                linear_lower,
-                linear_upper,
-                num=max(self.config.linear_samples, 2),
-                dtype=np.float64,
-            )
-            linear_values = np.concatenate(
-                [linear_values, np.array([min_active_linear_velocity], dtype=np.float64)]
-            )
-            linear_values = np.clip(linear_values, linear_lower, linear_upper)
+            if self.config.enforce_min_active_linear_velocity:
+                # The high-level velocity is an RL command rather than a direct
+                # actuator target.  Commands below the policy's gait threshold
+                # produce no translation, so treating them as dynamically
+                # feasible only traps the command window in the deadband.  Keep
+                # an explicit stop candidate, but evaluate moving candidates at
+                # or above the executable threshold with the normal collision
+                # rollout and scoring below.
+                active_lower = max(linear_lower, min_active_linear_velocity)
+                active_upper = max(linear_upper, active_lower)
+                active_upper = min(active_upper, linear_cap)
+                active_lower = min(active_lower, active_upper)
+                linear_values = np.linspace(
+                    active_lower,
+                    active_upper,
+                    num=max(self.config.linear_samples, 2),
+                    dtype=np.float64,
+                )
+                linear_values = np.concatenate(
+                    [linear_values, np.array([0.0], dtype=np.float64)]
+                )
+            else:
+                linear_values = np.linspace(
+                    linear_lower,
+                    linear_upper,
+                    num=max(self.config.linear_samples, 2),
+                    dtype=np.float64,
+                )
+                linear_values = np.concatenate(
+                    [linear_values, np.array([min_active_linear_velocity], dtype=np.float64)]
+                )
+                linear_values = np.clip(linear_values, linear_lower, linear_upper)
             linear_values = np.unique(
                 np.round(
                     np.concatenate(
@@ -506,6 +534,35 @@ class DWAController:
             angular_upper,
         )
         angular_values = np.unique(np.round(angular_values, decimals=4))
+        if self.config.enforce_min_active_angular_velocity:
+            angular_floor = min(
+                max(0.0, self.config.min_active_angular_velocity),
+                self.config.max_angular_velocity,
+            )
+            if angular_floor > 0.0:
+                # As with the linear command, preserve an explicit stop while
+                # removing angular commands that the policy treats as zero.
+                # A sign change must pass through stop: once an active turn is
+                # established we only expose its current sign plus zero.
+                active_values = angular_values[
+                    np.abs(angular_values) >= angular_floor - 1.0e-9
+                ]
+                if abs(current_wz) < angular_floor:
+                    floor_values = np.array(
+                        [-angular_floor, 0.0, angular_floor],
+                        dtype=np.float64,
+                    )
+                else:
+                    floor_values = np.array(
+                        [0.0, math.copysign(angular_floor, current_wz)],
+                        dtype=np.float64,
+                    )
+                angular_values = np.unique(
+                    np.round(
+                        np.concatenate([active_values, floor_values]),
+                        decimals=4,
+                    )
+                )
 
         return [(float(v), float(w)) for v in linear_values for w in angular_values]
 

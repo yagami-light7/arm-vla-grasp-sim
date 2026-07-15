@@ -353,6 +353,7 @@ class DwaNavExecutor:
         )
         if self._carry_mode:
             carry_linear_limit = float(self._active_dwa_config.max_linear_velocity)
+            carry_angular_limit = float(self._active_dwa_config.max_angular_velocity)
             self._active_terminal_pose_config = replace(
                 self._active_terminal_pose_config,
                 max_vx=min(
@@ -362,6 +363,42 @@ class DwaNavExecutor:
                 max_vy=min(
                     float(self._active_terminal_pose_config.max_vy),
                     carry_linear_limit,
+                ),
+                # Terminal pose control runs after DWA and therefore must be
+                # clipped independently.  Otherwise carry navigation can obey
+                # the 0.30 rad/s DWA limit and then immediately command a
+                # 0.50 rad/s final turn, which can drop the grasped object.
+                yaw_min_wz=min(
+                    float(self._active_terminal_pose_config.yaw_min_wz),
+                    carry_angular_limit,
+                ),
+                yaw_max_wz=min(
+                    float(self._active_terminal_pose_config.yaw_max_wz),
+                    carry_angular_limit,
+                ),
+                yaw_slowdown_min_wz=min(
+                    float(self._active_terminal_pose_config.yaw_slowdown_min_wz),
+                    carry_angular_limit,
+                ),
+                yaw_slowdown_max_wz=min(
+                    float(self._active_terminal_pose_config.yaw_slowdown_max_wz),
+                    carry_angular_limit,
+                ),
+                recovery_yaw_max_wz=min(
+                    float(self._active_terminal_pose_config.recovery_yaw_max_wz),
+                    carry_angular_limit,
+                ),
+                yaw_polish_min_wz=min(
+                    float(self._active_terminal_pose_config.yaw_polish_min_wz),
+                    carry_angular_limit,
+                ),
+                yaw_polish_max_wz=min(
+                    float(self._active_terminal_pose_config.yaw_polish_max_wz),
+                    carry_angular_limit,
+                ),
+                forward_turn_max_wz=min(
+                    float(self._active_terminal_pose_config.forward_turn_max_wz),
+                    carry_angular_limit,
                 ),
             )
         self.plan = plan
@@ -568,6 +605,16 @@ class DwaNavExecutor:
             self._failure_reason = ""
             self._phase = "completed"
             self._last_command = (0.0, 0.0, 0.0)
+        elif self._phase == "settling":
+            # Physics can move the base back outside the acceptance region
+            # while the commanded velocity is zero.  Remaining in ``settling``
+            # would then emit zero forever because compute_action deliberately
+            # holds that phase.  Return to active terminal/DWA control so the
+            # next tick can recover the lost pose tolerance.
+            self._done = False
+            self._success = False
+            self._failure_reason = ""
+            self._phase = "terminal_pose"
         return self._done
 
     def status(self) -> dict[str, Any]:
@@ -1081,6 +1128,8 @@ class DwaNavExecutor:
             pose[0],
             pose[1],
             command[0],
+            pose[2],
+            command[2],
         )
         self._stall_diagnostics = diagnostics
         if not stalled:
@@ -1214,6 +1263,15 @@ class DwaNavExecutor:
             ),
             "near_goal_min_active_linear_velocity": float(
                 self._active_dwa_config.near_goal_min_active_linear_velocity
+            ),
+            "enforce_min_active_linear_velocity": bool(
+                self._active_dwa_config.enforce_min_active_linear_velocity
+            ),
+            "min_active_angular_velocity": float(
+                self._active_dwa_config.min_active_angular_velocity
+            ),
+            "enforce_min_active_angular_velocity": bool(
+                self._active_dwa_config.enforce_min_active_angular_velocity
             ),
             "close_goal_speed_limit": float(
                 self._active_dwa_config.close_goal_speed_limit
@@ -2055,6 +2113,10 @@ class DwaNavExecutor:
             "sample_count": int(diagnostics.sample_count),
             "max_displacement_m": float(diagnostics.max_displacement_m),
             "forward_command_ratio": float(diagnostics.forward_command_ratio),
+            "max_yaw_displacement_rad": float(
+                diagnostics.max_yaw_displacement_rad
+            ),
+            "angular_command_ratio": float(diagnostics.angular_command_ratio),
         }
 
 

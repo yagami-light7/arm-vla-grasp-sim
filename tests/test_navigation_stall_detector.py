@@ -29,6 +29,32 @@ class NavigationStallDetectorTest(unittest.TestCase):
             stalled, _ = detector.update(0.0, 0.0, 0.0)
         self.assertFalse(stalled)
 
+    def test_commanded_rotation_without_yaw_progress_triggers_stall(self) -> None:
+        detector = NavigationStallDetector(window_steps=10, min_progress_m=0.05)
+        for _ in range(10):
+            stalled, diagnostics = detector.update(
+                0.0,
+                0.0,
+                0.0,
+                yaw=0.2,
+                cmd_wz=0.08,
+            )
+        self.assertTrue(stalled)
+        self.assertEqual(diagnostics.angular_command_ratio, 1.0)
+        self.assertEqual(diagnostics.max_yaw_displacement_rad, 0.0)
+
+    def test_real_yaw_progress_does_not_trigger_angular_stall(self) -> None:
+        detector = NavigationStallDetector(window_steps=10, min_progress_m=0.05)
+        for step in range(10):
+            stalled, _ = detector.update(
+                0.0,
+                0.0,
+                0.0,
+                yaw=step * 0.02,
+                cmd_wz=0.30,
+            )
+        self.assertFalse(stalled)
+
     def test_sparse_forward_commands_still_trigger_stall(self) -> None:
         detector = NavigationStallDetector(window_steps=10, min_progress_m=0.05)
         for step in range(10):

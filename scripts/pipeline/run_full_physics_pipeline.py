@@ -237,10 +237,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--navigation-visual-mode",
         choices=("auto", "collision", "full"),
-        default="collision",
+        default="full",
         help=(
-            "物理验收视觉模式；默认 collision，不加载 GaussianScene；"
-            "full 显式加载，auto 保留旧自适应语义。"
+            "物理验收视觉模式；默认 full，加载 GaussianScene 并隐藏导航碰撞可视化；"
+            "collision 仅显示碰撞场景，auto 保留旧自适应语义。"
         ),
     )
     parser.add_argument(

@@ -157,6 +157,10 @@ class NavigationSettings:
     require_stable_base: bool = False
     stall_window_steps: int = 240
     stall_min_progress: float = 0.05
+    # The pct_multifloor locomotion policy can receive a low DWA command while
+    # producing effectively zero displacement. Count those commands as active so
+    # the sliding-window stall gate does not wait for the much larger state timeout.
+    stall_min_forward_command: float = 0.03
 
 
 @dataclass(frozen=True)

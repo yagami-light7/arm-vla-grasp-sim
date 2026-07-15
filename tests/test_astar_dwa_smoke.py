@@ -103,6 +103,58 @@ class AStarDwaSmokeTest(unittest.TestCase):
         self.assertTrue(all(0.15 - 1.0e-6 <= vx <= 0.25 + 1.0e-6 for vx, _ in samples))
         self.assertTrue(all(0.04 - 1.0e-6 <= wz <= 0.16 + 1.0e-6 for _, wz in samples))
 
+    def test_dwa_policy_deadband_profile_samples_stop_or_active_gait(self) -> None:
+        grid = OccupancyGridMap(np.zeros((80, 80), dtype=bool), 0.05, (-1.0, -1.0, 0.0))
+        config = DWAConfig(
+            control_dt=0.02,
+            max_linear_velocity=0.45,
+            min_active_linear_velocity=0.25,
+            max_linear_accel=2.5,
+            enforce_min_active_linear_velocity=True,
+        )
+        controller = DWAController([(0.0, 0.0), (1.0, 0.0)], grid, config)
+
+        samples = controller._sample_velocities(
+            current_vx=0.0,
+            current_wz=0.0,
+            distance_to_goal=1.0,
+            heading_error=0.0,
+        )
+        linear_values = {vx for vx, _ in samples}
+
+        self.assertIn(0.0, linear_values)
+        self.assertIn(0.25, linear_values)
+        self.assertTrue(all(vx == 0.0 or vx >= 0.25 for vx in linear_values))
+
+    def test_dwa_policy_deadband_profile_samples_stop_or_active_turn(self) -> None:
+        grid = OccupancyGridMap(np.zeros((80, 80), dtype=bool), 0.05, (-1.0, -1.0, 0.0))
+        config = DWAConfig(
+            control_dt=0.02,
+            max_angular_velocity=0.50,
+            min_active_angular_velocity=0.30,
+            max_angular_accel=3.0,
+            enforce_min_active_angular_velocity=True,
+        )
+        controller = DWAController([(0.0, 0.0), (1.0, 0.0)], grid, config)
+
+        samples = controller._sample_velocities(
+            current_vx=0.0,
+            current_wz=0.0,
+            distance_to_goal=1.0,
+            heading_error=0.4,
+        )
+        angular_values = {wz for _, wz in samples}
+
+        self.assertEqual(angular_values, {-0.3, 0.0, 0.3})
+
+        positive_turn_samples = controller._sample_velocities(
+            current_vx=0.0,
+            current_wz=0.30,
+            distance_to_goal=1.0,
+            heading_error=-0.4,
+        )
+        self.assertTrue(all(wz >= 0.0 for _, wz in positive_turn_samples))
+
     def test_dwa_large_heading_error_keeps_creeping_turn_candidates(self) -> None:
         grid = OccupancyGridMap(np.zeros((80, 80), dtype=bool), 0.05, (-1.0, -1.0, 0.0))
         config = DWAConfig(

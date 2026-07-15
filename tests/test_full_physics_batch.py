@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from scripts.pipeline.run_full_physics_batch import (
@@ -43,6 +44,38 @@ PLACE_PLAN = (
 
 
 class FullPhysicsBatchTest(unittest.TestCase):
+    def test_liangzhu_stable_profile_is_the_batch_default(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"LIANGZHU_COLLISION_PLY": "/tmp/liangzhu_collision.ply"},
+        ):
+            args = _build_parser().parse_args(
+                ["--output-dir", "/tmp/liangzhu_default_batch"]
+            )
+
+        episode = _build_child_command(args, episode_index=0)
+        command = episode.command
+
+        self.assertTrue(args.task_json.endswith("nav_pick_place_cola_liangzhu_pct.json"))
+        self.assertEqual(args.global_planner, "pct")
+        self.assertEqual(args.pct_coord_mode, "identity")
+        self.assertTrue(args.pct_no_fallback)
+        self.assertEqual(args.policy_profile, "pct_multifloor")
+        self.assertTrue(args.require_locomotion_checkpoint)
+        self.assertEqual(args.navigation_visual_mode, "full")
+        self.assertIn("--pct-no-fallback", command)
+        self.assertIn("--require-locomotion-checkpoint", command)
+        self.assertEqual(
+            command[command.index("--pct-collision-ply-path") + 1],
+            "/tmp/liangzhu_collision.ply",
+        )
+        for flag in (
+            "--pct-cross-floor-gateway",
+            "--pct-cross-floor-stair-exit",
+            "--pct-cross-floor-stair-midpoint",
+        ):
+            self.assertEqual(command[command.index(flag) + 1], "none")
+
     def test_full_physics_batch_builds_one_episode_command_without_plan_json(self) -> None:
         args = _build_parser().parse_args(
             [
@@ -79,7 +112,7 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertIn("--headless", command)
         self.assertEqual(
             command[command.index("--navigation-visual-mode") + 1],
-            "collision",
+            "full",
         )
         self.assertEqual(
             command[command.index("--overview-camera-prim-path") + 1],

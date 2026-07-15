@@ -39,7 +39,11 @@ class FullPhysicsRandomizationTest(unittest.TestCase):
             episode,
         )
 
-        self.assertEqual(settings.final_position_tolerance, 0.05)
+        # 10 cm keeps the floor object inside the verified front-arm workspace while
+        # avoiding terminal-controller stalls when the locomotion policy cannot realize
+        # very small mixed vx/vy corrections.
+        self.assertEqual(settings.final_position_tolerance, 0.1)
+        self.assertEqual(settings.stall_min_forward_command, 0.03)
         self.assertEqual(settings.final_yaw_tolerance, 0.15)
         self.assertTrue(settings.require_yaw_alignment)
         self.assertTrue(settings.require_stable_base)
@@ -62,7 +66,7 @@ class FullPhysicsRandomizationTest(unittest.TestCase):
         self.assertTrue(args.randomize_base_goal)
         self.assertFalse(args.show_randomization_debug)
         self.assertFalse(args.keep_window_open)
-        self.assertEqual(args.navigation_visual_mode, "collision")
+        self.assertEqual(args.navigation_visual_mode, "full")
         self.assertEqual(args.overview_camera_mode, "fixed")
         self.assertEqual(args.overview_camera_prim_path, "/World/overview")
 

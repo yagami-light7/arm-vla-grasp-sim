@@ -324,6 +324,7 @@ def create_navigation_components(
         yaw_tolerance=nav.final_yaw_tolerance,
         stall_window_steps=nav.stall_window_steps,
         stall_min_progress_m=nav.stall_min_progress,
+        stall_min_forward_command=nav.stall_min_forward_command,
         command_recompute_interval_steps=nav.dwa_replan_interval_steps,
         completion_linear_velocity_tolerance=(
             nav.stable_linear_velocity if nav.require_stable_base else None
@@ -704,6 +705,9 @@ def _build_dwa_config(nav, *, policy_profile: str = "flat") -> DWAConfig:
                 "clearance_bias": 0.55,
                 "path_deviation_limit": 0.30,
                 "use_command_velocity_window": True,
+                "enforce_min_active_linear_velocity": True,
+                "min_active_angular_velocity": 0.30,
+                "enforce_min_active_angular_velocity": True,
             }
         )
 

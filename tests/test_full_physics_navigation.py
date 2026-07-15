@@ -226,7 +226,7 @@ class FullPhysicsNavigationTest(unittest.TestCase):
         action = executor.compute_action(state)
 
         self.assertEqual(action.source, "navigation_terminal_pose")
-        self.assertEqual(action.base_velocity, (0.0, 0.0, 0.50))
+        self.assertEqual(action.base_velocity, (0.0, 0.0, 0.30))
         self.assertEqual(
             action.metadata["terminal_control_mode"],
             "carry_forward_translation",
@@ -285,7 +285,8 @@ class FullPhysicsNavigationTest(unittest.TestCase):
         self.assertFalse(action.metadata["carry_forward_translation_active"])
         self.assertGreater(action.base_velocity[0], 0.0)
         self.assertGreater(action.base_velocity[1], 0.0)
-        self.assertGreater(action.base_velocity[2], 0.30)
+        self.assertGreater(action.base_velocity[2], 0.0)
+        self.assertLessEqual(action.base_velocity[2], 0.30)
 
     def test_carry_place_tolerance_holds_zero_until_base_is_stable(self) -> None:
         grid = OccupancyGridMap(
@@ -328,6 +329,42 @@ class FullPhysicsNavigationTest(unittest.TestCase):
         stopped = executor.compute_action(_state(x=0.0, y=0.0, yaw=0.0))
         self.assertEqual(stopped.base_velocity, (0.0, 0.0, 0.0))
         self.assertTrue(executor.status()["success"])
+
+    def test_settling_resumes_control_after_base_drifts_outside_tolerance(self) -> None:
+        grid = OccupancyGridMap(
+            np.zeros((40, 40), dtype=bool),
+            0.05,
+            (-1.0, -1.0, 0.0),
+        )
+        plan = NavPlan(
+            goal=NavGoal(x=0.10, y=0.0, yaw=0.0),
+            waypoints=((0.0, 0.0), (0.10, 0.0)),
+            metadata={"require_yaw_alignment": True},
+        )
+        executor = DwaNavExecutor(
+            grid_map=grid,
+            terminal_start_distance=0.18,
+            position_tolerance=0.10,
+            completion_linear_velocity_tolerance=0.06,
+            completion_angular_velocity_tolerance=0.20,
+        )
+        executor.reset(plan)
+
+        moving_inside = _state(
+            x=0.02,
+            y=0.0,
+            yaw=0.0,
+            velocity=(0.20, 0.0, 0.0, 0.0, 0.0, 0.0),
+        )
+        settling = executor.compute_action(moving_inside)
+        self.assertEqual(settling.source, "navigation_settling")
+
+        drifted = _state(x=-0.06, y=0.0, yaw=0.0)
+        recovery = executor.compute_action(drifted)
+
+        self.assertEqual(recovery.source, "navigation_terminal_pose")
+        self.assertGreater(recovery.base_velocity[0], 0.0)
+        self.assertFalse(executor.status()["success"])
 
     def test_navigation_verifier_uses_place_only_position_tolerance(self) -> None:
         spec = JsonTaskProvider().load(

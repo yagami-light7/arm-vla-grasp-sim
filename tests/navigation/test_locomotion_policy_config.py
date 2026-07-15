@@ -143,6 +143,9 @@ def test_pct_multifloor_dwa_commands_stay_inside_checkpoint_training_range() -> 
     assert pct.path_deviation_limit == pytest.approx(0.30)
     assert pct.close_goal_speed_limit == pytest.approx(0.30)
     assert pct.near_goal_min_active_linear_velocity == pytest.approx(0.30)
+    assert pct.enforce_min_active_linear_velocity is True
+    assert pct.enforce_min_active_angular_velocity is True
+    assert pct.min_active_angular_velocity == pytest.approx(0.30)
     assert pct.close_goal_speed_limit >= pct.min_active_linear_velocity
     assert pct.min_active_linear_velocity <= pct.max_linear_velocity
 

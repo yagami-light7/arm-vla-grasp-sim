@@ -19,6 +19,17 @@ from typing import Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PIPELINE_ENTRY = PROJECT_ROOT / "scripts/pipeline/run_full_physics_pipeline.py"
+DEFAULT_LIANGZHU_TASK_JSON = "tasks/nav_pick_place_cola_liangzhu_pct.json"
+DEFAULT_LIANGZHU_PCT_SERVER_SCRIPT = "scripts/navigation/pct_grid_server.py"
+DEFAULT_LIANGZHU_PCT_TOMOGRAM = (
+    "source/scene/liangzhu/pct/liangzhu_single_floor.pickle"
+)
+DEFAULT_LIANGZHU_PCT_WALKABLE = (
+    "source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy"
+)
+DEFAULT_LIANGZHU_LOCOMOTION_CHECKPOINT = (
+    "checkpoints/go2_x5/pct_multifloor/model_26000.pt"
+)
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -121,7 +132,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="逐个子进程运行 full-physics episode，适用于真实 Isaac 自动化批量验证。",
     )
-    parser.add_argument("--task-json", required=True, help="任务 JSON 路径。")
+    parser.add_argument(
+        "--task-json",
+        default=DEFAULT_LIANGZHU_TASK_JSON,
+        help=(
+            "任务 JSON 路径；默认使用良渚可乐到鼠标垫随机化任务。"
+        ),
+    )
     parser.add_argument(
         "--output-dir",
         required=True,
@@ -160,62 +177,94 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--navigation-visual-mode",
         choices=("auto", "collision", "full"),
-        default="collision",
+        default="full",
         help=(
-            "转发物理场景视觉模式；默认 collision，不加载 GaussianScene。"
+            "转发物理场景视觉模式；默认 full，加载 GaussianScene。"
         ),
     )
     parser.add_argument(
         "--global-planner",
         choices=("astar", "pct"),
-        default="astar",
-        help="转发全局规划器；良渚任务必须显式使用 pct。",
+        default="pct",
+        help="转发全局规划器；batch 良渚稳定配置默认使用 pct。",
     )
-    parser.add_argument("--pct-server-script", help="转发 PCT server 脚本路径。")
-    parser.add_argument("--pct-server-python", help="转发 PCT server Python 路径。")
-    parser.add_argument("--pct-tomogram-path", help="转发 PCT tomogram 路径。")
-    parser.add_argument("--pct-walkable-path", help="转发 PCT walkable 路径。")
-    parser.add_argument("--pct-collision-ply-path", help="转发 PCT collision PLY 路径。")
     parser.add_argument(
+        "--pct-server-script",
+        default=DEFAULT_LIANGZHU_PCT_SERVER_SCRIPT,
+        help="转发 PCT server 脚本路径；默认使用仓库内良渚 grid server。",
+    )
+    parser.add_argument("--pct-server-python", help="转发 PCT server Python 路径。")
+    parser.add_argument(
+        "--pct-tomogram-path",
+        default=DEFAULT_LIANGZHU_PCT_TOMOGRAM,
+        help="转发 PCT tomogram 路径；默认使用良渚单层地图。",
+    )
+    parser.add_argument(
+        "--pct-walkable-path",
+        default=DEFAULT_LIANGZHU_PCT_WALKABLE,
+        help="转发 PCT walkable 路径；默认使用良渚单层地图。",
+    )
+    parser.add_argument(
+        "--pct-collision-ply-path",
+        default=os.environ.get("LIANGZHU_COLLISION_PLY"),
+        help=(
+            "转发 PCT collision PLY 路径；默认读取 LIANGZHU_COLLISION_PLY。"
+        ),
+    )
+    fallback_group = parser.add_mutually_exclusive_group()
+    fallback_group.add_argument(
         "--pct-no-fallback",
         action="store_true",
-        help="禁止 PCT 失败时回退 A*。",
+        dest="pct_no_fallback",
+        default=True,
+        help="禁止 PCT 失败时回退 A*；良渚 batch 默认开启。",
+    )
+    fallback_group.add_argument(
+        "--pct-allow-fallback",
+        action="store_false",
+        dest="pct_no_fallback",
+        help="兼容旧任务：允许 PCT 失败时回退 A*。",
     )
     parser.add_argument(
         "--pct-coord-mode",
         choices=("sim_to_pct_180deg", "identity"),
-        default="sim_to_pct_180deg",
-        help="转发 Isaac 到 PCT 的坐标变换模式。",
+        default="identity",
+        help="转发 Isaac 到 PCT 的坐标变换模式；良渚默认 identity。",
     )
     parser.add_argument(
         "--pct-cross-floor-gateway",
         action="append",
         default=None,
-        help="转发跨层 gateway；单层任务传 none。",
+        help="转发跨层 gateway；良渚单层默认 none。",
     )
     parser.add_argument(
         "--pct-cross-floor-stair-exit",
         action="append",
         default=None,
-        help="转发跨层楼梯出口；单层任务传 none。",
+        help="转发跨层楼梯出口；良渚单层默认 none。",
     )
     parser.add_argument(
         "--pct-cross-floor-stair-midpoint",
         action="append",
         default=None,
-        help="转发跨层楼梯中点；单层任务传 none。",
+        help="转发跨层楼梯中点；良渚单层默认 none。",
     )
     parser.add_argument(
         "--policy-profile",
         choices=("flat", "pct_multifloor"),
-        default="flat",
-        help="转发 locomotion policy profile。",
+        default="pct_multifloor",
+        help="转发 locomotion policy profile；良渚默认 pct_multifloor。",
     )
-    parser.add_argument("--locomotion-checkpoint", help="转发 locomotion checkpoint。")
+    parser.add_argument(
+        "--locomotion-checkpoint",
+        default=DEFAULT_LIANGZHU_LOCOMOTION_CHECKPOINT,
+        help="转发 locomotion checkpoint；默认使用已验证的 Go2-X5 checkpoint。",
+    )
     parser.add_argument(
         "--require-locomotion-checkpoint",
-        action="store_true",
-        help="要求 checkpoint 存在，缺失时立即失败。",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="要求 checkpoint 存在，缺失时立即失败；默认开启。",
     )
     parser.add_argument(
         "--continue-on-failure",
@@ -819,7 +868,8 @@ def _build_child_command(
             "pct_cross_floor_stair_exit",
             "pct_cross_floor_stair_midpoint",
         ):
-            for value in getattr(args, argument_name) or ():
+            values = getattr(args, argument_name)
+            for value in (("none",) if values is None else values):
                 command.extend([f"--{argument_name.replace('_', '-')}", str(value)])
     if args.locomotion_checkpoint:
         command.extend(

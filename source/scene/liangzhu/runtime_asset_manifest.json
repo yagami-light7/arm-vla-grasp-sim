@@ -7,8 +7,8 @@
     "visual_prim_path": "/World/VisualScene/GaussianScene",
     "collision_floor_proxy_profile": null,
     "legacy_yinluyuan_f2_floor_proxy_disabled": true,
-    "default_navigation_visual_mode": "collision",
-    "gaussian_scene_loaded_by_default": false,
+    "default_navigation_visual_mode": "full",
+    "gaussian_scene_loaded_by_default": true,
     "overview_camera_prim_path": "/World/overview",
     "overview_camera_outside_gaussian_subtree_offline_verified": true,
     "configuration_unit_verified": true,
@@ -248,7 +248,7 @@
     "note": "每个 episode 同步更新机器人 yaw、可乐、地垫、placement region、正面对准目标的导航终态和 pick/place CuRobo 支撑代理；place goal 从 pick base goal 朝地垫生成。"
   },
   "data_export": {
-    "schema_version": "full_physics_lerobot_v2.1.2",
+    "schema_version": "full_physics_lerobot_v2.1.4",
     "training_action_schema": "base_xyyaw_tcp_base_rpy_gripper_v1",
     "training_action_dimension": 10,
     "training_action_alignment": "next_sample_executed_pose",
@@ -257,6 +257,25 @@
     "tcp_pose_frame": "base_frame",
     "control_action_schema": "base_velocity_arm_joint_gripper_targets_v1",
     "control_action_dimension": 11,
+    "subtask_schema_version": "nav_straight_turn_stop__arm_approach_contact_retreat_v1",
+    "subtask_directory_layout": "episodes_task_episode_segment_front_wrist_v2",
+    "subtask_duplicate_episode_id_policy": "renumber_per_task_from_1_in_dataset_order",
+    "task_stages": ["nav_to_pick", "pick", "nav_to_place", "place"],
+    "subtask_labels": [
+      "nav_straight",
+      "nav_turn",
+      "nav_stop",
+      "arm_approach",
+      "arm_contact",
+      "arm_retreat"
+    ],
+    "subtask_min_segment_frames": 3,
+    "subtask_hysteresis_frames": 2,
+    "subtask_contact_label_source": "heuristic_action_and_kinematics",
+    "subtask_directory_export_added": true,
+    "subtask_official_lerobot_compatibility_preserved": true,
+    "subtask_frame_loss_duplication_validator_added": true,
+    "uncollected_episode_task_csv_only_verified": true,
     "offline_conversion_unit_verified": true,
     "dry_run_training_gate_verified": true,
     "gaussian_scene_required_for_training": false,
@@ -271,6 +290,13 @@
     "mesh_truth_manipulation_target_training_gate_added": true,
     "mesh_truth_manipulation_target_training_gate_unit_verified": true,
     "real_episode_export_verified": false,
-    "real_episode_training_eligible_verified": false
+    "real_episode_training_eligible_verified": false,
+    "real_episode_online_subtask_export_pending": true,
+    "historical_attempt14_subtask_offline_backfill_verified": true,
+    "historical_attempt14_subtask_backfill_path": "/mnt/sage_data/outputs/arm_vla_liangzhu/phase126_front_carry_terminal_seed7_attempt14/lerobot_dataset_subtasks_v2_1_3/episodes/2001/1",
+    "historical_attempt14_subtask_frames": 107,
+    "historical_attempt14_subtask_segments": 9,
+    "historical_attempt14_subtask_validator_errors": 0,
+    "historical_attempt14_subtask_validator_warnings": 0
   }
 }

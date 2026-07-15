@@ -314,57 +314,101 @@ def build_vla_training_actions(
     actions: list[list[float]] = []
     for frame_index in range(len(samples)):
         target_index = min(frame_index + 1, len(samples) - 1)
-        target = samples[target_index]
-        base_pose = _finite_vector(target.get("base_pose"), 7, name="base_pose")
-        tcp_pose = _finite_vector(target.get("tcp_pose"), 7, name="tcp_pose")
-        if target.get("tcp_pose_valid") is not True:
-            raise ValueError(
-                f"sample {target_index} has no valid TCP pose for VLA action export"
+        actions.append(
+            _sample_to_vla_pose_vector(
+                samples[target_index],
+                sample_index=target_index,
+                closed=closed,
+                opened=opened,
             )
-        gripper_position = target.get("gripper_position")
-        if (
-            isinstance(gripper_position, bool)
-            or not isinstance(gripper_position, (int, float))
-            or not math.isfinite(float(gripper_position))
-        ):
-            raise ValueError(
-                f"sample {target_index} has no finite gripper_position for VLA action export"
-            )
-
-        base_quat = _normalize_quat_wxyz(base_pose[3:7], name="base_pose quaternion")
-        tcp_quat = _normalize_quat_wxyz(tcp_pose[3:7], name="tcp_pose quaternion")
-        base_yaw = _quat_wxyz_to_rpy(base_quat)[2]
-        tcp_position_base = _rotate_vector_by_quat_wxyz(
-            _quat_conjugate(base_quat),
-            (
-                tcp_pose[0] - base_pose[0],
-                tcp_pose[1] - base_pose[1],
-                tcp_pose[2] - base_pose[2],
-            ),
         )
-        tcp_quat_base = _normalize_quat_wxyz(
-            _quat_multiply(_quat_conjugate(base_quat), tcp_quat),
-            name="base-frame TCP quaternion",
-        )
-        tcp_rpy_base = _quat_wxyz_to_rpy(tcp_quat_base)
-        gripper_normalized = min(
-            1.0,
-            max(0.0, (float(gripper_position) - closed) / (opened - closed)),
-        )
-        action = [
-            base_pose[0],
-            base_pose[1],
-            base_yaw,
-            *tcp_position_base,
-            *tcp_rpy_base,
-            gripper_normalized,
-        ]
-        if len(action) != VLA_TRAINING_ACTION_DIMENSION or not all(
-            math.isfinite(value) for value in action
-        ):
-            raise ValueError(f"sample {target_index} produced an invalid VLA action")
-        actions.append(action)
     return np.asarray(actions, dtype=np.float32)
+
+
+def build_vla_observation_poses(
+    samples: Sequence[dict[str, Any]],
+    *,
+    source_gripper_joint_range_m: tuple[float, float],
+) -> np.ndarray:
+    """把每个当前采样状态转换为与 10 维 action 同坐标约定的观测轨迹。"""
+
+    if not samples:
+        return np.empty((0, VLA_TRAINING_ACTION_DIMENSION), dtype=np.float32)
+    closed, opened = (float(value) for value in source_gripper_joint_range_m)
+    if not math.isfinite(closed) or not math.isfinite(opened) or closed >= opened:
+        raise ValueError("source gripper joint range must be finite and ordered")
+    return np.asarray(
+        [
+            _sample_to_vla_pose_vector(
+                sample,
+                sample_index=sample_index,
+                closed=closed,
+                opened=opened,
+            )
+            for sample_index, sample in enumerate(samples)
+        ],
+        dtype=np.float32,
+    )
+
+
+def _sample_to_vla_pose_vector(
+    sample: dict[str, Any],
+    *,
+    sample_index: int,
+    closed: float,
+    opened: float,
+) -> list[float]:
+    """将单帧执行状态转换为 world 底盘、base-frame TCP 和归一化夹爪。"""
+
+    base_pose = _finite_vector(sample.get("base_pose"), 7, name="base_pose")
+    tcp_pose = _finite_vector(sample.get("tcp_pose"), 7, name="tcp_pose")
+    if sample.get("tcp_pose_valid") is not True:
+        raise ValueError(
+            f"sample {sample_index} has no valid TCP pose for VLA action export"
+        )
+    gripper_position = sample.get("gripper_position")
+    if (
+        isinstance(gripper_position, bool)
+        or not isinstance(gripper_position, (int, float))
+        or not math.isfinite(float(gripper_position))
+    ):
+        raise ValueError(
+            f"sample {sample_index} has no finite gripper_position for VLA action export"
+        )
+
+    base_quat = _normalize_quat_wxyz(base_pose[3:7], name="base_pose quaternion")
+    tcp_quat = _normalize_quat_wxyz(tcp_pose[3:7], name="tcp_pose quaternion")
+    base_yaw = _quat_wxyz_to_rpy(base_quat)[2]
+    tcp_position_base = _rotate_vector_by_quat_wxyz(
+        _quat_conjugate(base_quat),
+        (
+            tcp_pose[0] - base_pose[0],
+            tcp_pose[1] - base_pose[1],
+            tcp_pose[2] - base_pose[2],
+        ),
+    )
+    tcp_quat_base = _normalize_quat_wxyz(
+        _quat_multiply(_quat_conjugate(base_quat), tcp_quat),
+        name="base-frame TCP quaternion",
+    )
+    tcp_rpy_base = _quat_wxyz_to_rpy(tcp_quat_base)
+    gripper_normalized = min(
+        1.0,
+        max(0.0, (float(gripper_position) - closed) / (opened - closed)),
+    )
+    vector = [
+        base_pose[0],
+        base_pose[1],
+        base_yaw,
+        *tcp_position_base,
+        *tcp_rpy_base,
+        gripper_normalized,
+    ]
+    if len(vector) != VLA_TRAINING_ACTION_DIMENSION or not all(
+        math.isfinite(value) for value in vector
+    ):
+        raise ValueError(f"sample {sample_index} produced an invalid VLA pose vector")
+    return vector
 
 
 def _finite_vector(value: Any, length: int, *, name: str) -> tuple[float, ...]:

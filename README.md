@@ -266,7 +266,327 @@ frames.jsonl / events.jsonl / data.csv / samples.jsonl / images    保留，用�
 lerobot_manifest.json / lerobot_dataset/                           失败时删除或不生成
 ```
 
-batch 合并统一数据集时只合并成功 episode。
+batch 合并统一数据集时只合并成功并通过最终物理来源质量门的 episode。
+
+### 良渚 Phase 1 联合随机化
+
+良渚可乐到鼠标垫任务使用任务级随机化模式：
+
+```text
+robot_forward_sector_v1
+```
+
+这不是分别给几个固定坐标增加噪声，而是以一个 episode seed 联合生成机器人朝向、
+可乐、鼠标垫、导航交接点、放置区域和 CuRobo 碰撞代理。完整顺序为：
+
+```text
+episode seed
+-> 采样机器人 yaw
+-> 在机器人前向扇区采样可乐和鼠标垫
+-> 拒绝重叠或底盘交接点冲突的布局
+-> 使用 collision PLY 探测地面支撑
+-> 计算可乐 Z、鼠标垫根位姿和放置高度
+-> 重建 pick/place base_goal 与 CuRobo 支撑代理
+-> 写入统一 EpisodeSpec
+-> Isaac/PhysX、PCT、CuRobo 和 recorder 消费同一份结果
+```
+
+#### 当前随机变量和固定量
+
+配置来源为 `tasks/nav_pick_place_cola_liangzhu_pct.json` 的
+`randomization.forward_sector`：
+
+| 项目 | 当前分布或取值 | 说明 |
+| --- | --- | --- |
+| 机器人 XYZ | `(-1.4849319648, 5.1261365028, 0.2928172853)` | 当前固定，不随机平移 |
+| 机器人 yaw | `Uniform(-30°, 30°)` | 每个 episode 重新采样 |
+| 前向扇区 | 机器人 yaw 左右各 `35°` | 可乐和鼠标垫都相对采样后的 yaw 定义 |
+| 可乐半径 | `[0.70m, 1.15m]` | 在前向扇形内按面积均匀采样 |
+| 鼠标垫半径 | `[0.85m, 1.30m]` | 与可乐分别采样 |
+| 可乐 yaw | `Uniform(-180°, 180°)` | roll/pitch 固定为 0 |
+| 鼠标垫 yaw | `Uniform(-180°, 180°)` | roll/pitch 固定为 0 |
+| 放置后可乐 yaw | `Uniform(-180°, 180°)` | 与初始可乐 yaw 独立采样 |
+| pick base standoff | `[0.35m, 0.39m]` | 底盘最终正面朝向可乐 |
+| place base standoff | `[0.35m, 0.39m]` | 底盘最终正面朝向鼠标垫 |
+| base approach angle noise | `0°` | 当前不加入侧向接近噪声 |
+| placement region | 鼠标垫中心 `0.06m × 0.06m` | 当前不在安全区域内部二次采样 XY |
+
+可乐与鼠标垫的无约束极坐标样本来自同一个确定性随机流。角度均匀采样，半径使用：
+
+```text
+radius = sqrt(Uniform(radius_min², radius_max²))
+bearing_world = robot_yaw + Uniform(-sector_half_angle, +sector_half_angle)
+x = robot_x + radius * cos(bearing_world)
+y = robot_y + radius * sin(bearing_world)
+```
+
+使用平方半径采样可以使点在扇形面积内近似均匀，避免大量样本聚集在机器人附近。
+可乐和鼠标垫先分别采样，随后经过联合约束过滤，因此最终接受分布不是完全独立分布。
+
+#### 布局拒绝条件
+
+鼠标垫被建模为带 yaw 的旋转矩形足迹，可乐被建模为半径 `0.03m` 的圆形足迹。
+随机化器把可乐中心转换到鼠标垫局部坐标系，并计算点到旋转矩形的最短距离。
+候选布局满足以下任一条件时会被拒绝：
+
+```text
+可乐与鼠标垫中心距离 < 0.30m
+可乐足迹到鼠标垫足迹的净空 < 0.06m
+pick base_goal 落入鼠标垫足迹外扩 0.30m 的区域
+place base_goal 距离可乐初始位置 < 0.30m
+```
+
+每次几何布局最多尝试 `300` 次。被拒绝的 attempt、原因和测量距离都会写入：
+
+```text
+task.randomization.sample.rejected_layout_samples
+```
+
+同一个 seed 会复现相同的接受布局和拒绝历史。
+
+#### 正面抓取和放置的底盘目标
+
+pick base goal 从机器人初始位置朝可乐生成：
+
+```text
+pick_goal_xy = cola_xy - pick_standoff * unit(robot_xy -> cola_xy)
+pick_goal_yaw = bearing(pick_goal_xy -> cola_xy)
+```
+
+place base goal 从已经生成的 pick base goal 朝鼠标垫生成：
+
+```text
+place_goal_xy = mat_xy - place_standoff * unit(pick_goal_xy -> mat_xy)
+place_goal_yaw = bearing(place_goal_xy -> mat_xy)
+```
+
+因此携物导航从实际抓取交接位置朝鼠标垫收敛，而不是仍以 episode 初始位置为接近
+原点。两段目标都写入：
+
+```text
+target_region_in_base = front
+final_alignment_mode = face_target
+target_bearing_base_rad = 0
+```
+
+这对应当前 top-down、正面抓放策略，不再要求机器狗到达目标附近后额外旋转 90°。
+
+#### collision PLY 地面支撑
+
+XY 布局通过后，随机化器使用与 PCT/DWA 同源的 collision PLY 从
+`ground_query_ceiling_z=2.0m` 向下寻找最高支撑三角面。路径解析顺序为：
+
+```text
+--pct-collision-ply-path
+-> task.randomization.forward_sector.collision_ply_path
+-> task 中 collision_ply_env 指定的环境变量
+```
+
+缺少 PLY 或路径无效属于配置错误，会立即失败，不会通过重复采样掩盖。
+
+可乐只探测中心 XY：
+
+```text
+cola_center_z = cola_support_z + 0.0537467943m
+```
+
+鼠标垫探测中心和旋转后的四个角，共五个点。五点最高与最低地面高度差必须不超过
+`0.006m`；否则整套布局重新采样，最多进行 `20` 次支撑重采样。鼠标垫使用最高支撑
+点计算根位姿，使所有角都位于地面之上：
+
+```text
+mat_top_z = max(mat_ground_probe_z) + 0.000598875m
+place_object_center_z = mat_top_z + live_or_calibrated_object_bbox_half_height
+```
+
+鼠标垫 prim 原点不等于碰撞矩形中心。代码会旋转已标定的
+`mat_root_to_support_center_xyz`，再反算 `/World/carpet` 根位姿，禁止把采样中心直接当成
+prim translate。鼠标垫当前保持 roll/pitch 为 0；高度变化门禁只允许近似水平地面。
+
+#### PhysX、PCT 与 CuRobo 同步
+
+接受布局会一次性更新以下字段：
+
+```text
+task.start
+task.pick.object_pose_world
+task.pick.base_goal
+task.place.receptacle_pose_world
+task.place.place_pose_world
+task.place.placement_region
+task.place.base_goal
+task.pick.curobo_world_collision
+task.place.curobo_world_collision
+```
+
+运行时的对应关系为：
+
+- 机器人 reset 使用单点 pose range，精确采用随机化后的固定 XYZ 和 yaw，不会再次随机。
+- `/World/cola` 在 PhysX 初始化前写入随机 pose，随后以动态刚体自然 settle；抓取目标使用
+  settle 后的 live PhysX/Mesh bbox。
+- `/World/carpet` 是静态 CollisionAPI，随机根位姿必须在 PhysX 初始化前写入组合 stage；
+  运行时会再次验证实际支撑 bbox、placement region 和任务配置一致。
+- PCT 状态机直接使用随机化后的 `EpisodeSpec.pick_goal/place_goal`，并保留 PCT path、
+  snap distance 和 planner metadata。
+- pick CuRobo proxy 是可乐下方 `0.45m × 0.30m × 0.04m` 的地面 cuboid，顶面与 PLY
+  支撑面重合，局部 Z 轴与支撑三角面法向对齐。
+- place CuRobo proxy 随鼠标垫 XY/yaw 重建，顶面与当前 episode 鼠标垫碰撞顶面一致。
+- place XYZ 在真实运行时由当前 stage 鼠标垫顶面和抓取前可乐 live bbox 推导；配置中的
+  place pose 同时作为严格漂移审计基准。
+
+生成阶段会在 `task.randomization.synchronization` 中记录上述同步项。该字段证明任务结构
+已统一写回；真实执行是否一致还要以 runtime support report、CuRobo world export、PCT
+metadata 和最终 validator 为准。
+
+#### Seed、CLI 和 batch 语义
+
+单 episode 和 batch CLI 的 `--randomize-task`、`--randomize-base-goal` 默认均开启：
+
+| 参数组合 | 良渚前向扇区 profile 的实际行为 |
+| --- | --- |
+| `--randomize-task --randomize-base-goal` | 完整联合随机化，standoff 也在配置区间内随机 |
+| `--randomize-task --no-randomize-base-goal` | 目标和机器人 yaw 仍随机；standoff 固定为区间中点，但 base goal 仍随目标移动 |
+| `--no-randomize-task --no-randomize-base-goal` | 完全使用 task JSON 固定 baseline |
+| `--no-randomize-task --randomize-base-goal` | 良渚专用 profile 不转入旧通用 sampler，保持固定任务 |
+
+实际运行开关由 CLI 的 `RandomizationSettings` 控制；task JSON 中的
+`randomization.mode` 选择具体随机化算法。batch 为每个 episode 启动独立进程，并使用：
+
+```text
+episode_seed = batch_seed + episode_index
+```
+
+单个 episode 失败后默认继续。batch 只把同时满足以下条件的源 episode 交给统一
+LeRobot 物化器：
+
+```text
+success = true
+training_quality_gate_passed = true
+training_quality_success_verified(summary) = true
+```
+
+源 episode 的即时 `lerobot_manifest.json` 主要用于调试，可能因为尚未物化训练 action 而显示
+`lerobot_training_eligible=false`。这不会替代上述最终物理来源门禁。统一物化完成后，以 batch
+根目录 `lerobot_export_manifest.json` 的 `vla_training_action_available`、
+`vla_training_eligible` 和 `validation_report` 为最终训练入口判据。
+
+每个源 episode 的 `task.json` 和 `summary.json` 保存完整随机化配置、seed、接受布局、
+拒绝历史、地面探测、base goal 和同步状态。合并后的 `task.csv` 至少保留 seed、机器人
+起点和 pick/place base goal；因此训练数据可以按 seed 追溯到源布局。
+
+#### 当前随机化边界
+
+`robot_forward_sector_v1` 当前只属于 Phase 1 连续空间随机化。以下项目尚未随机：
+
+- 机器人初始 XYZ、roll、pitch。
+- 目标物体种类、尺寸、质量、摩擦、材质和纹理。
+- 鼠标垫种类以及 placement region 内的局部放置点。
+- 光照、相机内外参、曝光、RGB/depth 噪声和遮挡。
+- 场景局部障碍和家具布置。
+- 机器人质量、惯量、COM、执行器增益和外力。
+- 任务指令、任务组合和多目标实例选择。
+
+full-physics 数据采集会显式关闭 locomotion 训练环境中的观测 corruption、质量/惯量/COM、
+执行器增益、随机外力和 push event，避免把未审计的训练期 domain randomization 混入专家
+数据。当前 `perception_mode=sim_ground_truth`；RGB 会被记录用于 VLA，但不能把当前结果描述
+为 RGB-D 检测或视觉定位成功。
+
+前向扇区 sampler 本身执行几何与支撑门禁，不在采样函数内部预跑 PCT 或 CuRobo。实际
+PCT/CuRobo 规划失败会使该 episode 失败并保留诊断；当前范围已经通过 50 个 seed 的离线
+PCT sweep，但扩大 yaw、半径或局部场景范围时必须重新运行 sweep 和真实 batch。
+
+#### 导航执行稳定性保护
+
+真实多 seed 运行暴露出一个低层 locomotion policy 与局部速度命令之间的死区：DWA 或末端
+P 控制器持续输出很小的线速度/角速度时，策略可能只踏步而没有足够的位姿进展。当前保护为：
+
+- PCT profile 的非零线速度候选不得低于 locomotion gait floor；非零角速度候选同样设置下限。
+- 角速度换向必须先经过零命令，避免一步内直接反向导致振荡。
+- 携物阶段所有末端 yaw 命令统一受 carry yaw-rate 上限约束，末端 P 控制器不能绕过该限制。
+- stall detector 同时检查 XY 平移和 yaw 旋转；只有命令占比高且实测进展低时才判定卡住。
+- `navigation_settling` 期间若机器人漂回容差外，会恢复末端控制，而不是永久保持零命令。
+- 良渚单层任务使用默认 `5000` 导航 step 上限；`12000` 只保留给真实多楼层长路径。
+
+当前良渚 task 的 pick 底盘末端位置容差为 `0.10m`，place 底盘交接使用独立的 `0.12m`，
+place 目标物体 XY 容差为 `0.035m`，Mesh truth 物体 extent 漂移容差为 `0.005m`。
+这些数值来自本轮真实随机 batch，而不是用于隐藏失败；
+导航碰撞、不可达、掉落和放置验证失败仍会明确拒绝该 episode。
+
+#### 2026-07-15 真实随机 batch 结果
+
+使用 `seed=4013..4032` 连续运行 20 个 full-physics episode：
+
+| 指标 | 结果 |
+| --- | --- |
+| 尝试数 | 20 |
+| 质量门通过 / 纳入统一数据集 | 15 |
+| 失败并隔离 | 5 |
+| 实测成功率 | 75% |
+| 失败分布 | `nav_collision` 3；`pick_target_unreachable` 2 |
+| 统一数据集帧数 | 1950，5 Hz |
+| 视觉 | front / overview / wrist，45 个 mp4 |
+| parquet | 15 个，每个 accepted episode 一个 |
+| subtask | 144 个连续 segment，覆盖六类标签 schema |
+| action | 10D VLA action + 11D `control.action` |
+| validator | 15 episodes，1950 rows，0 error，0 warning |
+| 磁盘占用 | 约 3.0 GB |
+
+统一数据集位于：
+
+```text
+/mnt/sage_data/outputs/arm_vla_liangzhu/
+phase145_randomized_collection_seed4013_n20_20260715/lerobot_dataset
+```
+
+成功 seed 为 `4014, 4015, 4017, 4018, 4020, 4021, 4022, 4023, 4024, 4025,
+4026, 4027, 4029, 4030, 4031`。
+
+为形成一个参数版本一致、直接可训练的 20–50 条统一数据集，又从本轮前置调试 batch 与
+上述 15 条正式 batch 中筛选具有有效源目录、通过最终质量门且与当前 task 参数一致的 seed。
+当前参数一致性要求包括：placement region half extent=`[0.03, 0.03]`、place XY
+tolerance=`0.035`、Mesh extent tolerance=`0.005`。去重后统一物化为 21 条 episode：
+
+```text
+/mnt/sage_data/outputs/arm_vla_liangzhu/
+phase147_current_config_randomized_21_20260715/lerobot_dataset
+```
+
+最终 seed 为 `4001, 4002, 4004, 4005, 4008, 4011, 4014, 4015, 4017, 4018,
+4020, 4021, 4022, 4023, 4024, 4025, 4026, 4027, 4029, 4030, 4031`。对应统计为：
+
+| 最终统一采集指标 | 结果 |
+| --- | --- |
+| episode | 21 |
+| 帧数 | 2659 |
+| parquet | 21 |
+| 三相机视频 | 63；共 7977 个视频帧 |
+| subtask segment | 200 |
+| validator | 21 episodes，2659 rows，0 error，0 warning |
+| 训练门禁 | `source_episode_success_verified=true`，`vla_training_eligible=true` |
+| 数据集大小 | 约 112 MB |
+
+每个 `episodes/2001/<episode_id>/task.csv` 都保存 seed、机器人起点、pick/place 目标和
+base goal；`lerobot_export_manifest.json` 还保存每条数据的源 episode 目录，可反查完整
+`task.json` 和原始随机布局。这个 21-episode 数据集保存了本轮 20–50 条采集目标的完整轨迹，
+但其逐图片兼容层是旧 front-only v1，不再作为当前默认训练入口。获得数据盘写入授权后应从
+manifest 中的 21 个源 episode 无损重物化为：
+
+```text
+/mnt/sage_data/outputs/arm_vla_liangzhu/
+phase148_current_config_randomized_21_front_wrist_v2_20260715/lerobot_dataset
+```
+
+phase148 必须通过双路图像 validator 后才能标记为默认交付物；phase145 的 15 条数据集继续
+保留为连续 20-seed 成功率测试证据。
+
+另保留 `phase146_combined_randomized_27_20260715` 作为跨参数版本扩展集。它包含 21 条当前
+参数和 6 条早期参数，不应在未显式区分配置版本时替代 phase147 默认训练入口。
+
+这些 episode 使用 manipulation base/support joint lock，因此
+`stable_physics_success=true`、`training_quality_gate_passed=true`，但
+`pure_physics_success=false`。它们可以进入当前稳定物理专家数据集，不能报告为“无辅助锁定的
+严格纯物理成功”。此外，当前仍是 `perception_mode=sim_ground_truth`，不能报告为 RGB-D
+视觉定位成功。
 
 ## 四、LeRobot 数据导出
 
@@ -289,7 +609,19 @@ outputs/run_name/episode_000000/
     ├── data/chunk-000/episode_000000.parquet
     ├── videos/chunk-000/observation.images.front/episode_000000.mp4
     ├── videos/chunk-000/observation.images.wrist/episode_000000.mp4
-    └── meta/
+    ├── meta/
+    │   └── subtasks.jsonl
+    └── episodes/
+        └── 2001/                         # task_id
+            └── 1/                        # episode_id
+                ├── task.csv
+                ├── 1-1/
+                │   ├── data.csv
+                │   └── images/
+                │       ├── front/camera0_00000.jpg
+                │       └── wrist/camera0_00000.jpg
+                ├── 1-2/
+                └── ...
 ```
 
 batch 输出结构：
@@ -322,10 +654,34 @@ outputs/batch_run_name/
     │   ├── episodes.jsonl
     │   ├── episodes_stats.jsonl
     │   ├── stats.jsonl
+    │   ├── subtasks.jsonl
     │   ├── task_index_map.json
     │   └── tasks.jsonl
+    ├── episodes/
+    │   └── <task_id>/<episode_id>/
+    │       ├── task.csv
+    │       ├── <episode_id>-1/data.csv
+    │       ├── <episode_id>-1/images/front/camera0_00000.jpg
+    │       ├── <episode_id>-1/images/wrist/camera0_00000.jpg
+    │       └── ...
     └── validation_report.json
 ```
+
+`episodes/<task_id>/<episode_id>/` 是供当前 VLA 训练流程直接读取的逐图片兼容层，官方 LeRobot parquet/video/meta 仍完整保留。当前目录布局版本为 `episodes_task_episode_segment_front_wrist_v2`。每个 subtask 的 `images/` 必须且只能包含 `front/` 和 `wrist/` 两个目录，两路均逐帧导出；`data.csv` 分别使用 `image_front_path` 和 `image_wrist_path` 指向对应图像。`task.csv` 保存起点、抓取/放置目标、指令、schema、采集状态和连续片段索引；尚未采集的 episode 只创建 `task.csv`，不会伪造 `data.csv` 或图像目录。
+
+每个 `<episode_id>-N` 是时间上连续且标签唯一的 subtask 片段。编号按轨迹顺序从 1 连续递增；同一个标签如果稍后再次出现，也会创建新的编号目录。片段内 front 和 wrist 各自使用 `camera0_00000.jpg` 从 0 重新编号，文件夹已经区分相机语义；`data.csv` 同时保留 episode 内索引和合并数据集索引。校验器要求两路图像数量都与 CSV 行数一致，并且所有帧恰好出现一次。
+
+batch 子进程可能继承相同的 task `episode_id`。合并数据集检测到同一 `task_id` 下有重复值时，会按数据集顺序统一重编号为 1、2、3……，并在 `task.csv` 的 `source_task_episode_id` 中保留原始值，防止目录覆盖。
+
+当前统一标签为：
+
+```text
+task_stage: nav_to_pick / pick / nav_to_place / place
+subtask:    nav_straight / nav_turn / nav_stop /
+            arm_approach / arm_contact / arm_retreat
+```
+
+切分默认使用 3 帧最短片段和 2 帧迟滞；必要的短接触或终端对齐片段会保留并记录原因。当前 `arm_contact` 来源为动作语义与运动学启发式，不会冒充真实接触传感器标签。
 
 每个 `episode_XXXXXX.parquet` 的列：
 
@@ -341,7 +697,11 @@ outputs/batch_run_name/
 | `observation.object_state` | `list[float32] × 13` | 目标物体 pose 和速度，维度顺序见下表。 |
 | `observation.tcp_pose` | `list[float32] × 7` | TCP 位姿 `[x, y, z, quat_w, quat_x, quat_y, quat_z]`。 |
 | `pipeline_state` | `string` | 当前 full-physics 状态机阶段，例如 `exec_nav_to_pick`、`exec_pick`。 |
-| `action` | `list[float32] × 11` | 控制动作，维度顺序见下表。 |
+| `task_stage` | `string` | 统一任务阶段：`nav_to_pick`、`pick`、`nav_to_place` 或 `place`。 |
+| `subtask` | `string` | 当前连续动作标签，取值为上面的六类之一。 |
+| `subtask_segment_index` | `int64` | episode 内连续片段编号，从 1 开始。 |
+| `action` | `list[float32] × 10` | VLA 训练动作：下一采样时刻实际执行到的底盘/TCP/夹爪位姿。 |
+| `control.action` | `list[float32] × 11` | 同步保存的原始底盘、机械臂和夹爪控制目标。 |
 | `next.done` | `bool` | episode 末帧为 `True`，其余帧为 `False`。 |
 
 图像数据不直接写入 parquet 列。LeRobot v2 中图像作为 video feature 存储：
@@ -411,7 +771,24 @@ outputs/batch_run_name/
 | 5 | `tcp_quat_y` | TCP 姿态四元数 y。 |
 | 6 | `tcp_quat_z` | TCP 姿态四元数 z。 |
 
-`action` 11 维顺序：
+`action` 10 维顺序：
+
+| 维度 | 名称 | 说明 |
+| --- | --- | --- |
+| 0 | `base_x_world` | 下一采样时刻底盘世界系 x。 |
+| 1 | `base_y_world` | 下一采样时刻底盘世界系 y。 |
+| 2 | `base_yaw_world` | 下一采样时刻底盘世界系 yaw。 |
+| 3 | `tcp_x_base` | 下一采样时刻 TCP 在底盘系中的 x。 |
+| 4 | `tcp_y_base` | 下一采样时刻 TCP 在底盘系中的 y。 |
+| 5 | `tcp_z_base` | 下一采样时刻 TCP 在底盘系中的 z。 |
+| 6 | `tcp_roll_base` | 下一采样时刻 TCP 在底盘系中的 roll。 |
+| 7 | `tcp_pitch_base` | 下一采样时刻 TCP 在底盘系中的 pitch。 |
+| 8 | `tcp_yaw_base` | 下一采样时刻 TCP 在底盘系中的 yaw。 |
+| 9 | `gripper_normalized` | 夹爪归一化值，0 为闭合、1 为张开。 |
+
+episode 末帧没有下一采样时刻，因此使用当前姿态保持动作。`action` 的坐标系、单位、对齐方式和夹爪约定同时写入 `meta/info.json` 与 `task.csv`。
+
+`control.action` 11 维顺序：
 
 | 维度 | 名称 | 说明 |
 | --- | --- | --- |
@@ -539,16 +916,20 @@ PYTHONDONTWRITEBYTECODE=1 python -B \
 ### Headless batch 数据采集
 
 ```bash
-conda activate isaac_locomani
-cd /path/to/project
+cd /home/light/workspace/arm_vla_liangzhu
 
-PYTHONDONTWRITEBYTECODE=1 python -B \
+LIANGZHU_COLLISION_PLY=/mnt/sage_data/ply/Liangzhu/liangzhu_collision.ply \
+PYTHONDONTWRITEBYTECODE=1 \
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_batch.py \
-  --task-json tasks/nav_pick_place_apple_contact.json \
-  --output-dir outputs/full_physics_batch \
-  --num-episodes 20 \
-  --seed 0
+  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/batch_seed5000_n30 \
+  --num-episodes 30 \
+  --seed 5000
 ```
+
+batch 默认使用已经验证的良渚任务、联合随机化、PCT 单层地图、identity 坐标、禁止 A*
+fallback、`pct_multifloor` locomotion policy/checkpoint、headless 模式、固定 `/World/overview`
+相机和完整 GaussianScene。除输出目录、episode 数和 seed 外，无需重复传入稳定参数。
 
 ### 显示随机化区域
 
@@ -605,7 +986,7 @@ python \
 | `--randomize-base-goal` / `--no-randomize-base-goal` | 默认开启                        | 是否随机化 pick/place 导航交接 base_goal            |
 | `--keep-window-open` / `--no-keep-window-open`       | 默认关闭                        | 结束后保留 GUI；必须配合`--no-headless`             |
 | `--headless` / `--no-headless`                       | 默认`--no-headless`             | 是否无界面运行                                      |
-| `--navigation-visual-mode`                           | `collision`                     | 默认不加载 Gaussian；`full` 显式加载，`auto` 保留兼容 |
+| `--navigation-visual-mode`                           | `full`                          | 默认加载 GaussianScene；`collision` 仅显示碰撞场景，`auto` 保留兼容 |
 | `--record-video`                                     | 默认关闭                        | 启用 episode 展示/observation MP4 录制；展示视频固定 25fps |
 | `--video-mode`                                       | `overview`                      | `overview` 使用第三人称视角；`front`/`font` 使用前视 observation；`wrist` 使用腕部 observation；`all` 同时导出三路 |
 | `--video-out`                                        | 可选                            | 视频输出目录或单个`.mp4`；多路/多 episode 请传目录  |
@@ -632,7 +1013,7 @@ python \
 
 | 参数                                                 | 类型 / 默认   | 说明                                        |
 | ---------------------------------------------------- | ------------- | ------------------------------------------- |
-| `--task-json`                                        | 必填          | 任务 JSON 路径                              |
+| `--task-json`                                        | 良渚可乐任务  | 默认 `tasks/nav_pick_place_cola_liangzhu_pct.json` |
 | `--output-dir`                                       | 必填          | batch 输出目录                              |
 | `--num-episodes`                                     | `1`           | episode 数量                                |
 | `--seed`                                             | `0`           | 首个 seed，后续使用`seed + episode_index`   |
@@ -640,7 +1021,16 @@ python \
 | `--show-randomization-debug`                         | 默认关闭      | 显示矩形/前向扇区；通常只用于 GUI 单 episode |
 | `--randomize-base-goal` / `--no-randomize-base-goal` | 默认开启      | 是否随机化导航交接 base_goal                |
 | `--headless` / `--no-headless`                       | 默认 headless | batch 是否无界面运行                        |
-| `--navigation-visual-mode`                           | `collision`   | 默认不加载 Gaussian；可显式改为`full`       |
+| `--navigation-visual-mode`                           | `full`        | 默认加载 GaussianScene；`collision` 可用于碰撞调试 |
+| `--global-planner`                                   | `pct`         | 良渚 batch 默认使用 PCT                     |
+| `--pct-server-script`                                | 良渚 grid server | 默认使用仓库内 `pct_grid_server.py`       |
+| `--pct-tomogram-path` / `--pct-walkable-path`        | 良渚单层资产  | 默认使用 `source/scene/liangzhu/pct/` 下资产 |
+| `--pct-collision-ply-path`                           | 环境变量      | 默认读取 `LIANGZHU_COLLISION_PLY`           |
+| `--pct-no-fallback` / `--pct-allow-fallback`         | 默认禁止回退  | 默认 PCT 失败即拒绝 episode                 |
+| `--pct-coord-mode`                                   | `identity`    | 良渚 PLY 与 Isaac 使用同一坐标方向          |
+| `--policy-profile`                                   | `pct_multifloor` | 复用已验证的 RL locomotion profile       |
+| `--locomotion-checkpoint`                            | Go2-X5 model_26000 | 默认使用仓库 checkpoint                  |
+| `--require-locomotion-checkpoint`                    | 默认开启      | checkpoint 缺失时立即失败                   |
 | `--continue-on-failure` / `--no-continue-on-failure` | 默认继续      | 单 episode 失败后是否继续                   |
 | `--pick-plan-json`                                   | 可选          | 非 full-physics smoke 可转发离线 pick plan  |
 | `--place-plan-json`                                  | 可选          | 非 full-physics smoke 可转发离线 place plan |

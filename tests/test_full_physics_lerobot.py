@@ -659,6 +659,7 @@ class FullPhysicsLeRobotTest(unittest.TestCase):
                 _state(1, image),
                 robot_root_pose=(1.0, 2.0, 0.35, 1.0, 0.0, 0.0, 0.0),
                 tcp_pose=(1.2, 2.0, 0.85, 1.0, 0.0, 0.0, 0.0),
+                camera_images={"front": image, "wrist": image},
             )
             half_sqrt = 2.0**-0.5
             second = replace(
@@ -692,6 +693,7 @@ class FullPhysicsLeRobotTest(unittest.TestCase):
                     0.04,
                     0.04,
                 ),
+                camera_images={"front": image, "wrist": image},
             )
             for state in (first, second):
                 recorder.record_step(

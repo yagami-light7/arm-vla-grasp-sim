@@ -10,6 +10,14 @@ from typing import Any
 
 from source.interfaces import EpisodeSpec, SimulationState, StepRecord
 
+from .subtask_export import update_subtask_task_gate, write_subtask_task_stub
+from .subtask_segmentation import (
+    SUBTASK_DIRECTORY_LAYOUT,
+    SUBTASK_LABELS,
+    SUBTASK_SCHEMA_VERSION,
+    TASK_STAGES,
+    task_requests_subtask_segmentation,
+)
 from .lerobot_dataset import (
     ACTION_NAMES,
     BASE_POSE_NAMES,
@@ -84,7 +92,14 @@ class JsonlEpisodeRecorder:
     def save_task(self, episode_spec: EpisodeSpec) -> Path:
         payload = episode_spec.raw_task or asdict(episode_spec)
         self._task_payload = _json_safe(payload)
-        return self._write_json("task.json", payload)
+        path = self._write_json("task.json", payload)
+        if task_requests_subtask_segmentation(self._task_payload):
+            write_subtask_task_stub(
+                dataset_root=self.output_dir / "lerobot_dataset",
+                task=self._task_payload,
+                dataset_schema_version=SCHEMA_VERSION,
+            )
+        return path
 
     def record_event(self, event: dict[str, Any]) -> None:
         self._append_jsonl(self.events_path, event)
@@ -138,6 +153,9 @@ class JsonlEpisodeRecorder:
         vla_training_action_requested = task_requests_vla_training_action(
             self._task_payload
         )
+        subtask_segmentation_requested = task_requests_subtask_segmentation(
+            self._task_payload
+        )
         action_names = (
             VLA_TRAINING_ACTION_NAMES
             if vla_training_action_requested
@@ -161,6 +179,13 @@ class JsonlEpisodeRecorder:
         ]
         if vla_training_action_requested:
             feature_keys.insert(feature_keys.index("next.done"), "control.action")
+        if subtask_segmentation_requested:
+            pipeline_state_index = feature_keys.index("pipeline_state") + 1
+            feature_keys[pipeline_state_index:pipeline_state_index] = [
+                "task_stage",
+                "subtask",
+                "subtask_segment_index",
+            ]
         raw_payload = {
             "schema_version": SCHEMA_VERSION,
             "recording_enabled": self._lerobot_config.enabled,
@@ -218,6 +243,13 @@ class JsonlEpisodeRecorder:
             "training_action_position_unit": "m",
             "training_action_angle_unit": "rad",
             "training_action_gripper_range": [0.0, 1.0],
+            "subtask_segmentation_requested": subtask_segmentation_requested,
+            "subtask_segmentation_available": False,
+            "subtask_directory_export_available": False,
+            "subtask_schema_version": SUBTASK_SCHEMA_VERSION,
+            "subtask_directory_layout": SUBTASK_DIRECTORY_LAYOUT,
+            "task_stages": list(TASK_STAGES),
+            "subtask_labels": list(SUBTASK_LABELS),
             "base_pose_names": list(BASE_POSE_NAMES),
             "base_pose_frame": "world",
             "object_state_names": list(OBJECT_STATE_NAMES),
@@ -300,12 +332,19 @@ class JsonlEpisodeRecorder:
             payload = {**raw_payload, **conversion}
         export_ready = bool(payload.get("lerobot_exported"))
         vla_action_available = bool(payload.get("vla_training_action_available"))
+        subtask_export_available = bool(
+            payload.get("subtask_directory_export_available")
+        )
         training_eligible = bool(
             raw_payload["training_eligible"]
             and export_ready
             and (
                 not vla_training_action_requested
                 or vla_action_available
+            )
+            and (
+                not subtask_segmentation_requested
+                or subtask_export_available
             )
         )
         vla_training_eligible = bool(
@@ -326,6 +365,10 @@ class JsonlEpisodeRecorder:
             payload["vla_training_ineligibility_reason"] = (
                 self._training_eligibility_reason
                 or "episode_success_gate_not_verified"
+            )
+        elif subtask_segmentation_requested and not subtask_export_available:
+            payload["vla_training_ineligibility_reason"] = (
+                "subtask_directory_export_not_available"
             )
         path = self._write_json("lerobot_manifest.json", payload)
         return {**payload, "manifest_path": str(path)}
@@ -461,6 +504,11 @@ class JsonlEpisodeRecorder:
                 json.dumps(_json_safe(payload), indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
+        update_subtask_task_gate(
+            self.output_dir / "lerobot_dataset",
+            eligible=eligible,
+            reason=reason,
+        )
 
     @classmethod
     def _apply_export_training_gate(
@@ -535,6 +583,17 @@ class JsonlEpisodeRecorder:
         dataset_path = self.output_dir / "lerobot_dataset"
         if dataset_path.exists():
             shutil.rmtree(dataset_path)
+        if task_requests_subtask_segmentation(self._task_payload):
+            write_subtask_task_stub(
+                dataset_root=dataset_path,
+                task=self._task_payload,
+                dataset_schema_version=SCHEMA_VERSION,
+            )
+            update_subtask_task_gate(
+                dataset_path,
+                eligible=False,
+                reason=self._training_eligibility_reason or "episode_failed",
+            )
 
     def _write_json(self, name: str, payload: Any) -> Path:
         path = self.output_dir / name
