@@ -14,6 +14,7 @@ episodes/
 # !outputs/
 # !outputs/**/
 # !outputs/**/*.rrd
+
 outputs/
 tests/
 !tests/
@@ -34,6 +35,7 @@ checkpoints/go2_x5/pct_multifloor/training/
 *.npy
 *.mp4
 *.rrd
+!checkpoints/go2_x5/pct_multifloor/*.pt
 events.out.tfevents*
 source/scene/multifloor/yinluyuan/*_build_report.json
 source/scene/multifloor/yinluyuan/*_visual_points_report.json
