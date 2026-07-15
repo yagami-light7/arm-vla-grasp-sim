@@ -231,7 +231,7 @@
     "base_goal_randomization_enabled": true,
     "pick_base_standoff_range_m": [0.35, 0.39],
     "place_base_standoff_range_m": [0.35, 0.39],
-    "placement_region_half_extent_xy_m": [0.035, 0.035],
+    "placement_region_half_extent_xy_m": [0.04, 0.04],
     "live_object_vertical_extent_audit_tolerance_m": 0.01,
     "target_region_in_base": "front",
     "final_alignment_mode": "face_target",

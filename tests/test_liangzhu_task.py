@@ -231,8 +231,8 @@ def test_liangzhu_phase0_coke_is_in_forward_sector_and_both_targets_are_grounded
     assert task["place"]["support_expected_static"] is True
     assert task["randomization"]["forward_sector"][
         "placement_region_half_extent_xy_m"
-    ] == [0.035, 0.035]
-    assert task["place"]["place_xy_tolerance"] == 0.035
+    ] == [0.04, 0.04]
+    assert task["place"]["place_xy_tolerance"] == 0.04
     mesh_target = task["place"]["mesh_truth_target"]
     assert mesh_target["enabled"] is True
     assert mesh_target["visual_localization_required"] is False
@@ -335,8 +335,8 @@ def test_liangzhu_runtime_manifest_uses_identity_pct_frame() -> None:
     assert manifest["pct"]["coord_mode"] == "identity"
     assert manifest["randomization"]["robot_yaw_range_deg"] == [-180.0, 180.0]
     assert manifest["randomization"]["placement_region_half_extent_xy_m"] == [
-        0.035,
-        0.035,
+        0.04,
+        0.04,
     ]
     assert (
         manifest["randomization"]["live_object_vertical_extent_audit_tolerance_m"]

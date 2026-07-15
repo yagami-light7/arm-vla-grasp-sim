@@ -509,9 +509,52 @@ P 控制器持续输出很小的线速度/角速度时，策略可能只踏步�
 - 良渚单层任务使用默认 `5000` 导航 step 上限；`12000` 只保留给真实多楼层长路径。
 
 当前良渚 task 的 pick 底盘末端位置容差为 `0.10m`，place 底盘交接使用独立的 `0.15m`，
-place 目标物体 XY 容差为 `0.035m`，Mesh truth 物体竖直 extent 审计容差为 `0.010m`。
+place 目标物体中心 XY 容差为 `0.040m`，Mesh truth 物体竖直 extent 审计容差为 `0.010m`。
+按 `0.3 x 0.2m` 鼠标垫与约 `0.0343m` 可乐足迹半径计算，即使落在该中心容差边界，
+短边仍保留约 `0.0257m` 的实体边缘余量。
 这些数值来自本轮真实随机 batch，而不是用于隐藏失败；
 导航碰撞、不可达、掉落和放置验证失败仍会明确拒绝该 episode。
+
+#### 2026-07-16 全向 yaw 随机 batch 实测
+
+使用当前 `robot_yaw_range_deg=[-180, 180]` 配置连续运行
+`seed=7000..7019` 共 20 个真实 headless full-physics episode。20 个实际采样 yaw
+覆盖 `-170.50°..157.95°`，四个 90° 象限分别包含 `4 / 5 / 6 / 5` 条，不是只在
+原来的正前方小角度附近采样。
+
+| 指标 | 结果 |
+| --- | --- |
+| 连续 batch 尝试数 | 20 |
+| pipeline 成功 / 质量门通过 | 19 / 19 |
+| 隔离失败 | 1，seed 7018 的旧 `0.035m` placement center 边界拒绝 |
+| 连续 batch 实测成功率 | 95% |
+| 统一数据集 | 19 episodes，2419 rows，5 Hz |
+| 视觉 | front / overview / wrist，57 个 mp4；子任务 front/wrist 各 2419 JPG |
+| subtask | 每 episode 固定 6 目录，共 114 目录 |
+| action | 10D VLA action + 11D `control.action` |
+| validator | valid=true，19 episodes，2419 rows，0 error，0 warning |
+
+本批统一数据集位于：
+
+```text
+/mnt/sage_data/outputs/arm_vla_liangzhu/
+validation_full_yaw_seed7000_n20_final_v2_20260715/lerobot_dataset
+```
+
+seed 7018 的最终可乐中心相对目标误差为 `0.03580m`，且仅越过旧 placement region
+边界约 `0.00024m`；物体已经稳定释放在鼠标垫上，不是抓取、导航、掉落或物理放置失败。
+将中心容差调整为 `0.040m` 后，定向真实复跑的最终 XY 误差为 `0.03633m`、Z 误差为
+`0.00032m`、线速度为 `0.00063m/s`，完整状态机成功到达 `done`，结果位于：
+
+```text
+/mnt/sage_data/outputs/arm_vla_liangzhu/
+revalidate_full_yaw_seed7018_region40_20260716
+```
+
+因此这组 20 个全向 seed 均已有成功执行证据，但严格统计仍应表述为“连续 batch 19/20，
+唯一失败 seed 修正后定向通过”，不能写成同一次连续 batch 20/20。当前结果说明全向 yaw
+下 PCT、局部导航、locomotion、top-down 抓取和放置链路保持稳定；继续扩大随机范围时仍需
+重新统计连续 batch 成功率。
 
 #### 2026-07-15 历史 ±30° yaw 随机 batch 基线
 
@@ -973,7 +1016,7 @@ python \
   --out /mnt/sage_data/outputs/arm_vla_liangzhu/batch_seed7000_n20/episode_000000.rrd
 ```
 
-## 附录:CLI 参数表
+## 附录：CLI 参数表
 
 ### `scripts/pipeline/run_full_physics_pipeline.py`
 
