@@ -963,6 +963,27 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 task_json=task_path,
                 output_dir=root,
                 full_physics=True,
+                navigation=NavigationSettings(
+                    global_planner="pct",
+                    pct_enabled=True,
+                    pct_server_script=(
+                        PROJECT_ROOT / "scripts/navigation/pct_grid_server.py"
+                    ),
+                    pct_tomogram_path=(
+                        PROJECT_ROOT
+                        / "source/scene/liangzhu/pct/liangzhu_single_floor.pickle"
+                    ),
+                    pct_walkable_path=(
+                        PROJECT_ROOT
+                        / "source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy"
+                    ),
+                    pct_collision_ply_path=(
+                        PROJECT_ROOT
+                        / "source/scene/liangzhu/ply/liangzhu_collision.ply"
+                    ),
+                    pct_fallback_to_astar=False,
+                    pct_coord_mode="identity",
+                ),
                 locomotion=LocomotionPolicySettings(
                     policy_profile="pct_multifloor",
                     locomotion_task=PCT_MULTIFLOOR_LOCOMOTION_TASK,
@@ -981,11 +1002,11 @@ class FullPhysicsPipelineTest(unittest.TestCase):
 
             self.assertAlmostEqual(
                 pipeline.machine.arm_executor.config.post_motion_hold_duration,
-                1.00,
+                1.50,
             )
             self.assertAlmostEqual(
                 pipeline.machine.arm_executor.config.post_motion_joint_error_tolerance,
-                0.060,
+                0.070,
             )
             self.assertTrue(
                 pipeline.machine.config.manipulation.settle_object_before_navigation
@@ -1302,6 +1323,33 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertTrue(
             accepted.metadata["placement_region_contains_object_center"]
         )
+
+        runtime_target_state = replace(
+            base_state,
+            object_pose=(1.0, 2.0, 0.07, 1.0, 0.0, 0.0, 0.0),
+            metadata={
+                **base_state.metadata,
+                "last_current_state_curobo_place_export": {
+                    "mesh_truth_place_target_report": {
+                        "verified": True,
+                        "xyz_source": "runtime_mesh_truth",
+                        "derived_place_pose_world": {
+                            "x": 1.0,
+                            "y": 2.0,
+                            "z": 0.07,
+                        },
+                    }
+                },
+            },
+        )
+        runtime_target = verifier.verify_place_success(runtime_target_state, spec)
+        self.assertTrue(runtime_target.success)
+        self.assertEqual(
+            runtime_target.metadata["place_target_pose_source"],
+            "runtime_mesh_truth",
+        )
+        self.assertEqual(runtime_target.metadata["place_target_pose"][:3], (1.0, 2.0, 0.07))
+        self.assertEqual(runtime_target.metadata["configured_place_target_pose"], target_pose)
 
         outside_task_tolerance = verifier.verify_place_success(
             replace(base_state, object_pose=(1.05, 2.0, 0.10, 1.0, 0.0, 0.0, 0.0)),

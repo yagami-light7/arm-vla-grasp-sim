@@ -101,9 +101,13 @@ def inspect_task_receptacle_support_stage(
     raw_task: dict[str, Any],
     *,
     source: str,
-    tolerance_m: float = 1.0e-6,
+    tolerance_m: float = 5.0e-6,
 ) -> dict[str, Any]:
-    """检查组合 stage 中的目标支撑 Mesh、CollisionAPI、包围盒和任务代理。"""
+    """检查组合 stage 中的目标支撑 Mesh、CollisionAPI、包围盒和任务代理。
+
+    USD 组合后的单精度 xform/bbox 计算会产生数微米量级的舍入误差。这里仍以
+    5 µm 严格拒绝真实几何漂移，但不会把等价代理误判为过期配置。
+    """
 
     settings = resolve_task_receptacle_support_settings(raw_task)
     if not settings["configured"]:

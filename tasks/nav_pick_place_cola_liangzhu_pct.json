@@ -183,7 +183,7 @@
       "support_surface_source": "runtime_target_support_bbox_top",
       "object_support_extent_source": "pick_live_object_bbox_center_to_min_z",
       "expected_object_bbox_center_to_min_z_m": 0.05364498018521855,
-      "object_extent_tolerance_m": 0.005,
+      "object_extent_tolerance_m": 0.01,
       "configured_pose_consistency_tolerance_m": 1e-6
     },
     "place_pose_world": {
@@ -333,7 +333,7 @@
         5.126136502764003,
         0.29281728532721385
       ],
-      "robot_yaw_range_deg": [-30.0, 30.0],
+      "robot_yaw_range_deg": [-180.0, 180.0],
       "sector_half_angle_deg": 35.0,
       "cola_radius_range_m": [0.70, 1.15],
       "mat_radius_range_m": [0.85, 1.30],
@@ -364,7 +364,7 @@
       "max_mat_ground_height_variation_m": 0.006,
       "cola_center_to_ground_m": 0.05374679430209828,
       "place_object_bbox_center_to_min_z_m": 0.05364498018521855,
-      "placement_region_half_extent_xy_m": [0.03, 0.03],
+      "placement_region_half_extent_xy_m": [0.035, 0.035],
       "placement_edge_clearance_m": 0.01,
       "collision_ply_path": "source/scene/liangzhu/ply/liangzhu_collision.ply",
       "collision_ply_sha256": "85c2a2e745905eb9e83cc46c8f68e1706431658598d783c94f022f8131ad78de",

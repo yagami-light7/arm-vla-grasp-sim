@@ -163,18 +163,23 @@ class FullPhysicsVerifier:
                 failure_reason="place_tracking_failed",
                 metadata={"reason": "gripper_open_not_applied", "gripper_open_apply_count": open_count},
             )
-        if state.object_pose is None or episode_spec.place_target_pose is None:
+        place_target_pose, place_target_source = _runtime_place_target_pose(
+            state,
+            episode_spec,
+        )
+        if state.object_pose is None or place_target_pose is None:
             return VerificationResult(
                 success=False,
                 failure_reason="object_out_of_place",
                 metadata={
                     "reason": "missing_object_or_place_pose",
                     "object_pose": state.object_pose,
-                    "place_target_pose": episode_spec.place_target_pose,
+                    "place_target_pose": place_target_pose,
+                    "place_target_pose_source": place_target_source,
                 },
             )
         object_xyz = state.object_pose[:3]
-        target_xyz = episode_spec.place_target_pose[:3]
+        target_xyz = place_target_pose[:3]
         xy_error = math.hypot(object_xyz[0] - target_xyz[0], object_xyz[1] - target_xyz[1])
         z_error = abs(object_xyz[2] - target_xyz[2])
         linear_speed = _linear_speed(state.object_velocity)
@@ -218,7 +223,9 @@ class FullPhysicsVerifier:
                     else "object_final_pose_and_stability"
                 ),
                 "object_pose": state.object_pose,
-                "place_target_pose": episode_spec.place_target_pose,
+                "place_target_pose": place_target_pose,
+                "place_target_pose_source": place_target_source,
+                "configured_place_target_pose": episode_spec.place_target_pose,
                 "place_xy_error_m": xy_error,
                 "place_z_error_m": z_error,
                 "object_linear_speed_mps": linear_speed,
@@ -232,6 +239,33 @@ class FullPhysicsVerifier:
                 "gripper_open_apply_count": open_count,
             },
         )
+
+
+def _runtime_place_target_pose(
+    state: SimulationState,
+    episode_spec: EpisodeSpec,
+) -> tuple[tuple[float, ...] | None, str]:
+    """优先采用 CuRobo 已审计的 runtime Mesh-truth 最终物体中心。"""
+
+    configured = episode_spec.place_target_pose
+    export = state.metadata.get("last_current_state_curobo_place_export")
+    export = export if isinstance(export, dict) else {}
+    report = export.get("mesh_truth_place_target_report")
+    report = report if isinstance(report, dict) else {}
+    derived = report.get("derived_place_pose_world")
+    if (
+        report.get("verified") is True
+        and report.get("xyz_source") == "runtime_mesh_truth"
+        and isinstance(derived, dict)
+    ):
+        try:
+            xyz = tuple(float(derived[axis]) for axis in ("x", "y", "z"))
+        except (KeyError, TypeError, ValueError):
+            xyz = ()
+        if len(xyz) == 3 and all(math.isfinite(value) for value in xyz):
+            orientation = () if configured is None else tuple(configured[3:])
+            return xyz + orientation, "runtime_mesh_truth"
+    return configured, "episode_spec"
 
 
 def _distance_xyz(left: tuple[float, ...], right: tuple[float, ...]) -> float:

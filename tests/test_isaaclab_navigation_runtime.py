@@ -725,6 +725,12 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
 
         np.testing.assert_allclose(report["center_xyz"], [4.0, 5.0, 6.0])
         np.testing.assert_allclose(report["size_xyz"], [1.0, 2.0, 0.5])
+        self.assertEqual(report["long_axis_index"], 0)
+        np.testing.assert_allclose(
+            report["long_axis_world_xyz"],
+            [0.0, 1.0, 0.0],
+            atol=1.0e-12,
+        )
         self.assertEqual(
             report["transform_mode"],
             "authored_world_aabb_via_live_rigid_pose",

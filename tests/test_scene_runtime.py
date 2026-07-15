@@ -14,6 +14,7 @@ from source.simulation.scene_runtime import resolve_scene_runtime_settings
 from source.simulation.task_scene_pose import resolve_task_receptacle_pose
 from source.simulation.receptacle_support import (
     _validate_task_support_proxy,
+    inspect_task_receptacle_support_stage,
     resolve_task_receptacle_support_settings,
 )
 from source.recording.training_action import (
@@ -349,3 +350,13 @@ def test_receptacle_support_gate_rejects_stale_curobo_bbox_proxy() -> None:
             bbox_max=bbox_max,
             tolerance_m=1.0e-6,
         )
+
+
+def test_receptacle_support_stage_default_tolerance_covers_usd_roundoff() -> None:
+    """运行时默认容差应覆盖数微米 USD bbox 舍入，同时远小于真实几何漂移。"""
+
+    default_tolerance = inspect.signature(
+        inspect_task_receptacle_support_stage
+    ).parameters["tolerance_m"].default
+    assert default_tolerance == 5.0e-6
+    assert 2.7983789412378e-6 <= default_tolerance < 1.0e-4

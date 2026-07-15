@@ -831,6 +831,37 @@ class FullPhysicsManipulationTest(unittest.TestCase):
         self.assertAlmostEqual(grasp_matrix[1, 0], 0.0, places=7)
         self.assertAlmostEqual(grasp_matrix[2, 0], -1.0, places=7)
 
+    def test_top_down_grasp_aligns_closing_axis_across_object_short_axis(self) -> None:
+        payload = build_top_down_grasp_target_payload(
+            object_prim_path="/World/cola",
+            T_world_base=pose_to_matrix(
+                (0.0, 0.0, 0.35),
+                (1.0, 0.0, 0.0, 0.0),
+            ),
+            bbox_min=(-0.06, -0.06, 0.0),
+            bbox_max=(0.06, 0.06, 0.10),
+            bbox_center=(0.0, 0.0, 0.05),
+            bbox_size=(0.12, 0.12, 0.10),
+            object_long_axis_world=(0.0, 1.0, 0.0),
+        )
+
+        grasp = payload["poses"]["grasp"]
+        grasp_matrix = pose_to_matrix(
+            grasp["position_xyz"],
+            grasp["quaternion_wxyz"],
+        )
+        for actual, expected in zip(grasp_matrix[:3, 0], [0.0, 0.0, -1.0]):
+            self.assertAlmostEqual(actual, expected, places=7)
+        self.assertAlmostEqual(abs(grasp_matrix[1, 2]), 1.0, places=7)
+        self.assertAlmostEqual(grasp_matrix[1, 1], 0.0, places=7)
+        alignment = payload["source"]["top_down_yaw_alignment"]
+        self.assertEqual(alignment["mode"], "object_long_axis_aligned")
+        self.assertAlmostEqual(
+            alignment["closing_axis_dot_object_long_axis"],
+            0.0,
+            places=7,
+        )
+
     def test_arm_place_target_aligns_object_center_not_tcp_to_task_xyz(self) -> None:
         payload = build_arm_place_target_payload(
             object_prim_path="/World/apple",

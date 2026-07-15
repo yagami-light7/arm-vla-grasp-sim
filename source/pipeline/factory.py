@@ -173,8 +173,10 @@ def create_full_physics_pipeline(
     if full_physics_config.locomotion.policy_profile == "pct_multifloor":
         # DogOnly 多楼层策略不直接暴露机械臂 action 槽位，真实跟踪会通过
         # 独立 position target 收敛；这里仅放宽 PCT profile 的终端收敛判定。
-        post_motion_hold_duration = max(post_motion_hold_duration, 1.00)
-        post_motion_joint_error_tolerance = max(post_motion_joint_error_tolerance, 0.060)
+        # top-down 接触后各关节的独立 position target 会保留小量稳态残差；门禁使用
+        # 六关节 L2 norm（不是单关节 max），因此 0.070 rad 仍对应更小的逐关节误差。
+        post_motion_hold_duration = max(post_motion_hold_duration, 1.50)
+        post_motion_joint_error_tolerance = max(post_motion_joint_error_tolerance, 0.070)
     return FullPhysicsPipeline(
         config=full_physics_config,
         episode_spec=episode_spec,

@@ -59,6 +59,67 @@ TCP_TOP_DOWN_QUAT_BASE_WXYZ = np.array(
 )
 
 
+def _top_down_quaternion_for_object_long_axis(
+    *,
+    T_world_base: Any,
+    object_long_axis_world: Any | None,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """保持 TCP +X 竖直向下，并让夹爪闭合轴垂直于物体水平长轴。"""
+
+    if object_long_axis_world is None:
+        return TCP_TOP_DOWN_QUAT_BASE_WXYZ.copy(), {
+            "mode": "base_fixed",
+            "reason": "object_long_axis_unavailable",
+        }
+    T_world_base = np.asarray(T_world_base, dtype=float)
+    axis_world = np.asarray(object_long_axis_world, dtype=float)
+    if T_world_base.shape != (4, 4) or axis_world.shape != (3,):
+        raise ValueError("top-down 长轴对齐要求 4x4 T_world_base 和 3D object long axis")
+    if not bool(np.all(np.isfinite(T_world_base))) or not bool(
+        np.all(np.isfinite(axis_world))
+    ):
+        raise ValueError("top-down 长轴对齐输入必须为有限数值")
+    axis_norm = float(np.linalg.norm(axis_world))
+    if axis_norm < 1.0e-9:
+        raise ValueError("object long axis 不能为零向量")
+    axis_world = axis_world / axis_norm
+    axis_base = T_world_base[:3, :3].T @ axis_world
+    horizontal_norm = float(np.linalg.norm(axis_base[:2]))
+    if horizontal_norm < 1.0e-3:
+        return TCP_TOP_DOWN_QUAT_BASE_WXYZ.copy(), {
+            "mode": "base_fixed",
+            "reason": "object_long_axis_nearly_vertical",
+            "object_long_axis_world_xyz": axis_world.tolist(),
+            "object_long_axis_base_xyz": axis_base.tolist(),
+            "horizontal_projection_norm": horizontal_norm,
+        }
+
+    tcp_z_base = np.array(
+        [axis_base[0] / horizontal_norm, axis_base[1] / horizontal_norm, 0.0],
+        dtype=float,
+    )
+    # 平行夹爪绕下探轴旋转 180°等价；选择更接近原姿态的符号，避免无谓腕部翻转。
+    if tcp_z_base[0] < 0.0:
+        tcp_z_base *= -1.0
+    tcp_x_base = np.array([0.0, 0.0, -1.0], dtype=float)
+    tcp_y_base = np.cross(tcp_z_base, tcp_x_base)
+    rotation_base_tcp = np.column_stack(
+        (tcp_x_base, tcp_y_base, tcp_z_base)
+    )
+    quaternion = rotmat_to_quat_wxyz(rotation_base_tcp)
+    closing_axis_dot_long_axis = float(np.dot(tcp_y_base, axis_base))
+    return quaternion, {
+        "mode": "object_long_axis_aligned",
+        "object_long_axis_world_xyz": axis_world.tolist(),
+        "object_long_axis_base_xyz": axis_base.tolist(),
+        "horizontal_projection_norm": horizontal_norm,
+        "tcp_x_down_base_xyz": tcp_x_base.tolist(),
+        "tcp_y_closing_axis_base_xyz": tcp_y_base.tolist(),
+        "tcp_z_long_axis_base_xyz": tcp_z_base.tolist(),
+        "closing_axis_dot_object_long_axis": closing_axis_dot_long_axis,
+    }
+
+
 def normalize_quat_wxyz(quaternion: Any) -> np.ndarray:
     q = np.asarray(quaternion, dtype=float)
     norm = float(np.linalg.norm(q))
@@ -399,6 +460,7 @@ def build_top_down_grasp_target_payload(
     bbox_max: Any,
     bbox_center: Any,
     bbox_size: Any,
+    object_long_axis_world: Any | None = None,
 ) -> dict[str, Any]:
     """从物体上方竖直下探，生成当前物体的 pick target JSON。"""
 
@@ -414,9 +476,15 @@ def build_top_down_grasp_target_payload(
         T_world_base,
         grasp_position_world,
     )
+    grasp_quaternion_base, yaw_alignment = (
+        _top_down_quaternion_for_object_long_axis(
+            T_world_base=T_world_base,
+            object_long_axis_world=object_long_axis_world,
+        )
+    )
     T_base_grasp = pose_to_matrix(
         grasp_position_base,
-        TCP_TOP_DOWN_QUAT_BASE_WXYZ,
+        grasp_quaternion_base,
     )
     T_base_pregrasp = _offset_pose_along_base_z(
         T_base_grasp,
@@ -480,8 +548,10 @@ def build_top_down_grasp_target_payload(
             "pregrasp_offset_m": TOP_PREGRASP_OFFSET_M,
             "lift_offset_m": LIFT_OFFSET_M,
             "tcp_orientation_rule": (
-                "base_top_down: grasp_tcp_link local +X points to arm_base_link -Z"
+                "top_down_long_axis_aligned: grasp_tcp_link local +X points to "
+                "arm_base_link -Z; local +Y closes across the object short axis"
             ),
+            "top_down_yaw_alignment": yaw_alignment,
         },
         "diagnostics": {
             "target_workspace_base": diagnostics,
@@ -498,6 +568,7 @@ def build_grasp_target_payload(
     bbox_max: Any,
     bbox_center: Any,
     bbox_size: Any,
+    object_long_axis_world: Any | None = None,
 ) -> dict[str, Any]:
     """按显式抓取模式分派目标生成；auto 保持旧 side 行为。"""
 
@@ -514,7 +585,7 @@ def build_grasp_target_payload(
             "grasp_mode 必须是 auto、side 或 top_down，"
             f"当前为 {grasp_mode!r}"
         )
-    return builder(
+    builder_kwargs = dict(
         object_prim_path=object_prim_path,
         T_world_base=T_world_base,
         bbox_min=bbox_min,
@@ -522,6 +593,9 @@ def build_grasp_target_payload(
         bbox_center=bbox_center,
         bbox_size=bbox_size,
     )
+    if normalized_mode == "top_down":
+        builder_kwargs["object_long_axis_world"] = object_long_axis_world
+    return builder(**builder_kwargs)
 
 
 def build_arm_place_target_payload(

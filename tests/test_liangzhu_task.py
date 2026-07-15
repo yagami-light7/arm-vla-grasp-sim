@@ -60,9 +60,12 @@ def test_liangzhu_fixed_task_loads_through_existing_episode_spec() -> None:
     assert episode.raw_task["global_planner"] == "pct"
     assert episode.raw_task["policy_profile"] == "pct_multifloor"
     assert episode.raw_task["perception_mode"] == "sim_ground_truth"
+    assert episode.raw_task["randomization"]["forward_sector"][
+        "robot_yaw_range_deg"
+    ] == [-180.0, 180.0]
     assert (
         episode.raw_task["place"]["mesh_truth_target"]["object_extent_tolerance_m"]
-        == 0.005
+        == 0.01
     )
     assert episode.raw_task["navigation_execution"] == {
         "final_position_tolerance": 0.1,
@@ -228,7 +231,7 @@ def test_liangzhu_phase0_coke_is_in_forward_sector_and_both_targets_are_grounded
     assert task["place"]["support_expected_static"] is True
     assert task["randomization"]["forward_sector"][
         "placement_region_half_extent_xy_m"
-    ] == [0.03, 0.03]
+    ] == [0.035, 0.035]
     assert task["place"]["place_xy_tolerance"] == 0.035
     mesh_target = task["place"]["mesh_truth_target"]
     assert mesh_target["enabled"] is True
@@ -330,6 +333,21 @@ def test_liangzhu_runtime_manifest_uses_identity_pct_frame() -> None:
     assert pct_point == point
     assert restored == point
     assert manifest["pct"]["coord_mode"] == "identity"
+    assert manifest["randomization"]["robot_yaw_range_deg"] == [-180.0, 180.0]
+    assert manifest["randomization"]["placement_region_half_extent_xy_m"] == [
+        0.035,
+        0.035,
+    ]
+    assert (
+        manifest["randomization"]["live_object_vertical_extent_audit_tolerance_m"]
+        == 0.01
+    )
+    robot_evidence = next(
+        item
+        for item in calibration["evidence"]
+        if item["name"] == "robot_start_floor"
+    )
+    assert robot_evidence["robot_yaw_runtime_range_deg"] == [-180.0, 180.0]
     assert calibration["runtime_path_overlay_verified"] is False
 
 

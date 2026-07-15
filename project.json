@@ -2,8 +2,8 @@
   "project": "arm_vla_liangzhu",
   "branch": "liangzhu-deploy",
   "goal": "在良渚单层场景中复用原 pct_multifloor locomotion policy，跑通移动操作 pipeline，并导出可验证的数据。",
-  "current_phase": "phase_152_randomized_20_of_20_pipeline_and_v3_dataset_verified",
-  "last_updated": "2026-07-15 19:03:02 CST",
+  "current_phase": "phase_153_full_yaw_randomization_configured_runtime_pending",
+  "last_updated": "2026-07-15 20:36:19 CST",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -164,6 +164,9 @@
     "liangzhu_v3_real_dataset_validator_verified": true,
     "liangzhu_v3_real_dataset_front_wrist_verified": true,
     "liangzhu_gui_pick_display_stall_isolated_from_headless_pipeline": true,
+    "liangzhu_robot_full_yaw_randomization_added": true,
+    "liangzhu_robot_full_yaw_randomization_unit_verified": true,
+    "liangzhu_robot_full_yaw_randomization_real_batch_verified": false,
     "liangzhu_phase148_front_wrist_dataset_exported": false,
     "liangzhu_phase148_front_wrist_dataset_validator_verified": false,
     "liangzhu_navigation_command_deadzone_guard_added": true,
@@ -7282,6 +7285,28 @@
         "扩大随机化范围前继续保留 phase-specific map 诊断，重点观察新的 pick/place 几何是否超出 CuRobo 可达范围。",
         "单独建立关闭 manipulation base/support-joint lock 的 pure-physics 对照批次，不要与当前 stable-physics 训练数据混用。"
       ]
+    },
+    {
+      "time": "2026-07-15 20:36:19 CST",
+      "summary": "将良渚 robot_forward_sector_v1 中机器狗的初始 yaw 随机化范围从 Uniform(-30°, 30°) 扩展为 Uniform(-180°, 180°)。任务 JSON、runtime asset manifest 的标定证据/随机化声明和 README 已统一；可乐与鼠标垫仍在采样后的机器人 yaw 前方±35°扇形内生成，因此相对生成逻辑不变。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "source/scene/liangzhu/runtime_asset_manifest.json",
+        "tasks/nav_pick_place_cola_liangzhu_pct.json",
+        "tests/test_liangzhu_task.py"
+      ],
+      "tests": [
+        {
+          "command": "focused Liangzhu task and full-physics randomization regression",
+          "result": "passed",
+          "note": "20 passed；包含任务配置精确断言 [-180.0, 180.0]、seed 确定性和机器人/可乐/鼠标垫/base-goal 同步。"
+        }
+      ],
+      "next_steps": [
+        "先用全向 yaw 运行少量 headless episode，覆盖面向四个主方向的 seed，检查 PCT 可走区、地面支撑与 CuRobo 可达性。",
+        "再运行新的 20-seed batch 统计成功率；旧 20/20 只代表±30° yaw 分布，不能当作全向 yaw 的实测结果。"
+      ]
     }
   ],
   "open_questions": [
@@ -7290,7 +7315,7 @@
   ],
   "known_limitations": [
     "当前可作为默认 v3 真实训练入口的是 validation_seed4013_n20_final_carry_map_v2/lerobot_dataset；phase146/147 历史数据仍是旧 front-only/连续 segment 目录，不能与 v3 直接混用。",
-    "当前随机范围下连续 20-seed batch 接受率为 100%（20/20）；这只证明 seed 4013..4032 和现有几何范围，扩大可乐/垫子/底盘采样范围后仍需重新统计。",
+    "已验证的连续 20-seed batch 接受率为 100%（20/20），但该批次使用旧±30° robot yaw 分布。当前配置已扩展为±180°，全向 yaw 的真实 batch 成功率尚未验证。",
     "phase146 的 27 条扩展集混合 21 条当前参数与 6 条早期 placement/tolerance 参数；phase147 虽参数一致但仍是旧 front-only 目录，使用历史数据时必须显式区分配置和目录版本。",
     "当前 perception_mode=sim_ground_truth；抓取和放置 TCP 直接使用运行时 Mesh/PhysX 真值，RGB 仅用于 VLA 记录，不能描述为 RGB-D 目标检测或视觉定位成功。",
     "当前最新 20 条 accepted episode 使用 manipulation base lock 与 support-joint lock，因此 stable_physics_success=true 但 pure_physics_success=false；后续仍需建立无锁严格物理成功率。",

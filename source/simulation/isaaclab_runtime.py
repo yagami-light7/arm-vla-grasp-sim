@@ -296,6 +296,24 @@ def _transform_authored_aabb_to_live_rigid_pose(
     )
     if not bool(np.allclose(live_bbox_center, expected_live_center, atol=1.0e-9)):
         raise RuntimeError("live bbox center 与刚体局部中心偏移变换不一致")
+    # authored world AABB 是当前资产已审计的保守 OBB。把它的三个 world 轴经
+    # authored-rigid -> live-rigid 旋转，恢复 live PhysX 下的主轴方向。
+    live_oriented_axes_world = []
+    for authored_world_axis in np.eye(3, dtype=float):
+        rigid_local_axis = _quat_rotate_vector_wxyz(
+            world_to_authored_rigid,
+            tuple(authored_world_axis.tolist()),
+        )
+        live_oriented_axes_world.append(
+            list(
+                _quat_rotate_vector_wxyz(
+                    live_quaternion,
+                    rigid_local_axis,
+                )
+            )
+        )
+    authored_bbox_size = bbox_max - bbox_min
+    long_axis_index = int(np.argmax(authored_bbox_size))
     return {
         "min_xyz": live_bbox_min.tolist(),
         "max_xyz": live_bbox_max.tolist(),
@@ -307,6 +325,11 @@ def _transform_authored_aabb_to_live_rigid_pose(
         "bbox_center_offset_rigid_xyz": center_offset_rigid.tolist(),
         "live_rigid_position_xyz": live_position.tolist(),
         "live_rigid_quaternion_wxyz": list(live_quaternion),
+        "authored_bbox_size_xyz": authored_bbox_size.tolist(),
+        "live_oriented_bbox_axes_world": live_oriented_axes_world,
+        "long_axis_index": long_axis_index,
+        "long_axis_world_xyz": live_oriented_axes_world[long_axis_index],
+        "long_axis_length_m": float(authored_bbox_size[long_axis_index]),
         "transform_mode": "authored_world_aabb_via_live_rigid_pose",
     }
 
@@ -3077,6 +3100,11 @@ class IsaacLabNavigationRuntime:
             bbox_max=bbox["max_xyz"],
             bbox_center=bbox["center_xyz"],
             bbox_size=bbox["size_xyz"],
+            object_long_axis_world=(
+                (bbox.get("live_bbox_transform") or {}).get(
+                    "long_axis_world_xyz"
+                )
+            ),
         )
         pick_target_source = target_payload.get("source")
         pick_target_source = (

@@ -185,19 +185,15 @@ source/
 │   ├── randomizer.py                       # 通用 pick/place XY 和 base_goal 随机化
 │   └── forward_sector_randomization.py     # 良渚机器人前向扇区联合随机化
 ├── scene/                                  # USD 场景、物体资产和导航地图
-│   ├── 839920_go2_x5.usd                   # 当前主场景 USD
-│   ├── nav_maps/839920/                    # occupancy map / metadata
-│   ├── apple/                              # apple visual/collision asset
-│   ├── bottle/                             # distractor asset
-│   └── orange/                             # distractor asset
+│   └── liangzhu/                           # 良渚 USDA、PCT 单层地图、collision PLY 和 manifest
 ├── robot/                                  # Go2-X5 URDF / robot 资产源文件
 └── robot_lab/                              # Isaac Lab extension / Go2-X5 task registration
 
 tasks/
-└── nav_pick_place_apple_contact.json       # 当前主任务
+└── nav_pick_place_cola_liangzhu_pct.json   # 当前默认良渚可乐到鼠标垫任务
 
 checkpoints/
-└── go2_x5/flat/model_8500.pt               # 本地 locomotion checkpoint，通常不提交 git
+└── go2_x5/pct_multifloor/model_26000.pt    # 当前默认 locomotion checkpoint
 ```
 
 ## 三、Pipeline 流程
@@ -304,7 +300,7 @@ episode seed
 | 项目 | 当前分布或取值 | 说明 |
 | --- | --- | --- |
 | 机器人 XYZ | `(-1.4849319648, 5.1261365028, 0.2928172853)` | 当前固定，不随机平移 |
-| 机器人 yaw | `Uniform(-30°, 30°)` | 每个 episode 重新采样 |
+| 机器人 yaw | `Uniform(-180°, 180°)` | 每个 episode 重新采样，覆盖全向朝向 |
 | 前向扇区 | 机器人 yaw 左右各 `35°` | 可乐和鼠标垫都相对采样后的 yaw 定义 |
 | 可乐半径 | `[0.70m, 1.15m]` | 在前向扇形内按面积均匀采样 |
 | 鼠标垫半径 | `[0.85m, 1.30m]` | 与可乐分别采样 |
@@ -513,7 +509,7 @@ P 控制器持续输出很小的线速度/角速度时，策略可能只踏步�
 - 良渚单层任务使用默认 `5000` 导航 step 上限；`12000` 只保留给真实多楼层长路径。
 
 当前良渚 task 的 pick 底盘末端位置容差为 `0.10m`，place 底盘交接使用独立的 `0.15m`，
-place 目标物体 XY 容差为 `0.035m`，Mesh truth 物体 extent 漂移容差为 `0.005m`。
+place 目标物体 XY 容差为 `0.035m`，Mesh truth 物体竖直 extent 审计容差为 `0.010m`。
 这些数值来自本轮真实随机 batch，而不是用于隐藏失败；
 导航碰撞、不可达、掉落和放置验证失败仍会明确拒绝该 episode。
 
@@ -806,15 +802,14 @@ Rerun 转换脚本必须在 `lerobot_rerun` 环境中运行：
 
 ```bash
 conda activate lerobot_rerun
-
-cd /path/to/project
+cd /home/light/workspace/arm_vla_liangzhu
 
 python tools/lerobot_to_rerun.py \
   --repo-id full_physics_dataset \
-  --root outputs/full_physics_batch/lerobot_dataset \
+  --root /mnt/sage_data/outputs/arm_vla_liangzhu/batch_run/lerobot_dataset \
   --episode-index 0 \
   --max-frames 200 \
-  --out outputs/full_physics_batch/episode_000000.rrd
+  --out /mnt/sage_data/outputs/arm_vla_liangzhu/batch_run/episode_000000.rrd
 ```
 
 打开：
@@ -858,111 +853,147 @@ Rerun 路径内容：
 
 ## 五、常见运行命令
 
-以下命令中的 `/path/to/project` 表示本仓库根目录。
+以下命令均在当前良渚 worktree 中运行。入口已默认使用良渚可乐任务、
+PCT 单层地图、`pct_multifloor` policy/checkpoint、identity 坐标、仓库内 collision
+PLY 和 `/World/overview`，不需重复传入整组稳定参数。
+
+```bash
+cd /home/light/workspace/arm_vla_liangzhu
+```
 
 ### GUI 单次 full-physics
 
 ```bash
-conda activate isaac_locomani
-cd /path/to/project
-
-PYTHONDONTWRITEBYTECODE=1 python -B \
+PYTHONDONTWRITEBYTECODE=1 \
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_pipeline.py \
-  --task-json tasks/nav_pick_place_apple_contact.json \
-  --output-dir outputs/full_physics_gui \
-  --seed 0 \
+  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/gui_seed7000 \
+  --seed 7000 \
   --no-headless \
   --keep-window-open
 ```
 
+GUI 只建议用于单条观察。`--keep-window-open` 会在 pipeline 结束后保留窗口；
+实际成败仍以 `summary.json` 和 `events.jsonl` 为准。
+
 ### Headless 单次 full-physics
 
 ```bash
-conda activate isaac_locomani
-cd /path/to/project
-
-PYTHONDONTWRITEBYTECODE=1 python -B \
+PYTHONDONTWRITEBYTECODE=1 \
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_pipeline.py \
-  --task-json tasks/nav_pick_place_apple_contact.json \
-  --output-dir outputs/full_physics_headless \
-  --seed 0 \
+  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/single_seed7000 \
+  --seed 7000 \
   --headless
 ```
 
 ### Headless batch 数据采集
 
 ```bash
-cd /home/light/workspace/arm_vla_liangzhu
-
 PYTHONDONTWRITEBYTECODE=1 \
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_batch.py \
-  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/batch_seed5000_n30 \
-  --num-episodes 30 \
-  --seed 5000
+  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/batch_seed7000_n20 \
+  --num-episodes 20 \
+  --seed 7000
 ```
 
 batch 默认使用已经验证的良渚任务、联合随机化、PCT 单层地图、identity 坐标、禁止 A*
 fallback、`pct_multifloor` locomotion policy/checkpoint、headless 模式、固定 `/World/overview`
 相机、仓库内 collision PLY 和 collision 视觉模式。除输出目录、episode 数和 seed 外，
-无需重复传入稳定参数。需要 Gaussian 背景时显式传 `--navigation-visual-mode full`。
+无需重复传入稳定参数。当前机器人 yaw 由 task JSON 在 `[-180°, 180°]`
+内采样；这不是 CLI 参数。
+
+### 复现固定任务
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 \
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
+  scripts/pipeline/run_full_physics_pipeline.py \
+  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/fixed_baseline \
+  --seed 0 \
+  --no-randomize-task \
+  --no-randomize-base-goal \
+  --headless
+```
+
+关闭 task randomization 后使用 task JSON 中的 nominal 机器人、可乐、鼠标垫和
+base goal；`--seed` 仍会记录，但不会改变该固定布局。
 
 ### 显示随机化区域
 
 ```bash
-conda activate isaac_locomani
-cd /path/to/project
-
-PYTHONDONTWRITEBYTECODE=1 python -B \
+PYTHONDONTWRITEBYTECODE=1 \
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_pipeline.py \
-  --task-json tasks/nav_pick_place_apple_contact.json \
-  --output-dir outputs/randomization_debug_gui \
-  --seed 0 \
+  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/randomization_debug_seed7000 \
+  --seed 7000 \
   --show-randomization-debug \
+  --show-planned-trajectories \
   --no-headless \
   --keep-window-open
 ```
 
-```###
+### 显式加载 Gaussian 视觉场景
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 \
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
+  scripts/pipeline/run_full_physics_pipeline.py \
+  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/gui_gaussian_seed7000 \
+  --seed 7000 \
+  --navigation-visual-mode full \
+  --no-headless \
+  --keep-window-open
+```
+
+稳定默认是 `collision`。`full` 会加载 GaussianScene；在 8 GB GPU 上不建议将
+`full` 与多路相机批量采集同时开启。
+
+### 验证 LeRobot 数据集并导出 Rerun
 
 ```bash
 conda activate isaac_locomani
-cd /path/to/project
 
 python -B \
   scripts/pipeline/validate_lerobot_episode.py \
-  --dataset-root outputs/full_physics_batch/lerobot_dataset
+  --dataset-root /mnt/sage_data/outputs/arm_vla_liangzhu/batch_seed7000_n20/lerobot_dataset
 
 conda activate lerobot_rerun
 
 python \
   tools/lerobot_to_rerun.py \
   --repo-id full_physics_dataset \
-  --root outputs/full_physics_batch/lerobot_dataset \
+  --root /mnt/sage_data/outputs/arm_vla_liangzhu/batch_seed7000_n20/lerobot_dataset \
   --episode-index 0 \
   --max-frames 200 \
-  --out outputs/full_physics_batch/episode_000000.rrd
+  --out /mnt/sage_data/outputs/arm_vla_liangzhu/batch_seed7000_n20/episode_000000.rrd
 ```
 
 ## 附录:CLI 参数表
 
 ### `scripts/pipeline/run_full_physics_pipeline.py`
 
-默认模式是 full-physics。只在需要 smoke/debug 时传模式参数。
+默认模式是 full-physics。下表只列日常运行和验收需要的参数；完整试验性 PCT/
+楼梯参数以 `python -B scripts/pipeline/run_full_physics_pipeline.py --help` 为准。
+机器人 yaw 范围、扇形半径和物体间距属于 task 配置，不是 CLI 参数；当前
+`robot_yaw_range_deg=[-180, 180]`。只在需要 smoke/debug 时传模式参数。
 
 
 | 参数                                                 | 类型 / 默认                     | 说明                                                |
 | ---------------------------------------------------- | ------------------------------- | --------------------------------------------------- |
 | `--task-json`                                        | 良渚可乐任务                    | 默认 `tasks/nav_pick_place_cola_liangzhu_pct.json`  |
-| `--output-dir`                                       | `outputs/full_physics_pipeline` | 输出目录                                            |
+| `--output-dir`                                       | `outputs/full_physics_pipeline` | 输出目录；真实采集建议使用 `/mnt/sage_data`       |
 | `--num-episodes`                                     | `1`                             | episode 数量；真实 Isaac 模式当前只支持 1           |
-| `--seed`                                             | `0`                             | 首个 episode seed                                   |
-| `--randomize-task` / `--no-randomize-task`           | 默认开启                        | 是否按 task profile 随机化完整 episode 布局         |
+| `--seed`                                             | `0`                             | episode seed；相同 task/config/seed 复现同一布局       |
+| `--randomize-task` / `--no-randomize-task`           | 默认开启                        | 随机化机器人 yaw、可乐、鼠标垫及同步目标             |
 | `--show-randomization-debug`                         | 默认关闭                        | 显示矩形/前向扇区和采样点 USD guide                 |
+| `--show-planned-trajectories`                        | 默认关闭                        | 显示 PCT 路径和 CuRobo TCP 轨迹 guide                   |
 | `--randomize-base-goal` / `--no-randomize-base-goal` | 默认开启                        | 是否随机化 pick/place 导航交接 base_goal            |
 | `--keep-window-open` / `--no-keep-window-open`       | 默认关闭                        | 结束后保留 GUI；必须配合`--no-headless`             |
 | `--headless` / `--no-headless`                       | 默认`--no-headless`             | 是否无界面运行                                      |
 | `--navigation-visual-mode`                           | `collision`                     | 稳定默认不加载 GaussianScene；`full` 显式加载，`auto` 保留兼容 |
+| `--scene-light-mode`                                 | `camera`                        | `camera` 用于保存图像；`stage` 使用 USD 原场景灯光          |
 | `--global-planner`                                   | `pct`                           | 良渚默认使用 PCT；可显式切换 `astar`                 |
 | `--pct-collision-ply-path`                           | 仓库内良渚 PLY                  | 默认 `source/scene/liangzhu/ply/liangzhu_collision.ply` |
 | `--pct-no-fallback` / `--pct-allow-fallback`         | 默认禁止回退                    | 默认 PCT 失败即拒绝 episode                          |
@@ -986,24 +1017,27 @@ python \
 | `--simulation-smoke`                                 | mode                            | 只验证真实 Isaac stage/reset                        |
 | `--navigation-smoke`                                 | mode                            | 只验证 nav 到 pick                                  |
 | `--navigation-carry-smoke`                           | mode                            | 验证 carry 姿态下 nav 到 place                      |
+| `--pct-plan-preview`                                 | mode                            | GUI 中只预览 PCT 路径，不执行 locomotion             |
+| `--pick-smoke`                                       | mode                            | 只运行到 pick 成功验证                              |
 | `--manipulation-smoke`                               | mode                            | 使用假后端验证 manipulation action 合同             |
 | `--manipulation-apply-smoke`                         | mode                            | 真实 Isaac 中验证 arm/gripper action 下发           |
 
 ### `scripts/pipeline/run_full_physics_batch.py`
 
-默认模式是 full-physics，默认 headless，默认继续执行失败后的 episode。
+默认模式是 full-physics，默认 headless，默认继续执行失败后的 episode。batch
+会为每个 episode 启动独立 Isaac Sim 子进程，并在结束时只合并通过质量门的数据。
 
 
 | 参数                                                 | 类型 / 默认   | 说明                                        |
 | ---------------------------------------------------- | ------------- | ------------------------------------------- |
 | `--task-json`                                        | 良渚可乐任务  | 默认 `tasks/nav_pick_place_cola_liangzhu_pct.json` |
-| `--output-dir`                                       | 必填          | batch 输出目录                              |
+| `--output-dir`                                       | 必填          | batch 输出目录；必须使用新目录，避免混入旧摘要       |
 | `--num-episodes`                                     | `1`           | episode 数量                                |
 | `--seed`                                             | `0`           | 首个 seed，后续使用`seed + episode_index`   |
 | `--randomize-task` / `--no-randomize-task`           | 默认开启      | 是否按 task profile 随机化完整 episode 布局 |
 | `--show-randomization-debug`                         | 默认关闭      | 显示矩形/前向扇区；通常只用于 GUI 单 episode |
 | `--randomize-base-goal` / `--no-randomize-base-goal` | 默认开启      | 是否随机化导航交接 base_goal                |
-| `--headless` / `--no-headless`                       | 默认 headless | batch 是否无界面运行                        |
+| `--headless` / `--no-headless`                       | 默认 headless | batch 是否无界面运行；量产不建议 `--no-headless`     |
 | `--navigation-visual-mode`                           | `collision`   | 稳定默认不加载 GaussianScene；`full` 可显式启用    |
 | `--global-planner`                                   | `pct`         | 良渚 batch 默认使用 PCT                     |
 | `--pct-server-script`                                | 良渚 grid server | 默认使用仓库内 `pct_grid_server.py`       |
@@ -1018,7 +1052,7 @@ python \
 | `--pick-plan-json`                                   | 可选          | 非 full-physics smoke 可转发离线 pick plan  |
 | `--place-plan-json`                                  | 可选          | 非 full-physics smoke 可转发离线 place plan |
 | `--progress-interval-s`                              | `5.0`         | heartbeat 进度打印间隔                      |
-| `--color` / `--no-color`                             | 默认开启      | 是否使用 ANSI 彩色输出                      |
+| `--color` / `--no-color`                             | 默认开启      | 是否使用 ANSI 彩色输出；保存 CI 日志时建议关闭       |
 | `--record-video`                                     | 默认关闭      | 转发给单 episode pipeline，启用 MP4 录制；展示视频固定 25fps |
 | `--video-mode`                                       | `overview`    | `overview`/`front`/`font`/`wrist`/`all`；`font` 是 `front` 兼容别名 |
 | `--video-out`                                        | 可选          | 视频输出根目录；batch 会写入其下的`episode_XXXXXX/`子目录，不支持单个`.mp4` |
