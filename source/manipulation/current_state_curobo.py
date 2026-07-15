@@ -58,6 +58,12 @@ TCP_TOP_DOWN_QUAT_BASE_WXYZ = np.array(
     dtype=float,
 )
 
+# A nearly upright can has no stable horizontal long-axis direction.  Small
+# simulation tilts would otherwise amplify into an arbitrary wrist-yaw change.
+# Only align to the projected long axis once the object is tilted by about
+# 14.5 degrees or more; upright cans retain the known-good fixed top-down pose.
+TOP_DOWN_LONG_AXIS_MIN_HORIZONTAL_PROJECTION = 0.25
+
 
 def _top_down_quaternion_for_object_long_axis(
     *,
@@ -85,13 +91,16 @@ def _top_down_quaternion_for_object_long_axis(
     axis_world = axis_world / axis_norm
     axis_base = T_world_base[:3, :3].T @ axis_world
     horizontal_norm = float(np.linalg.norm(axis_base[:2]))
-    if horizontal_norm < 1.0e-3:
+    if horizontal_norm < TOP_DOWN_LONG_AXIS_MIN_HORIZONTAL_PROJECTION:
         return TCP_TOP_DOWN_QUAT_BASE_WXYZ.copy(), {
             "mode": "base_fixed",
             "reason": "object_long_axis_nearly_vertical",
             "object_long_axis_world_xyz": axis_world.tolist(),
             "object_long_axis_base_xyz": axis_base.tolist(),
             "horizontal_projection_norm": horizontal_norm,
+            "minimum_horizontal_projection_for_alignment": (
+                TOP_DOWN_LONG_AXIS_MIN_HORIZONTAL_PROJECTION
+            ),
         }
 
     tcp_z_base = np.array(
@@ -113,6 +122,9 @@ def _top_down_quaternion_for_object_long_axis(
         "object_long_axis_world_xyz": axis_world.tolist(),
         "object_long_axis_base_xyz": axis_base.tolist(),
         "horizontal_projection_norm": horizontal_norm,
+        "minimum_horizontal_projection_for_alignment": (
+            TOP_DOWN_LONG_AXIS_MIN_HORIZONTAL_PROJECTION
+        ),
         "tcp_x_down_base_xyz": tcp_x_base.tolist(),
         "tcp_y_closing_axis_base_xyz": tcp_y_base.tolist(),
         "tcp_z_long_axis_base_xyz": tcp_z_base.tolist(),

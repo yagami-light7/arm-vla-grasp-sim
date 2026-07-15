@@ -73,8 +73,11 @@ _TERMINAL_HOLD_STATES = frozenset(
 _NAV_HANDOFF_POSITION_MARGIN_M = 0.005
 _NAV_HANDOFF_Z_MARGIN_M = 0.010
 _NAV_HANDOFF_YAW_MARGIN_RAD = 0.010
-_NAV_HANDOFF_LINEAR_SPEED_MARGIN_MPS = 0.010
-_NAV_HANDOFF_ANGULAR_SPEED_MARGIN_RADPS = 0.020
+_NAV_HANDOFF_LINEAR_SPEED_MARGIN_MPS = 0.015
+_NAV_HANDOFF_ANGULAR_SPEED_MARGIN_RADPS = 0.040
+_NAV_HANDOFF_SETTLE_MAX_STEPS = 12
+_NAV_HANDOFF_SETTLE_LINEAR_SPEED_MARGIN_MPS = 0.060
+_NAV_HANDOFF_SETTLE_ANGULAR_SPEED_MARGIN_RADPS = 0.200
 
 
 def _accept_successful_navigation_handoff_drift(
@@ -148,6 +151,51 @@ def _accept_successful_navigation_handoff_drift(
             ),
             "executor_yaw_error": executor_status.get("yaw_error"),
         },
+    )
+
+
+def _navigation_handoff_requires_zero_command_settle(
+    result: VerificationResult,
+    executor_status: dict[str, Any] | None,
+) -> bool:
+    """Return whether only bounded residual base motion blocks verification."""
+
+    if result.success or not isinstance(executor_status, dict):
+        return False
+    if executor_status.get("success") is not True:
+        return False
+    if executor_status.get("failed") is True:
+        return False
+
+    metadata = result.metadata
+    if not bool(metadata.get("base_stability_required")):
+        return False
+    if bool(metadata.get("base_stable")):
+        return False
+    if not bool(metadata.get("position_reached")):
+        return False
+    if bool(metadata.get("z_check_enabled")) and not bool(
+        metadata.get("z_reached")
+    ):
+        return False
+    if bool(metadata.get("yaw_alignment_required")) and not bool(
+        metadata.get("yaw_aligned")
+    ):
+        return False
+
+    linear_speed = float(metadata.get("linear_speed", math.inf))
+    angular_speed = float(metadata.get("angular_speed", math.inf))
+    linear_limit = float(metadata.get("linear_velocity_tolerance", 0.0)) + (
+        _NAV_HANDOFF_SETTLE_LINEAR_SPEED_MARGIN_MPS
+    )
+    angular_limit = float(metadata.get("angular_velocity_tolerance", 0.0)) + (
+        _NAV_HANDOFF_SETTLE_ANGULAR_SPEED_MARGIN_RADPS
+    )
+    return (
+        math.isfinite(linear_speed)
+        and math.isfinite(angular_speed)
+        and linear_speed <= linear_limit
+        and angular_speed <= angular_limit
     )
 
 
@@ -1224,6 +1272,13 @@ class FullPhysicsStateMachine:
             phase="pick",
         )
         if not result.success:
+            settle_result = self._settle_navigation_handoff(
+                result,
+                observation,
+                phase="pick",
+            )
+            if settle_result is not None:
+                return settle_result
             handoff_status = dict(self.latest_executor_status or {})
             if handoff_status.get("near_goal_stall_handoff") is True:
                 result = VerificationResult(
@@ -1252,7 +1307,14 @@ class FullPhysicsStateMachine:
                     observation,
                     result.metadata,
                 )
-        events = [self._event("nav_to_pick_success", observation.step_index, result.metadata)]
+        events = self._navigation_handoff_settle_complete_events(
+            observation,
+            phase="pick",
+            result=result,
+        )
+        events.append(
+            self._event("nav_to_pick_success", observation.step_index, result.metadata)
+        )
         if self.config.navigation_smoke:
             events.append(self._event("navigation_smoke_success", observation.step_index))
             events.extend(self._transition(PipelineState.CLEANUP_EPISODE, observation.step_index))
@@ -1520,12 +1582,26 @@ class FullPhysicsStateMachine:
             phase="place",
         )
         if not result.success:
+            settle_result = self._settle_navigation_handoff(
+                result,
+                observation,
+                phase="place",
+            )
+            if settle_result is not None:
+                return settle_result
             return RobotAction.idle(source="verify_place_reachable"), self._fail(
                 result.failure_reason or "place_target_unreachable",
                 observation,
                 result.metadata,
             )
-        events = [self._event("nav_to_place_success", observation.step_index, result.metadata)]
+        events = self._navigation_handoff_settle_complete_events(
+            observation,
+            phase="place",
+            result=result,
+        )
+        events.append(
+            self._event("nav_to_place_success", observation.step_index, result.metadata)
+        )
         if self.config.navigation_carry_smoke or self.config.full_physics:
             if self.config.full_physics:
                 object_carry_check = self._verify_carry_object_tracking(observation)
@@ -2457,6 +2533,78 @@ class FullPhysicsStateMachine:
             ),
             events,
         )
+
+    def _settle_navigation_handoff(
+        self,
+        result: VerificationResult,
+        observation: SimulationState,
+        *,
+        phase: str,
+    ) -> tuple[RobotAction, list[PipelineEvent]] | None:
+        """Wait briefly for bounded RL residual motion after nav success."""
+
+        if not _navigation_handoff_requires_zero_command_settle(
+            result,
+            self.latest_executor_status,
+        ):
+            return None
+        if self.state_ticks >= _NAV_HANDOFF_SETTLE_MAX_STEPS:
+            return None
+
+        metadata = {
+            **result.metadata,
+            "navigation_handoff_settle": True,
+            "navigation_handoff_settle_phase": phase,
+            "navigation_handoff_settle_step": self.state_ticks,
+            "navigation_handoff_settle_max_steps": (
+                _NAV_HANDOFF_SETTLE_MAX_STEPS
+            ),
+            "navigation_handoff_settle_linear_speed_limit_mps": float(
+                result.metadata.get("linear_velocity_tolerance", 0.0)
+            )
+            + _NAV_HANDOFF_SETTLE_LINEAR_SPEED_MARGIN_MPS,
+            "navigation_handoff_settle_angular_speed_limit_radps": float(
+                result.metadata.get("angular_velocity_tolerance", 0.0)
+            )
+            + _NAV_HANDOFF_SETTLE_ANGULAR_SPEED_MARGIN_RADPS,
+        }
+        events: list[PipelineEvent] = []
+        if self.state_ticks == 1:
+            events.append(
+                self._event(
+                    f"nav_to_{phase}_handoff_settle_start",
+                    observation.step_index,
+                    metadata,
+                )
+            )
+        return (
+            RobotAction(
+                base_velocity=(0.0, 0.0, 0.0),
+                source=f"nav_to_{phase}_handoff_settle",
+                metadata=metadata,
+            ),
+            events,
+        )
+
+    def _navigation_handoff_settle_complete_events(
+        self,
+        observation: SimulationState,
+        *,
+        phase: str,
+        result: VerificationResult,
+    ) -> list[PipelineEvent]:
+        if self.state_ticks <= 1:
+            return []
+        return [
+            self._event(
+                f"nav_to_{phase}_handoff_settle_complete",
+                observation.step_index,
+                {
+                    **result.metadata,
+                    "navigation_handoff_settle_steps": self.state_ticks - 1,
+                },
+            )
+        ]
 
     def _update_pick_peak_lift(self, observation: SimulationState) -> None:
         """记录 primary pick motion 的峰值抬升，回位后仍可验证真实 lift。"""

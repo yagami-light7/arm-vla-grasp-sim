@@ -46,6 +46,7 @@ from source.pipeline.navigation_smoke import _build_dwa_config
 from source.pipeline.state_machine import (
     FullPhysicsStateMachine,
     _accept_successful_navigation_handoff_drift,
+    _navigation_handoff_requires_zero_command_settle,
 )
 from source.recording import JsonlEpisodeRecorder
 from source.simulation import InMemorySimulationRuntime
@@ -53,6 +54,29 @@ from source.tasks import JsonTaskProvider
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _liangzhu_pct_navigation_settings() -> NavigationSettings:
+    """Return a real in-repo planner fixture without relying on removed A* assets."""
+
+    return NavigationSettings(
+        global_planner="pct",
+        pct_enabled=True,
+        pct_server_script=PROJECT_ROOT / "scripts/navigation/pct_grid_server.py",
+        pct_tomogram_path=(
+            PROJECT_ROOT
+            / "source/scene/liangzhu/pct/liangzhu_single_floor.pickle"
+        ),
+        pct_walkable_path=(
+            PROJECT_ROOT
+            / "source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy"
+        ),
+        pct_collision_ply_path=(
+            PROJECT_ROOT / "source/scene/liangzhu/ply/liangzhu_collision.ply"
+        ),
+        pct_fallback_to_astar=False,
+        pct_coord_mode="identity",
+    )
 
 
 class FullPhysicsPipelineTest(unittest.TestCase):
@@ -96,6 +120,91 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         )
         self.assertTrue(
             all(accepted.metadata["navigation_handoff_margin_checks"].values())
+        )
+
+        # Regression from the full-yaw seed-7000 place handoff: the executor
+        # had already succeeded, then the adjacent verifier frame observed a
+        # small residual locomotion-policy pulse.
+        residual_velocity = VerificationResult(
+            success=False,
+            failure_reason="place_target_unreachable",
+            metadata={
+                **base_metadata,
+                "goal_distance": 0.089,
+                "yaw_error": 0.1366,
+                "linear_speed": 0.070280,
+                "angular_speed": 0.23605,
+            },
+        )
+        accepted_residual_velocity = _accept_successful_navigation_handoff_drift(
+            residual_velocity,
+            {"success": True, "failed": False},
+            phase="place",
+        )
+        self.assertTrue(accepted_residual_velocity.success)
+
+        excessive_residual_velocity = VerificationResult(
+            success=False,
+            failure_reason="place_target_unreachable",
+            metadata={
+                **base_metadata,
+                "linear_speed": 0.076,
+                "angular_speed": 0.241,
+            },
+        )
+        rejected_residual_velocity = _accept_successful_navigation_handoff_drift(
+            excessive_residual_velocity,
+            {"success": True, "failed": False},
+            phase="place",
+        )
+        self.assertFalse(rejected_residual_velocity.success)
+
+        settle_only_residual = VerificationResult(
+            success=False,
+            failure_reason="place_target_unreachable",
+            metadata={
+                **base_metadata,
+                "goal_distance": 0.0857,
+                "yaw_error": 0.1382,
+                "linear_speed": 0.0553,
+                "angular_speed": 0.2676,
+                "position_reached": True,
+                "z_reached": True,
+                "yaw_aligned": True,
+                "base_stable": False,
+            },
+        )
+        self.assertTrue(
+            _navigation_handoff_requires_zero_command_settle(
+                settle_only_residual,
+                {"success": True, "failed": False},
+            )
+        )
+        self.assertFalse(
+            _navigation_handoff_requires_zero_command_settle(
+                VerificationResult(
+                    success=False,
+                    failure_reason="place_target_unreachable",
+                    metadata={
+                        **settle_only_residual.metadata,
+                        "position_reached": False,
+                    },
+                ),
+                {"success": True, "failed": False},
+            )
+        )
+        self.assertFalse(
+            _navigation_handoff_requires_zero_command_settle(
+                VerificationResult(
+                    success=False,
+                    failure_reason="place_target_unreachable",
+                    metadata={
+                        **settle_only_residual.metadata,
+                        "angular_speed": 0.401,
+                    },
+                ),
+                {"success": True, "failed": False},
+            )
         )
 
         too_far = VerificationResult(
@@ -871,6 +980,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 task_json=task_path,
                 output_dir=root,
                 full_physics=True,
+                navigation=_liangzhu_pct_navigation_settings(),
             )
             spec = JsonTaskProvider().load(task_path)
 
@@ -1039,6 +1149,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 task_json=task_path,
                 output_dir=root,
                 full_physics=True,
+                navigation=_liangzhu_pct_navigation_settings(),
                 manipulation=ManipulationSettings(
                     settle_object_before_navigation=True,
                     object_settle_max_steps=5,
@@ -1088,6 +1199,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 task_json=task_path,
                 output_dir=root,
                 full_physics=True,
+                navigation=_liangzhu_pct_navigation_settings(),
                 manipulation=ManipulationSettings(
                     settle_object_before_navigation=True,
                     settle_base_before_navigation=True,

@@ -13,6 +13,7 @@ from source.manipulation.arm_executor import SegmentedArmExecutor, SegmentedArmE
 from source.manipulation.current_state_curobo import (
     CurrentStateCuroboPlanner,
     CurrentStateCuroboPlannerConfig,
+    TCP_TOP_DOWN_QUAT_BASE_WXYZ,
     build_curobo_state_payload,
     build_arm_place_target_payload,
     build_side_grasp_target_payload,
@@ -861,6 +862,33 @@ class FullPhysicsManipulationTest(unittest.TestCase):
             0.0,
             places=7,
         )
+
+    def test_top_down_grasp_keeps_fixed_yaw_for_nearly_upright_object(self) -> None:
+        payload = build_top_down_grasp_target_payload(
+            object_prim_path="/World/cola",
+            T_world_base=pose_to_matrix(
+                (0.0, 0.0, 0.35),
+                (1.0, 0.0, 0.0, 0.0),
+            ),
+            bbox_min=(-0.03, -0.03, 0.0),
+            bbox_max=(0.03, 0.03, 0.11),
+            bbox_center=(0.0, 0.0, 0.055),
+            bbox_size=(0.06, 0.06, 0.11),
+            object_long_axis_world=(0.05, 0.0, 0.9987492178),
+        )
+
+        alignment = payload["source"]["top_down_yaw_alignment"]
+        self.assertEqual(alignment["mode"], "base_fixed")
+        self.assertEqual(alignment["reason"], "object_long_axis_nearly_vertical")
+        self.assertLess(
+            alignment["horizontal_projection_norm"],
+            alignment["minimum_horizontal_projection_for_alignment"],
+        )
+        for actual, expected in zip(
+            payload["poses"]["grasp"]["quaternion_wxyz"],
+            TCP_TOP_DOWN_QUAT_BASE_WXYZ,
+        ):
+            self.assertAlmostEqual(actual, float(expected), places=14)
 
     def test_arm_place_target_aligns_object_center_not_tcp_to_task_xyz(self) -> None:
         payload = build_arm_place_target_payload(
