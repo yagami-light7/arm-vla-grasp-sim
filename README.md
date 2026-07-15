@@ -21,6 +21,70 @@ base pose，Isaac Sim GUI 负责恢复导航结果并调用现有抓取链路。
 - `docs/nav_manip_integration_plan.md`
 - `docs/nav_pick_data_format.md`
 
+## 当前 Pipeline 总览
+
+当前代码主要保留两条执行路径：
+
+1. 单任务导航抓取入口：`scripts/pipeline/run_nav_then_pick.py`
+   - 输入一个 task JSON；
+   - 在 Isaac Lab 中运行 `run_nav_only.py`，用 A* + DWA + RSL-RL policy 导航到 pick base goal；
+   - 导航成功后启动 standalone Isaac Sim 抓取 runner；
+   - 抓取 runner 恢复导航 handoff pose，导出当前机器人/物体状态，调用 cuRobo planner server 或 one-shot planner；
+   - Isaac Sim 按物理关节控制执行开夹爪、接近、闭合、retreat/return-home，并写出 handoff report。
+
+2. 批量 nav-pick-place 入口：`scripts/pipeline/run_random_nav_pick_place_batch.py`
+   - 按 seed 生成随机化 pick/place task；
+   - 对每个 episode 依次运行 nav-to-pick、pick、nav-to-place、place；
+   - 支持 legacy multiprocess 和 `single-stage-07` manipulation backend；
+   - 每个阶段失败都会写入 episode summary，batch 末尾汇总成功率和失败原因。
+
+核心设计取舍：
+
+- 导航阶段由 Isaac Lab + RSL-RL locomotion policy 推进；
+- 机械臂规划由 cuRobo 完成，优先复用常驻 `grasp_planner_server.py` 降低初始化开销；
+- 抓取/放置执行仍由 Isaac Sim 中的 articulation、drive、碰撞、摩擦和重力完成；
+- batch 层只负责生成 task、启动子流程、收集 summary，不直接修改物理结果。
+
+```mermaid
+flowchart TD
+    A[Task JSON<br/>start / pick / place] --> B{是否批量随机化}
+    B -->|单任务| C[run_nav_then_pick.py]
+    B -->|批量| D[run_random_nav_pick_place_batch.py<br/>按 seed 生成 episode task]
+
+    D --> E[Episode task JSON]
+    C --> F[nav_to_pick<br/>run_nav_only.py]
+    E --> F
+
+    F --> G{nav_to_pick 成功?}
+    G -->|否| Z1[写 summary<br/>nav_to_pick_failed]
+    G -->|是| H[nav_result.json<br/>base handoff pose]
+
+    H --> I{manipulation backend}
+    I -->|legacy multiprocess| J[standalone pick runner<br/>恢复 base pose]
+    I -->|single-stage-07| K[07 single-stage runner<br/>pick/place 共用同一 Isaac stage]
+
+    J --> L[导出 state / 生成 grasp target]
+    L --> M[cuRobo planner server<br/>或 one-shot planner]
+    M --> N[Isaac Sim 物理执行 pick<br/>open -> approach -> close -> retreat -> home]
+    N --> O{pick 成功?}
+    O -->|否| Z2[写 summary<br/>pick_failed]
+    O -->|是| P[生成 nav_to_place task]
+
+    P --> Q[nav_to_place<br/>run_nav_only.py]
+    Q --> R{nav_to_place 成功?}
+    R -->|否| Z3[写 summary<br/>nav_to_place_failed]
+    R -->|是| S[place base handoff]
+
+    S --> T{place 执行路径}
+    T -->|legacy place| U[run_place_from_nav_result<br/>规划并执行 place]
+    T -->|single-stage-07| K
+    U --> V{place 成功?}
+    K --> V
+
+    V -->|否| Z4[写 summary<br/>place_failed 或 single_stage_manipulation_failed]
+    V -->|是| W[episode success<br/>写 episode summary / batch_summary.jsonl]
+```
+
 ## 导航抓取快速入口
 
 先使用 Isaac Lab 导出导航地图：
@@ -232,65 +296,148 @@ exec(
 
 ## 二、环境依赖
 
-### 运行分层
+### 环境分层
 
-项目运行依赖两个进程
+本项目明确拆成两个 Python 环境，避免把 LeRobot/Rerun 依赖装进 Isaac Sim
+环境后破坏 Isaac Sim 5.1 的 ABI 和依赖约束。
 
+| 环境 | 本机路径 | 职责 | 说明 |
+| ---- | -------- | ---- | ---- |
+| Isaac Sim / Isaac Lab 运行环境 | `/data/conda_envs/isaacsim51_3dgs_grasp` | full-physics pipeline、IsaacLab runtime、cuRobo 规划 server、仿真采集 | 不安装 `lerobot` / `rerun-sdk` |
+| LeRobot / Rerun 转换环境 | `/data/conda_envs/lerobot_rerun` | LeRobot v2 数据检查、`.rrd` 可视化导出 | 不 import `omni`、`isaacsim`、`pxr` |
 
-| 进程                        | 职责                                                      | 关键依赖                                                   |
-| --------------------------- | --------------------------------------------------------- | ---------------------------------------------------------- |
-| Isaac Sim GUI Script Editor | 读取当前 USD stage、articulation、物体 bbox，执行关节控制 | Isaac Sim 5.1.x、`omni.usd`、`isaacsim.core`、`pxr`、NumPy |
-| 外部 cuRobo Python 进程     | FK、IK、MotionPlanner、环境碰撞规划                       | CUDA、PyTorch CUDA、cuRobo source checkout、NumPy          |
+### Isaac Sim 环境版本
 
-轨迹规划没有放进 Isaac Sim 进程，而是明确把 cuRobo 放到外部 Python 中由外部终端执行。原因是 Isaac Sim 内部已经加载 `omni.warp`，而当前 cuRobo 环境使用另一套Warp/CUDA 组合，把 planner 留在外部进程可以避免进程内依赖冲突
+该环境已经包含 Isaac Sim 5.1、Isaac Lab、RobotLab 任务、RSL-RL policy 和
+cuRobo 规划依赖。以下版本来自当前可运行环境，用于复现或排查依赖漂移。
 
-### 当前代码默认路径
+| Package | Version | 用途 |
+| ------- | ------- | ---- |
+| Python | `3.11.15` | Isaac Sim 5.1 当前环境 Python |
+| `isaacsim` | `5.1.0.0` | Isaac Sim Kit / runtime |
+| `isaacsim-core` | `5.1.0.0` | Isaac Sim core API |
+| `isaacsim-kernel` | `5.1.0.0` | Isaac Sim kernel 依赖 |
+| `isaaclab` | `0.54.3` | Isaac Lab runtime |
+| `isaaclab-rl` | `0.4.7` | Isaac Lab RL wrapper |
+| `rsl-rl-lib` | `3.1.2` | Go2-X5 locomotion policy runner |
+| `rl-games` | `1.6.1` | Isaac Lab 依赖 |
+| `nvidia-curobo` | `0.0.0` | cuRobo planner |
+| `warp-lang` | `1.13.0` | cuRobo / NVIDIA Warp |
+| `torch` | `2.7.0+cu128` | CUDA tensor / policy / planner |
+| `torchvision` | `0.22.0+cu128` | 图像工具 |
+| `torchaudio` | `2.7.0+cu128` | torch 环境配套包 |
+| `numpy` | `1.26.0` | Isaac Sim 兼容 NumPy |
+| `scipy` | `1.15.3` | 数值工具 |
+| `packaging` | `23.0` | Isaac Sim 版本约束 |
+| `psutil` | `5.9.8` | Isaac Sim kernel 版本约束 |
+| `websockets` | `12.0` | Isaac Sim kernel 版本约束 |
+| `pillow` | `11.3.0` | 图像保存 |
+| `opencv-python-headless` | `4.11.0.86` | MP4 编码和帧处理 |
+| `pyarrow` | `24.0.0` | LeRobot parquet 物化 |
+| `pandas` | `3.0.3` | 表格处理 |
+| `tqdm` | `4.67.3` | 进度条 |
+| `imageio` | `2.37.0` | 视频/图像 I/O |
+| `imageio-ffmpeg` | `0.6.0` | ffmpeg 后端 |
+| `gymnasium` | `1.2.1` | Isaac Lab env API |
+| `hydra-core` | `1.3.2` | Isaac Lab 配置 |
+| `omegaconf` | `2.3.0` | Hydra 配置 |
+| `trimesh` | `4.5.1` | mesh / collision 诊断 |
+| `networkx` | `3.3` | 图搜索辅助 |
+| `matplotlib` | `3.10.3` | debug 可视化 |
 
-主流程脚本目前按以下本机路径配置：
+不要在该环境执行：
 
-```text
-workspace:         /home/light/workspace/arm_vla
-cuRobo source:     /home/light/workspace/curobo
-external python:   /data/conda_envs/isaacsim51_3dgs_grasp/bin/python
+```bash
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pip install lerobot rerun-sdk
 ```
 
-对应代码位置：
+如需锁定普通 pip package，可使用：
 
-- `scripts/isaac/05_run_pick_retreat_demo.py` 中的 `WORKSPACE` 和 `PYTHON`
-- `scripts/curobo/03_plan_grasp_trajectory.py` 中的 `WORKSPACE` 和 `CUROBO_SOURCE_ROOT`
-- `scripts/curobo/grasp_planner_server.py` 中的 `WORKSPACE`
-- `source/robot/go2_x5/curobo/go2_x5_arm.yml` 中的 robot asset absolute path
+```bash
+cd /home/light/workspace/arm_vla_full_physics
 
-如果仓库路径、conda env 或 cuRobo checkout 位置变化，先改这些路径，再调 demo。
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pip install \
+  -r requirements/isaacsim51_runtime.txt
+```
+
+离线下载 wheel：
+
+```bash
+mkdir -p /tmp/wheelhouse_isaacsim51
+
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pip download \
+  -r requirements/isaacsim51_runtime.txt \
+  -d /tmp/wheelhouse_isaacsim51
+```
+
+### LeRobot / Rerun 环境版本
+
+该环境只用于数据集转换、检查和 Rerun 可视化，不运行 Isaac Sim。
+
+| Package | Version | 用途 |
+| ------- | ------- | ---- |
+| Python | `3.10.20` | LeRobot/Rerun 普通 Python 环境 |
+| `lerobot` | `0.4.4` | LeRobot v2 dataset API |
+| `rerun-sdk` | `0.26.2` | `.rrd` 可视化记录 |
+| `numpy` | `2.2.6` | 数组处理 |
+| `pandas` | `2.3.3` | parquet / metadata 检查 |
+| `pyarrow` | `24.0.0` | LeRobot parquet 读取 |
+| `pillow` | `12.2.0` | 图片读取 |
+| `opencv-python` | `4.13.0.92` | 视频帧处理 |
+| `tqdm` | `4.68.2` | 转换进度 |
+| `imageio` | `2.37.3` | 视频/图像 I/O |
+| `imageio-ffmpeg` | `0.6.0` | ffmpeg 后端 |
+| `torch` | `2.10.0+cu128` | LeRobot tensor 数据 |
+| `torchvision` | `0.25.0+cu128` | 图像 tensor 工具 |
+| `pyyaml` | `6.0.3` | metadata 配置 |
+| `huggingface-hub` | `0.35.3` | LeRobot/HF 数据集工具 |
+| `datasets` | `4.8.5` | HF dataset 工具 |
+| `safetensors` | `0.8.0` | torch/模型数据依赖 |
+| `av` | `15.1.0` | 视频解码依赖 |
+| `packaging` | `25.0` | 版本解析 |
+
+安装或复现：
+
+```bash
+cd /home/light/workspace/arm_vla_full_physics
+
+/data/conda_envs/lerobot_rerun/bin/python -m pip install \
+  -r requirements/lerobot_rerun.txt
+```
+
+离线下载 wheel：
+
+```bash
+mkdir -p /tmp/wheelhouse_lerobot_rerun
+
+/data/conda_envs/lerobot_rerun/bin/python -m pip download \
+  -r requirements/lerobot_rerun.txt \
+  -d /tmp/wheelhouse_lerobot_rerun
+```
 
 ### cuRobo 准备
 
-外部规划环境需要满足：
+full-physics 模式默认会自动启动或复用 `scripts/curobo/grasp_planner_server.py`。
+规划环境需要满足：
 
-- 能从 `/home/light/workspace/curobo` 导入 `curobo`
-- `torch.cuda.is_available()` 为 `True`
-- 能加载 `source/robot/go2_x5/curobo/go2_x5_arm.yml`
-- 能读取 arm-only URDF 和 mesh assets
-- 能调用 `curobo.motion_planner.MotionPlanner`
+- 能导入当前环境中的 `nvidia-curobo`；
+- `torch.cuda.is_available()` 为 `True`；
+- 能加载 `source/robot/go2_x5/curobo/go2_x5_arm.yml`；
+- 能读取 arm-only URDF 和 mesh assets；
+- 能调用 `curobo.motion_planner.MotionPlanner`。
 
-可以使用以下脚本验证 cuRobo 机器人模型：
-
-```bash
-cd /home/light/workspace/arm_vla
-
-PYTHONPATH=/home/light/workspace/curobo:${PYTHONPATH:-} \
-/data/conda_envs/isaacsim51_3dgs_grasp/bin/python \
-  scripts/dev_tools/curobo/check_go2_x5_curobo_model.py
-```
-
-如果需要检查 Isaac 导出的关节状态和 cuRobo FK 是否一致，先在 Isaac Sim中运行`scripts/isaac/01_export_go2_x5_state.py`，再运行：
+检查命令：
 
 ```bash
-cd /home/light/workspace/arm_vla
+cd /home/light/workspace/arm_vla_full_physics
 
-PYTHONPATH=/home/light/workspace/curobo:${PYTHONPATH:-} \
-/data/conda_envs/isaacsim51_3dgs_grasp/bin/python \
-  scripts/dev_tools/curobo/check_isaac_curobo_fk.py
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python - <<'PY'
+import torch
+print("torch", torch.__version__, "cuda", torch.version.cuda)
+print("cuda_available", torch.cuda.is_available())
+import curobo
+print("curobo import ok", curobo.__file__)
+PY
 ```
 
 ## 三、文件结构

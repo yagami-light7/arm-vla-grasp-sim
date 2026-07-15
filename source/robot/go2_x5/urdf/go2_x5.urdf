@@ -893,7 +893,7 @@
         <mesh filename="./meshes/X5/link4.STL"/>
       </geometry>
       <material name="">
-        <color rgba="0.79216 0.81961 0.93333 1"/>
+        <color rgba="0 0 0 1"/>
       </material>
     </visual>
     <collision>
@@ -923,7 +923,7 @@
         <mesh filename="./meshes/X5/link5.STL"/>
       </geometry>
       <material name="">
-        <color rgba="0.69804 0.69804 0.69804 1"/>
+        <color rgba="0 0 0 1"/>
       </material>
     </visual>
     <collision>
@@ -953,7 +953,7 @@
         <mesh filename="./meshes/X5/link6.STL"/>
       </geometry>
       <material name="">
-        <color rgba="0.89804 0.91765 0.92941 1"/>
+        <color rgba="0 0 0 1"/>
       </material>
     </visual>
     <collision>
@@ -985,7 +985,7 @@
         <mesh filename="./meshes/X5/link7.STL"/>
       </geometry>
       <material name="">
-        <color rgba="1 1 1 1"/>
+        <color rgba="0 0 0 1"/>
       </material>
     </visual>
     <collision>
@@ -1015,7 +1015,7 @@
         <mesh filename="./meshes/X5/link8.STL"/>
       </geometry>
       <material name="">
-        <color rgba="1 1 1 1"/>
+        <color rgba="0 0 0 1"/>
       </material>
     </visual>
     <collision>
