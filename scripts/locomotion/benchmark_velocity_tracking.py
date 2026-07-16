@@ -23,6 +23,19 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--task", default="RobotLab-Isaac-Velocity-Rough-Go2-X5-DogOnly-v0")
 parser.add_argument("--output-dir", required=True)
 parser.add_argument("--profile", choices=("quick", "full"), default="quick")
+custom_group = parser.add_mutually_exclusive_group()
+custom_group.add_argument(
+    "--command",
+    type=float,
+    nargs=3,
+    action="append",
+    metavar=("VX", "VY", "WZ"),
+    help="Run a user-defined body velocity. Repeat this option to run multiple commands.",
+)
+custom_group.add_argument(
+    "--commands-json",
+    help="JSON command sequence; each item supports name, duration_s, vx, vy, wz, and evaluate.",
+)
 parser.add_argument("--settle-seconds", type=float, default=2.0)
 parser.add_argument("--hold-seconds", type=float, default=3.0)
 parser.add_argument("--stop-seconds", type=float, default=1.5)
@@ -49,7 +62,13 @@ from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import robot_lab.tasks  # noqa: F401
-from source.locomotion_benchmark import build_schedule, write_benchmark_artifacts
+from source.locomotion_benchmark import (
+    CommandSegment,
+    build_custom_schedule,
+    build_schedule,
+    load_command_file,
+    write_benchmark_artifacts,
+)
 from source.navigation.adapters.isaaclab_go2_adapter import Go2LocomotionAdapter
 
 
@@ -86,7 +105,6 @@ def _configure_flat_deterministic(env_cfg: ManagerBasedRLEnvCfg, total_duration_
         "randomize_apply_external_force_torque",
         "randomize_actuator_gains",
         "randomize_push_robot",
-        "randomize_reset_joints",
     ):
         _set_if_present(events, name, None)
     reset_event = getattr(events, "randomize_reset_base", None)
@@ -95,6 +113,10 @@ def _configure_flat_deterministic(env_cfg: ManagerBasedRLEnvCfg, total_duration_
             "pose_range": {axis: (0.0, 0.0) for axis in ("x", "y", "z", "roll", "pitch", "yaw")},
             "velocity_range": {axis: (0.0, 0.0) for axis in ("x", "y", "z", "roll", "pitch", "yaw")},
         }
+    joint_reset_event = getattr(events, "randomize_reset_joints", None)
+    if joint_reset_event is not None:
+        joint_reset_event.params["position_range"] = (1.0, 1.0)
+        joint_reset_event.params["velocity_range"] = (0.0, 0.0)
 
 
 def _step(adapter: Go2LocomotionAdapter):
@@ -110,13 +132,38 @@ def _step(adapter: Go2LocomotionAdapter):
 def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg: RslRlBaseRunnerCfg) -> None:
     output_dir = Path(args_cli.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    schedule = build_schedule(
-        args_cli.profile,
-        settle_s=args_cli.settle_seconds,
-        hold_s=args_cli.hold_seconds,
-        stop_s=args_cli.stop_seconds,
-        repeats=args_cli.repeats,
-    )
+    if args_cli.commands_json:
+        custom_commands = load_command_file(args_cli.commands_json, default_duration_s=args_cli.hold_seconds)
+    elif args_cli.command:
+        custom_commands = [
+            CommandSegment(
+                name=f"user_{index:03d}",
+                duration_s=args_cli.hold_seconds,
+                vx=values[0],
+                vy=values[1],
+                wz=values[2],
+            )
+            for index, values in enumerate(args_cli.command, start=1)
+        ]
+    else:
+        custom_commands = []
+    if custom_commands:
+        schedule = build_custom_schedule(
+            custom_commands,
+            settle_s=args_cli.settle_seconds,
+            stop_s=args_cli.stop_seconds,
+            repeats=args_cli.repeats,
+        )
+        schedule_source = "json" if args_cli.commands_json else "cli"
+    else:
+        schedule = build_schedule(
+            args_cli.profile,
+            settle_s=args_cli.settle_seconds,
+            hold_s=args_cli.hold_seconds,
+            stop_s=args_cli.stop_seconds,
+            repeats=args_cli.repeats,
+        )
+        schedule_source = args_cli.profile
     total_duration_s = sum(segment.duration_s for segment in schedule)
     _configure_flat_deterministic(env_cfg, total_duration_s)
 
@@ -206,6 +253,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg: RslRlBaseRunnerCfg) -> None:
         "checkpoint": str(Path(checkpoint).resolve()),
         "task": args_cli.task,
         "profile": args_cli.profile,
+        "schedule_source": schedule_source,
         "seed": args_cli.seed,
         "terrain": "plane",
         "deterministic": True,

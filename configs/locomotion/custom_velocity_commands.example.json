@@ -1,0 +1,25 @@
+{
+  "commands": [
+    {"name": "x_slow_1", "duration_s": 10.0, "vx": 0.05, "vy": 0.00, "wz": 0.00},
+    {"name": "x_slow_2", "duration_s": 10.0, "vx": 0.10, "vy": 0.00, "wz": 0.00},
+    {"name": "x_slow_3", "duration_s": 10.0, "vx": 0.15, "vy": 0.00, "wz": 0.00},
+    {"name": "x_slow_4", "duration_s": 10.0, "vx": 0.20, "vy": 0.00, "wz": 0.00},
+    {"name": "x_slow_5", "duration_s": 10.0, "vx": 0.25, "vy": 0.00, "wz": 0.00},
+    {"name": "x_slow_6", "duration_s": 10.0, "vx": 0.30, "vy": 0.00, "wz": 0.00},
+
+    {"name": "y_slow_1", "duration_s": 10.0, "vx": 0.00, "vy": 0.05, "wz": 0.00},
+    {"name": "y_slow_2", "duration_s": 10.0, "vx": 0.00, "vy": 0.10, "wz": 0.00},
+    {"name": "y_slow_3", "duration_s": 10.0, "vx": 0.00, "vy": 0.15, "wz": 0.00},
+    {"name": "y_slow_4", "duration_s": 10.0, "vx": 0.00, "vy": 0.20, "wz": 0.00},
+    {"name": "y_slow_5", "duration_s": 10.0, "vx": 0.00, "vy": 0.25, "wz": 0.00},
+    {"name": "y_slow_6", "duration_s": 10.0, "vx": 0.00, "vy": 0.30, "wz": 0.00},
+
+    {"name": "z_slow_1", "duration_s": 10.0, "vx": 0.00, "vy": 0.00, "wz": 0.05},
+    {"name": "z_slow_2", "duration_s": 10.0, "vx": 0.00, "vy": 0.00, "wz": 0.10},
+    {"name": "z_slow_3", "duration_s": 10.0, "vx": 0.00, "vy": 0.00, "wz": 0.15},
+    {"name": "z_slow_4", "duration_s": 10.0, "vx": 0.00, "vy": 0.00, "wz": 0.20},
+    {"name": "z_slow_5", "duration_s": 10.0, "vx": 0.00, "vy": 0.00, "wz": 0.25},
+    {"name": "z_slow_6", "duration_s": 10.0, "vx": 0.00, "vy": 0.00, "wz": 0.30}
+  ]
+  
+}

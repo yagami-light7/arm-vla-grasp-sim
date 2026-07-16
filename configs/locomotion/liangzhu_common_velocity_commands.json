@@ -1,0 +1,67 @@
+{
+  "commands": [
+    {
+      "name": "terminal_gait_forward",
+      "duration_s": 4.0,
+      "vx": 0.04,
+      "vy": 0.0,
+      "wz": 0.0
+    },
+    {
+      "name": "terminal_recovery_forward",
+      "duration_s": 4.0,
+      "vx": 0.08,
+      "vy": 0.0,
+      "wz": 0.0
+    },
+    {
+      "name": "path_recovery_creep_turn",
+      "duration_s": 4.0,
+      "vx": 0.06,
+      "vy": 0.0,
+      "wz": 0.30
+    },
+    {
+      "name": "final_alignment_turn",
+      "duration_s": 4.0,
+      "vx": 0.16,
+      "vy": 0.0,
+      "wz": 0.35
+    },
+    {
+      "name": "close_goal_forward",
+      "duration_s": 4.0,
+      "vx": 0.22,
+      "vy": 0.0,
+      "wz": 0.0
+    },
+    {
+      "name": "carry_nominal_arc",
+      "duration_s": 4.0,
+      "vx": 0.20,
+      "vy": 0.0,
+      "wz": 0.30
+    },
+    {
+      "name": "dwa_door_arc",
+      "duration_s": 4.0,
+      "vx": 0.30,
+      "vy": 0.0,
+      "wz": 0.35
+    },
+    {
+      "name": "pure_yaw_settle",
+      "duration_s": 4.0,
+      "vx": 0.0,
+      "vy": 0.0,
+      "wz": 0.35
+    },
+    {
+      "name": "final_pose_mixed",
+      "duration_s": 4.0,
+      "vx": 0.16,
+      "vy": 0.08,
+      "wz": 0.30
+    }
+  ]
+}

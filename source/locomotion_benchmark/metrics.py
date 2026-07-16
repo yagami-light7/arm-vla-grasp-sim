@@ -97,7 +97,7 @@ def analyze_samples(samples: list[dict[str, Any]], *, steady_fraction: float = 0
             "steady_window_fraction": steady_fraction,
             "gain_range": [0.70, 1.30],
             "rmse_limit": "max(0.04, 0.30 * abs(command))",
-            "note": "This diagnoses open-loop policy tracking; it does not by itself prove DWA causality.",
+            "note": "该测试隔离低层 policy 的速度跟踪能力，但不能单独证明所有 DWA 问题都由 policy 导致。",
         },
         "evaluated_segments": evaluated,
         "passed_segments": passed,
@@ -141,18 +141,29 @@ def _write_plot(path: Path, samples: list[dict[str, Any]]) -> str | None:
 
 def _write_markdown(path: Path, summary: dict[str, Any], metadata: dict[str, Any]) -> None:
     lines = [
-        "# Locomotion policy velocity tracking report",
+        "# 低层 Locomotion Policy 速度跟踪报告",
         "",
-        f"- Checkpoint: `{metadata.get('checkpoint', '')}`",
-        f"- Task interface: `{metadata.get('task', '')}`",
-        "- Terrain: flat plane; original policy observation/action layout retained",
-        f"- Control dt: `{metadata.get('control_dt_s', '')}` s",
-        f"- Evaluated: `{summary['evaluated_segments']}`; passed: `{summary['passed_segments']}`; pass rate: `{summary['pass_rate']:.1%}`",
+        f"- Checkpoint：`{metadata.get('checkpoint', '')}`",
+        f"- Isaac Lab task：`{metadata.get('task', '')}`",
+        f"- 命令来源：`{metadata.get('schedule_source', metadata.get('profile', 'unknown'))}`",
+        "- 地形：Isaac Lab 平地；保留原 policy 的 observation/action 布局",
+        f"- 控制周期：`{metadata.get('control_dt_s', '')}` 秒",
+        f"- 随机种子：`{metadata.get('seed', '')}`",
+        f"- 评估段数：`{summary['evaluated_segments']}`；通过：`{summary['passed_segments']}`；通过率：`{summary['pass_rate']:.1%}`",
         "",
-        "The pass flag requires steady-state gain 0.70–1.30 and RMSE <= max(0.04, 30% of command). "
-        "The result isolates low-level command tracking from PCT/DWA, but correlation with DWA retuning should be confirmed by replaying actual DWA command traces.",
+        "## 判定标准",
         "",
-        "| segment | command vx/vy/wz | measured vx/vy/wz | gain vx/vy/wz | pass |",
+        "每段取后 50% 样本作为稳态窗口。所有非零命令轴必须同时满足：",
+        "",
+        "- 稳态速度增益 `gain = measured_mean / command` 位于 `[0.70, 1.30]`。",
+        "- `RMSE <= max(0.04, 0.30 * abs(command))`。",
+        "- 运行期间没有跌倒或环境 reset。",
+        "",
+        "该测试隔离了低层 policy 的速度跟踪能力，不经过 PCT 或 DWA；它能证明速度执行模型是否失配，但不能单独证明所有导航失败都由 policy 引起。",
+        "",
+        "## 分段结果",
+        "",
+        "| 测试段 | 命令 vx/vy/wz | 实测均值 vx/vy/wz | 增益 vx/vy/wz | 结果 |",
         "|---|---:|---:|---:|---:|",
     ]
     for item in summary["segments"]:
@@ -161,8 +172,45 @@ def _write_markdown(path: Path, summary: dict[str, Any], metadata: dict[str, Any
         lines.append(
             f"| {item['segment_name']} | {item['cmd_vx']:.2f}/{item['cmd_vy']:.2f}/{item['cmd_wz']:.2f} | "
             f"{item['mean_vx']:.2f}/{item['mean_vy']:.2f}/{item['mean_wz']:.2f} | {gain_text} | "
-            f"{'yes' if item['tracking_pass'] else 'no'} |"
+            f"{'通过' if item['tracking_pass'] else '失败'} |"
         )
+    lines.extend(
+        [
+            "",
+            "## 为什么原 pipeline 需要频繁调整 DWA",
+            "",
+            "DWA 使用候选 `vx/vy/wz` 在预测时域内积分得到局部轨迹，隐含假设是低层执行器能近似实现该速度。当前 benchmark 表明这个假设只在部分速度区间成立：",
+            "",
+            "1. **低速死区**：小速度命令可能几乎不产生位移，末端 P 控制器越接近目标、输出越小，反而越容易原地踏步。",
+            "2. **非线性增益**：同一轴在不同速度档位的 gain 不恒定，DWA 预测的转弯半径和制动距离会与真实轨迹不同。",
+            "3. **方向不对称**：正负横移或旋转响应不同，不能用一个对称速度窗口准确描述。",
+            "4. **轴间耦合和横向漂移**：组合转弯时，即使命令 `vy=0` 也可能产生持续侧滑；带 `vy` 的最终位姿修正又可能执行不足。",
+            "5. **响应和停止滞后**：切换到零命令后仍存在残余速度，窄门、桌边和路径硬约束会放大这一误差。",
+            "6. **场景局部几何不同**：开阔区、窄门、楼梯入口和桌前空间对转弯半径、clearance 和路径偏离的容忍度不同，所以同一组补偿参数无法覆盖所有场景。",
+            "",
+            "因此，过去频繁调 DWA，本质上同时在补偿两件事：低层 policy 并非理想速度执行器，以及不同场景的局部碰撞/通道几何不同。",
+            "",
+            "## 原 pipeline 调整过的 DWA 参数",
+            "",
+            "| 参数类别 | 代表参数 | 调整目的/历史变化 |",
+            "|---|---|---|",
+            "| 速度上限 | `max_linear_velocity`、`max_angular_velocity` | 控制转弯半径和碰撞风险；carry 曾由 `0.30/0.35` 降到 `0.20/0.30` |",
+            "| 加速度 | `max_linear_accel` | 限制速度阶跃和携物扰动；carry 曾由 `1.50` 降到 `1.00` |",
+            "| 最小有效速度 | `min_active_linear_velocity`、`near_goal_min_active_linear_velocity` | 避开 policy 低速死区；不同入口曾使用约 `0.22~0.30`，brisk profile 更高 |",
+            "| 近目标限速 | `close_goal_speed_limit` | 在可停稳与不落入死区之间折中，历史入口使用过约 `0.22~0.30` |",
+            "| 预测与跟踪 | `prediction_horizon`、`lookahead_distance`、`waypoint_tolerance` | 窄通道曾收紧到 horizon `0.35 s`、lookahead `0.12 m`、waypoint tolerance `0.03 m` |",
+            "| 候选与打分 | 线/角速度采样数、`speed_bias`、路径/目标/clearance 权重 | 改变候选覆盖范围以及速度、贴路径、避障之间的偏好 |",
+            "| 原地转向 | `rotate_in_place_angle`、`yaw_align_min/max_wz` | 控制大角度时原地转还是 creeping turn，避免转得动但位置不前进 |",
+            "| 末端 P 控制 | `yaw_align_kp`、`yaw_align_vx`、`yaw_align_max_vy`、lateral deadband、yaw settle/polish 参数 | 控制最终位置和 yaw 收敛；曾使用 `vx=0.04/0.08/0.16` 等激活速度 |",
+            "| 路径偏离限制 | hard path deviation、initial-alignment/recovery deviation limit | 防止切角撞墙，同时避免机器人已经偏离后所有回归候选都被拒绝；recovery limit 曾由 `0.20` 放宽到 `0.35 m` |",
+            "| 通道与碰撞 | inflate radius、local clearance、route corridor radius | 适配点云/栅格离散误差；route corridor 曾由 `0.16` 放宽到 `0.24 m` |",
+            "| 稳定与停稳 | stable linear/angular tolerance、stable steps | 决定何时允许从 nav 切换到 pick/place，避免残余运动影响机械臂操作 |",
+            "",
+            "## 工程结论",
+            "",
+            "继续逐场景手调 DWA 可以暂时提高成功率，但会把低层响应缺陷编码进大量场景参数。更稳健的路线是：保留场景相关的碰撞、通道和路径约束；同时为当前 checkpoint 建立 command-response/deadzone 补偿模型，或重新训练低速、横移和组合速度跟踪更好的 locomotion policy。",
+        ]
+    )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

@@ -27,10 +27,12 @@ class VelocityTrackingBridge(Node):
     def __init__(self) -> None:
         super().__init__("loco_velocity_tracking_bridge")
         self.declare_parameter("samples_path", "")
+        self.declare_parameter("rows_per_poll", 1)
         samples_path_value = str(self.get_parameter("samples_path").value).strip()
         if not samples_path_value:
             raise ValueError("set -p samples_path:=/path/to/samples.jsonl")
         self.samples_path = Path(samples_path_value).expanduser()
+        self.rows_per_poll = max(1, int(self.get_parameter("rows_per_poll").value))
         self.frame_id = "map"
         self.offset = 0
         self.actual_path = PathMsg()
@@ -54,12 +56,17 @@ class VelocityTrackingBridge(Node):
             return
         with self.samples_path.open("r", encoding="utf-8") as handle:
             handle.seek(self.offset)
-            for line in handle:
+            for _ in range(self.rows_per_poll):
+                line_start = handle.tell()
+                line = handle.readline()
+                if not line:
+                    break
                 try:
                     self._publish(json.loads(line))
                 except json.JSONDecodeError:
+                    handle.seek(line_start)
                     break
-            self.offset = handle.tell()
+                self.offset = handle.tell()
 
     def _pose(self, x: float, y: float, yaw: float, stamp) -> PoseStamped:
         pose = PoseStamped()

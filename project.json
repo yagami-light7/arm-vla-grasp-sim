@@ -1,10 +1,28 @@
 {
-  "project": "arm_vla_liangzhu",
-  "branch": "liangzhu-deploy",
-  "goal": "在良渚单层场景中复用原 pct_multifloor locomotion policy，跑通移动操作 pipeline，并导出可验证的数据。",
-  "current_phase": "phase_126_randomized_full_physics_and_export_verified",
-  "last_updated": "2026-07-14 21:41:41 CST",
+  "project": "arm_vla_loco_policy_benchmark",
+  "branch": "loco-policy-benchmark",
+  "goal": "在不加载真实场景、PCT、DWA 或 CuRobo 的平地 Isaac Sim 环境中，定量测试 pct_multifloor locomotion checkpoint 的速度跟踪性能，并提供 ROS2/RViz 可视化。",
+  "current_phase": "phase_1_flat_ground_velocity_tracking_verified",
+  "last_updated": "2026-07-14 23:43:29 CST",
   "status": {
+    "loco_benchmark_worktree_created": true,
+    "loco_benchmark_worktree_path": "/mnt/sage_data/workspace/arm_vla_loco_policy_benchmark",
+    "loco_benchmark_flat_isaac_runtime_verified": true,
+    "loco_benchmark_checkpoint_loaded": true,
+    "loco_benchmark_observation_dimension": 260,
+    "loco_benchmark_action_dimension": 12,
+    "loco_benchmark_ros2_bridge_added": true,
+    "loco_benchmark_rviz_config_added": true,
+    "loco_benchmark_ros2_timeseries_plot_added": true,
+    "loco_benchmark_user_commands_added": true,
+    "loco_benchmark_user_command_runtime_verified": true,
+    "loco_benchmark_readme_added": true,
+    "loco_benchmark_liangzhu_common_commands_verified": true,
+    "loco_benchmark_chinese_report_added": true,
+    "loco_benchmark_dwa_tuning_summary_added": true,
+    "loco_benchmark_chinese_output_copy": "/mnt/sage_data/outputs/2026-07-14/liangzhu_common_commands_seed42",
+    "loco_benchmark_liangzhu_common_commands_pass_rate": 0.5555555555555556,
+    "loco_benchmark_full_seed42_pass_rate": 0.5,
     "astar_default_preserved": true,
     "pct_adapter_added": true,
     "pct_pipeline_switch_added": true,
@@ -6742,6 +6760,153 @@
         "在保持 0.12m place 交接容差的前提下先验证批量稳定性，再决定是否通过更强 final alignment 收紧到 0.08–0.10m。",
         "单独建立关闭 manipulation base/support lock 的严格物理基线；当前 accepted episode 可用于训练，但 pure_physics_success=false。",
         "固定 sim_ground_truth 专家闭环稳定后，再接入 RGB-D 目标定位，避免把真值闭环误报为视觉感知成功。"
+      ]
+    },
+    {
+      "time": "2026-07-14 23:02:00 CST",
+      "summary": "创建独立 loco-policy-benchmark worktree，并在不加载良渚、PCT、DWA 或 CuRobo 的 Isaac Lab 平面上直接向 pct_multifloor/model_26000.pt 下发 vx/vy/wz 阶跃命令。原始 DogOnly 260 维观测和 12 维腿部 action 接口保持不变，真实 CUDA 完整矩阵 20 档完成且无跌倒/reset；严格按所有非零轴判定后 10/20 通过。结果显示低速平移和部分低速旋转存在明显死区及方向不对称，可解释 DWA 近场收尾需要场景化调参的主要机制之一。新增逐帧 JSONL、CSV、PNG、JSON/Markdown 报告以及 ROS2/RViz 实时轨迹和速度箭头可视化。",
+      "files_changed": [
+        "configs/rviz/loco_velocity_tracking.rviz",
+        "docs/locomotion_policy_benchmark.md",
+        "project.json",
+        "scripts/locomotion/benchmark_velocity_tracking.py",
+        "scripts/locomotion/ros2_velocity_tracking_bridge.py",
+        "source/locomotion_benchmark/__init__.py",
+        "source/locomotion_benchmark/metrics.py",
+        "source/locomotion_benchmark/schedule.py",
+        "tests/locomotion/test_velocity_tracking_metrics.py"
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 Isaac Python pytest tests/locomotion/test_velocity_tracking_metrics.py -q",
+          "result": "passed",
+          "note": "2 passed；覆盖命令 schedule 和好/坏速度跟踪判定。"
+        },
+        {
+          "command": "real CUDA Isaac Sim quick flat benchmark",
+          "result": "passed_runtime_with_tracking_failures",
+          "note": "575 samples，7 档执行完成；验证 checkpoint、平面 RayCaster、260->12 policy 和全套导出。"
+        },
+        {
+          "command": "real CUDA Isaac Sim full seed42 flat benchmark",
+          "result": "passed_runtime_with_tracking_failures",
+          "note": "20 档、约 92 秒仿真，无跌倒/reset；严格组合轴标准 10/20 通过。输出 /mnt/sage_data/outputs/arm_vla_loco_policy_benchmark/full_seed42。"
+        },
+        {
+          "command": "ROS2 bridge DDS smoke",
+          "result": "passed",
+          "note": "系统 ROS2 Humble 节点成功读取 samples.jsonl 并初始化 DDS publisher；3 秒 timeout 干净退出。"
+        }
+      ],
+      "data_results": {
+        "evaluated_velocity_segments": 20,
+        "passed_velocity_segments": 10,
+        "pass_rate": 0.5,
+        "terminated_early": false,
+        "notable_failures": [
+          "vx=+0.05,+0.10,-0.10 m/s",
+          "vy=+0.05,+0.10,+0.20,-0.10 m/s",
+          "wz=+0.10,-0.20 rad/s",
+          "terminal_mix=(0.16,0.08,0.30) because vy did not track"
+        ],
+        "report": "/mnt/sage_data/outputs/arm_vla_loco_policy_benchmark/full_seed42/report.md"
+      },
+      "next_steps": [
+        "用 3 个以上 seed 重复 full profile，给出均值、方差和死区置信范围。",
+        "将真实 pipeline 的 DWA cmd_vel trace 导入同一 harness 回放，量化 planner 预测轨迹和实际轨迹偏差。",
+        "根据结果决定在 DWA 前加入 checkpoint 专属 command response model/deadzone compensation，还是重新训练低速跟踪能力更好的 locomotion policy。"
+      ]
+    },
+    {
+      "time": "2026-07-14 23:15:00 CST",
+      "summary": "改进低层速度 benchmark 的交互与可视化：新增独立 ROS2/Matplotlib 实时窗口，分别绘制 vx、vy、wz 三个折线图，并在每个图中叠加 command 与 measured；RViz 继续只承担空间轨迹和 TF。benchmark 新增可重复的 --command VX VY WZ 以及 --commands-json FILE，自定义命令进入统一 schedule、metadata 和指标导出链路。",
+      "files_changed": [
+        "configs/locomotion/custom_velocity_commands.example.json",
+        "docs/locomotion_policy_benchmark.md",
+        "project.json",
+        "scripts/locomotion/benchmark_velocity_tracking.py",
+        "scripts/locomotion/ros2_velocity_tracking_bridge.py",
+        "scripts/locomotion/ros2_velocity_tracking_plot.py",
+        "source/locomotion_benchmark/__init__.py",
+        "source/locomotion_benchmark/schedule.py",
+        "tests/locomotion/test_velocity_tracking_metrics.py"
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 Isaac Python pytest tests/locomotion/test_velocity_tracking_metrics.py -q",
+          "result": "passed",
+          "note": "4 passed；新增用户命令 schedule 和 JSON 解析覆盖。"
+        },
+        {
+          "command": "ROS2 bridge + ros2_velocity_tracking_plot.py with Agg backend",
+          "result": "passed",
+          "note": "plot 节点成功订阅 bridge 的 cmd_vel/measured_twist，并执行三轴曲线刷新路径。"
+        },
+        {
+          "command": "real CUDA Isaac Sim --command 0.12 -0.03 0.25 smoke",
+          "result": "passed_runtime",
+          "note": "25 个有效命令帧；metadata schedule_source=cli，最大命令注入误差 2.68e-9。"
+        }
+      ],
+      "next_steps": [
+        "如需交互式连续遥控，再增加 ROS2 cmd_vel 在线输入模式，并加入安全速度限幅和超时自动归零。",
+        "将真实 DWA cmd_vel 日志转换为 commands-json，复现局部规划器命令序列。"
+      ]
+    },
+    {
+      "time": "2026-07-14 23:27:00 CST",
+      "summary": "在根 README 中补充 benchmark 完整使用说明，并使用良渚 pipeline 中出现过的末端 gait、恢复 creep、final alignment、close-goal、携物弧线、门口 DWA、纯 yaw 和横移混合指令完成 9 组真实 CUDA 平地专项测试。9 组中 5 组通过；低速 vx=0.04/0.08 基本不响应，vx=0.06+wz=0.30 前进 gain 仅 0.49，最终混合指令 vy gain 仅 0.25。",
+      "files_changed": [
+        "README.md",
+        "configs/locomotion/liangzhu_common_velocity_commands.json",
+        "project.json"
+      ],
+      "tests": [
+        {
+          "command": "real CUDA Isaac Sim Liangzhu common commands seed42",
+          "result": "passed_runtime_with_tracking_failures",
+          "note": "9 段、2800 帧、无跌倒/reset、5/9 通过、最大命令注入误差 1.19e-8；输出 /mnt/sage_data/outputs/arm_vla_loco_policy_benchmark/liangzhu_common_commands_seed42。"
+        }
+      ],
+      "data_results": {
+        "evaluated_velocity_segments": 9,
+        "passed_velocity_segments": 5,
+        "pass_rate": 0.5555555555555556,
+        "sample_count": 2800,
+        "terminated_early": false,
+        "max_command_injection_error": 1.1920928966180355e-8,
+        "notable_failures": [
+          "terminal_gait_forward vx=0.04 gain=-0.05",
+          "terminal_recovery_forward vx=0.08 gain=0.01",
+          "path_recovery_creep_turn vx=0.06 gain=0.49 while wz=0.30 gain=1.10",
+          "final_pose_mixed vy=0.08 gain=0.25"
+        ],
+        "report": "/mnt/sage_data/outputs/arm_vla_loco_policy_benchmark/liangzhu_common_commands_seed42/report.md"
+      },
+      "next_steps": [
+        "使用不同 seed 和至少 3 次 repeats 复测相同命令，给出均值和置信区间。",
+        "将这些实测 command-response 数据用于 DWA deadzone compensation 或 velocity response model。"
+      ]
+    },
+    {
+      "time": "2026-07-14 23:38:46 CST",
+      "summary": "将 benchmark 自动生成的 report.md 改为中文，并在报告与根 README 中总结原 pipeline 频繁调整 DWA 的原因。核心结论是 DWA 同时在补偿低层 policy 的低速死区、非线性增益、轴间耦合、横向漂移和响应滞后，以及适配窄门、楼梯入口、桌前区域等场景局部几何。报告详细列出速度/加速度、最小激活速度、近目标限速、预测时域、lookahead、采样评分、原地转向、末端 P 控制、路径偏离、corridor/clearance 和稳定判定等历史调参项。良渚常用命令的完整中文产物已复制并重命名到 /mnt/sage_data/outputs/2026-07-14/liangzhu_common_commands_seed42。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "source/locomotion_benchmark/metrics.py",
+        "tests/locomotion/test_velocity_tracking_metrics.py"
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 Isaac Python pytest tests/locomotion/test_velocity_tracking_metrics.py -q",
+          "result": "passed",
+          "note": "5 passed；新增中文报告标题、DWA 分析章节、关键参数和中文结果的回归覆盖。"
+        }
+      ],
+      "next_steps": [
+        "用多 seed/repeat 复测并报告置信区间。",
+        "将真实 DWA cmd_vel trace 导入 benchmark，对比 planner rollout 与真实底盘轨迹。"
       ]
     }
   ],
