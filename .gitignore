@@ -40,9 +40,19 @@ events.out.tfevents*
 source/scene/multifloor/yinluyuan/*_build_report.json
 source/scene/multifloor/yinluyuan/*_visual_points_report.json
 
-# 已确认随仓库发布的 PCT 运行资产；大文件由 .gitattributes 交给 Git LFS。
+# 随仓库发布的运行资产。
 !source/scene/multifloor/mutifloor.pickle
 !source/scene/multifloor/mutifloor_ply_walkable.npy
 !checkpoints/go2_x5/pct_multifloor/model_26000.pt
+!source/scene/liangzhu/liangzhu.usda
+!source/scene/liangzhu/pct/liangzhu_single_floor.pickle
+!source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy
+!source/scene/liangzhu/ply/liangzhu_collision.ply
+!source/scene/multifloor/usda/multifloor.usda
+!source/scene/multifloor/usd/multifloor_collision.usd
+!source/scene/multifloor/ply/3dgs_collision.ply
+!source/scene/objects/apple/MesaTask-10K/MesaTask_Assets/apple/0176be079c2449e7aaebfb652910a854/usd/0176be079c2449e7aaebfb652910a854.usd
+!source/scene/objects/bottle/MesaTask-10K/MesaTask_Assets/body-care_products/ec67d7141333464ca1061320452f06a2/usd/ec67d7141333464ca1061320452f06a2.usd
+!source/scene/objects/cola/MesaTask-10K/MesaTask_Assets/can/0364ab96f338493c972248102b462aa4/usd/0364ab96f338493c972248102b462aa4.usd
 __pycache__/
 *.py[cod]

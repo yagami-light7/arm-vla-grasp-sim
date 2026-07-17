@@ -16,6 +16,7 @@
     "runtime_resolution_verified": true
   },
   "scene_collision": {
+    "path": "source/scene/liangzhu/usd/liangzhu_collision.usda",
     "path_env": "LIANGZHU_COLLISION_USD",
     "composed_prim_path": "/World/PhysicsScene/CollisionScene/LiangzhuCollision",
     "physics_collision_api_observed": true,
@@ -35,6 +36,7 @@
     "runtime_load_verified": true
   },
   "visual_scene": {
+    "path": "source/scene/liangzhu/usdz/liangzhu_cropped_nozip64.usdz",
     "path_env": "LIANGZHU_VISUAL_USDZ",
     "composed_prim_path": "/World/VisualScene/GaussianScene",
     "package_members_verified": [

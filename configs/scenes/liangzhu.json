@@ -47,7 +47,7 @@
       "prim_path": "/World/VisualScene/GaussianScene",
       "arc_type": "reference",
       "environment_variable": "LIANGZHU_VISUAL_USDZ",
-      "fallback_path": "/mnt/sage_data/usdz/Liangzhu/liangzhu_cropped_nozip64.usdz",
+      "fallback_path": "source/scene/liangzhu/usdz/liangzhu_cropped_nozip64.usdz",
       "package_member": "gauss.usda"
     },
     {
@@ -55,7 +55,7 @@
       "prim_path": "/World/PhysicsScene/CollisionScene",
       "arc_type": "payload",
       "environment_variable": "LIANGZHU_COLLISION_USD",
-      "fallback_path": "/mnt/sage_data/usd/Liangzhu/liangzhu_collision.usda"
+      "fallback_path": "source/scene/liangzhu/usd/liangzhu_collision.usda"
     }
   ],
   "required_assets": [
