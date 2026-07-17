@@ -9,24 +9,11 @@ import json
 import os
 import sys
 import traceback
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_LIANGZHU_TASK_JSON = "tasks/nav_pick_place_cola_liangzhu_pct.json"
-DEFAULT_LIANGZHU_PCT_SERVER_SCRIPT = "scripts/navigation/pct_grid_server.py"
-DEFAULT_LIANGZHU_PCT_TOMOGRAM = (
-    "source/scene/liangzhu/pct/liangzhu_single_floor.pickle"
-)
-DEFAULT_LIANGZHU_PCT_WALKABLE = (
-    "source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy"
-)
-DEFAULT_LIANGZHU_COLLISION_PLY = (
-    "source/scene/liangzhu/ply/liangzhu_collision.ply"
-)
-DEFAULT_LIANGZHU_LOCOMOTION_CHECKPOINT = (
-    "checkpoints/go2_x5/pct_multifloor/model_26000.pt"
-)
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -45,7 +32,59 @@ from source.pipeline import (  # noqa: E402
 )
 from source.pipeline.dry_run import create_dry_run_pipeline  # noqa: E402
 from source.pipeline.isaac_compat import patch_numpy_for_isaacsim  # noqa: E402
+from source.scene.profiles import (  # noqa: E402
+    SceneProfileError,
+    apply_scene_profile_defaults,
+    check_scene_profile_assets,
+    list_scene_profiles,
+    load_scene_profile,
+)
+from source.scene.runtime_assets import (  # noqa: E402
+    materialize_scene_asset_bindings,
+    write_scene_binding_report,
+)
 from source.tasks import JsonTaskProvider, prepare_episode_spec  # noqa: E402
+
+
+DEFAULT_SCENE_PROFILE = "liangzhu"
+
+# NuRec 体渲染必须在 Kit 首次 Hydra 同步之前锁定为单 GPU；运行期再改设置已太晚。
+NUREC_KIT_ARGS = (
+    "--/renderer/multiGpu/enabled=false",
+    "--/renderer/multiGpu/autoEnable=false",
+    "--/renderer/multiGpu/maxGpuCount=1",
+    "--/rtx/post/aa/op=1",
+    "--/rtx-defaults/post/aa/op=1",
+    "--/rtx/rtpt/gaussian/skipTonemapping/enabled=false",
+)
+
+
+def _scene_isaac_kit_args(scene_profile: Any) -> tuple[str, ...]:
+    """返回必须在 Isaac App 创建前应用的场景渲染参数。"""
+
+    if scene_profile.supports("nurec_visual"):
+        return NUREC_KIT_ARGS
+    return ()
+
+
+def _scene_isaac_app_overrides(scene_profile: Any) -> dict[str, Any]:
+    """返回 SimulationApp 会在启动后再次写入的场景专用配置。"""
+
+    if scene_profile.supports("nurec_visual"):
+        return {
+            "multi_gpu": False,
+            # Isaac Sim 5.1 的 NuRec volume 在 DLSS render product 路径会触发 CUDA 700。
+            "anti_aliasing": 1,
+        }
+    return {}
+
+
+def _scene_isaac_runtime_overrides(scene_profile: Any) -> dict[str, Any]:
+    """返回环境创建时应用、晚于 SimulationApp 的场景渲染配置。"""
+
+    if scene_profile.supports("nurec_visual"):
+        return {"render_antialiasing_mode": "TAA"}
+    return {}
 
 
 def _project_path(raw_path: str | Path) -> Path:
@@ -170,8 +209,6 @@ def _locomotion_runtime_kwargs(config: FullPhysicsConfig) -> dict[str, object]:
         # 避免 DWA 起步爬升阶段触发原地换脚。
         kwargs["standing_command_threshold"] = 0.08
         kwargs["policy_action_warmup_steps"] = 50
-        # Yinluyuan 扫描碰撞网格在 F2 有厘米级裂缝，使用窄物理通行面避免足端卡住。
-        kwargs["collision_floor_proxy_profile"] = "yinluyuan_f2"
     return kwargs
 
 
@@ -197,19 +234,61 @@ def _navigation_visual_runtime_kwargs(
     }
 
 
+def _navigation_smoke_viewport_runtime_kwargs(
+    *,
+    headless: bool,
+    stair_locomotion_smoke: bool,
+    overview_camera_mode: str,
+    overview_camera_prim_path: str,
+) -> dict[str, object]:
+    """按场景 profile 设置导航 smoke 的初始视口相机。"""
+
+    return {
+        "viewport_camera_prim_path": str(overview_camera_prim_path),
+        "auto_manage_viewport_camera": bool(
+            headless or stair_locomotion_smoke or overview_camera_mode == "fixed"
+        ),
+    }
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="运行单进程、单 World 的纯物理 nav-pick-place pipeline。",
     )
     parser.add_argument(
+        "--scene-profile",
+        default=DEFAULT_SCENE_PROFILE,
+        help="场景 profile 名称或别名；默认 liangzhu，可用 --list-scene-profiles 查看。",
+    )
+    parser.add_argument(
+        "--list-scene-profiles",
+        action="store_true",
+        help="列出当前仓库可用场景并退出。",
+    )
+    parser.add_argument(
+        "--check-scene-assets",
+        action="store_true",
+        help="检查所选场景的运行资产并退出。",
+    )
+    parser.add_argument(
+        "--pct-multifloor",
+        action="store_const",
+        const="multi_floor",
+        dest="scene_profile",
+        help="兼容旧命令：等价于 --scene-profile multi_floor。",
+    )
+    parser.add_argument(
         "--task-json",
-        default=DEFAULT_LIANGZHU_TASK_JSON,
-        help="任务 JSON 路径；默认使用良渚可乐到鼠标垫随机化任务。",
+        default=None,
+        help="任务 JSON 路径；默认由所选 scene profile 提供。",
     )
     parser.add_argument(
         "--output-dir",
-        default="outputs/full_physics_pipeline",
-        help="episode、事件、帧和 summary 的输出目录。",
+        default=None,
+        help=(
+            "episode、事件、帧和 summary 的输出目录；stair-locomotion-smoke "
+            "默认写入 outputs/stair_locomotion_smoke。"
+        ),
     )
     parser.add_argument("--num-episodes", type=int, default=1, help="运行的 episode 数量。")
     parser.add_argument(
@@ -221,8 +300,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--randomize-task",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="按 episode seed 随机采样任务布局；默认开启，可用 --no-randomize-task 关闭。",
+        default=None,
+        help="按 episode seed 随机采样任务布局；默认由 scene profile 决定。",
     )
     parser.add_argument(
         "--show-randomization-debug",
@@ -231,20 +310,27 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--show-planned-trajectories",
-        action="store_true",
-        help="在完整 pipeline 中显示 PCT 路径和 cuRobo TCP 规划轨迹；仅添加非物理 USD guide。",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "显示 PCT 路径和 cuRobo TCP 轨迹；stair-locomotion-smoke 和 "
+            "PCT preview 默认开启，完整 pipeline 默认关闭。"
+        ),
     )
     parser.add_argument(
         "--randomize-base-goal",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="开启 pick/place 导航交接 base_goal 随机化；默认开启，可用 --no-randomize-base-goal 关闭。",
+        default=None,
+        help="开启 pick/place 导航交接 base_goal 随机化；默认由 scene profile 决定。",
     )
     parser.add_argument(
         "--keep-window-open",
         action=argparse.BooleanOptionalAction,
-        default=False,
-        help="pipeline 结束后保持 GUI 窗口，便于检查场景和调试标记；默认关闭。",
+        default=None,
+        help=(
+            "pipeline 结束后保持 GUI 窗口，便于检查场景和调试标记；"
+            "stair-locomotion-smoke 的 GUI 默认开启。"
+        ),
     )
     parser.add_argument(
         "--headless",
@@ -255,10 +341,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--navigation-visual-mode",
         choices=("auto", "collision", "full"),
-        default="collision",
+        default=None,
         help=(
-            "物理验收视觉模式；默认 collision，避免 GaussianScene 多相机 CUDA 700；"
-            "full 显式加载 GaussianScene，auto 保留旧自适应语义。"
+            "物理验收视觉模式；full 加载 GaussianScene，collision 仅显示碰撞场景；"
+            "默认由 scene profile 决定。"
         ),
     )
     parser.add_argument(
@@ -281,13 +367,33 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--record-video",
-        action="store_true",
-        help="启用展示用 overview 视频录制；默认关闭。",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "启用视频录制；PCT 稳定完整 pipeline 和 stair-locomotion-smoke "
+            "默认开启，可用 --no-record-video 关闭。"
+        ),
+    )
+    parser.add_argument(
+        "--record-dataset",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否保存 LeRobot dataset 图像和数据；物理验收可用 --no-record-dataset 节省空间。",
+    )
+    parser.add_argument(
+        "--dataset-camera-keys",
+        nargs="+",
+        choices=("front", "wrist", "overview"),
+        default=list(RecordingSettings().camera_keys),
+        help=(
+            "训练数据相机流，默认 front wrist overview；至少包含 front。"
+            "可用于隔离特定渲染后端问题。"
+        ),
     )
     parser.add_argument(
         "--video-mode",
         choices=("overview", "front", "font", "wrist", "all"),
-        default="overview",
+        default=None,
         help=(
             "录制视频类型：overview 为第三人称展示视角，front/font 为前视 observation "
             "camera，wrist 为腕部 observation camera，all 同时导出 overview/front/wrist。"
@@ -312,13 +418,20 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--overview-camera-mode",
         choices=("fixed", "auto"),
-        default="fixed",
-        help="overview camera 选择模式；fixed 固定优先指定相机，auto 保留按任务阶段切换。",
+        default=None,
+        help="overview camera 选择模式；默认由 scene profile 决定。",
     )
     parser.add_argument(
         "--overview-camera-prim-path",
-        default=DEFAULT_OVERVIEW_CAMERA_PRIM_PATH,
-        help="image/video/GUI 共用的 overview Camera prim，默认 /World/overview。",
+        default=None,
+        help="image/video/GUI 共用的 overview Camera prim；默认由 scene profile 决定。",
+    )
+    parser.add_argument(
+        "--overview-camera-schedule",
+        default=None,
+        help=(
+            "headless overview Camera0-8 切换规则 JSON；可按 pipeline state 和机器人 XYZ 调整。"
+        ),
     )
     parser.add_argument(
         "--overview-capture-backend",
@@ -367,56 +480,51 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--global-planner",
         choices=("astar", "pct"),
-        default="pct",
-        help="全局导航规划器；良渚默认使用 PCT，仍可显式切换 astar。",
+        default=None,
+        help="全局导航规划器；默认由 scene profile 决定。",
     )
     parser.add_argument("--pct-planner-root", help="兼容旧外部入口的 PCT 根目录；默认不依赖 external/PCT。")
     parser.add_argument(
         "--pct-server-script",
-        default=DEFAULT_LIANGZHU_PCT_SERVER_SCRIPT,
-        help="PCT server 脚本路径；默认使用仓库内良渚 grid server。",
+        default=None,
+        help="PCT server 脚本路径；默认由 scene profile 决定。",
     )
     parser.add_argument("--pct-server-python", help="运行 PCT server 的 Python 解释器。")
     parser.add_argument(
         "--pct-tomogram-path",
-        default=DEFAULT_LIANGZHU_PCT_TOMOGRAM,
-        help="PCT tomogram pickle 路径；默认使用良渚单层地图。",
+        default=None,
+        help="PCT tomogram pickle 路径；默认由 scene profile 决定。",
     )
     parser.add_argument(
         "--pct-walkable-path",
-        default=DEFAULT_LIANGZHU_PCT_WALKABLE,
-        help="PCT walkable map；默认使用良渚单层地图。",
+        default=None,
+        help="PCT walkable map；默认由 scene profile 决定。",
     )
     parser.add_argument(
         "--pct-collision-ply-path",
-        default=DEFAULT_LIANGZHU_COLLISION_PLY,
-        help=(
-            "PCT DWA collision PLY；默认使用仓库内良渚碰撞点云，"
-            "可通过 CLI 显式覆盖。"
-        ),
+        default=None,
+        help="PCT DWA collision PLY；默认由 scene profile 决定。",
     )
     fallback_group = parser.add_mutually_exclusive_group()
     fallback_group.add_argument(
         "--pct-no-fallback",
         action="store_true",
         dest="pct_no_fallback",
-        default=True,
-        help="PCT 规划失败时不回退 A*；良渚默认开启。",
+        default=None,
+        help="PCT 规划失败时不回退 A*。",
     )
     fallback_group.add_argument(
         "--pct-allow-fallback",
+        "--pct-fallback-to-astar",
         action="store_false",
         dest="pct_no_fallback",
-        help="兼容旧任务：允许 PCT 失败时回退 A*。",
+        help="允许 PCT 失败时回退 A*。",
     )
     parser.add_argument(
         "--pct-coord-mode",
         choices=("sim_to_pct_180deg", "identity"),
-        default="identity",
-        help=(
-            "Isaac 世界坐标到 PCT/PLY 的变换模式；旧多楼层场景使用 "
-            "sim_to_pct_180deg，良渚同坐标 PLY 使用 identity。"
-        ),
+        default=None,
+        help="Isaac 世界坐标到 PCT/PLY 的变换模式；默认由 scene profile 决定。",
     )
     parser.add_argument("--pct-offset-x", type=float, default=0.0, help="PCT 坐标 X 偏移。")
     parser.add_argument("--pct-offset-y", type=float, default=0.0, help="PCT 坐标 Y 偏移。")
@@ -565,8 +673,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--pct-stair-float",
-        action="store_true",
-        help="携物上楼阶段冻结底盘并沿 PCT 3D 楼梯路径小步漂移。",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "携物上楼阶段冻结底盘并沿 PCT 3D 路径漂移；"
+            "PCT 稳定完整 pipeline 默认开启，可用 --no-pct-stair-float 关闭。"
+        ),
     )
     parser.add_argument(
         "--pct-stair-float-speed",
@@ -636,14 +748,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--locomotion-checkpoint",
-        default=DEFAULT_LIANGZHU_LOCOMOTION_CHECKPOINT,
-        help="RSL-RL locomotion checkpoint；默认使用已验证的 Go2-X5 model_26000。",
+        default=None,
+        help="RSL-RL locomotion checkpoint；默认由 scene profile 决定。",
     )
     parser.add_argument(
         "--policy-profile",
         choices=("flat", "pct_multifloor"),
-        default="pct_multifloor",
-        help="底层 locomotion policy profile；良渚默认 pct_multifloor。",
+        default=None,
+        help="底层 locomotion policy profile；默认由 scene profile 决定。",
     )
     parser.add_argument(
         "--require-locomotion-checkpoint",
@@ -681,6 +793,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="从 pick 导航终点出发，验证导航到 place 时机械臂保持全零 home 且夹爪闭合。",
     )
     mode_group.add_argument(
+        "--stair-locomotion-smoke",
+        action="store_const",
+        const="stair_locomotion_smoke",
+        dest="mode",
+        help=(
+            "从楼梯入口重置并沿 PCT 在线规划的 path_3d 纯物理上楼；"
+            "禁用 Float 和 DWA，默认开启 GUI、保留窗口并录制 overview 视频和数据集，"
+            "越过楼梯出口并进入 F2 平台后结束。"
+        ),
+    )
+    mode_group.add_argument(
         "--pct-plan-preview",
         action="store_const",
         const="pct_plan_preview",
@@ -712,8 +835,127 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_runtime_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    """按 scene profile 补齐稳定默认值，同时保留显式 CLI 覆盖。"""
+
+    if args.list_scene_profiles:
+        try:
+            profiles = list_scene_profiles(PROJECT_ROOT)
+        except SceneProfileError as exc:
+            raise SystemExit(str(exc)) from exc
+        for profile in profiles:
+            aliases = ", ".join(profile.aliases) if profile.aliases else "-"
+            print(
+                f"{profile.name:12s} aliases=[{aliases}] {profile.description}",
+                flush=True,
+            )
+        raise SystemExit(0)
+
+    try:
+        profile = load_scene_profile(args.scene_profile, PROJECT_ROOT)
+        applied_defaults = apply_scene_profile_defaults(
+            args,
+            profile,
+            mode=str(args.mode),
+        )
+    except SceneProfileError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    args.scene_profile = profile.name
+    args.scene_profile_config_path = str(profile.config_path)
+    args.scene_profile_task_name = profile.task_scene_profile
+    args.scene_profile_aliases = profile.all_names
+    args.scene_runtime_asset_manifest = profile.runtime_asset_manifest
+    args.scene_profile_defaults_applied = applied_defaults
+
+    stair_locomotion_smoke = str(args.mode) == "stair_locomotion_smoke"
+    generic_defaults = {
+        "output_dir": f"outputs/{profile.name}",
+        "global_planner": "pct",
+        "pct_server_script": "scripts/navigation/pct_grid_server.py",
+        "pct_no_fallback": True,
+        "pct_coord_mode": "identity",
+        "policy_profile": "pct_multifloor",
+        "locomotion_task": PCT_MULTIFLOOR_LOCOMOTION_TASK,
+        "locomotion_checkpoint": (
+            "checkpoints/go2_x5/pct_multifloor/model_26000.pt"
+        ),
+        "randomize_task": False,
+        "randomize_base_goal": False,
+        "show_planned_trajectories": bool(
+            stair_locomotion_smoke or str(args.mode) == "pct_plan_preview"
+        ),
+        "pct_stair_float": False,
+        "navigation_visual_mode": "full",
+        "overview_camera_mode": "fixed",
+        "overview_camera_prim_path": DEFAULT_OVERVIEW_CAMERA_PRIM_PATH,
+        "video_mode": "overview",
+    }
+    for key, value in generic_defaults.items():
+        if getattr(args, key) is None:
+            setattr(args, key, value)
+
+    if args.task_json is None:
+        raise SystemExit(
+            f"场景 profile {profile.name!r} 未提供 task_json，请显式传 --task-json。"
+        )
+    if stair_locomotion_smoke and not profile.supports(
+        "stair_locomotion_smoke"
+    ):
+        raise SystemExit(
+            f"场景 profile {profile.name!r} 未声明 stair_locomotion_smoke 能力。"
+        )
+    if stair_locomotion_smoke and str(args.global_planner) != "pct":
+        raise SystemExit("--stair-locomotion-smoke 只支持 PCT 全局规划器。")
+    if args.keep_window_open is None:
+        args.keep_window_open = bool(stair_locomotion_smoke and not args.headless)
+    if args.record_video is None:
+        args.record_video = bool(
+            str(args.mode) == "full_physics" or stair_locomotion_smoke
+        )
+    args.runtime_preset = f"scene_profile:{profile.name}"
+
+    if args.check_scene_assets:
+        report = check_scene_profile_assets(profile, PROJECT_ROOT)
+        print(
+            f"scene_profile={profile.name} available={len(report.available)} "
+            f"missing={len(report.missing)}",
+            flush=True,
+        )
+        for path in report.missing:
+            print(f"MISSING {path}", flush=True)
+        if report.success:
+            print("PASS", flush=True)
+        raise SystemExit(0 if report.success else 2)
+    return args
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    return _build_parser().parse_args(argv)
+    return _resolve_runtime_defaults(_build_parser().parse_args(argv))
+
+
+def _validate_task_scene_profile(
+    args: argparse.Namespace,
+    raw_task: dict[str, Any],
+) -> None:
+    """防止显式 task 覆盖后静默加载到错误场景。"""
+
+    actual = raw_task.get("scene_profile")
+    if actual is None:
+        return
+
+    def _normalized(value: object) -> str:
+        return str(value).strip().lower().replace("-", "_")
+
+    accepted = {
+        _normalized(args.scene_profile_task_name),
+        *(_normalized(value) for value in args.scene_profile_aliases),
+    }
+    if _normalized(actual) not in accepted:
+        raise SystemExit(
+            "任务与场景 profile 不匹配："
+            f"task.scene_profile={actual!r}，CLI scene_profile={args.scene_profile!r}。"
+        )
 
 
 def _validate_external_plan_paths(config: FullPhysicsConfig) -> None:
@@ -756,6 +998,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mode = str(args.mode)
     dry_run = mode == "dry_run"
     simulation_smoke = mode == "simulation_smoke"
+    stair_locomotion_smoke = mode == "stair_locomotion_smoke"
     navigation_smoke = mode == "navigation_smoke"
     navigation_carry_smoke = mode == "navigation_carry_smoke"
     pct_plan_preview = mode == "pct_plan_preview"
@@ -768,6 +1011,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("full-physics / pick-smoke 模式禁止使用离线 plan JSON；pick/place 必须按当前仿真状态在线规划。")
     if args.keep_window_open and args.headless:
         raise SystemExit("--keep-window-open 只能与 --no-headless 一起使用。")
+    if stair_locomotion_smoke and args.pct_stair_float:
+        raise SystemExit("--stair-locomotion-smoke 固定禁用 Float，请不要传 --pct-stair-float。")
     if args.record_video and dry_run:
         raise SystemExit("--record-video 需要真实 Isaac stage / camera images，不能与 --dry-run 一起使用。")
     if args.export_video_camera_trajectory and not args.record_video:
@@ -780,6 +1025,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         simulation_smoke
         or navigation_smoke
         or navigation_carry_smoke
+        or stair_locomotion_smoke
         or pct_plan_preview
         or pick_smoke
         or manipulation_apply_smoke
@@ -827,6 +1073,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         simulation_smoke=simulation_smoke,
         navigation_smoke=navigation_smoke,
         navigation_carry_smoke=navigation_carry_smoke,
+        stair_locomotion_smoke=stair_locomotion_smoke,
         pct_plan_preview=pct_plan_preview,
         pick_smoke=pick_smoke,
         manipulation_smoke=manipulation_smoke,
@@ -963,6 +1210,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
         ),
         recording=RecordingSettings(
+            enabled=bool(args.record_dataset),
+            camera_keys=tuple(args.dataset_camera_keys),
             debug_per_episode_lerobot=(
                 os.environ.get("FULL_PHYSICS_DEFER_LEROBOT_EXPORT") != "1"
             ),
@@ -979,6 +1228,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_path=_project_path(args.video_out) if args.video_out else None,
             overview_camera_mode=str(args.overview_camera_mode),
             overview_camera_prim_path=str(args.overview_camera_prim_path),
+            overview_camera_schedule_path=(
+                _project_path(args.overview_camera_schedule)
+                if args.overview_camera_schedule
+                else None
+            ),
             width=int(args.video_width),
             height=int(args.video_height),
             overview_capture_backend=str(args.overview_capture_backend),
@@ -995,7 +1249,37 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     _validate_external_plan_paths(config)
     base_spec = JsonTaskProvider().load(config.task_json)
+    _validate_task_scene_profile(args, base_spec.raw_task)
     config.output_dir.mkdir(parents=True, exist_ok=True)
+    scene_profile = load_scene_profile(args.scene_profile, PROJECT_ROOT)
+    scene_isaac_kit_args = _scene_isaac_kit_args(scene_profile)
+    scene_isaac_app_overrides = _scene_isaac_app_overrides(scene_profile)
+    scene_isaac_runtime_overrides = _scene_isaac_runtime_overrides(scene_profile)
+    binding_profile = scene_profile
+    if base_spec.raw_task.get("scene_profile") is None:
+        # 兼容没有 scene_profile 字段的旧任务：它们不应继承默认场景的大资产绑定。
+        binding_profile = replace(scene_profile, usd_asset_bindings=())
+    scene_binding_report = materialize_scene_asset_bindings(
+        binding_profile,
+        base_spec.scene_usd,
+        config.output_dir / ".runtime" / f"{scene_profile.name}_scene_bound.usda",
+        project_root=PROJECT_ROOT,
+    )
+    runtime_scene_usd = str(scene_binding_report["runtime_scene_usd"])
+    bound_raw_task = {
+        **base_spec.raw_task,
+        "scene_usd": runtime_scene_usd,
+        "scene_asset_binding_runtime": scene_binding_report,
+    }
+    base_spec = replace(
+        base_spec,
+        scene_usd=runtime_scene_usd,
+        raw_task=bound_raw_task,
+    )
+    scene_binding_report_path = write_scene_binding_report(
+        scene_binding_report,
+        config.output_dir / ".runtime" / "scene_asset_bindings.json",
+    )
     batch_summary_path = None
     if not flat_episode_output:
         batch_summary_path = config.output_dir / "batch_summary.jsonl"
@@ -1011,6 +1295,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         "created_at": _utc_now_iso(),
         "updated_at": _utc_now_iso(),
         "mode": mode,
+        "runtime_preset": str(args.runtime_preset),
+        "scene_profile": str(args.scene_profile),
+        "scene_profile_config_path": str(args.scene_profile_config_path),
+        "scene_runtime_asset_manifest": str(args.scene_runtime_asset_manifest),
+        "scene_asset_binding_report": scene_binding_report,
+        "scene_asset_binding_report_path": str(scene_binding_report_path),
+        "scene_profile_defaults_applied": dict(
+            args.scene_profile_defaults_applied
+        ),
+        "scene_isaac_kit_args": list(scene_isaac_kit_args),
+        "scene_isaac_app_overrides": dict(scene_isaac_app_overrides),
+        "scene_isaac_runtime_overrides": dict(scene_isaac_runtime_overrides),
         "task_json": str(config.task_json),
         "output_dir": str(config.output_dir),
         "headless": bool(config.headless),
@@ -1071,6 +1367,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             simulation_smoke
             or navigation_smoke
             or navigation_carry_smoke
+            or stair_locomotion_smoke
             or pct_plan_preview
             or pick_smoke
             or manipulation_apply_smoke
@@ -1096,18 +1393,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or config.randomization.show_debug_region
                     or not config.headless
                 ),
+                kit_args=list(scene_isaac_kit_args),
+                simulation_app_overrides=dict(scene_isaac_app_overrides),
             )
-            app_launcher = AppLauncher(
-                {
-                    "headless": config.headless,
-                    "enable_cameras": bool(
-                        ((config.full_physics or config.pick_smoke) and config.recording.enabled)
-                        or config.video.enabled
-                        or config.randomization.show_debug_region
-                        or not config.headless
-                    ),
-                }
-            )
+            app_launcher_config = {
+                "headless": config.headless,
+                "enable_cameras": bool(
+                    ((config.full_physics or config.pick_smoke) and config.recording.enabled)
+                    or config.video.enabled
+                    or config.randomization.show_debug_region
+                    or not config.headless
+                ),
+            }
+            if scene_isaac_kit_args:
+                app_launcher_config["kit_args"] = " ".join(scene_isaac_kit_args)
+            app_launcher_config.update(scene_isaac_app_overrides)
+            app_launcher = AppLauncher(app_launcher_config)
             _record_startup_phase(
                 startup_status,
                 startup_status_path,
@@ -1273,6 +1574,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                                     and bool(config.recording.camera_keys)
                                 ),
                             ),
+                            **scene_isaac_runtime_overrides,
+                            auto_manage_viewport_camera=bool(
+                                config.headless
+                                or config.video.overview_camera_mode == "fixed"
+                            ),
                             enable_front_camera=(
                                 (
                                     config.recording.enabled
@@ -1354,21 +1660,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                         ),
                     ),
                 )
-            elif navigation_smoke or navigation_carry_smoke:
+            elif navigation_smoke or navigation_carry_smoke or stair_locomotion_smoke:
                 from source.pipeline.navigation_smoke import (
                     create_navigation_carry_smoke_pipeline,
                     create_navigation_smoke_pipeline,
+                    create_stair_locomotion_smoke_pipeline,
                 )
                 from source.simulation import (
                     IsaacLabNavigationRuntime,
                     IsaacLabNavigationRuntimeConfig,
                 )
 
-                pipeline_factory = (
-                    create_navigation_carry_smoke_pipeline
-                    if navigation_carry_smoke
-                    else create_navigation_smoke_pipeline
-                )
+                if stair_locomotion_smoke:
+                    pipeline_factory = create_stair_locomotion_smoke_pipeline
+                elif navigation_carry_smoke:
+                    pipeline_factory = create_navigation_carry_smoke_pipeline
+                else:
+                    pipeline_factory = create_navigation_smoke_pipeline
                 pipeline = pipeline_factory(
                     config=config,
                     episode_spec=episode_spec,
@@ -1382,6 +1690,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                             **_navigation_visual_runtime_kwargs(
                                 config.locomotion.policy_profile,
                                 args.navigation_visual_mode,
+                            ),
+                            **_navigation_smoke_viewport_runtime_kwargs(
+                                headless=config.headless,
+                                stair_locomotion_smoke=stair_locomotion_smoke,
+                                overview_camera_mode=(
+                                    config.video.overview_camera_mode
+                                ),
+                                overview_camera_prim_path=(
+                                    config.recording.overview_camera_prim_path
+                                ),
+                            ),
+                            show_velocity_command_debug=bool(
+                                stair_locomotion_smoke
+                                and config.show_planned_trajectories
                             ),
                             scene_light_mode=config.lighting.scene_light_mode,
                             camera_light_intensity=(

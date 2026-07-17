@@ -4,6 +4,11 @@ from .adapters.dwa_nav_adapter import NavPlanner as LegacyDwaNavPlanner
 from .executor import DWAExecutor, DwaNavExecutor
 from .planner_adapter import AStarNavPlanner, AStarPlannerAdapter
 from .pct_adapter import PCTNavPlanner, PCTPlannerClient, PCTPlannerConfig
+from .stair_locomotion import (
+    StairCenterlinePlanner,
+    StairLocomotionExecutor,
+    StairLocomotionExecutorConfig,
+)
 
 # 保留旧脚本使用的 NavPlanner 名称，新 pipeline 显式导入 AStarNavPlanner/DwaNavExecutor。
 NavPlanner = LegacyDwaNavPlanner
@@ -18,4 +23,7 @@ __all__ = [
     "PCTNavPlanner",
     "PCTPlannerClient",
     "PCTPlannerConfig",
+    "StairCenterlinePlanner",
+    "StairLocomotionExecutor",
+    "StairLocomotionExecutorConfig",
 ]

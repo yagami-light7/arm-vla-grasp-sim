@@ -156,7 +156,10 @@ class CuroboPlannerServerProcess:
         server_script = self.config.project_root / "scripts/curobo/grasp_planner_server.py"
         env = os.environ.copy()
         env["GO2_X5_WORKSPACE"] = str(self.config.project_root)
-        env.setdefault("GO2_X5_CUROBO_SOURCE_ROOT", "/home/light/workspace/curobo")
+        env.setdefault(
+            "GO2_X5_CUROBO_SOURCE_ROOT",
+            str(self.config.project_root / "external/curobo"),
+        )
         # 常驻服务的默认值对齐 random nav-pick-place baseline；每次请求仍会显式传入策略。
         env["GO2_X5_SIDE_GRASP_PLAN_VERTICAL_LIFT"] = "0"
         env["GO2_X5_SIDE_GRASP_FALLBACK_RETREAT"] = "0"

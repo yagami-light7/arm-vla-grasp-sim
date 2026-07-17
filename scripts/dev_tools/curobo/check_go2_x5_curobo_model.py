@@ -23,24 +23,34 @@
     6. robot_spheres 存在，且 arm_link1 已使用 refit 后的最终版本。
 
 运行：
-    cd /home/light/workspace/arm_vla
+    cd /path/to/arm_vla_pct
 
-    PYTHONPATH=/home/light/workspace/curobo:${PYTHONPATH:-} \
-    /data/conda_envs/isaacsim51_3dgs_grasp/bin/python \
+    export CUROBO_ROOT="${GO2_X5_CUROBO_SOURCE_ROOT:-$PWD/external/curobo}"
+    PYTHONPATH="$CUROBO_ROOT:${PYTHONPATH:-}" \
+    python \
       scripts/dev_tools/curobo/check_go2_x5_curobo_model.py
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import sys
 
 import torch
 import yaml
 
 
-WORKSPACE = Path("/home/light/workspace/arm_vla")
-CUROBO_SOURCE_ROOT = Path("/home/light/workspace/curobo")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+WORKSPACE = Path(
+    os.environ.get("GO2_X5_WORKSPACE", str(PROJECT_ROOT))
+).expanduser().resolve()
+CUROBO_SOURCE_ROOT = Path(
+    os.environ.get(
+        "GO2_X5_CUROBO_SOURCE_ROOT",
+        str(WORKSPACE / "external/curobo"),
+    )
+).expanduser().resolve()
 
 ROBOT_YAML = WORKSPACE / "source/robot/go2_x5/curobo/go2_x5_arm.yml"
 
@@ -63,6 +73,10 @@ PREFERRED_ARM_LINK1_SPHERE_COUNT = 4
 
 if CUROBO_SOURCE_ROOT.exists():
     sys.path.insert(0, str(CUROBO_SOURCE_ROOT))
+if str(WORKSPACE) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE))
+
+from source.manipulation.curobo_paths import load_project_robot_config
 
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
 from curobo.types import JointState
@@ -151,7 +165,7 @@ def create_motion_planner(robot_yaml: Path) -> MotionPlanner:
     print("cuda device:", torch.cuda.get_device_name(0))
 
     cfg = MotionPlannerCfg.create(
-        robot=str(robot_yaml),
+        robot=load_project_robot_config(robot_yaml),
         scene_model=None,
         self_collision_check=True,
         use_cuda_graph=False,

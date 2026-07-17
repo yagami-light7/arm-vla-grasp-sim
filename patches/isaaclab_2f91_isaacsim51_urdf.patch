@@ -1,0 +1,48 @@
+diff --git a/source/isaaclab/isaaclab/sim/converters/urdf_converter.py b/source/isaaclab/isaaclab/sim/converters/urdf_converter.py
+index ba80f520355..8b584668b2f 100644
+--- a/source/isaaclab/isaaclab/sim/converters/urdf_converter.py
++++ b/source/isaaclab/isaaclab/sim/converters/urdf_converter.py
+@@ -68,7 +68,30 @@ class UrdfConverter(AssetConverterBase):
+                 manager.set_extension_enabled_immediate("isaacsim.asset.importer.urdf-2.4.31", True)
+-
++
+         # acquire the URDF interface
+-        from isaacsim.asset.importer.urdf._urdf import acquire_urdf_interface
++        try:
++            from isaacsim.asset.importer.urdf._urdf import acquire_urdf_interface
++        except ModuleNotFoundError:
++            manager = omni.kit.app.get_app().get_extension_manager()
++            candidate_extensions = [
++                "isaacsim.asset.importer.urdf",
++                "isaacsim.asset.importer.urdf-2.4.31",
++                "isaacsim.asset.importer.urdf-2.3.10",
++            ]
++
++            acquired = False
++            for extension in candidate_extensions:
++                try:
++                    if not manager.is_extension_enabled(extension):
++                        manager.set_extension_enabled_immediate(extension, True)
++                    from isaacsim.asset.importer.urdf._urdf import acquire_urdf_interface
++
++                    acquired = True
++                    break
++                except Exception:
++                    continue
++
++            if not acquired:
++                raise
+-
++
+         self._urdf_interface = acquire_urdf_interface()
+         super().__init__(cfg=cfg)
+@@ -140,7 +163,8 @@ class UrdfConverter(AssetConverterBase):
+         import_config.set_collision_from_visuals(self.cfg.collision_from_visuals)
+         # consolidating links that are connected by fixed joints
+         import_config.set_merge_fixed_joints(self.cfg.merge_fixed_joints)
+-        import_config.set_merge_fixed_ignore_inertia(self.cfg.merge_fixed_joints)
++        if hasattr(import_config, "set_merge_fixed_ignore_inertia"):
++            import_config.set_merge_fixed_ignore_inertia(self.cfg.merge_fixed_joints)
+         # -- physics settings
+         # create fix joint for base link
+         import_config.set_fix_base(self.cfg.fix_base)

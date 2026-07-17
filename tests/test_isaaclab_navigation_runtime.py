@@ -291,6 +291,7 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         self.assertTrue(config.hide_object_collision_visual)
         self.assertEqual(config.standing_command_threshold, 0.0)
         self.assertEqual(config.policy_action_warmup_steps, 0)
+        self.assertFalse(config.show_velocity_command_debug)
         self.assertEqual(config.object_collision_visual_root_path, "/World")
         self.assertEqual(
             config.object_collision_visual_hide_keywords,
@@ -937,6 +938,30 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
             builder_source.index("wrapped = RslRlVecEnvWrapper"),
         )
 
+    def test_show_only_task_object_deactivates_physical_distractors(self) -> None:
+        try:
+            from pxr import Usd
+        except ImportError:
+            self.skipTest("当前 Python 环境没有 OpenUSD pxr")
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.DefinePrim("/World", "Xform")
+        distractor = stage.DefinePrim("/World/apple", "Xform")
+        task_object = stage.DefinePrim("/World/apple_01", "Xform")
+        runtime = object.__new__(IsaacLabNavigationRuntime)
+        runtime._hidden_distractor_root_paths = ()
+        episode = type("Episode", (), {"object_prim_path": "/World/apple_01"})()
+
+        first_report = runtime._show_only_task_object(stage, episode)
+        second_report = runtime._show_only_task_object(stage, episode)
+
+        self.assertFalse(distractor.IsActive())
+        self.assertTrue(task_object.IsActive())
+        self.assertEqual(first_report["deactivated_root_paths"], ["/World/apple"])
+        self.assertEqual(second_report["deactivated_root_paths"], ["/World/apple"])
+        self.assertTrue(second_report["distractor_physics_disabled"])
+        self.assertEqual(runtime._hidden_distractor_root_paths, ("/World/apple",))
+
     def test_runtime_reads_front_and_wrist_camera_images(self) -> None:
         class FakeSensor:
             def __init__(self, value: int):
@@ -1219,6 +1244,39 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
                 "world_step_owned_by_pipeline": True,
             },
         )
+
+    def test_apply_updates_velocity_command_guide_every_control_tick(self) -> None:
+        runtime, adapter, _fake_runtime_obj = _fake_runtime()
+        runtime._config = IsaacLabNavigationRuntimeConfig(  # type: ignore[attr-defined]
+            show_velocity_command_debug=True,
+        )
+        adapter.get_base_pose_full = lambda: {
+            "x": 1.0,
+            "y": 2.0,
+            "z": 0.4,
+            "yaw": 0.0,
+            "quat_wxyz": (1.0, 0.0, 0.0, 0.0),
+        }
+        adapter.get_effective_base_command = lambda: (0.20, 0.05, 0.40)
+        action = RobotAction(
+            base_velocity=(0.25, 0.05, 0.50),
+            source="stair_locomotion_heading_tracker",
+        )
+
+        with patch(
+            "source.diagnostics.planned_trajectories.draw_velocity_command",
+            return_value={"available": True, "updated_per_control_tick": True},
+        ) as draw_command:
+            runtime.apply(action)
+
+        draw_command.assert_called_once_with(
+            robot_root_pose=(1.0, 2.0, 0.4, 1.0, 0.0, 0.0, 0.0),
+            base_velocity=(0.20, 0.05, 0.40),
+            source="stair_locomotion_heading_tracker",
+        )
+        report = runtime._metadata["velocity_command_visualization"]  # type: ignore[attr-defined]
+        self.assertEqual(report["requested_base_velocity"], [0.25, 0.05, 0.50])
+        self.assertEqual(report["effective_base_velocity"], [0.20, 0.05, 0.40])
 
     def test_apply_accepts_explicit_gripper_hold_target(self) -> None:
         runtime, adapter, _fake_runtime_obj = _fake_runtime()

@@ -1,5 +1,66 @@
 # Go2-X5 PCT 多楼层 locomotion policy 训练设计。
 
+runtime_stable_pipeline:
+  selector: --pct-multifloor
+  task_json: tasks/nav_pick_place_apple_multifloor_pct.json
+  global_planner: pct
+  pct_server_script: scripts/navigation/pct_grid_server.py
+  pct_tomogram_path: source/scene/multifloor/mutifloor.pickle
+  pct_walkable_path: source/scene/multifloor/mutifloor_ply_walkable.npy
+  pct_collision_ply_path: source/scene/multifloor/ply/3dgs_collision.ply
+  pct_fallback_to_astar: false
+  policy_profile: pct_multifloor
+  locomotion_task: RobotLab-Isaac-Velocity-Rough-Go2-X5-DogOnly-v0
+  locomotion_checkpoint: checkpoints/go2_x5/pct_multifloor/model_26000.pt
+  randomize_task: false
+  randomize_base_goal: false
+  navigation_visual_mode: collision
+  show_planned_trajectories: false
+  record_dataset: true
+  record_video: true
+  video_mode: all
+  overview_camera_schedule: configs/recording/multifloor_overview_camera_schedule.json
+  pct_stair_float: true
+
+stair_locomotion_smoke:
+  selector: --stair-locomotion-smoke
+  shortest_command: python scripts/pipeline/run_full_physics_pipeline.py --stair-locomotion-smoke
+  defaults:
+    headless: false
+    keep_window_open: true
+    record_video: true
+    video_mode: overview
+    record_dataset: true
+    output_dir: outputs/stair_locomotion_smoke
+  start_source: pct_cross_floor_gateway_points[0]
+  goal_source: pct_cross_floor_stair_exit_points[0] + exit_extension_m
+  exit_extension_m: 1.0
+  global_planner: pct
+  controller: stair_heading_tracker
+  global_path: pct_online_path_3d
+  manual_centerline: false
+  dwa_enabled: false
+  pct_stair_float: false
+  base_pose_lock: false
+  show_planned_trajectories: true
+  forward_velocity_mps: 0.25
+  max_lateral_velocity_mps: 0.12
+  max_angular_velocity_rps: 0.50
+  visualization:
+    pct_path_3d: true
+    centerline_color: cyan
+    command_update: every_control_tick
+    command_renderer: isaacsim.util.debug_draw
+    command_renderer_fallback: usd_basis_curves
+    linear_velocity_color: green
+    angular_velocity_color: orange
+  recording:
+    gui_default_camera: /World/Camera3
+    lower_stair_camera: /World/Camera3
+    upper_stair_camera: /World/Camera5
+    camera_switch_root_z_m: 1.8
+    schedule: configs/recording/stair_locomotion_camera_schedule.json
+
 environment:
   framework: Isaac Lab
   robot: Go2-X5

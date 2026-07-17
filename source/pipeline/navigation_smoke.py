@@ -15,7 +15,14 @@ from source.manipulation.dry_run import (
     DryRunGripperController,
     DryRunManipulationPlanner,
 )
-from source.navigation import AStarNavPlanner, DwaNavExecutor, PCTNavPlanner, PCTPlannerConfig
+from source.navigation import (
+    AStarNavPlanner,
+    DwaNavExecutor,
+    PCTNavPlanner,
+    PCTPlannerConfig,
+    StairLocomotionExecutor,
+    StairLocomotionExecutorConfig,
+)
 from source.navigation.adapters.yaw_align import TerminalPoseConfig
 from source.navigation.navlib import DWAConfig, OccupancyGridMap
 from source.navigation.pct_local_map import (
@@ -32,9 +39,6 @@ from .full_physics_pipeline import FullPhysicsPipeline
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PCT_SERVER_SCRIPT = PROJECT_ROOT / "scripts/navigation/pct_grid_server.py"
-DEFAULT_PCT_TOMOGRAM_PATH = PROJECT_ROOT / "source/scene/multifloor/mutifloor.pickle"
-DEFAULT_PCT_WALKABLE_PATH = PROJECT_ROOT / "source/scene/multifloor/mutifloor_ply_walkable.npy"
-DEFAULT_PCT_COLLISION_PLY_PATH = PROJECT_ROOT / "source/scene/multifloor/ply/3dgs_collision.ply"
 
 
 def _project_path(raw_path: str | Path) -> Path:
@@ -48,6 +52,22 @@ def _optional_project_path(raw_path: str | Path | None) -> Path | None:
     if raw_path is None:
         return None
     return _project_path(raw_path)
+
+
+def _required_pct_asset_path(
+    raw_path: str | Path | None,
+    *,
+    field_name: str,
+) -> Path:
+    """解析场景 profile 提供的 PCT 资产，禁止静默使用其他场景地图。"""
+
+    path = _optional_project_path(raw_path)
+    if path is None:
+        raise ValueError(
+            f"PCT 场景缺少 {field_name}；请在 configs/scenes/<scene>.json "
+            "中声明对应路径，或通过 CLI 显式传入。"
+        )
+    return path
 
 
 def create_navigation_smoke_pipeline(
@@ -114,6 +134,162 @@ def create_navigation_carry_smoke_pipeline(
     )
 
 
+def create_stair_locomotion_smoke_pipeline(
+    *,
+    config: FullPhysicsConfig,
+    episode_spec: EpisodeSpec,
+    episode_seed: int,
+    episode_dir: str | Path,
+    simulation: IsaacLabNavigationRuntime,
+) -> FullPhysicsPipeline:
+    """用真实 PCT 路径和直接速度命令验证 locomotion policy 上楼。"""
+
+    stair_spec = _stair_locomotion_smoke_spec(config, episode_spec)
+    stair_config = replace(
+        config,
+        navigation_smoke=False,
+        navigation_carry_smoke=False,
+        stair_locomotion_smoke=True,
+        full_physics=False,
+        navigation=replace(
+            config.navigation,
+            global_planner="pct",
+            pct_enabled=True,
+            pct_fallback_to_astar=False,
+            pct_stair_float_enabled=False,
+        ),
+        limits=replace(
+            config.limits,
+            navigation=max(config.limits.navigation, 6000),
+            episode=max(config.limits.episode, 8000),
+        ),
+    )
+    planner = _create_navigation_planner(
+        config=stair_config,
+        episode_spec=stair_spec,
+    )
+    executor = StairLocomotionExecutor(
+        StairLocomotionExecutorConfig(
+            forward_velocity_mps=config.navigation.pct_carry_max_linear_velocity,
+            max_angular_velocity_rps=max(
+                0.50,
+                config.navigation.pct_carry_max_angular_velocity,
+            ),
+            goal_z_tolerance_m=config.navigation.goal_z_tolerance,
+        )
+    )
+    verifier = NavigationEpisodeVerifier(
+        position_tolerance=0.25,
+        yaw_tolerance=config.navigation.final_yaw_tolerance,
+        linear_velocity_tolerance=config.navigation.stable_linear_velocity,
+        angular_velocity_tolerance=config.navigation.stable_angular_velocity,
+        require_yaw_alignment=False,
+        require_stable_base=False,
+        goal_z_tolerance=config.navigation.goal_z_tolerance,
+    )
+    return _create_navigation_pipeline(
+        config=stair_config,
+        episode_spec=stair_spec,
+        episode_seed=episode_seed,
+        episode_dir=episode_dir,
+        simulation=simulation,
+        components=(planner, executor, verifier),
+    )
+
+
+def _stair_locomotion_smoke_spec(
+    config: FullPhysicsConfig,
+    episode_spec: EpisodeSpec,
+) -> EpisodeSpec:
+    """用 PCT 楼梯入口和出口构造只包含楼梯路段的 episode。"""
+
+    nav = config.navigation
+    if not nav.pct_cross_floor_gateway_points:
+        raise ValueError("stair locomotion smoke requires a PCT stair gateway")
+    if not nav.pct_cross_floor_stair_exit_points:
+        raise ValueError("stair locomotion smoke requires a PCT stair exit")
+    if episode_spec.place_goal is None or episode_spec.place_goal.z is None:
+        raise ValueError("stair locomotion smoke requires an upstairs place goal z")
+
+    gateway = nav.pct_cross_floor_gateway_points[0]
+    stair_exit = nav.pct_cross_floor_stair_exit_points[0]
+    if not nav.pct_cross_floor_stair_midpoint_points:
+        raise ValueError("stair locomotion smoke requires PCT stair midpoint points")
+    start_root_z = float(
+        episode_spec.pick_goal.z
+        if episode_spec.pick_goal.z is not None
+        else episode_spec.start.z
+        if episode_spec.start.z is not None
+        else 0.0
+    )
+    end_root_z = float(episode_spec.place_goal.z)
+    entry_reference = min(
+        nav.pct_cross_floor_stair_midpoint_points,
+        key=lambda point: abs(float(point[2]) - float(gateway[2])),
+    )
+    exit_reference = min(
+        nav.pct_cross_floor_stair_midpoint_points,
+        key=lambda point: abs(float(point[2]) - float(stair_exit[2])),
+    )
+    start_heading = math.atan2(
+        float(entry_reference[1]) - float(gateway[1]),
+        float(entry_reference[0]) - float(gateway[0]),
+    )
+    end_heading = math.atan2(
+        float(stair_exit[1]) - float(exit_reference[1]),
+        float(stair_exit[0]) - float(exit_reference[0]),
+    )
+    exit_extension_m = float(nav.pct_stair_locomotion_exit_extension_m)
+    terminal_x = float(stair_exit[0]) + exit_extension_m * math.cos(end_heading)
+    terminal_y = float(stair_exit[1]) + exit_extension_m * math.sin(end_heading)
+    start = NavGoal(
+        x=float(gateway[0]),
+        y=float(gateway[1]),
+        z=start_root_z,
+        yaw=start_heading,
+        floor_id=episode_spec.pick_goal.floor_id,
+        slice_id=episode_spec.pick_goal.slice_id,
+    )
+    goal = NavGoal(
+        x=terminal_x,
+        y=terminal_y,
+        z=end_root_z,
+        yaw=end_heading,
+        floor_id=episode_spec.place_goal.floor_id,
+        slice_id=episode_spec.place_goal.slice_id,
+    )
+    raw_task = {
+        **episode_spec.raw_task,
+        "runtime_override": {
+            "mode": "stair_locomotion_smoke",
+            "controller": "stair_heading_tracker",
+            "global_planner": "pct",
+            "global_path": "pct_online_path_3d",
+            "manual_centerline": False,
+            "float_enabled": False,
+            "stair_exit_xyz": [
+                float(stair_exit[0]),
+                float(stair_exit[1]),
+                float(stair_exit[2]),
+            ],
+            "exit_extension_m": exit_extension_m,
+            "start_xyz_yaw": [start.x, start.y, start.z, start.yaw],
+            "goal_xyz_yaw": [goal.x, goal.y, goal.z, goal.yaw],
+        },
+    }
+    return replace(
+        episode_spec,
+        instruction="测试低层 locomotion policy 能否沿 PCT 在线规划路径完成上楼。",
+        start=start,
+        pick_goal=goal,
+        place_goal=None,
+        object_prim_path=None,
+        object_initial_pose=None,
+        place_target_pose=None,
+        raw_task=raw_task,
+    )
+
+
 def _navigation_carry_smoke_start(episode_spec: EpisodeSpec) -> tuple[NavGoal, str]:
     """读取任务级抓取后底盘位姿，未配置时保持旧的 pick goal 行为。"""
 
@@ -157,11 +333,15 @@ def _create_navigation_pipeline(
     episode_seed: int,
     episode_dir: str | Path,
     simulation: IsaacLabNavigationRuntime,
+    components=None,
 ) -> FullPhysicsPipeline:
-    planner, executor, verifier = create_navigation_components(
-        config=config,
-        episode_spec=episode_spec,
-    )
+    if components is None:
+        planner, executor, verifier = create_navigation_components(
+            config=config,
+            episode_spec=episode_spec,
+        )
+    else:
+        planner, executor, verifier = components
     gripper = DryRunGripperController()
     return FullPhysicsPipeline(
         config=config,
@@ -179,12 +359,12 @@ def _create_navigation_pipeline(
     )
 
 
-def create_navigation_components(
+def _create_navigation_planner(
     *,
     config: FullPhysicsConfig,
     episode_spec: EpisodeSpec,
-):
-    """创建可被独立 smoke 和连续联调共同复用的导航组件。"""
+) -> AStarNavPlanner | PCTNavPlanner:
+    """创建完整 pipeline 与楼梯 smoke 共用的全局规划器。"""
 
     nav = config.navigation
     nav_map = _project_path(episode_spec.nav_map) if episode_spec.nav_map else None
@@ -213,11 +393,17 @@ def create_navigation_components(
         planner = astar_planner
     elif nav.global_planner == "pct":
         pct_server_script = _optional_project_path(nav.pct_server_script) or DEFAULT_PCT_SERVER_SCRIPT
-        pct_tomogram_path = _optional_project_path(nav.pct_tomogram_path) or DEFAULT_PCT_TOMOGRAM_PATH
-        pct_walkable_path = _optional_project_path(nav.pct_walkable_path) or DEFAULT_PCT_WALKABLE_PATH
-        pct_collision_ply_path = (
-            _optional_project_path(nav.pct_collision_ply_path)
-            or DEFAULT_PCT_COLLISION_PLY_PATH
+        pct_tomogram_path = _required_pct_asset_path(
+            nav.pct_tomogram_path,
+            field_name="pct_tomogram_path",
+        )
+        pct_walkable_path = _required_pct_asset_path(
+            nav.pct_walkable_path,
+            field_name="pct_walkable_path",
+        )
+        pct_collision_ply_path = _required_pct_asset_path(
+            nav.pct_collision_ply_path,
+            field_name="pct_collision_ply_path",
         )
         planner = PCTNavPlanner(
             PCTPlannerConfig(
@@ -276,6 +462,23 @@ def create_navigation_components(
         )
     else:
         raise ValueError(f"unsupported global planner: {nav.global_planner}")
+    return planner
+
+
+def create_navigation_components(
+    *,
+    config: FullPhysicsConfig,
+    episode_spec: EpisodeSpec,
+):
+    """创建可被独立 smoke 和连续联调共同复用的导航组件。"""
+
+    nav = config.navigation
+    nav_map = _project_path(episode_spec.nav_map) if episode_spec.nav_map else None
+    nav_map_exists = nav_map is not None and nav_map.is_file()
+    planner = _create_navigation_planner(
+        config=config,
+        episode_spec=episode_spec,
+    )
     dwa_config = _build_dwa_config(
         nav,
         policy_profile=config.locomotion.policy_profile,
@@ -346,6 +549,29 @@ def create_navigation_components(
             nav.pct_multifloor_route_corridor_radius
             if nav.global_planner == "pct"
             else None
+        ),
+        multifloor_no_float_clearance_radius=(
+            # 无漂移或仅在台阶处漂移时，F1 都按 Go2 落足扫掠范围保留墙柱净距。
+            nav.local_clearance_radius
+            if (
+                nav.global_planner == "pct"
+                and config.locomotion.policy_profile == "pct_multifloor"
+                and (
+                    not nav.pct_stair_float_enabled
+                    or nav.pct_stair_float_approach_distance_m <= 1.0e-6
+                )
+            )
+            else 0.0
+        ),
+        post_stair_clearance_radius=(
+            # float 释放后在目标楼层恢复真实步态，必须按底盘足迹
+            # 优化 PCT 尾段，不能继续使用贴障碍的点机器最短路。
+            nav.local_clearance_radius
+            if (
+                nav.global_planner == "pct"
+                and config.locomotion.policy_profile == "pct_multifloor"
+            )
+            else 0.0
         ),
         carry_max_linear_velocity=(
             nav.pct_carry_max_linear_velocity
@@ -520,11 +746,17 @@ def _open_pct_grid_map_at_z(
 ) -> OccupancyGridMap:
     """按指定世界高度创建 PCT 单楼层局部避障地图。"""
 
-    tomogram_path = _optional_project_path(nav.pct_tomogram_path) or DEFAULT_PCT_TOMOGRAM_PATH
-    walkable_path = _optional_project_path(nav.pct_walkable_path) or DEFAULT_PCT_WALKABLE_PATH
-    collision_ply_path = (
-        _optional_project_path(nav.pct_collision_ply_path)
-        or DEFAULT_PCT_COLLISION_PLY_PATH
+    tomogram_path = _required_pct_asset_path(
+        nav.pct_tomogram_path,
+        field_name="pct_tomogram_path",
+    )
+    walkable_path = _required_pct_asset_path(
+        nav.pct_walkable_path,
+        field_name="pct_walkable_path",
+    )
+    collision_ply_path = _required_pct_asset_path(
+        nav.pct_collision_ply_path,
+        field_name="pct_collision_ply_path",
     )
     if not tomogram_path.is_file() or not walkable_path.is_file():
         raise ValueError(
@@ -577,11 +809,17 @@ def _open_pct_multifloor_grid_map(
     z_values = _multifloor_route_z_values(episode_spec)
     if z_values is None:
         return None
-    tomogram_path = _optional_project_path(nav.pct_tomogram_path) or DEFAULT_PCT_TOMOGRAM_PATH
-    walkable_path = _optional_project_path(nav.pct_walkable_path) or DEFAULT_PCT_WALKABLE_PATH
-    collision_ply_path = (
-        _optional_project_path(nav.pct_collision_ply_path)
-        or DEFAULT_PCT_COLLISION_PLY_PATH
+    tomogram_path = _required_pct_asset_path(
+        nav.pct_tomogram_path,
+        field_name="pct_tomogram_path",
+    )
+    walkable_path = _required_pct_asset_path(
+        nav.pct_walkable_path,
+        field_name="pct_walkable_path",
+    )
+    collision_ply_path = _required_pct_asset_path(
+        nav.pct_collision_ply_path,
+        field_name="pct_collision_ply_path",
     )
     if not collision_ply_path.is_file():
         raise ValueError(

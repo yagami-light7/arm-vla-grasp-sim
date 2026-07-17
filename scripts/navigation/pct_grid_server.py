@@ -20,9 +20,6 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TOMOGRAM = PROJECT_ROOT / "source/scene/multifloor/mutifloor.pickle"
 DEFAULT_WALKABLE = PROJECT_ROOT / "source/scene/multifloor/mutifloor_ply_walkable.npy"
-DEFAULT_COLLISION_PLY = (
-    PROJECT_ROOT / "source/scene/multifloor/ply/3dgs_collision.ply"
-)
 BARRIER = 49.0
 
 if str(PROJECT_ROOT) not in sys.path:
@@ -278,9 +275,12 @@ class _State:
 def _load_state() -> _State:
     tomogram_path = Path(os.environ.get("PCT_TOMOGRAM_PATH", os.fspath(DEFAULT_TOMOGRAM))).expanduser()
     walkable_path = Path(os.environ.get("PCT_WALKABLE_PATH", os.fspath(DEFAULT_WALKABLE))).expanduser()
-    collision_ply_path = Path(
-        os.environ.get("PCT_COLLISION_PLY_PATH", os.fspath(DEFAULT_COLLISION_PLY))
-    ).expanduser()
+    raw_collision_ply_path = os.environ.get("PCT_COLLISION_PLY_PATH")
+    collision_ply_path = (
+        Path(raw_collision_ply_path).expanduser()
+        if raw_collision_ply_path
+        else None
+    )
     hard_obstacle_min_slices = int(
         os.environ.get("PCT_GLOBAL_VERTICAL_OBSTACLE_MIN_SLICES", "7")
     )
@@ -345,7 +345,7 @@ def _load_state() -> _State:
     walkable = np.load(walkable_path)
     hard_obstacle_mask = None
     cross_floor_hard_obstacle_mask = None
-    if collision_ply_path.is_file():
+    if collision_ply_path is not None and collision_ply_path.is_file():
         hard_obstacle_mask = pct_robot_body_obstacle_volume_from_ply(
             collision_ply_path=collision_ply_path,
             tomogram=tomogram,
@@ -353,7 +353,7 @@ def _load_state() -> _State:
             max_height_m=body_obstacle_max_height_m,
         )
         cross_floor_hard_obstacle_mask = hard_obstacle_mask
-    elif "PCT_COLLISION_PLY_PATH" in os.environ:
+    elif collision_ply_path is not None:
         raise FileNotFoundError(f"PCT collision PLY 不存在: {collision_ply_path}")
     return _State(
         tomogram=tomogram,

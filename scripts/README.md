@@ -12,6 +12,22 @@ Current maintained entrypoints:
 4. `curobo/03_plan_grasp_trajectory.py` for cuRobo one-shot planning fallback.
 5. `curobo/grasp_planner_server.py` for persistent online planning.
 
+日常部署、双场景选择、batch 数据导出和完整 CLI 表以仓库根目录
+[`README.md`](../README.md) 为准。统一入口不再要求切换 worktree：
+
+```bash
+export ISAAC_PYTHON=/data/conda_envs/isaacsim51_3dgs_grasp/bin/python
+
+$ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
+  --list-scene-profiles
+
+$ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
+  --scene-profile liangzhu --check-scene-assets
+
+$ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
+  --scene-profile multi_floor --check-scene-assets
+```
+
 开始真实 full-physics 运行前，先使用只读 preflight：
 
 ```bash
@@ -47,8 +63,11 @@ capabilities 的常驻 CuRobo server 是可复用共享服务，不占用 Isaac 
 良渚 task 的 `scene_runtime` 是运行时 prim 的唯一配置来源：collision 使用
 `/World/PhysicsScene/CollisionScene/LiangzhuCollision`，可选 Gaussian visual prim 为
 `/World/VisualScene/GaussianScene`，并显式关闭旧 Yinluyuan F2 地面代理。pipeline
-默认 `--navigation-visual-mode collision`，不会加载 GaussianScene；只有显式传入
-`--navigation-visual-mode full` 时才要求 `$LIANGZHU_VISUAL_USDZ`。
+profile 默认 `--navigation-visual-mode full` 并加载 GaussianScene；显式传入
+`--navigation-visual-mode collision` 才会关闭 Gaussian 视觉。当前 8GB RTX 4060
+Laptop + Isaac Sim 5.1 在 full/NuRec 与 RGB render product 同时启用时会复现 CUDA
+illegal address 700，因此本机量产数据使用 collision 兼容模式；两种视觉来源不能
+无标记混合。
 preflight 中的 `--collision-prim-path` 只作为一致性断言；与 task 不一致会直接失败。
 collision terrain wrapper 不写死根 prim 类型，必须让引用源保持实际的 `Mesh` 或
 `Xform`；IsaacLab 在创建 `TerrainImporterCfg` 前会重新打开 wrapper，并要求其中至少
@@ -73,7 +92,7 @@ stage 中安全 placement region 的中心，目标 Z 来自当前支撑 Mesh �
 
 机器人根平移固定为
 `(-1.4849319648011197, 5.126136502764003, 0.29281728532721385)`。默认 Phase 1
-随机化会在 `[-30°, 30°]` 内采样机器人 yaw，再分别在机器人前向 `±35°` 扇区内
+随机化会在 `[-180°, 180°]` 内采样机器人 yaw，再分别在机器人前向 `±35°` 扇区内
 独立采样可乐和地垫；可乐半径为 `[0.70m, 1.15m]`，地垫半径为
 `[0.85m, 1.30m]`。两者位置和 yaw 独立随机，并通过旋转地垫足迹距离门禁保证可乐
 初始不在地垫上。抓取/放置 TCP 目标
@@ -144,19 +163,24 @@ CuRobo final object center 必须与 Mesh 推导结果一致。缺少任一证�
 ```bash
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_pipeline.py \
+  --scene-profile liangzhu \
   --output-dir outputs/liangzhu_cola_to_mat_randomized \
   --seed 1000 \
+  --navigation-visual-mode collision \
+  --no-record-video \
   --no-headless
 ```
 
-入口默认使用良渚可乐任务、PCT 单层地图、identity 坐标、禁止 fallback、无跨楼层
-约束、`pct_multifloor` policy/checkpoint、仓库内
-`source/scene/liangzhu/ply/liangzhu_collision.ply` 和 collision 视觉模式。
+`liangzhu` profile 使用良渚可乐任务、PCT 单层地图、identity 坐标、禁止 fallback、
+无跨楼层约束、`pct_multifloor` policy/checkpoint 和仓库内
+`source/scene/liangzhu/ply/liangzhu_collision.ply`；视觉默认是 full，上述命令只为当前
+8GB 主机显式覆盖为 collision。
 
 默认 image/video/GUI overview 均优先使用 USDA 中已有的 `/World/overview`。该相机
-位于 GaussianScene 子树之外，因此禁用 Gaussian 后仍可采集。`front`、`wrist`、
-`overview` 三路图像缺少任一路都会令训练质量门禁失败。需要 Gaussian 背景时显式改为
-`--navigation-visual-mode full`；`auto` 仅作为旧自适应行为保留。
+位于 GaussianScene 子树之外，因此禁用 Gaussian 后仍可采集。默认
+`--dataset-camera-keys front wrist overview`；质量门要求配置中选中的每一路都有同步帧，
+且至少包含 front。`--dataset-camera-keys` 主要用于渲染诊断，不会解决当前 NuRec
+CUDA 700；`auto` 仅作为旧自适应行为保留。
 
 `pick.object_pose_world` 定义当前 episode 初始生成位姿；CuRobo 侧向抓取 TCP 在 handoff
 时由可乐当前 Mesh 尺寸和 live PhysX 中心生成。放置 TCP 同样由当前垫子支撑 Mesh、
@@ -171,9 +195,12 @@ world 更新、垫子 PhysX collision 和轨迹避碰仍需真实 Isaac/CuRobo h
 ```bash
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_batch.py \
+  --scene-profile liangzhu \
   --output-dir outputs/liangzhu_cola_to_mat_batch \
   --num-episodes 10 \
-  --seed 1000
+  --seed 1000 \
+  --navigation-visual-mode collision \
+  --no-record-video
 ```
 
 batch 只会把 `training_quality_gate_passed=true` 的物理 episode 合并到统一
@@ -190,7 +217,7 @@ pipeline 成功且 20/20 通过训练质量门。携物 nav-to-place 使用不�
 的可乐在原地留下过期障碍。
 
 统一数据集中每个 episode 恰好有 6 个子任务目录：
-`episode-1` 到 `episode-6` 分别对应 `nav_straight`、`nav_turn`、
+`1-1` 到 `1-6` 分别对应 `nav_straight`、`nav_turn`、
 `nav_stop`、`arm_approach`、`arm_contact`、`arm_retreat`。每个目录均保留
 `data.csv` 以及 `images/front` / `images/wrist`；同类多次出现会按原始帧序合并，
 不再按状态切换重复建目录。

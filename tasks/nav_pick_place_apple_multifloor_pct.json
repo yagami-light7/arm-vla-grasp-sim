@@ -1,6 +1,15 @@
 {
   "task_id": 1002,
   "episode_id": 1,
+  "scene_profile": "multi_floor",
+  "scene_runtime": {
+    "collision_prim_path": "/World/scene_collision",
+    "visual_prim_path": "/World/gauss",
+    "collision_floor_proxy_profile": "yinluyuan_f2"
+  },
+  "navigation_execution": {
+    "extended_state_limits": true
+  },
   "instruction": "Template: use PCT multi-floor navigation to reach the apple, pick it, carry it to the upstairs place goal, and release it.",
   "scene_usd": "source/scene/multifloor/usda/multifloor.usda",
   "nav_map": "source/scene/multifloor/nav_map/map.json",
@@ -54,7 +63,8 @@
     "retreat_height": 0.12,
     "settle_steps": 120,
     "place_xy_tolerance": 0.10,
-    "place_z_tolerance": 0.08
+    "place_z_tolerance": 0.08,
+    "place_release_peak_downward_speed_tolerance_mps": 0.55
   },
   "carry": {
     "mode": "contact",
@@ -79,10 +89,44 @@
     "num_cycles": 1
   },
   "recording": {
-    "dataset_dir": "episodes",
+    "dataset_dir": "episodes/multi_floor_apple_to_f2",
     "front_camera": true,
-    "wrist_camera": false,
+    "wrist_camera": true,
     "save_every_n_steps": 10
+  },
+  "training_action": {
+    "enabled": true,
+    "schema": "base_xyyaw_tcp_base_rpy_gripper_v1",
+    "dimension": 10,
+    "base_pose_frame": "world",
+    "tcp_pose_frame": "base_frame",
+    "tcp_euler_order": "roll_pitch_yaw",
+    "angle_unit": "rad",
+    "position_unit": "m",
+    "gripper_range": [0.0, 1.0],
+    "gripper_closed_value": 0.0,
+    "gripper_open_value": 1.0,
+    "source_gripper_joint_range_m": [0.0, 0.04],
+    "action_alignment": "next_sample_executed_pose",
+    "terminal_action": "hold_current_pose"
+  },
+  "subtask_segmentation": {
+    "enabled": true,
+    "schema": "nav_straight_turn_stop__arm_approach_contact_retreat_v1",
+    "directory_export": true,
+    "output_layout": "episodes_task_episode_subtask_front_wrist_v3",
+    "min_segment_frames": 3,
+    "hysteresis_frames": 2,
+    "navigation": {
+      "stop_command_linear_max_mps": 0.03,
+      "stop_command_angular_max_rps": 0.08,
+      "stop_measured_linear_max_mps": 0.08,
+      "stop_measured_angular_max_rps": 0.20,
+      "turn_command_angular_min_rps": 0.12,
+      "turn_measured_angular_min_rps": 0.25,
+      "turn_yaw_delta_min_rad": 0.03
+    },
+    "contact_label_source": "heuristic_action_and_kinematics"
   },
   "notes": {
     "template": true,
@@ -95,6 +139,7 @@
     "asset_manifest": "source/scene/multifloor",
     "local_policy_checkpoint": "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
     "navigation_note": "当前 nav_map 是占位路径；PCT smoke 会从 PCT walkable slice 生成 DWA 局部避障地图。start 坐标来自机器狗起点 Transform，pick/place pose_world 坐标来自苹果 pick/place Transform，base_goal 是机器人底盘站位而不是苹果中心点。",
-    "visual_note": "source/scene/multifloor/usda/multifloor.usda 是当前唯一保留的高质量 NuRec 主场景，/World/gauss 为 clean 3DGS visual，/World/scene_collision 为隐藏 collision mesh，两者均按 Z 轴 180 度旋转对齐。"
+    "visual_note": "source/scene/multifloor/usda/multifloor.usda 是当前唯一保留的高质量 NuRec 主场景，/World/gauss 为 clean 3DGS visual，/World/scene_collision 为隐藏 collision mesh，两者均按 Z 轴 180 度旋转对齐。",
+    "place_release_validation_note": "苹果约 1.5cm 的允许垂直落座对应 sqrt(2gh)≈0.543m/s；向下阈值取 0.55m/s，向上弹射与水平甩出继续使用更严格的默认门禁。"
   }
 }

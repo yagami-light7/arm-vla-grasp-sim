@@ -9,6 +9,7 @@
   "global_planner": "pct",
   "policy_profile": "pct_multifloor",
   "navigation_execution": {
+    "extended_state_limits": false,
     "final_position_tolerance": 0.1,
     "place_position_tolerance": 0.15,
     "final_yaw_tolerance": 0.15,
@@ -280,7 +281,7 @@
   "recording": {
     "dataset_dir": "episodes/liangzhu_cola_to_mat_phase0",
     "front_camera": true,
-    "wrist_camera": false,
+    "wrist_camera": true,
     "save_every_n_steps": 10
   },
   "training_action": {

@@ -56,8 +56,16 @@ class FullPhysicsNavigationTest(unittest.TestCase):
         task_path = PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json"
         spec = JsonTaskProvider().load(task_path)
         self.assertIsNotNone(spec.place_goal)
+        occupancy = np.zeros((80, 80), dtype=bool)
+        # 在 pick/place 之间放一段带端点的墙，确保测试覆盖 clearance 绕行，
+        # 同时不再依赖旧 839920 worktree 中的 ignored nav map。
+        occupancy[40, 20:51] = True
         planner = AStarNavPlanner(
-            PROJECT_ROOT / spec.nav_map,
+            grid_map=OccupancyGridMap(
+                occupancy,
+                0.1,
+                (-3.0, -1.0, 0.0),
+            ),
             inflate_radius=settings.global_inflate_radius,
         )
         start = _state(

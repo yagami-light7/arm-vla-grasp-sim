@@ -1,6 +1,20 @@
-# Go2-X5 loco-manipulation pipeline
+# PCT Scene：Go2-X5 多场景移动操作与数据采集
 
-**本仓库实现loco-manipulation的数据采集流程，导出用于VLA模型训练的数据集**
+本仓库把原来的良渚单层 pipeline 与别墅多楼层 PCT pipeline 合并为同一份代码。
+用户通过 `--scene-profile` 选择场景；任务、PCT 地图、坐标变换、楼梯能力、随机化、
+视觉层和 overview 相机均由场景 profile 注入，不需要切换 worktree 或重复填写整组参数。
+
+当前提供两个 profile：
+
+
+| profile       | 别名                                    | 任务                        | 关键默认值                                                                                |
+| ------------- | --------------------------------------- | --------------------------- | ----------------------------------------------------------------------------------------- |
+| `liangzhu`    | `liangzhu_single_floor`                 | 单层良渚，可乐搬到鼠标垫    | PCT`identity`；任务随机化开启；加载 Gaussian 视觉层；固定 `/World/overview`               |
+| `multi_floor` | `multifloor`、`pct_multifloor`、`villa` | 别墅 F1→F2，苹果跨楼层搬运 | PCT`sim_to_pct_180deg`；楼梯锚点开启；任务随机化关闭；collision 视觉；overview 按阶段切换 |
+
+场景配置位于 `configs/scenes/*.json`。CLI 显式参数的优先级高于 profile 默认值，
+因此调试时仍可覆盖单项参数。`--pct-multifloor` 作为旧命令兼容别名保留，等价于
+`--scene-profile multi_floor`。
 
 大致流程为：
 
@@ -13,9 +27,258 @@ graph LR
     E --> F["LeRobot 数据导出"]
 ```
 
+## 0. 快速开始
+
+### 0.1 工作目录与 Python
+
+推荐把数据输出放在 `/mnt/sage_data`，避免占满系统盘：
+
+```bash
+cd /mnt/sage_data/workspace/pct_scene
+
+export ISAAC_PYTHON=/data/conda_envs/isaacsim51_3dgs_grasp/bin/python
+```
+
+如需从零创建环境，请按“环境依赖”章节先安装 Isaac Sim 5.1、Isaac Lab 和 cuRobo，
+再安装 `requirements/isaacsim51_runtime.txt` 中的已验证普通依赖。该 requirements
+文件不会替代 NVIDIA runtime 的安装。用于校验 LeRobot 和导出 Rerun 的普通 Python
+环境应独立安装 `requirements/lerobot_rerun.txt`。
+
+`external/PCT` 供建图、阅读原实现和后续扩展使用；当前运行入口使用仓库内迁移后的
+`scripts/navigation/pct_grid_server.py`。全新部署若没有该目录，可执行：
+
+```bash
+git clone https://github.com/BoZhiStudying233/PCT.git external/PCT
+```
+
+### 0.2 查看场景并检查资产
+
+先运行只读检查；检查失败时不要启动 Isaac：
+
+```bash
+# 良渚 visual/collision 可以放在任意磁盘，通过环境变量绑定；以下为本机示例。
+export LIANGZHU_VISUAL_USDZ=/mnt/sage_data/usdz/Liangzhu/liangzhu_cropped_nozip64.usdz
+export LIANGZHU_COLLISION_USD=/mnt/sage_data/usd/Liangzhu/liangzhu_collision.usda
+
+$ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
+  --list-scene-profiles
+
+$ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
+  --scene-profile liangzhu \
+  --check-scene-assets
+
+$ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
+  --scene-profile multi_floor \
+  --check-scene-assets
+```
+
+检查器读取 profile 的 `required_assets`。大型 USD/USDA/USDZ、PLY、pickle、Numpy、
+物体资产和 checkpoint 可能由 Git LFS 或本地 runtime 资产提供；缺失路径应按对应的
+`source/scene/<scene>/runtime_asset_manifest.json` 准备。不要把一个场景的地图复制成
+另一个场景的路径来绕过检查。
+
+良渚 profile 的 `usd_asset_bindings` 会优先读取上述两个环境变量；未设置时才兼容回退到
+当前服务器的 `/mnt/sage_data` 路径。pipeline 在 `<output-dir>/.runtime/` 生成独立的临时
+USDA 副本：先把源 USDA 中的文件资产弧统一改写为绝对路径，再替换 profile 声明的
+visual/collision 绑定，并把最终来源写入 `scene_asset_bindings.json`。它不会改写或提交
+用户提供的主场景 USDA。别墅的 visual/collision 已按场景目录内相对路径组织，只需把
+manifest 所列的整个 `source/scene/multifloor` runtime 资产树准备完整。
+
+### 0.3 无 Isaac 配置链路检查
+
+`--dry-run` 不代表物理成功，但可以快速确认 profile、task、随机化和状态机能完整闭环：
+
+```bash
+$ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
+  --scene-profile liangzhu \
+  --dry-run \
+  --output-dir /tmp/pct_scene_liangzhu_dry
+
+$ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
+  --scene-profile multi_floor \
+  --dry-run \
+  --output-dir /tmp/pct_scene_multi_floor_dry
+```
+
+### 0.4 单 episode 真实 pipeline
+
+良渚 GUI：
+
+```bash
+$ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
+  --scene-profile liangzhu \
+  --seed 7000 \
+  --output-dir /mnt/sage_data/outputs/pct_scene/liangzhu_gui_seed7000 \
+  --no-record-dataset \
+  --no-record-video \
+  --no-headless \
+  --keep-window-open
+```
+
+这条 GUI 命令保留 profile 默认的 `full` Gaussian/NuRec 视觉，但不创建 RGB render
+product，适合先检查场景、随机化与轨迹。当前 8GB RTX 4060 Laptop + Isaac Sim 5.1
+机器上的稳定数据采集兼容命令为：
+
+```bash
+$ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
+  --scene-profile liangzhu \
+  --seed 7000 \
+  --output-dir /mnt/sage_data/outputs/pct_scene/liangzhu_seed7000 \
+  --navigation-visual-mode collision \
+  --no-record-video \
+  --headless
+```
+
+`--no-record-video` 只关闭额外的展示视频录制；LeRobot 仍会从同步数据帧物化
+front/wrist/overview 三路 MP4。显存充足或升级 runtime 后，可以删除
+`--navigation-visual-mode collision` 重新验收 full 视觉采集，但不要把两种视觉来源的
+episode 无标记混合。
+
+别墅多楼层 GUI：
+
+```bash
+$ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
+  --scene-profile multi_floor \
+  --seed 0 \
+  --output-dir /mnt/sage_data/outputs/pct_scene/multi_floor_gui \
+  --no-headless \
+  --keep-window-open
+```
+
+只验证别墅楼梯 locomotion：
+
+```bash
+$ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
+  --scene-profile multi_floor \
+  --stair-locomotion-smoke \
+  --output-dir /mnt/sage_data/outputs/pct_scene/multi_floor_stair_smoke \
+  --no-headless \
+  --keep-window-open
+```
+
+该专用 smoke 会刻意关闭 stair-float，只检验低层 policy 的纯物理楼梯执行。当前已知dog-only policy 会在第一段约 `(1.72, 5.88)` 附近触发
+`stair_locomotion_stalled`；这与原 `arm_vla_pct` 的现有结果一致，不代表 profile 或
+PCT 规划失败。默认 `multi_floor` 完整 pipeline 仍启用并明确记录 stair-float
+workaround。此次重构中，良渚 seed 7000 与别墅 seed 0 均已真实完成完整 pick/place、
+数据导出并到 `done`。别墅释放门禁现在区分向下落座、向上弹射和水平甩出：最新实测
+向下峰值 `0.4116 m/s < 0.55 m/s`，向上峰值 `0.0136 m/s`、水平峰值
+`0.0565 m/s`、水平位移 `0.0026 m` 均通过严格门禁；最终导出 849 行、三路 5 FPS
+视频并由 validator 以 0 error/0 warning 接受。该默认运行使用 stair-float，因此只能
+宣称 stable-physics pipeline 成功，不能宣称跨层纯物理 locomotion 成功。
+
+真实 full-physics 默认保存 LeRobot 数据并录制 profile 指定的视频流。只做物理诊断、
+需要节省磁盘时可显式增加 `--no-record-dataset --no-record-video`。
+
+### 0.5 批量采集
+
+良渚随机 batch：
+
+```bash
+$ISAAC_PYTHON -B scripts/pipeline/run_full_physics_batch.py \
+  --scene-profile liangzhu \
+  --output-dir /mnt/sage_data/outputs/pct_scene/liangzhu_seed7000_n20 \
+  --num-episodes 20 \
+  --seed 7000 \
+  --navigation-visual-mode collision \
+  --no-record-video
+```
+
+别墅多楼层 batch（当前 profile 默认固定任务）：
+
+```bash
+$ISAAC_PYTHON -B scripts/pipeline/run_full_physics_batch.py \
+  --scene-profile multi_floor \
+  --output-dir /mnt/sage_data/outputs/pct_scene/multi_floor_seed0_n5 \
+  --num-episodes 5 \
+  --seed 0
+```
+
+batch 为每个 episode 启动独立 Isaac 子进程，默认 headless，seed 依次为
+`seed + episode_index`。失败 episode 保留诊断文件；只有通过物理来源与训练质量门的
+episode 才会合并进 `<output-dir>/lerobot_dataset`。
+
+### 0.6 校验数据并导出少量 Rerun
+
+注意：校验 batch 时应传合并后的 `lerobot_dataset`，不能传 batch 根目录或某个尚未
+成功导出的空 episode：
+
+```bash
+$ISAAC_PYTHON -B scripts/pipeline/validate_lerobot_episode.py \
+  --dataset-root /mnt/sage_data/outputs/pct_scene/liangzhu_seed7000_n20/lerobot_dataset
+```
+
+磁盘空间有限时，无需复制整个 batch。保留 `lerobot_dataset/meta`、目标 episode 对应的
+Parquet chunk 和相机视频，或者直接在服务器上按 episode 转换。以下命令只导出第 0 条、
+最多 200 帧：
+
+```bash
+conda activate lerobot_rerun
+
+python tools/lerobot_to_rerun.py \
+  --repo-id pct_scene_dataset \
+  --root /mnt/sage_data/outputs/pct_scene/liangzhu_seed7000_n20/lerobot_dataset \
+  --episode-index 0 \
+  --max-frames 200 \
+  --out /mnt/sage_data/outputs/pct_scene/liangzhu_seed7000_n20/episode_000000.rrd
+```
+
+### 0.7 添加新场景
+
+新增普通场景不应再创建 worktree，也不应在主 CLI 中添加 `if scene == ...`。假设已经
+标注机器人起点、pick/place 物体位姿和导航交接点，推荐按以下顺序接入：
+
+1. 准备 `source/scene/<name>/`：主 USDA、physics collision、PCT collision PLY、
+   tomogram、walkable mask 和 `runtime_asset_manifest.json`。手工导航点不能替代覆盖整个
+   可行走区域的 PCT 地图和 collision 资产。
+2. 复制最接近的 task JSON。必须填写唯一 `task_id`、`scene_profile`、`scene_usd`、
+   `start=[x,y,z,yaw,floor_id]`、`pick.base_goal`、`pick.object_prim_path`、
+   `pick.object_pose_world`、`place.base_goal`、`place.place_pose_world`，以及成功容差。
+   `base_goal` 是机械臂接管前的底盘位姿，不应直接填物体中心。
+3. 把 collision/visual prim 写入 `scene_runtime`。有桌面、垫子或其他支撑体时，补齐
+   receptacle/support prim、placement region 和 CuRobo collision proxy；确认世界坐标、
+   PCT 坐标、floor/slice 与相机/机械臂坐标转换一致。
+4. 若标注的是普通单层路径，只用起点和 pick/place `base_goal` 作为 PCT 端点，运行时由
+   PCT 生成完整路线；若路径跨楼层，把楼梯入口、出口和中间锚点写入 profile 的
+   `pct_cross_floor_gateway`、`pct_cross_floor_stair_exit` 和
+   `pct_cross_floor_stair_midpoint`。不要把一串人工 waypoint 冒充 walkable map。
+5. 在 `configs/scenes/<name>.json` 新建 profile，声明 `name`、别名、capabilities、
+   `task_scene_profile`、默认 task、三项 PCT 资产、`pct_coord_mode`、policy/checkpoint、
+   随机化、视觉和 overview 相机；把所有运行必需文件列入 `required_assets`。
+6. 外部大资产通过 `usd_asset_bindings` 的环境变量绑定。绑定中的 fallback arc 必须确实
+   出现在源 USDA；运行时副本和 `scene_asset_bindings.json` 用于追溯最终来源。
+7. 复制两场景共有的 `subtask_segmentation`、`training_action` 和 `recording` 合同，确保
+   front/wrist 相机可用。每个已采集 episode 应固定且仅生成六类 subtask 目录。
+8. 按 `--list-scene-profiles` → `--check-scene-assets` → `--dry-run` →
+   `--simulation-smoke` → `--navigation-smoke` → 单条 full-physics → 一条 batch →
+   `validate_lerobot_episode.py` 的顺序验收；前一阶段失败时不要直接批量采集。
+
+`source/scene/profiles.py` 会动态发现 `configs/scenes/*.json`，因此新增 profile 不需要修改
+Python 枚举。只有新场景引入新的物理能力（例如新的楼梯、电梯或完全不同机器人）时，
+才需要扩展 capability 和 pipeline 实现。
+
 ## 一、环境依赖
 
 ### Isaac Sim 5.1 / Isaac Lab 环境
+
+当前实测平台为 Ubuntu Linux、可运行 CUDA 12.x/RTX 的 NVIDIA 驱动、Python 3.11、
+Isaac Sim 5.1、Isaac Lab 2.3.x 和 cuRobo 0.8.x。开始安装前先确认：
+
+```bash
+sudo apt update
+sudo apt install -y git git-lfs ffmpeg build-essential cmake ninja-build libgl1 libglib2.0-0
+
+nvidia-smi
+git lfs install
+
+git clone https://github.com/yagami-light7/arm-vla-grasp-sim.git pct_scene
+cd pct_scene
+git checkout pct_scene
+git lfs pull
+```
+
+Git LFS 只覆盖已经纳入版本控制的对象；场景私有大资产仍须按
+`source/scene/<scene>/runtime_asset_manifest.json` 放到清单指定路径。部署完成后必须运行
+两个 profile 的 `--check-scene-assets`，不能仅以 Python import 成功作为可运行依据。
 
 
 | Package                  | Version        | 用途                            |
@@ -52,13 +315,33 @@ graph LR
 | `networkx`               | `3.3`          | 图搜索辅助                      |
 | `matplotlib`             | `3.10.3`       | debug 可视化                    |
 
-可以使用以下命令创建一个conda虚拟环境
+以下是与当前仓库匹配的源码安装路线。Isaac Lab 与 cuRobo 的 revision 是当前机器的实测
+版本；若改用更新版本，应重新运行全量测试和两场景真实 smoke：
 
 ```bash
 conda create -n isaac_locomani python=3.11 -y
 conda activate isaac_locomani
+
+python -m pip install --upgrade pip
+python -m pip install "isaacsim[all,extscache]==5.1.0" \
+  --extra-index-url https://pypi.nvidia.com
+
+git clone https://github.com/isaac-sim/IsaacLab.git ../IsaacLab
+git -C ../IsaacLab checkout 2f91d7dd2994246505602526b32ac67ff758d472
+../IsaacLab/isaaclab.sh -i
+
+git clone https://github.com/NVlabs/curobo.git ../curobo
+git -C ../curobo checkout 87260212b9ad5ebe486427cbf168611145232884
+python -m pip install -e "../curobo[cu12]"
+
 python -m pip install -r requirements/isaacsim51_runtime.txt
+
+python -c "import isaacsim, isaaclab, curobo, torch; print(torch.cuda.is_available())"
 ```
+
+`source/robot_lab` 已随本仓库提供，pipeline 启动时会把它加入 Python 路径；无需另装一份
+Go2-X5 task 包。若 Isaac Lab 或 cuRobo 的官方安装命令因系统 CUDA/驱动版本不同而变化，
+应以对应 revision 自带的安装文档为准，但最终版本与上表不一致时必须视为新的运行环境。
 
 ### LeRobot / Rerun 环境
 
@@ -184,13 +467,20 @@ source/
 │   ├── task_loader.py                      # JSON task -> EpisodeSpec
 │   ├── randomizer.py                       # 通用 pick/place XY 和 base_goal 随机化
 │   └── forward_sector_randomization.py     # 良渚机器人前向扇区联合随机化
-├── scene/                                  # USD 场景、物体资产和导航地图
-│   └── liangzhu/                           # 良渚 USDA、PCT 单层地图、collision PLY 和 manifest
+├── scene/                                  # USD 场景、物体资产、导航地图和 profile loader
+│   ├── profiles.py                         # 动态发现/解析 configs/scenes/*.json
+│   ├── liangzhu/                           # 良渚 USDA、PCT 单层地图、collision PLY 和 manifest
+│   └── multifloor/                         # 别墅 USDA、PCT 多楼层地图、collision PLY 和 manifest
 ├── robot/                                  # Go2-X5 URDF / robot 资产源文件
 └── robot_lab/                              # Isaac Lab extension / Go2-X5 task registration
 
+configs/scenes/
+├── liangzhu.json                           # 良渚稳定默认值
+└── multi_floor.json                        # 别墅跨楼层稳定默认值
+
 tasks/
-└── nav_pick_place_cola_liangzhu_pct.json   # 当前默认良渚可乐到鼠标垫任务
+├── nav_pick_place_cola_liangzhu_pct.json   # 良渚可乐到鼠标垫任务
+└── nav_pick_place_apple_multifloor_pct.json # 别墅苹果跨楼层任务
 
 checkpoints/
 └── go2_x5/pct_multifloor/model_26000.pt    # 当前默认 locomotion checkpoint
@@ -297,20 +587,21 @@ episode seed
 配置来源为 `tasks/nav_pick_place_cola_liangzhu_pct.json` 的
 `randomization.forward_sector`：
 
-| 项目 | 当前分布或取值 | 说明 |
-| --- | --- | --- |
-| 机器人 XYZ | `(-1.4849319648, 5.1261365028, 0.2928172853)` | 当前固定，不随机平移 |
-| 机器人 yaw | `Uniform(-180°, 180°)` | 每个 episode 重新采样，覆盖全向朝向 |
-| 前向扇区 | 机器人 yaw 左右各 `35°` | 可乐和鼠标垫都相对采样后的 yaw 定义 |
-| 可乐半径 | `[0.70m, 1.15m]` | 在前向扇形内按面积均匀采样 |
-| 鼠标垫半径 | `[0.85m, 1.30m]` | 与可乐分别采样 |
-| 可乐 yaw | `Uniform(-180°, 180°)` | roll/pitch 固定为 0 |
-| 鼠标垫 yaw | `Uniform(-180°, 180°)` | roll/pitch 固定为 0 |
-| 放置后可乐 yaw | `Uniform(-180°, 180°)` | 与初始可乐 yaw 独立采样 |
-| pick base standoff | `[0.35m, 0.39m]` | 底盘最终正面朝向可乐 |
-| place base standoff | `[0.35m, 0.39m]` | 底盘最终正面朝向鼠标垫 |
-| base approach angle noise | `0°` | 当前不加入侧向接近噪声 |
-| placement region | 鼠标垫中心 `0.06m × 0.06m` | 当前不在安全区域内部二次采样 XY |
+
+| 项目                      | 当前分布或取值                                | 说明                                |
+| ------------------------- | --------------------------------------------- | ----------------------------------- |
+| 机器人 XYZ                | `(-1.4849319648, 5.1261365028, 0.2928172853)` | 当前固定，不随机平移                |
+| 机器人 yaw                | `Uniform(-180°, 180°)`                      | 每个 episode 重新采样，覆盖全向朝向 |
+| 前向扇区                  | 机器人 yaw 左右各`35°`                       | 可乐和鼠标垫都相对采样后的 yaw 定义 |
+| 可乐半径                  | `[0.70m, 1.15m]`                              | 在前向扇形内按面积均匀采样          |
+| 鼠标垫半径                | `[0.85m, 1.30m]`                              | 与可乐分别采样                      |
+| 可乐 yaw                  | `Uniform(-180°, 180°)`                      | roll/pitch 固定为 0                 |
+| 鼠标垫 yaw                | `Uniform(-180°, 180°)`                      | roll/pitch 固定为 0                 |
+| 放置后可乐 yaw            | `Uniform(-180°, 180°)`                      | 与初始可乐 yaw 独立采样             |
+| pick base standoff        | `[0.35m, 0.39m]`                              | 底盘最终正面朝向可乐                |
+| place base standoff       | `[0.35m, 0.39m]`                              | 底盘最终正面朝向鼠标垫              |
+| base approach angle noise | `0°`                                         | 当前不加入侧向接近噪声              |
+| placement region          | 鼠标垫中心`0.06m × 0.06m`                    | 当前不在安全区域内部二次采样 XY     |
 
 可乐与鼠标垫的无约束极坐标样本来自同一个确定性随机流。角度均匀采样，半径使用：
 
@@ -443,12 +734,13 @@ metadata 和最终 validator 为准。
 
 单 episode 和 batch CLI 的 `--randomize-task`、`--randomize-base-goal` 默认均开启：
 
-| 参数组合 | 良渚前向扇区 profile 的实际行为 |
-| --- | --- |
-| `--randomize-task --randomize-base-goal` | 完整联合随机化，standoff 也在配置区间内随机 |
-| `--randomize-task --no-randomize-base-goal` | 目标和机器人 yaw 仍随机；standoff 固定为区间中点，但 base goal 仍随目标移动 |
-| `--no-randomize-task --no-randomize-base-goal` | 完全使用 task JSON 固定 baseline |
-| `--no-randomize-task --randomize-base-goal` | 良渚专用 profile 不转入旧通用 sampler，保持固定任务 |
+
+| 参数组合                                       | 良渚前向扇区 profile 的实际行为                                             |
+| ---------------------------------------------- | --------------------------------------------------------------------------- |
+| `--randomize-task --randomize-base-goal`       | 完整联合随机化，standoff 也在配置区间内随机                                 |
+| `--randomize-task --no-randomize-base-goal`    | 目标和机器人 yaw 仍随机；standoff 固定为区间中点，但 base goal 仍随目标移动 |
+| `--no-randomize-task --no-randomize-base-goal` | 完全使用 task JSON 固定 baseline                                            |
+| `--no-randomize-task --randomize-base-goal`    | 良渚专用 profile 不转入旧通用 sampler，保持固定任务                         |
 
 实际运行开关由 CLI 的 `RandomizationSettings` 控制；task JSON 中的
 `randomization.mode` 选择具体随机化算法。batch 为每个 episode 启动独立进程，并使用：
@@ -522,17 +814,18 @@ place 目标物体中心 XY 容差为 `0.040m`，Mesh truth 物体竖直 extent 
 覆盖 `-170.50°..157.95°`，四个 90° 象限分别包含 `4 / 5 / 6 / 5` 条，不是只在
 原来的正前方小角度附近采样。
 
-| 指标 | 结果 |
-| --- | --- |
-| 连续 batch 尝试数 | 20 |
-| pipeline 成功 / 质量门通过 | 19 / 19 |
-| 隔离失败 | 1，seed 7018 的旧 `0.035m` placement center 边界拒绝 |
-| 连续 batch 实测成功率 | 95% |
-| 统一数据集 | 19 episodes，2419 rows，5 Hz |
-| 视觉 | front / overview / wrist，57 个 mp4；子任务 front/wrist 各 2419 JPG |
-| subtask | 每 episode 固定 6 目录，共 114 目录 |
-| action | 10D VLA action + 11D `control.action` |
-| validator | valid=true，19 episodes，2419 rows，0 error，0 warning |
+
+| 指标                       | 结果                                                                |
+| -------------------------- | ------------------------------------------------------------------- |
+| 连续 batch 尝试数          | 20                                                                  |
+| pipeline 成功 / 质量门通过 | 19 / 19                                                             |
+| 隔离失败                   | 1，seed 7018 的旧`0.035m` placement center 边界拒绝                 |
+| 连续 batch 实测成功率      | 95%                                                                 |
+| 统一数据集                 | 19 episodes，2419 rows，5 Hz                                        |
+| 视觉                       | front / overview / wrist，57 个 mp4；子任务 front/wrist 各 2419 JPG |
+| subtask                    | 每 episode 固定 6 目录，共 114 目录                                 |
+| action                     | 10D VLA action + 11D`control.action`                                |
+| validator                  | valid=true，19 episodes，2419 rows，0 error，0 warning              |
 
 本批统一数据集位于：
 
@@ -563,19 +856,20 @@ revalidate_full_yaw_seed7018_region40_20260716
 > 这组 20/20 使用的是扩展到全向 yaw 之前的 `[-30°, 30°]` 配置，保留用于
 > 格式和窄角度稳定性对照，不能作为当前 `[-180°, 180°]` 配置的成功率结论。
 
-| 指标 | 结果 |
-| --- | --- |
-| 尝试数 | 20 |
-| 质量门通过 / 纳入统一数据集 | 20 |
-| 失败并隔离 | 0 |
-| 实测成功率 | 100% |
-| 统一数据集帧数 | 2476，5 Hz |
-| 视觉 | front / overview / wrist，60 个 mp4；子任务 front/wrist 各 2476 JPG |
-| parquet | 20 个，每个 accepted episode 一个 |
-| subtask | 每 episode 固定 6 目录，共 120 目录；保留 189 个原始连续 segment 编号 |
-| action | 10D VLA action + 11D `control.action` |
-| validator | 20 episodes，2476 rows，0 error，0 warning |
-| 磁盘占用 | 统一 LeRobot 数据集约 176 MB |
+
+| 指标                        | 结果                                                                  |
+| --------------------------- | --------------------------------------------------------------------- |
+| 尝试数                      | 20                                                                    |
+| 质量门通过 / 纳入统一数据集 | 20                                                                    |
+| 失败并隔离                  | 0                                                                     |
+| 实测成功率                  | 100%                                                                  |
+| 统一数据集帧数              | 2476，5 Hz                                                            |
+| 视觉                        | front / overview / wrist，60 个 mp4；子任务 front/wrist 各 2476 JPG   |
+| parquet                     | 20 个，每个 accepted episode 一个                                     |
+| subtask                     | 每 episode 固定 6 目录，共 120 目录；保留 189 个原始连续 segment 编号 |
+| action                      | 10D VLA action + 11D`control.action`                                  |
+| validator                   | 20 episodes，2476 rows，0 error，0 warning                            |
+| 磁盘占用                    | 统一 LeRobot 数据集约 176 MB                                          |
 
 统一数据集位于：
 
@@ -623,7 +917,7 @@ outputs/run_name/episode_000000/
     ├── meta/
     │   └── subtasks.jsonl
     └── episodes/
-        └── 2001/                         # task_id
+                └── <task_id>/                    # 良渚 2001；别墅 1002
             └── 1/                        # episode_id
                 ├── task.csv
                 ├── 1-1/
@@ -703,124 +997,132 @@ subtask:    nav_straight / nav_turn / nav_stop /
 
 每个 `episode_XXXXXX.parquet` 的列：
 
-| 列 | 类型 | 说明 |
-| --- | --- | --- |
-| `index` | `int64` | 全局帧编号，跨 episode 单调递增。 |
-| `episode_index` | `int64` | episode 编号。 |
-| `frame_index` | `int64` | episode 内帧序号，从 0 开始。 |
-| `timestamp` | `float32` | episode 内时间戳，单位为秒，当前数据集 `fps=5.0`。 |
-| `task_index` | `int64` | 指向 LeRobot `meta/tasks.jsonl` / task metadata 的任务编号。 |
-| `observation.state` | `list[float32] × 17` | 机器人主状态向量，维度顺序见下表。 |
-| `observation.base_velocity` | `list[float32] × 3` | 机体系底盘速度 `[vx_body, vy_body, wz_body]`。 |
-| `observation.object_state` | `list[float32] × 13` | 目标物体 pose 和速度，维度顺序见下表。 |
-| `observation.tcp_pose` | `list[float32] × 7` | TCP 位姿 `[x, y, z, quat_w, quat_x, quat_y, quat_z]`。 |
-| `pipeline_state` | `string` | 当前 full-physics 状态机阶段，例如 `exec_nav_to_pick`、`exec_pick`。 |
-| `task_stage` | `string` | 统一任务阶段：`nav_to_pick`、`pick`、`nav_to_place` 或 `place`。 |
-| `subtask` | `string` | 当前连续动作标签，取值为上面的六类之一。 |
-| `subtask_segment_index` | `int64` | episode 内连续片段编号，从 1 开始。 |
-| `action` | `list[float32] × 10` | VLA 训练动作：下一采样时刻实际执行到的底盘/TCP/夹爪位姿。 |
-| `control.action` | `list[float32] × 11` | 同步保存的原始底盘、机械臂和夹爪控制目标。 |
-| `next.done` | `bool` | episode 末帧为 `True`，其余帧为 `False`。 |
+
+| 列                          | 类型                  | 说明                                                                |
+| --------------------------- | --------------------- | ------------------------------------------------------------------- |
+| `index`                     | `int64`               | 全局帧编号，跨 episode 单调递增。                                   |
+| `episode_index`             | `int64`               | episode 编号。                                                      |
+| `frame_index`               | `int64`               | episode 内帧序号，从 0 开始。                                       |
+| `timestamp`                 | `float32`             | episode 内时间戳，单位为秒，当前数据集`fps=5.0`。                   |
+| `task_index`                | `int64`               | 指向 LeRobot`meta/tasks.jsonl` / task metadata 的任务编号。         |
+| `observation.state`         | `list[float32] × 17` | 机器人主状态向量，维度顺序见下表。                                  |
+| `observation.base_velocity` | `list[float32] × 3`  | 机体系底盘速度`[vx_body, vy_body, wz_body]`。                       |
+| `observation.object_state`  | `list[float32] × 13` | 目标物体 pose 和速度，维度顺序见下表。                              |
+| `observation.tcp_pose`      | `list[float32] × 7`  | TCP 位姿`[x, y, z, quat_w, quat_x, quat_y, quat_z]`。               |
+| `pipeline_state`            | `string`              | 当前 full-physics 状态机阶段，例如`exec_nav_to_pick`、`exec_pick`。 |
+| `task_stage`                | `string`              | 统一任务阶段：`nav_to_pick`、`pick`、`nav_to_place` 或 `place`。    |
+| `subtask`                   | `string`              | 当前连续动作标签，取值为上面的六类之一。                            |
+| `subtask_segment_index`     | `int64`               | episode 内连续片段编号，从 1 开始。                                 |
+| `action`                    | `list[float32] × 10` | VLA 训练动作：下一采样时刻实际执行到的底盘/TCP/夹爪位姿。           |
+| `control.action`            | `list[float32] × 11` | 同步保存的原始底盘、机械臂和夹爪控制目标。                          |
+| `next.done`                 | `bool`                | episode 末帧为`True`，其余帧为 `False`。                            |
 
 图像数据不直接写入 parquet 列。LeRobot v2 中图像作为 video feature 存储：
 
-| Feature | 类型 | 文件位置 | 说明 |
-| --- | --- | --- | --- |
+
+| Feature                    | 类型                 | 文件位置                                                       | 说明                |
+| -------------------------- | -------------------- | -------------------------------------------------------------- | ------------------- |
 | `observation.images.front` | `video[480, 640, 3]` | `videos/chunk-000/observation.images.front/episode_XXXXXX.mp4` | 前视相机 RGB 视频。 |
 | `observation.images.wrist` | `video[480, 640, 3]` | `videos/chunk-000/observation.images.wrist/episode_XXXXXX.mp4` | 腕部相机 RGB 视频。 |
 
 `observation.state` 17 维顺序：
 
-| 维度 | 名称 | 说明 |
-| --- | --- | --- |
-| 0 | `base_x` | 底盘世界系 x。 |
-| 1 | `base_y` | 底盘世界系 y。 |
-| 2 | `base_z` | 底盘世界系 z。 |
-| 3 | `base_yaw` | 底盘 yaw。 |
-| 4 | `tcp_x` | TCP 世界系 x。 |
-| 5 | `tcp_y` | TCP 世界系 y。 |
-| 6 | `tcp_z` | TCP 世界系 z。 |
-| 7 | `tcp_roll` | TCP roll。 |
-| 8 | `tcp_pitch` | TCP pitch。 |
-| 9 | `tcp_yaw` | TCP yaw。 |
-| 10 | `arm_joint1` | 机械臂第 1 关节位置。 |
-| 11 | `arm_joint2` | 机械臂第 2 关节位置。 |
-| 12 | `arm_joint3` | 机械臂第 3 关节位置。 |
-| 13 | `arm_joint4` | 机械臂第 4 关节位置。 |
-| 14 | `arm_joint5` | 机械臂第 5 关节位置。 |
-| 15 | `arm_joint6` | 机械臂第 6 关节位置。 |
-| 16 | `gripper_joint7_joint8_mean` | 两个夹爪关节位置均值。 |
+
+| 维度 | 名称                         | 说明                   |
+| ---- | ---------------------------- | ---------------------- |
+| 0    | `base_x`                     | 底盘世界系 x。         |
+| 1    | `base_y`                     | 底盘世界系 y。         |
+| 2    | `base_z`                     | 底盘世界系 z。         |
+| 3    | `base_yaw`                   | 底盘 yaw。             |
+| 4    | `tcp_x`                      | TCP 世界系 x。         |
+| 5    | `tcp_y`                      | TCP 世界系 y。         |
+| 6    | `tcp_z`                      | TCP 世界系 z。         |
+| 7    | `tcp_roll`                   | TCP roll。             |
+| 8    | `tcp_pitch`                  | TCP pitch。            |
+| 9    | `tcp_yaw`                    | TCP yaw。              |
+| 10   | `arm_joint1`                 | 机械臂第 1 关节位置。  |
+| 11   | `arm_joint2`                 | 机械臂第 2 关节位置。  |
+| 12   | `arm_joint3`                 | 机械臂第 3 关节位置。  |
+| 13   | `arm_joint4`                 | 机械臂第 4 关节位置。  |
+| 14   | `arm_joint5`                 | 机械臂第 5 关节位置。  |
+| 15   | `arm_joint6`                 | 机械臂第 6 关节位置。  |
+| 16   | `gripper_joint7_joint8_mean` | 两个夹爪关节位置均值。 |
 
 `observation.base_velocity` 3 维顺序：
 
-| 维度 | 名称 | 说明 |
-| --- | --- | --- |
-| 0 | `vx_body` | 机体系前向线速度。 |
-| 1 | `vy_body` | 机体系横向线速度。 |
-| 2 | `wz_body` | 机体系 yaw 角速度。 |
+
+| 维度 | 名称      | 说明                |
+| ---- | --------- | ------------------- |
+| 0    | `vx_body` | 机体系前向线速度。  |
+| 1    | `vy_body` | 机体系横向线速度。  |
+| 2    | `wz_body` | 机体系 yaw 角速度。 |
 
 `observation.object_state` 13 维顺序：
 
-| 维度 | 名称 | 说明 |
-| --- | --- | --- |
-| 0 | `object_x` | 物体世界系 x。 |
-| 1 | `object_y` | 物体世界系 y。 |
-| 2 | `object_z` | 物体世界系 z。 |
-| 3 | `object_quat_w` | 物体姿态四元数 w。 |
-| 4 | `object_quat_x` | 物体姿态四元数 x。 |
-| 5 | `object_quat_y` | 物体姿态四元数 y。 |
-| 6 | `object_quat_z` | 物体姿态四元数 z。 |
-| 7 | `object_vx` | 物体世界系线速度 x。 |
-| 8 | `object_vy` | 物体世界系线速度 y。 |
-| 9 | `object_vz` | 物体世界系线速度 z。 |
-| 10 | `object_wx` | 物体世界系角速度 x。 |
-| 11 | `object_wy` | 物体世界系角速度 y。 |
-| 12 | `object_wz` | 物体世界系角速度 z。 |
+
+| 维度 | 名称            | 说明                 |
+| ---- | --------------- | -------------------- |
+| 0    | `object_x`      | 物体世界系 x。       |
+| 1    | `object_y`      | 物体世界系 y。       |
+| 2    | `object_z`      | 物体世界系 z。       |
+| 3    | `object_quat_w` | 物体姿态四元数 w。   |
+| 4    | `object_quat_x` | 物体姿态四元数 x。   |
+| 5    | `object_quat_y` | 物体姿态四元数 y。   |
+| 6    | `object_quat_z` | 物体姿态四元数 z。   |
+| 7    | `object_vx`     | 物体世界系线速度 x。 |
+| 8    | `object_vy`     | 物体世界系线速度 y。 |
+| 9    | `object_vz`     | 物体世界系线速度 z。 |
+| 10   | `object_wx`     | 物体世界系角速度 x。 |
+| 11   | `object_wy`     | 物体世界系角速度 y。 |
+| 12   | `object_wz`     | 物体世界系角速度 z。 |
 
 `observation.tcp_pose` 7 维顺序：
 
-| 维度 | 名称 | 说明 |
-| --- | --- | --- |
-| 0 | `tcp_x` | TCP 世界系 x。 |
-| 1 | `tcp_y` | TCP 世界系 y。 |
-| 2 | `tcp_z` | TCP 世界系 z。 |
-| 3 | `tcp_quat_w` | TCP 姿态四元数 w。 |
-| 4 | `tcp_quat_x` | TCP 姿态四元数 x。 |
-| 5 | `tcp_quat_y` | TCP 姿态四元数 y。 |
-| 6 | `tcp_quat_z` | TCP 姿态四元数 z。 |
+
+| 维度 | 名称         | 说明               |
+| ---- | ------------ | ------------------ |
+| 0    | `tcp_x`      | TCP 世界系 x。     |
+| 1    | `tcp_y`      | TCP 世界系 y。     |
+| 2    | `tcp_z`      | TCP 世界系 z。     |
+| 3    | `tcp_quat_w` | TCP 姿态四元数 w。 |
+| 4    | `tcp_quat_x` | TCP 姿态四元数 x。 |
+| 5    | `tcp_quat_y` | TCP 姿态四元数 y。 |
+| 6    | `tcp_quat_z` | TCP 姿态四元数 z。 |
 
 `action` 10 维顺序：
 
-| 维度 | 名称 | 说明 |
-| --- | --- | --- |
-| 0 | `base_x_world` | 下一采样时刻底盘世界系 x。 |
-| 1 | `base_y_world` | 下一采样时刻底盘世界系 y。 |
-| 2 | `base_yaw_world` | 下一采样时刻底盘世界系 yaw。 |
-| 3 | `tcp_x_base` | 下一采样时刻 TCP 在底盘系中的 x。 |
-| 4 | `tcp_y_base` | 下一采样时刻 TCP 在底盘系中的 y。 |
-| 5 | `tcp_z_base` | 下一采样时刻 TCP 在底盘系中的 z。 |
-| 6 | `tcp_roll_base` | 下一采样时刻 TCP 在底盘系中的 roll。 |
-| 7 | `tcp_pitch_base` | 下一采样时刻 TCP 在底盘系中的 pitch。 |
-| 8 | `tcp_yaw_base` | 下一采样时刻 TCP 在底盘系中的 yaw。 |
-| 9 | `gripper_normalized` | 夹爪归一化值，0 为闭合、1 为张开。 |
+
+| 维度 | 名称                 | 说明                                  |
+| ---- | -------------------- | ------------------------------------- |
+| 0    | `base_x_world`       | 下一采样时刻底盘世界系 x。            |
+| 1    | `base_y_world`       | 下一采样时刻底盘世界系 y。            |
+| 2    | `base_yaw_world`     | 下一采样时刻底盘世界系 yaw。          |
+| 3    | `tcp_x_base`         | 下一采样时刻 TCP 在底盘系中的 x。     |
+| 4    | `tcp_y_base`         | 下一采样时刻 TCP 在底盘系中的 y。     |
+| 5    | `tcp_z_base`         | 下一采样时刻 TCP 在底盘系中的 z。     |
+| 6    | `tcp_roll_base`      | 下一采样时刻 TCP 在底盘系中的 roll。  |
+| 7    | `tcp_pitch_base`     | 下一采样时刻 TCP 在底盘系中的 pitch。 |
+| 8    | `tcp_yaw_base`       | 下一采样时刻 TCP 在底盘系中的 yaw。   |
+| 9    | `gripper_normalized` | 夹爪归一化值，0 为闭合、1 为张开。    |
 
 episode 末帧没有下一采样时刻，因此使用当前姿态保持动作。`action` 的坐标系、单位、对齐方式和夹爪约定同时写入 `meta/info.json` 与 `task.csv`。
 
 `control.action` 11 维顺序：
 
-| 维度 | 名称 | 说明 |
-| --- | --- | --- |
-| 0 | `base_cmd_vx` | 底盘前向速度指令。 |
-| 1 | `base_cmd_vy` | 底盘横向速度指令。 |
-| 2 | `base_cmd_wz` | 底盘 yaw 角速度指令。 |
-| 3 | `arm_joint1_target` | 机械臂第 1 关节目标位置。 |
-| 4 | `arm_joint2_target` | 机械臂第 2 关节目标位置。 |
-| 5 | `arm_joint3_target` | 机械臂第 3 关节目标位置。 |
-| 6 | `arm_joint4_target` | 机械臂第 4 关节目标位置。 |
-| 7 | `arm_joint5_target` | 机械臂第 5 关节目标位置。 |
-| 8 | `arm_joint6_target` | 机械臂第 6 关节目标位置。 |
-| 9 | `gripper_joint7_target` | 第 7 夹爪关节目标位置。 |
-| 10 | `gripper_joint8_target` | 第 8 夹爪关节目标位置。 |
+
+| 维度 | 名称                    | 说明                      |
+| ---- | ----------------------- | ------------------------- |
+| 0    | `base_cmd_vx`           | 底盘前向速度指令。        |
+| 1    | `base_cmd_vy`           | 底盘横向速度指令。        |
+| 2    | `base_cmd_wz`           | 底盘 yaw 角速度指令。     |
+| 3    | `arm_joint1_target`     | 机械臂第 1 关节目标位置。 |
+| 4    | `arm_joint2_target`     | 机械臂第 2 关节目标位置。 |
+| 5    | `arm_joint3_target`     | 机械臂第 3 关节目标位置。 |
+| 6    | `arm_joint4_target`     | 机械臂第 4 关节目标位置。 |
+| 7    | `arm_joint5_target`     | 机械臂第 5 关节目标位置。 |
+| 8    | `arm_joint6_target`     | 机械臂第 6 关节目标位置。 |
+| 9    | `gripper_joint7_target` | 第 7 夹爪关节目标位置。   |
+| 10   | `gripper_joint8_target` | 第 8 夹爪关节目标位置。   |
 
 校验单 episode：
 
@@ -848,14 +1150,14 @@ Rerun 转换脚本必须在 `lerobot_rerun` 环境中运行：
 
 ```bash
 conda activate lerobot_rerun
-cd /home/light/workspace/arm_vla_liangzhu
+cd /mnt/sage_data/workspace/pct_scene
 
 python tools/lerobot_to_rerun.py \
   --repo-id full_physics_dataset \
-  --root /mnt/sage_data/outputs/arm_vla_liangzhu/batch_run/lerobot_dataset \
+  --root /mnt/sage_data/outputs/pct_scene/batch_run/lerobot_dataset \
   --episode-index 0 \
   --max-frames 200 \
-  --out /mnt/sage_data/outputs/arm_vla_liangzhu/batch_run/episode_000000.rrd
+  --out /mnt/sage_data/outputs/pct_scene/batch_run/episode_000000.rrd
 ```
 
 打开：
@@ -864,7 +1166,7 @@ python tools/lerobot_to_rerun.py \
 conda activate lerobot_rerun
 
 python -m rerun \
-  outputs/full_physics_batch/episode_000000.rrd
+  /mnt/sage_data/outputs/pct_scene/batch_run/episode_000000.rrd
 ```
 
 或转换时直接打开 Viewer：
@@ -875,10 +1177,10 @@ conda activate lerobot_rerun
 python \
   tools/lerobot_to_rerun.py \
   --repo-id full_physics_dataset \
-  --root outputs/full_physics_batch/lerobot_dataset \
+  --root /mnt/sage_data/outputs/pct_scene/batch_run/lerobot_dataset \
   --episode-index 0 \
   --max-frames 200 \
-  --out outputs/full_physics_batch/episode_000000.rrd \
+  --out /mnt/sage_data/outputs/pct_scene/batch_run/episode_000000.rrd \
   --spawn
 ```
 
@@ -899,12 +1201,11 @@ Rerun 路径内容：
 
 ## 五、常见运行命令
 
-以下命令均在当前良渚 worktree 中运行。入口已默认使用良渚可乐任务、
-PCT 单层地图、`pct_multifloor` policy/checkpoint、identity 坐标、仓库内 collision
-PLY 和 `/World/overview`，不需重复传入整组稳定参数。
+以下命令均在统一 `pct_scene` worktree 中运行。示例显式写出 scene profile，
+便于日志和命令历史直接看出当前运行的是哪套场景配置。
 
 ```bash
-cd /home/light/workspace/arm_vla_liangzhu
+cd /mnt/sage_data/workspace/pct_scene
 ```
 
 ### GUI 单次 full-physics
@@ -913,14 +1214,18 @@ cd /home/light/workspace/arm_vla_liangzhu
 PYTHONDONTWRITEBYTECODE=1 \
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_pipeline.py \
-  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/gui_seed7000 \
+  --scene-profile liangzhu \
+  --output-dir /mnt/sage_data/outputs/pct_scene/liangzhu_gui_seed7000 \
   --seed 7000 \
+  --no-record-dataset \
+  --no-record-video \
   --no-headless \
   --keep-window-open
 ```
 
 GUI 只建议用于单条观察。`--keep-window-open` 会在 pipeline 结束后保留窗口；
-实际成败仍以 `summary.json` 和 `events.jsonl` 为准。
+实际成败仍以 `summary.json` 和 `events.jsonl` 为准。此命令保留良渚默认 full/NuRec
+场景，但不创建训练相机 render product。
 
 ### Headless 单次 full-physics
 
@@ -928,8 +1233,11 @@ GUI 只建议用于单条观察。`--keep-window-open` 会在 pipeline 结束后
 PYTHONDONTWRITEBYTECODE=1 \
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_pipeline.py \
-  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/single_seed7000 \
+  --scene-profile liangzhu \
+  --output-dir /mnt/sage_data/outputs/pct_scene/liangzhu_single_seed7000 \
   --seed 7000 \
+  --navigation-visual-mode collision \
+  --no-record-video \
   --headless
 ```
 
@@ -939,16 +1247,19 @@ PYTHONDONTWRITEBYTECODE=1 \
 PYTHONDONTWRITEBYTECODE=1 \
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_batch.py \
-  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/batch_seed7000_n20 \
+  --scene-profile liangzhu \
+  --output-dir /mnt/sage_data/outputs/pct_scene/liangzhu_batch_seed7000_n20 \
   --num-episodes 20 \
-  --seed 7000
+  --seed 7000 \
+  --navigation-visual-mode collision \
+  --no-record-video
 ```
 
-batch 默认使用已经验证的良渚任务、联合随机化、PCT 单层地图、identity 坐标、禁止 A*
-fallback、`pct_multifloor` locomotion policy/checkpoint、headless 模式、固定 `/World/overview`
-相机、仓库内 collision PLY 和 collision 视觉模式。除输出目录、episode 数和 seed 外，
-无需重复传入稳定参数。当前机器人 yaw 由 task JSON 在 `[-180°, 180°]`
-内采样；这不是 CLI 参数。
+`liangzhu` profile 提供已验证的良渚任务、联合随机化、PCT 单层地图、identity 坐标、
+禁止 A* fallback、`pct_multifloor` locomotion policy/checkpoint、固定 `/World/overview`
+相机和 full/Gaussian 视觉模式。当前机器人 yaw 由 task JSON 在 `[-180°, 180°]`
+内采样；这不是 CLI 参数。上面的当前机器兼容命令显式覆盖为 collision 视觉，
+切换别墅时只需改为 `--scene-profile multi_floor`。
 
 ### 复现固定任务
 
@@ -956,10 +1267,13 @@ fallback、`pct_multifloor` locomotion policy/checkpoint、headless 模式、固
 PYTHONDONTWRITEBYTECODE=1 \
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_pipeline.py \
-  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/fixed_baseline \
+  --scene-profile liangzhu \
+  --output-dir /mnt/sage_data/outputs/pct_scene/liangzhu_fixed_baseline \
   --seed 0 \
   --no-randomize-task \
   --no-randomize-base-goal \
+  --navigation-visual-mode collision \
+  --no-record-video \
   --headless
 ```
 
@@ -972,29 +1286,38 @@ base goal；`--seed` 仍会记录，但不会改变该固定布局。
 PYTHONDONTWRITEBYTECODE=1 \
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_pipeline.py \
-  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/randomization_debug_seed7000 \
+  --scene-profile liangzhu \
+  --output-dir /mnt/sage_data/outputs/pct_scene/liangzhu_randomization_debug_seed7000 \
   --seed 7000 \
   --show-randomization-debug \
   --show-planned-trajectories \
+  --no-record-dataset \
+  --no-record-video \
   --no-headless \
   --keep-window-open
 ```
 
-### 显式加载 Gaussian 视觉场景
+### 良渚当前 8GB 显存的数据采集兼容模式
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 \
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_pipeline.py \
-  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/gui_gaussian_seed7000 \
+  --scene-profile liangzhu \
+  --output-dir /mnt/sage_data/outputs/pct_scene/liangzhu_gui_collision_seed7000 \
   --seed 7000 \
-  --navigation-visual-mode full \
-  --no-headless \
-  --keep-window-open
+  --navigation-visual-mode collision \
+  --no-record-video \
+  --headless
 ```
 
-稳定默认是 `collision`。`full` 会加载 GaussianScene；在 8 GB GPU 上不建议将
-`full` 与多路相机批量采集同时开启。
+良渚 profile 默认是 `full`，会加载 GaussianScene。当前 RTX 4060 Laptop 8GB、
+Isaac Sim 5.1 和约 1.56GB NuRec 资产的组合中，只要启用任一 IsaacLab RGB render
+product，就会在最初几帧稳定触发 CUDA illegal address 700；该现象在单相机、TAA、
+关闭 multi-GPU 后仍能复现。入口已经为 NuRec profile 设置 single-GPU 和 TAA 保护，
+但这些保护不足以消除该版本/显存组合的问题。因此本机真实数据验收使用 collision
+兼容模式；它会改变训练视觉来源，不应与 full 视觉数据静默混合。升级 Isaac Sim 或
+使用更大显存 GPU 后，先运行一条 full 录制并通过 validator，再恢复 full batch。
 
 ### 验证 LeRobot 数据集并导出 Rerun
 
@@ -1003,17 +1326,17 @@ conda activate isaac_locomani
 
 python -B \
   scripts/pipeline/validate_lerobot_episode.py \
-  --dataset-root /mnt/sage_data/outputs/arm_vla_liangzhu/batch_seed7000_n20/lerobot_dataset
+  --dataset-root /mnt/sage_data/outputs/pct_scene/liangzhu_batch_seed7000_n20/lerobot_dataset
 
 conda activate lerobot_rerun
 
 python \
   tools/lerobot_to_rerun.py \
   --repo-id full_physics_dataset \
-  --root /mnt/sage_data/outputs/arm_vla_liangzhu/batch_seed7000_n20/lerobot_dataset \
+  --root /mnt/sage_data/outputs/pct_scene/liangzhu_batch_seed7000_n20/lerobot_dataset \
   --episode-index 0 \
   --max-frames 200 \
-  --out /mnt/sage_data/outputs/arm_vla_liangzhu/batch_seed7000_n20/episode_000000.rrd
+  --out /mnt/sage_data/outputs/pct_scene/liangzhu_batch_seed7000_n20/episode_000000.rrd
 ```
 
 ## 附录：CLI 参数表
@@ -1022,51 +1345,56 @@ python \
 
 默认模式是 full-physics。下表只列日常运行和验收需要的参数；完整试验性 PCT/
 楼梯参数以 `python -B scripts/pipeline/run_full_physics_pipeline.py --help` 为准。
-机器人 yaw 范围、扇形半径和物体间距属于 task 配置，不是 CLI 参数；当前
-`robot_yaw_range_deg=[-180, 180]`。只在需要 smoke/debug 时传模式参数。
+机器人 yaw 范围、扇形半径和物体间距属于 task 配置，不是 CLI 参数；良渚当前
+`robot_yaw_range_deg=[-180, 180]`，别墅 profile 默认使用固定任务。只在需要
+smoke/debug 时传模式参数。
 
 
-| 参数                                                 | 类型 / 默认                     | 说明                                                |
-| ---------------------------------------------------- | ------------------------------- | --------------------------------------------------- |
-| `--task-json`                                        | 良渚可乐任务                    | 默认 `tasks/nav_pick_place_cola_liangzhu_pct.json`  |
-| `--output-dir`                                       | `outputs/full_physics_pipeline` | 输出目录；真实采集建议使用 `/mnt/sage_data`       |
-| `--num-episodes`                                     | `1`                             | episode 数量；真实 Isaac 模式当前只支持 1           |
-| `--seed`                                             | `0`                             | episode seed；相同 task/config/seed 复现同一布局       |
-| `--randomize-task` / `--no-randomize-task`           | 默认开启                        | 随机化机器人 yaw、可乐、鼠标垫及同步目标             |
-| `--show-randomization-debug`                         | 默认关闭                        | 显示矩形/前向扇区和采样点 USD guide                 |
-| `--show-planned-trajectories`                        | 默认关闭                        | 显示 PCT 路径和 CuRobo TCP 轨迹 guide                   |
-| `--randomize-base-goal` / `--no-randomize-base-goal` | 默认开启                        | 是否随机化 pick/place 导航交接 base_goal            |
-| `--keep-window-open` / `--no-keep-window-open`       | 默认关闭                        | 结束后保留 GUI；必须配合`--no-headless`             |
-| `--headless` / `--no-headless`                       | 默认`--no-headless`             | 是否无界面运行                                      |
-| `--navigation-visual-mode`                           | `collision`                     | 稳定默认不加载 GaussianScene；`full` 显式加载，`auto` 保留兼容 |
-| `--scene-light-mode`                                 | `camera`                        | `camera` 用于保存图像；`stage` 使用 USD 原场景灯光          |
-| `--global-planner`                                   | `pct`                           | 良渚默认使用 PCT；可显式切换 `astar`                 |
-| `--pct-collision-ply-path`                           | 仓库内良渚 PLY                  | 默认 `source/scene/liangzhu/ply/liangzhu_collision.ply` |
-| `--pct-no-fallback` / `--pct-allow-fallback`         | 默认禁止回退                    | 默认 PCT 失败即拒绝 episode                          |
-| `--pct-coord-mode`                                   | `identity`                      | 良渚 PLY 与 Isaac 使用同一坐标方向                   |
-| `--policy-profile`                                   | `pct_multifloor`                | 复用已验证的 RL locomotion profile                   |
-| `--locomotion-checkpoint`                            | Go2-X5 model_26000              | 默认使用仓库 checkpoint                              |
-| `--require-locomotion-checkpoint`                    | 默认开启                        | checkpoint 缺失时立即失败                            |
-| `--record-video`                                     | 默认关闭                        | 启用 episode 展示/observation MP4 录制；展示视频固定 25fps |
-| `--video-mode`                                       | `overview`                      | `overview` 使用第三人称视角；`front`/`font` 使用前视 observation；`wrist` 使用腕部 observation；`all` 同时导出三路 |
-| `--video-out`                                        | 可选                            | 视频输出目录或单个`.mp4`；多路/多 episode 请传目录  |
-| `--video-width` / `--video-height`                   | `1280` / `720`                  | overview 捕获分辨率；不改变 front/wrist observation |
-| `--overview-camera-mode`                             | `fixed`                         | 默认固定使用指定 overview；`auto` 才按阶段发现相机  |
-| `--overview-camera-prim-path`                        | `/World/overview`               | image/video/GUI 共用的 overview Camera prim          |
-| `--overview-capture-backend`                         | `viewport`                      | overview 取帧后端；`viewport` 抓最终视口画面最接近 GUI，`render_product` 使用 Replicator RGB，`auto` 先 viewport 后回退 |
-| `--overview-initial-hold-frames`                     | `160`                           | 初始`third_person1`最少保持帧数，避免刚 reset 后立即切到导航镜头 |
-| `--overview-exposure`                                | `0.0`                           | overview 线性 RGB 转视频前曝光补偿，单位 EV stops  |
-| `--overview-gamma`                                   | `2.2`                           | overview 线性 RGB 转 sRGB 的 gamma；设为`1.0`可关闭 gamma 提亮 |
-| `--pick-plan-json`                                   | 可选                            | 仅 manipulation apply smoke 使用；full-physics 禁止 |
-| `--place-plan-json`                                  | 可选                            | 仅 manipulation apply smoke 使用；full-physics 禁止 |
-| `--dry-run`                                          | mode                            | 无 Isaac 内存后端状态机验证                         |
-| `--simulation-smoke`                                 | mode                            | 只验证真实 Isaac stage/reset                        |
-| `--navigation-smoke`                                 | mode                            | 只验证 nav 到 pick                                  |
-| `--navigation-carry-smoke`                           | mode                            | 验证 carry 姿态下 nav 到 place                      |
-| `--pct-plan-preview`                                 | mode                            | GUI 中只预览 PCT 路径，不执行 locomotion             |
-| `--pick-smoke`                                       | mode                            | 只运行到 pick 成功验证                              |
-| `--manipulation-smoke`                               | mode                            | 使用假后端验证 manipulation action 合同             |
-| `--manipulation-apply-smoke`                         | mode                            | 真实 Isaac 中验证 arm/gripper action 下发           |
+| 参数                                                 | 类型 / 默认            | 说明                                                                                                                    |
+| ---------------------------------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `--scene-profile`                                    | `liangzhu`             | 选择场景；可用`--list-scene-profiles` 查看，别墅使用 `multi_floor`                                                      |
+| `--list-scene-profiles` / `--check-scene-assets`     | 只读检查               | 列出动态发现的 profile，或检查所选场景资产后退出                                                                        |
+| `--task-json`                                        | 由 profile 提供        | 良渚可乐任务或别墅苹果任务；显式覆盖时会校验 scene_profile                                                              |
+| `--output-dir`                                       | `outputs/<profile>`    | 输出目录；真实采集建议使用`/mnt/sage_data`                                                                              |
+| `--num-episodes`                                     | `1`                    | episode 数量；真实 Isaac 模式当前只支持 1                                                                               |
+| `--seed`                                             | `0`                    | episode seed；相同 task/config/seed 复现同一布局                                                                        |
+| `--randomize-task` / `--no-randomize-task`           | 由 profile 提供        | 良渚默认开启；别墅默认关闭；显式开关可覆盖                                                                              |
+| `--show-randomization-debug`                         | 默认关闭               | 显示矩形/前向扇区和采样点 USD guide                                                                                     |
+| `--show-planned-trajectories`                        | 默认关闭               | 显示 PCT 路径和 CuRobo TCP 轨迹 guide                                                                                   |
+| `--randomize-base-goal` / `--no-randomize-base-goal` | 由 profile 提供        | 良渚默认开启；别墅默认关闭                                                                                              |
+| `--keep-window-open` / `--no-keep-window-open`       | 默认关闭               | 结束后保留 GUI；必须配合`--no-headless`                                                                                 |
+| `--headless` / `--no-headless`                       | 默认`--no-headless`    | 是否无界面运行                                                                                                          |
+| `--navigation-visual-mode`                           | 由 profile 提供        | 良渚为`full`；别墅为 `collision`；可显式覆盖                                                                            |
+| `--scene-light-mode`                                 | `camera`               | `camera` 用于保存图像；`stage` 使用 USD 原场景灯光                                                                      |
+| `--global-planner`                                   | `pct`                  | 良渚默认使用 PCT；可显式切换`astar`                                                                                     |
+| `--pct-collision-ply-path`                           | 由 profile 提供        | 每个场景必须声明自己的 collision PLY，禁止静默借用别墅地图                                                              |
+| `--pct-no-fallback` / `--pct-allow-fallback`         | 默认禁止回退           | 默认 PCT 失败即拒绝 episode                                                                                             |
+| `--pct-coord-mode`                                   | 由 profile 提供        | 良渚`identity`；别墅 `sim_to_pct_180deg`                                                                                |
+| `--policy-profile`                                   | `pct_multifloor`       | 复用已验证的 RL locomotion profile                                                                                      |
+| `--locomotion-checkpoint`                            | Go2-X5 model_26000     | 默认使用仓库 checkpoint                                                                                                 |
+| `--require-locomotion-checkpoint`                    | 默认开启               | checkpoint 缺失时立即失败                                                                                               |
+| `--record-video`                                     | full-physics 默认开启  | 可用`--no-record-video` 关闭；展示视频固定 25fps                                                                        |
+| `--record-dataset`                                   | 默认开启               | 保存同步帧与 LeRobot 数据；GUI 纯检查可用`--no-record-dataset`                                                          |
+| `--dataset-camera-keys`                              | `front wrist overview` | 选择训练数据相机流；主要用于渲染后端诊断，至少包含 front                                                                |
+| `--video-mode`                                       | 由 profile 提供        | 当前两 profile 默认`all`；也可只选 overview/front/wrist                                                                 |
+| `--video-out`                                        | 可选                   | 视频输出目录或单个`.mp4`；多路/多 episode 请传目录                                                                      |
+| `--video-width` / `--video-height`                   | `1280` / `720`         | overview 捕获分辨率；不改变 front/wrist observation                                                                     |
+| `--overview-camera-mode`                             | 由 profile 提供        | 良渚`fixed`；别墅 `auto` 按 schedule 切换                                                                               |
+| `--overview-camera-prim-path`                        | 由 profile 提供        | 良渚`/World/overview`；别墅从 `/World/Camera0` 开始                                                                     |
+| `--overview-capture-backend`                         | `viewport`             | overview 取帧后端；`viewport` 抓最终视口画面最接近 GUI，`render_product` 使用 Replicator RGB，`auto` 先 viewport 后回退 |
+| `--overview-initial-hold-frames`                     | `160`                  | 初始`third_person1`最少保持帧数，避免刚 reset 后立即切到导航镜头                                                        |
+| `--overview-exposure`                                | `0.0`                  | overview 线性 RGB 转视频前曝光补偿，单位 EV stops                                                                       |
+| `--overview-gamma`                                   | `2.2`                  | overview 线性 RGB 转 sRGB 的 gamma；设为`1.0`可关闭 gamma 提亮                                                          |
+| `--pick-plan-json`                                   | 可选                   | 仅 manipulation apply smoke 使用；full-physics 禁止                                                                     |
+| `--place-plan-json`                                  | 可选                   | 仅 manipulation apply smoke 使用；full-physics 禁止                                                                     |
+| `--dry-run`                                          | mode                   | 无 Isaac 内存后端状态机验证                                                                                             |
+| `--simulation-smoke`                                 | mode                   | 只验证真实 Isaac stage/reset                                                                                            |
+| `--navigation-smoke`                                 | mode                   | 只验证 nav 到 pick                                                                                                      |
+| `--navigation-carry-smoke`                           | mode                   | 验证 carry 姿态下 nav 到 place                                                                                          |
+| `--pct-plan-preview`                                 | mode                   | GUI 中只预览 PCT 路径，不执行 locomotion                                                                                |
+| `--pick-smoke`                                       | mode                   | 只运行到 pick 成功验证                                                                                                  |
+| `--manipulation-smoke`                               | mode                   | 使用假后端验证 manipulation action 合同                                                                                 |
+| `--manipulation-apply-smoke`                         | mode                   | 真实 Isaac 中验证 arm/gripper action 下发                                                                               |
 
 ### `scripts/pipeline/run_full_physics_batch.py`
 
@@ -1074,46 +1402,48 @@ python \
 会为每个 episode 启动独立 Isaac Sim 子进程，并在结束时只合并通过质量门的数据。
 
 
-| 参数                                                 | 类型 / 默认   | 说明                                        |
-| ---------------------------------------------------- | ------------- | ------------------------------------------- |
-| `--task-json`                                        | 良渚可乐任务  | 默认 `tasks/nav_pick_place_cola_liangzhu_pct.json` |
-| `--output-dir`                                       | 必填          | batch 输出目录；必须使用新目录，避免混入旧摘要       |
-| `--num-episodes`                                     | `1`           | episode 数量                                |
-| `--seed`                                             | `0`           | 首个 seed，后续使用`seed + episode_index`   |
-| `--randomize-task` / `--no-randomize-task`           | 默认开启      | 是否按 task profile 随机化完整 episode 布局 |
-| `--show-randomization-debug`                         | 默认关闭      | 显示矩形/前向扇区；通常只用于 GUI 单 episode |
-| `--randomize-base-goal` / `--no-randomize-base-goal` | 默认开启      | 是否随机化导航交接 base_goal                |
-| `--headless` / `--no-headless`                       | 默认 headless | batch 是否无界面运行；量产不建议 `--no-headless`     |
-| `--navigation-visual-mode`                           | `collision`   | 稳定默认不加载 GaussianScene；`full` 可显式启用    |
-| `--global-planner`                                   | `pct`         | 良渚 batch 默认使用 PCT                     |
-| `--pct-server-script`                                | 良渚 grid server | 默认使用仓库内 `pct_grid_server.py`       |
-| `--pct-tomogram-path` / `--pct-walkable-path`        | 良渚单层资产  | 默认使用 `source/scene/liangzhu/pct/` 下资产 |
-| `--pct-collision-ply-path`                           | 仓库内良渚 PLY | 默认 `source/scene/liangzhu/ply/liangzhu_collision.ply` |
-| `--pct-no-fallback` / `--pct-allow-fallback`         | 默认禁止回退  | 默认 PCT 失败即拒绝 episode                 |
-| `--pct-coord-mode`                                   | `identity`    | 良渚 PLY 与 Isaac 使用同一坐标方向          |
-| `--policy-profile`                                   | `pct_multifloor` | 复用已验证的 RL locomotion profile       |
-| `--locomotion-checkpoint`                            | Go2-X5 model_26000 | 默认使用仓库 checkpoint                  |
-| `--require-locomotion-checkpoint`                    | 默认开启      | checkpoint 缺失时立即失败                   |
-| `--continue-on-failure` / `--no-continue-on-failure` | 默认继续      | 单 episode 失败后是否继续                   |
-| `--pick-plan-json`                                   | 可选          | 非 full-physics smoke 可转发离线 pick plan  |
-| `--place-plan-json`                                  | 可选          | 非 full-physics smoke 可转发离线 place plan |
-| `--progress-interval-s`                              | `5.0`         | heartbeat 进度打印间隔                      |
-| `--color` / `--no-color`                             | 默认开启      | 是否使用 ANSI 彩色输出；保存 CI 日志时建议关闭       |
-| `--record-video`                                     | 默认关闭      | 转发给单 episode pipeline，启用 MP4 录制；展示视频固定 25fps |
-| `--video-mode`                                       | `overview`    | `overview`/`front`/`font`/`wrist`/`all`；`font` 是 `front` 兼容别名 |
-| `--video-out`                                        | 可选          | 视频输出根目录；batch 会写入其下的`episode_XXXXXX/`子目录，不支持单个`.mp4` |
-| `--video-width` / `--video-height`                   | `1280` / `720`| overview 捕获分辨率；不改变 front/wrist observation |
-| `--overview-camera-mode`                             | `fixed`       | 默认固定使用指定 overview；`auto` 保留动态发现 |
-| `--overview-camera-prim-path`                        | `/World/overview` | image/video/GUI 共用的 overview Camera prim |
-| `--overview-capture-backend`                         | `viewport`    | overview 取帧后端；`viewport` 最接近 GUI，`render_product` 用于排查 fallback |
-| `--overview-initial-hold-frames`                     | `160`         | 初始`third_person1`最少保持帧数              |
-| `--overview-exposure`                                | `0.0`         | overview 曝光补偿，单位 EV stops            |
-| `--overview-gamma`                                   | `2.2`         | overview 线性 RGB 转 sRGB gamma             |
-| `--dry-run`                                          | mode          | 子进程 dry-run                              |
-| `--simulation-smoke`                                 | mode          | 子进程 simulation smoke                     |
-| `--navigation-smoke`                                 | mode          | 子进程 navigation smoke                     |
-| `--navigation-carry-smoke`                           | mode          | 子进程 navigation carry smoke               |
-| `--manipulation-apply-smoke`                         | mode          | 子进程 manipulation apply smoke             |
+| 参数                                                 | 类型 / 默认            | 说明                                                                         |
+| ---------------------------------------------------- | ---------------------- | ---------------------------------------------------------------------------- |
+| `--scene-profile`                                    | `liangzhu`             | 选择`liangzhu` 或 `multi_floor`，其余稳定参数随 profile 注入                 |
+| `--task-json`                                        | 由 profile 提供        | 显式覆盖时由单 episode 入口校验 task 与场景兼容性                            |
+| `--output-dir`                                       | 必填                   | batch 输出目录；必须使用新目录，避免混入旧摘要                               |
+| `--num-episodes`                                     | `1`                    | episode 数量                                                                 |
+| `--seed`                                             | `0`                    | 首个 seed，后续使用`seed + episode_index`                                    |
+| `--randomize-task` / `--no-randomize-task`           | 由 profile 提供        | 良渚默认开启；别墅默认关闭                                                   |
+| `--show-randomization-debug`                         | 默认关闭               | 显示矩形/前向扇区；通常只用于 GUI 单 episode                                 |
+| `--randomize-base-goal` / `--no-randomize-base-goal` | 由 profile 提供        | 良渚默认开启；别墅默认关闭                                                   |
+| `--headless` / `--no-headless`                       | 默认 headless          | batch 是否无界面运行；量产不建议`--no-headless`                              |
+| `--navigation-visual-mode`                           | 由 profile 提供        | 良渚`full`；别墅 `collision`                                                 |
+| `--global-planner`                                   | 由 profile 提供        | 当前两个 profile 均使用 PCT                                                  |
+| `--pct-server-script`                                | 由 profile 提供        | 当前均使用仓库内`pct_grid_server.py`                                         |
+| `--pct-tomogram-path` / `--pct-walkable-path`        | 由 profile 提供        | 自动选择良渚单层或别墅多楼层地图                                             |
+| `--pct-collision-ply-path`                           | 由 profile 提供        | 自动选择对应场景 collision PLY                                               |
+| `--pct-no-fallback` / `--pct-allow-fallback`         | 默认禁止回退           | 默认 PCT 失败即拒绝 episode                                                  |
+| `--pct-coord-mode`                                   | 由 profile 提供        | 良渚`identity`；别墅 `sim_to_pct_180deg`                                     |
+| `--policy-profile`                                   | `pct_multifloor`       | 复用已验证的 RL locomotion profile                                           |
+| `--locomotion-checkpoint`                            | Go2-X5 model_26000     | 默认使用仓库 checkpoint                                                      |
+| `--require-locomotion-checkpoint`                    | 默认开启               | checkpoint 缺失时立即失败                                                    |
+| `--continue-on-failure` / `--no-continue-on-failure` | 默认继续               | 单 episode 失败后是否继续                                                    |
+| `--pick-plan-json`                                   | 可选                   | 非 full-physics smoke 可转发离线 pick plan                                   |
+| `--place-plan-json`                                  | 可选                   | 非 full-physics smoke 可转发离线 place plan                                  |
+| `--progress-interval-s`                              | `5.0`                  | heartbeat 进度打印间隔                                                       |
+| `--color` / `--no-color`                             | 默认开启               | 是否使用 ANSI 彩色输出；保存 CI 日志时建议关闭                               |
+| `--record-video`                                     | full-physics 默认开启  | 沿用单 episode/profile 默认；可显式关闭                                      |
+| `--dataset-camera-keys`                              | `front wrist overview` | 转发训练数据相机流；可用`--dataset-camera-keys front wrist` 做诊断           |
+| `--video-mode`                                       | 由 profile 提供        | 当前 profile 默认`all`；`font` 是 `front` 兼容别名                           |
+| `--video-out`                                        | 可选                   | 视频输出根目录；batch 会写入其下的`episode_XXXXXX/`子目录，不支持单个`.mp4`  |
+| `--video-width` / `--video-height`                   | `1280` / `720`         | overview 捕获分辨率；不改变 front/wrist observation                          |
+| `--overview-camera-mode`                             | 由 profile 提供        | 良渚固定相机；别墅按 schedule 自动切换                                       |
+| `--overview-camera-prim-path`                        | 由 profile 提供        | image/video/GUI 共用的初始 overview Camera prim                              |
+| `--overview-capture-backend`                         | `viewport`             | overview 取帧后端；`viewport` 最接近 GUI，`render_product` 用于排查 fallback |
+| `--overview-initial-hold-frames`                     | `160`                  | 初始`third_person1`最少保持帧数                                              |
+| `--overview-exposure`                                | `0.0`                  | overview 曝光补偿，单位 EV stops                                             |
+| `--overview-gamma`                                   | `2.2`                  | overview 线性 RGB 转 sRGB gamma                                              |
+| `--dry-run`                                          | mode                   | 子进程 dry-run                                                               |
+| `--simulation-smoke`                                 | mode                   | 子进程 simulation smoke                                                      |
+| `--navigation-smoke`                                 | mode                   | 子进程 navigation smoke                                                      |
+| `--navigation-carry-smoke`                           | mode                   | 子进程 navigation carry smoke                                                |
+| `--manipulation-apply-smoke`                         | mode                   | 子进程 manipulation apply smoke                                              |
 
 ### `tools/lerobot_to_rerun.py`
 

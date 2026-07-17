@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "description": "仅供 headless overview 录制使用；规则按顺序匹配，可直接调整 Camera0-8 和 XYZ 分界。",
+  "default_camera": "/World/Camera0",
+  "rules": [
+    {
+      "name": "nav_to_pick",
+      "states": ["plan_nav_to_pick", "exec_nav_to_pick", "verify_pick_reachable"],
+      "camera": "/World/Camera1"
+    },
+    {
+      "name": "pick",
+      "states": ["plan_pick", "exec_pick", "verify_pick_success", "plan_nav_to_place"],
+      "camera": "/World/Camera1"
+    },
+    {
+      "name": "post_pick_departure",
+      "states": ["exec_nav_to_place"],
+      "x_max": -2.6,
+      "camera": "/World/Camera1"
+    },
+    {
+      "name": "upper_place_approach",
+      "states": ["exec_nav_to_place", "verify_place_reachable"],
+      "z_min": 2.2,
+      "y_max": 2.2,
+      "camera": "/World/Camera7"
+    },
+    {
+      "name": "upper_floor_navigation",
+      "states": ["exec_nav_to_place", "verify_place_reachable"],
+      "z_min": 2.2,
+      "y_max": 4.3,
+      "camera": "/World/Camera6"
+    },
+    {
+      "name": "second_stair_flight",
+      "states": ["exec_nav_to_place"],
+      "z_min": 1.8,
+      "camera": "/World/Camera5"
+    },
+    {
+      "name": "first_floor_landing",
+      "states": ["exec_nav_to_place"],
+      "z_min": 0.8,
+      "y_min": 7.0,
+      "camera": "/World/Camera4"
+    },
+    {
+      "name": "stair_entrance_and_first_flight",
+      "states": ["exec_nav_to_place"],
+      "x_min": 0.75,
+      "y_min": 4.3,
+      "camera": "/World/Camera3"
+    },
+    {
+      "name": "lower_floor_carry",
+      "states": ["exec_nav_to_place"],
+      "camera": "/World/Camera2"
+    },
+    {
+      "name": "place",
+      "states": ["plan_place", "exec_place", "verify_place_success"],
+      "camera": "/World/Camera8"
+    }
+  ]
+}

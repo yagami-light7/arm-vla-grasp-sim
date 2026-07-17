@@ -20,9 +20,16 @@ class FullPhysicsVerifier:
         object_lift_height_tolerance_m: float = 0.04,
         object_retreat_distance_tolerance_m: float = 0.03,
         pick_linear_velocity_tolerance_mps: float = 0.30,
-        place_xy_tolerance_m: float = 0.12,
-        place_z_tolerance_m: float = 0.10,
-        place_linear_velocity_tolerance_mps: float = 0.20,
+        place_xy_tolerance_m: float = 0.06,
+        place_z_tolerance_m: float = 0.03,
+        place_linear_velocity_tolerance_mps: float = 0.05,
+        place_angular_velocity_tolerance_rps: float = 0.50,
+        place_release_xy_tolerance_m: float = 0.03,
+        place_release_z_tolerance_m: float = 0.015,
+        place_release_peak_linear_speed_tolerance_mps: float = 0.35,
+        place_release_peak_horizontal_speed_tolerance_mps: float = 0.15,
+        place_release_peak_angular_speed_tolerance_rps: float = 12.0,
+        place_release_horizontal_displacement_tolerance_m: float = 0.05,
     ):
         self.navigation = navigation
         self.grasp_tcp_distance_tolerance_m = float(grasp_tcp_distance_tolerance_m)
@@ -32,6 +39,23 @@ class FullPhysicsVerifier:
         self.place_xy_tolerance_m = float(place_xy_tolerance_m)
         self.place_z_tolerance_m = float(place_z_tolerance_m)
         self.place_linear_velocity_tolerance_mps = float(place_linear_velocity_tolerance_mps)
+        self.place_angular_velocity_tolerance_rps = float(
+            place_angular_velocity_tolerance_rps
+        )
+        self.place_release_xy_tolerance_m = float(place_release_xy_tolerance_m)
+        self.place_release_z_tolerance_m = float(place_release_z_tolerance_m)
+        self.place_release_peak_linear_speed_tolerance_mps = float(
+            place_release_peak_linear_speed_tolerance_mps
+        )
+        self.place_release_peak_horizontal_speed_tolerance_mps = float(
+            place_release_peak_horizontal_speed_tolerance_mps
+        )
+        self.place_release_peak_angular_speed_tolerance_rps = float(
+            place_release_peak_angular_speed_tolerance_rps
+        )
+        self.place_release_horizontal_displacement_tolerance_m = float(
+            place_release_horizontal_displacement_tolerance_m
+        )
 
     def verify_pick_reachable(
         self,
@@ -157,11 +181,18 @@ class FullPhysicsVerifier:
         episode_spec: EpisodeSpec,
     ) -> VerificationResult:
         open_count = int(state.metadata.get("gripper_open_apply_count", 0) or 0)
-        if open_count <= 0:
+        release_open_count = int(state.metadata.get("place_open_apply_count_delta", 0) or 0)
+        release_observed = state.metadata.get("place_release_observed") is True
+        if open_count <= 0 or release_open_count <= 0 or not release_observed:
             return VerificationResult(
                 success=False,
-                failure_reason="place_tracking_failed",
-                metadata={"reason": "gripper_open_not_applied", "gripper_open_apply_count": open_count},
+                failure_reason="place_release_not_observed",
+                metadata={
+                    "reason": "place_gripper_open_not_observed",
+                    "gripper_open_apply_count": open_count,
+                    "place_open_apply_count_delta": release_open_count,
+                    "place_release_observed": release_observed,
+                },
             )
         place_target_pose, place_target_source = _runtime_place_target_pose(
             state,
@@ -178,16 +209,39 @@ class FullPhysicsVerifier:
                     "place_target_pose_source": place_target_source,
                 },
             )
-        object_xyz = state.object_pose[:3]
-        target_xyz = place_target_pose[:3]
-        xy_error = math.hypot(object_xyz[0] - target_xyz[0], object_xyz[1] - target_xyz[1])
-        z_error = abs(object_xyz[2] - target_xyz[2])
-        linear_speed = _linear_speed(state.object_velocity)
+
+        object_xyz = _xyz(state.object_pose)
+        target_xyz = _xyz(place_target_pose)
+        if object_xyz is None or target_xyz is None:
+            return VerificationResult(
+                success=False,
+                failure_reason="object_out_of_place",
+                metadata={
+                    "reason": "non_finite_object_or_place_pose",
+                    "object_pose": state.object_pose,
+                    "place_target_pose": place_target_pose,
+                    "place_target_pose_source": place_target_source,
+                },
+            )
+        object_velocity = _finite_vector(state.object_velocity, minimum_length=6)
+        if object_velocity is None:
+            return VerificationResult(
+                success=False,
+                failure_reason="place_dynamics_unavailable",
+                metadata={
+                    "reason": "object_velocity_unavailable_or_non_finite",
+                    "object_velocity": state.object_velocity,
+                },
+            )
+
         try:
             validation_config = _place_validation_config(
                 episode_spec,
                 default_xy_tolerance_m=self.place_xy_tolerance_m,
                 default_z_tolerance_m=self.place_z_tolerance_m,
+                default_release_peak_linear_speed_tolerance_mps=(
+                    self.place_release_peak_linear_speed_tolerance_mps
+                ),
             )
         except (TypeError, ValueError) as exc:
             return VerificationResult(
@@ -201,26 +255,134 @@ class FullPhysicsVerifier:
         xy_tolerance = validation_config["place_xy_tolerance_m"]
         z_tolerance = validation_config["place_z_tolerance_m"]
         region = validation_config["placement_region_world"]
+        peak_linear_tolerance = float(
+            validation_config[
+                "place_release_peak_linear_speed_tolerance_mps"
+            ]
+        )
+        peak_upward_tolerance = float(
+            validation_config[
+                "place_release_peak_upward_speed_tolerance_mps"
+            ]
+        )
+        peak_downward_tolerance = float(
+            validation_config[
+                "place_release_peak_downward_speed_tolerance_mps"
+            ]
+        )
+
+        xy_error = math.hypot(
+            object_xyz[0] - target_xyz[0],
+            object_xyz[1] - target_xyz[1],
+        )
+        z_error = abs(object_xyz[2] - target_xyz[2])
+        linear_speed = _linear_speed(object_velocity)
+        angular_speed = _angular_speed(object_velocity)
         region_contains_object_center = None
         if region is not None:
             region_contains_object_center = bool(
                 region["x_min"] <= float(object_xyz[0]) <= region["x_max"]
                 and region["y_min"] <= float(object_xyz[1]) <= region["y_max"]
             )
-        success = (
-            xy_error <= xy_tolerance
-            and z_error <= z_tolerance
-            and linear_speed <= self.place_linear_velocity_tolerance_mps
-            and region_contains_object_center is not False
+
+        release_pose = state.metadata.get("place_release_object_pose")
+        expected_release_center = state.metadata.get(
+            "place_expected_release_object_center"
         )
+        if _xyz(release_pose) is None or _xyz(expected_release_center) is None:
+            return VerificationResult(
+                success=False,
+                failure_reason="place_release_pose_unavailable",
+                metadata={
+                    "reason": "release_pose_or_target_unavailable",
+                    "place_release_object_pose": release_pose,
+                    "place_expected_release_object_center": expected_release_center,
+                },
+            )
+        release_xyz = _xyz(release_pose)
+        expected_release_xyz = _xyz(expected_release_center)
+        assert release_xyz is not None and expected_release_xyz is not None
+        release_xy_error = math.hypot(
+            release_xyz[0] - expected_release_xyz[0],
+            release_xyz[1] - expected_release_xyz[1],
+        )
+        release_z_error = abs(release_xyz[2] - expected_release_xyz[2])
+        peak_linear_speed = _optional_finite_float(
+            state.metadata.get("place_peak_object_linear_speed_mps")
+        )
+        peak_horizontal_speed = _optional_finite_float(
+            state.metadata.get("place_peak_object_horizontal_speed_mps")
+        )
+        peak_upward_speed = _optional_finite_float(
+            state.metadata.get("place_peak_object_upward_speed_mps")
+        )
+        peak_downward_speed = _optional_finite_float(
+            state.metadata.get("place_peak_object_downward_speed_mps")
+        )
+        directional_speed_source = "signed_vertical_velocity_peaks"
+        if peak_upward_speed is None or peak_downward_speed is None:
+            # 兼容旧 episode：没有有向速度时继续按原三轴峰值严格判断，
+            # 不会因为升级 schema 而放宽历史数据质量门。
+            peak_upward_speed = peak_linear_speed
+            peak_downward_speed = peak_linear_speed
+            directional_speed_source = "legacy_linear_speed_fallback"
+        peak_angular_speed = _optional_finite_float(
+            state.metadata.get("place_peak_object_angular_speed_rps")
+        )
+        max_horizontal_displacement = _optional_finite_float(
+            state.metadata.get("place_max_horizontal_displacement_m")
+        )
+        velocity_samples = int(
+            state.metadata.get("place_release_velocity_sample_count", 0) or 0
+        )
+
+        if (
+            peak_linear_speed is None
+            or peak_horizontal_speed is None
+            or peak_upward_speed is None
+            or peak_downward_speed is None
+            or peak_angular_speed is None
+            or max_horizontal_displacement is None
+            or velocity_samples <= 0
+        ):
+            failure_reason = "place_dynamics_unavailable"
+        elif (
+            release_xy_error > self.place_release_xy_tolerance_m
+            or release_z_error > self.place_release_z_tolerance_m
+        ):
+            failure_reason = "place_release_pose_error"
+        elif (
+            peak_upward_speed > peak_upward_tolerance
+            or peak_downward_speed > peak_downward_tolerance
+            or peak_horizontal_speed
+            > self.place_release_peak_horizontal_speed_tolerance_mps
+            or peak_angular_speed > self.place_release_peak_angular_speed_tolerance_rps
+            or max_horizontal_displacement
+            > self.place_release_horizontal_displacement_tolerance_m
+        ):
+            failure_reason = "place_release_ejected"
+        elif (
+            xy_error > xy_tolerance
+            or z_error > z_tolerance
+            or region_contains_object_center is False
+        ):
+            failure_reason = "object_out_of_place"
+        elif (
+            linear_speed > self.place_linear_velocity_tolerance_mps
+            or angular_speed > self.place_angular_velocity_tolerance_rps
+        ):
+            failure_reason = "object_unstable_after_place"
+        else:
+            failure_reason = ""
+        success = not failure_reason
         return VerificationResult(
             success=success,
-            failure_reason="" if success else "object_out_of_place",
+            failure_reason=failure_reason,
             metadata={
                 "validation_mode": (
-                    "object_final_pose_region_and_stability"
+                    "contact_release_pose_dynamics_region_and_final_stability"
                     if region is not None
-                    else "object_final_pose_and_stability"
+                    else "contact_release_pose_dynamics_and_final_stability"
                 ),
                 "object_pose": state.object_pose,
                 "place_target_pose": place_target_pose,
@@ -229,14 +391,52 @@ class FullPhysicsVerifier:
                 "place_xy_error_m": xy_error,
                 "place_z_error_m": z_error,
                 "object_linear_speed_mps": linear_speed,
+                "object_angular_speed_rps": angular_speed,
                 "place_xy_tolerance_m": xy_tolerance,
                 "place_z_tolerance_m": z_tolerance,
                 "place_linear_velocity_tolerance_mps": self.place_linear_velocity_tolerance_mps,
+                "place_angular_velocity_tolerance_rps": (
+                    self.place_angular_velocity_tolerance_rps
+                ),
                 "placement_region_world": region,
                 "placement_region_contains_object_center": (
                     region_contains_object_center
                 ),
+                "place_release_object_pose": release_pose,
+                "place_expected_release_object_center": expected_release_center,
+                "place_release_xy_error_m": release_xy_error,
+                "place_release_z_error_m": release_z_error,
+                "place_peak_object_linear_speed_mps": peak_linear_speed,
+                "place_peak_object_horizontal_speed_mps": peak_horizontal_speed,
+                "place_peak_object_upward_speed_mps": peak_upward_speed,
+                "place_peak_object_downward_speed_mps": peak_downward_speed,
+                "place_directional_speed_source": directional_speed_source,
+                "place_peak_object_angular_speed_rps": peak_angular_speed,
+                "place_max_horizontal_displacement_m": max_horizontal_displacement,
+                "place_release_velocity_sample_count": velocity_samples,
+                "place_release_xy_tolerance_m": self.place_release_xy_tolerance_m,
+                "place_release_z_tolerance_m": self.place_release_z_tolerance_m,
+                "place_release_peak_linear_speed_tolerance_mps": (
+                    peak_linear_tolerance
+                ),
+                "place_release_peak_upward_speed_tolerance_mps": (
+                    peak_upward_tolerance
+                ),
+                "place_release_peak_downward_speed_tolerance_mps": (
+                    peak_downward_tolerance
+                ),
+                "place_release_peak_horizontal_speed_tolerance_mps": (
+                    self.place_release_peak_horizontal_speed_tolerance_mps
+                ),
+                "place_release_peak_angular_speed_tolerance_rps": (
+                    self.place_release_peak_angular_speed_tolerance_rps
+                ),
+                "place_release_horizontal_displacement_tolerance_m": (
+                    self.place_release_horizontal_displacement_tolerance_m
+                ),
                 "gripper_open_apply_count": open_count,
+                "place_open_apply_count_delta": release_open_count,
+                "failure_reason": failure_reason,
             },
         )
 
@@ -278,11 +478,18 @@ def _linear_speed(velocity: tuple[float, ...] | None) -> float:
     return math.sqrt(sum(float(value) ** 2 for value in velocity[:3]))
 
 
+def _angular_speed(velocity: tuple[float, ...] | None) -> float:
+    if velocity is None or len(velocity) < 6:
+        return 0.0
+    return math.sqrt(sum(float(value) ** 2 for value in velocity[3:6]))
+
+
 def _place_validation_config(
     episode_spec: EpisodeSpec,
     *,
     default_xy_tolerance_m: float,
     default_z_tolerance_m: float,
+    default_release_peak_linear_speed_tolerance_mps: float,
 ) -> dict[str, object]:
     """解析任务级放置容差与可选的世界坐标安全区域。"""
 
@@ -297,6 +504,33 @@ def _place_validation_config(
         raw_place.get("place_z_tolerance", default_z_tolerance_m),
         field_name="task.place.place_z_tolerance",
     )
+    linear_peak_tolerance = _positive_finite_float(
+        raw_place.get(
+            "place_release_peak_linear_speed_tolerance_mps",
+            default_release_peak_linear_speed_tolerance_mps,
+        ),
+        field_name=(
+            "task.place.place_release_peak_linear_speed_tolerance_mps"
+        ),
+    )
+    upward_peak_tolerance = _positive_finite_float(
+        raw_place.get(
+            "place_release_peak_upward_speed_tolerance_mps",
+            linear_peak_tolerance,
+        ),
+        field_name=(
+            "task.place.place_release_peak_upward_speed_tolerance_mps"
+        ),
+    )
+    downward_peak_tolerance = _positive_finite_float(
+        raw_place.get(
+            "place_release_peak_downward_speed_tolerance_mps",
+            linear_peak_tolerance,
+        ),
+        field_name=(
+            "task.place.place_release_peak_downward_speed_tolerance_mps"
+        ),
+    )
     raw_region = raw_place.get("placement_region")
     region: dict[str, float] | None = None
     if raw_region is not None:
@@ -310,7 +544,7 @@ def _place_validation_config(
             if str(raw_region.get("frame", "world")) != "world":
                 raise ValueError("task.place.placement_region 当前只支持 world frame")
             region = {
-                key: _finite_float(
+                key: _strict_finite_float(
                     raw_region[key],
                     field_name=f"task.place.placement_region.{key}",
                 )
@@ -323,6 +557,15 @@ def _place_validation_config(
     return {
         "place_xy_tolerance_m": xy_tolerance,
         "place_z_tolerance_m": z_tolerance,
+        "place_release_peak_linear_speed_tolerance_mps": (
+            linear_peak_tolerance
+        ),
+        "place_release_peak_upward_speed_tolerance_mps": (
+            upward_peak_tolerance
+        ),
+        "place_release_peak_downward_speed_tolerance_mps": (
+            downward_peak_tolerance
+        ),
         "placement_region_world": region,
     }
 
@@ -330,16 +573,52 @@ def _place_validation_config(
 def _positive_finite_float(value: object, *, field_name: str) -> float:
     """要求配置值为有限正数。"""
 
-    parsed = _finite_float(value, field_name=field_name)
+    parsed = _strict_finite_float(value, field_name=field_name)
     if parsed <= 0.0:
         raise ValueError(f"{field_name} 必须大于 0")
     return parsed
 
 
-def _finite_float(value: object, *, field_name: str) -> float:
+def _strict_finite_float(value: object, *, field_name: str) -> float:
     """严格解析有限浮点数。"""
 
     parsed = float(value)
     if not math.isfinite(parsed):
         raise ValueError(f"{field_name} 必须是有限数值")
     return parsed
+
+
+def _optional_finite_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _finite_vector(
+    value: object,
+    *,
+    minimum_length: int,
+) -> tuple[float, ...] | None:
+    if not isinstance(value, (tuple, list)) or len(value) < minimum_length:
+        return None
+    try:
+        parsed = tuple(float(item) for item in value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if all(math.isfinite(item) for item in parsed) else None
+
+
+def _xyz(value: object) -> tuple[float, float, float] | None:
+    if not isinstance(value, (tuple, list)) or len(value) < 3:
+        return None
+    try:
+        xyz = tuple(float(item) for item in value[:3])
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(item) for item in xyz):
+        return None
+    return (xyz[0], xyz[1], xyz[2])

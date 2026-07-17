@@ -495,6 +495,11 @@ class Go2LocomotionAdapter:
 
         self._command = float(vx), float(vy), float(wz)
 
+    def get_effective_base_command(self) -> tuple[float, float, float]:
+        """返回经过站立死区处理、实际写入 policy observation 的速度命令。"""
+
+        return tuple(float(value) for value in self._effective_command)
+
     def reset_policy_warmup(self) -> None:
         """重置每个 episode 的 locomotion action 渐入状态。"""
 

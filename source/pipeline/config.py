@@ -85,14 +85,15 @@ class NavigationSettings:
         (1.5, 5.7, 0.6),
     )
     pct_cross_floor_stair_exit_points: tuple[tuple[float, float, float], ...] = (
-        (2.90, 7.05, 3.0),
+        (2.70, 7.05, 3.0),
     )
     pct_cross_floor_stair_midpoint_points: tuple[tuple[float, float, float], ...] = (
         (1.51822, 6.27683, 0.29486),
-        (2.94512, 9.14634, 1.64666),
+        (2.74512, 9.14634, 1.64666),
         (1.9202, 9.52807, 1.71919),
-        (2.89841, 7.79872, 2.61031),
+        (2.69841, 7.79872, 2.61031),
     )
+    pct_stair_locomotion_exit_extension_m: float = 1.0
     pct_cross_floor_gateway_radius_m: float = 0.6
     pct_robot_root_to_floor_m: float = 0.45
     pct_body_obstacle_min_height_m: float = 0.30
@@ -111,16 +112,16 @@ class NavigationSettings:
     pct_carry_max_linear_velocity: float = 0.25
     pct_carry_max_angular_velocity: float = 0.30
     pct_carry_max_linear_accel: float = 1.00
-    pct_carry_path_deviation_limit: float = 0.14
+    pct_carry_path_deviation_limit: float = 0.12
     pct_carry_initial_alignment_path_deviation_limit: float = 0.40
-    pct_carry_path_recovery_deviation_limit: float = 0.50
+    pct_carry_path_recovery_deviation_limit: float = 0.35
     pct_carry_max_infeasible_recomputes: int = 8
     pct_stair_float_enabled: bool = False
     pct_stair_float_speed_mps: float = 0.18
-    pct_stair_float_activation_radius_m: float = 0.45
+    pct_stair_float_activation_radius_m: float = 0.12
     pct_stair_float_completion_radius_m: float = 0.25
     pct_stair_float_min_z_delta_m: float = 0.75
-    pct_stair_float_approach_distance_m: float = 6.00
+    pct_stair_float_approach_distance_m: float = 0.00
     pct_stair_float_exit_distance_m: float = 1.40
     pct_stair_float_settle_time_s: float = 1.20
     pct_stair_float_release_settle_time_s: float = 0.80
@@ -198,10 +199,15 @@ class ManipulationSettings:
     pick_approach_motion_time_scale: float = 0.50
     # place 携物段对齐稳定 baseline。pick 仍可保持 2 倍速，place 三段不再使用全局 2 倍速。
     place_move_to_pre_place_motion_time_scale: float = 1.00
-    place_approach_motion_time_scale: float = 1.00
+    place_approach_motion_time_scale: float = 1.50
     place_retreat_motion_time_scale: float = 1.00
     arm_post_motion_hold_duration_s: float = 0.75
     arm_post_motion_joint_error_tolerance: float = 0.030
+    # 松爪前使用独立的严格位置与速度门，不能继承 PCT profile 的宽松通用容差。
+    place_release_joint_error_tolerance: float = 0.025
+    place_release_joint_velocity_tolerance: float = 0.03
+    place_release_stability_window_duration_s: float = 0.30
+    place_release_object_tcp_offset_tolerance_m: float = 0.02
     # 对齐 video baseline：松爪后先保持释放位姿，让苹果在桌面稳定，再执行退臂。
     place_release_settle_duration_s: float = 0.50
     # 对齐稳定 baseline 的 nav->pick handoff：只停驻并锁住已有姿态，不改变底盘站高。
@@ -221,7 +227,7 @@ class ManipulationSettings:
     return_home_after_place: bool = True
     place_return_home_duration_s: float = 1.20
     place_return_home_skip_tolerance: float = 0.01
-    # 对齐 baseline arm-place：轻放时物体中心只高于目标 1.0 cm。
+    # 单楼层稳定 baseline 保留 10 mm 低高度沉降，避免闭合夹爪把苹果压进桌面后再退臂拖走。
     place_release_clearance_min_m: float = 0.010
     place_pre_clearance_min_m: float = 0.06
     hold_arm_home_during_carry: bool = True
@@ -270,7 +276,7 @@ class RecordingSettings:
     image_width: int = 640
     jpeg_quality: int = 90
     chunks_size: int = 1000
-    # front/wrist/overview 都由 IsaacLab runtime 直接采集并参与完整性检查。
+    # front/wrist 由 IsaacLab runtime 采集；overview 可由固定相机或展示录像器保存。
     camera_keys: tuple[str, ...] = ("front", "wrist", "overview")
     primary_camera_key: str = "front"
     overview_camera_prim_path: str = DEFAULT_OVERVIEW_CAMERA_PRIM_PATH
@@ -299,6 +305,7 @@ class VideoRecordingSettings:
     fps: float = 25.0
     overview_camera_mode: str = "fixed"
     overview_camera_prim_path: str = DEFAULT_OVERVIEW_CAMERA_PRIM_PATH
+    overview_camera_schedule_path: Path | None = None
     width: int = 1280
     height: int = 720
     overview_capture_backend: str = "viewport"
@@ -334,6 +341,7 @@ class FullPhysicsConfig:
     simulation_smoke: bool = False
     navigation_smoke: bool = False
     navigation_carry_smoke: bool = False
+    stair_locomotion_smoke: bool = False
     pct_plan_preview: bool = False
     pick_smoke: bool = False
     manipulation_smoke: bool = False
@@ -392,6 +400,10 @@ class FullPhysicsConfig:
                 raise ValueError(
                     "pct_cross_floor_stair_midpoint_points entries must be xyz triples"
                 )
+        if self.navigation.pct_stair_locomotion_exit_extension_m < 0.0:
+            raise ValueError(
+                "pct_stair_locomotion_exit_extension_m must be non-negative"
+            )
         if self.navigation.pct_robot_root_to_floor_m < 0.0:
             raise ValueError("pct_robot_root_to_floor_m must be non-negative")
         if self.navigation.pct_stair_float_speed_mps <= 0.0:
@@ -571,6 +583,16 @@ class FullPhysicsConfig:
             raise ValueError("arm_post_motion_hold_duration_s must be positive")
         if self.manipulation.arm_post_motion_joint_error_tolerance < 0.0:
             raise ValueError("arm_post_motion_joint_error_tolerance must be non-negative")
+        if self.manipulation.place_release_joint_error_tolerance < 0.0:
+            raise ValueError("place_release_joint_error_tolerance must be non-negative")
+        if self.manipulation.place_release_joint_velocity_tolerance < 0.0:
+            raise ValueError("place_release_joint_velocity_tolerance must be non-negative")
+        if self.manipulation.place_release_stability_window_duration_s <= 0.0:
+            raise ValueError("place_release_stability_window_duration_s must be positive")
+        if self.manipulation.place_release_object_tcp_offset_tolerance_m < 0.0:
+            raise ValueError(
+                "place_release_object_tcp_offset_tolerance_m must be non-negative"
+            )
         if self.manipulation.place_release_settle_duration_s < 0.0:
             raise ValueError("place_release_settle_duration_s must be non-negative")
         if self.manipulation.base_lock_settle_steps < 0:
@@ -716,10 +738,19 @@ class FullPhysicsConfig:
         if not self.video.overview_camera_prim_path.startswith("/"):
             raise ValueError("video overview_camera_prim_path 必须是绝对 prim path")
         if (
+            self.video.overview_camera_mode == "fixed"
+            and
             self.video.overview_camera_prim_path
             != self.recording.overview_camera_prim_path
         ):
             raise ValueError("image/video overview camera prim path 必须一致")
+        if (
+            self.video.overview_camera_schedule_path is not None
+            and not self.video.overview_camera_schedule_path.is_file()
+        ):
+            raise ValueError(
+                "overview_camera_schedule_path must point to an existing JSON file"
+            )
         if self.video.overview_capture_backend not in {"viewport", "render_product", "auto"}:
             raise ValueError("video overview_capture_backend must be one of: viewport, render_product, auto")
         if self.video.min_switch_interval_frames < 0:
@@ -735,6 +766,7 @@ class FullPhysicsConfig:
                 self.simulation_smoke,
                 self.navigation_smoke,
                 self.navigation_carry_smoke,
+                self.stair_locomotion_smoke,
                 self.pick_smoke,
                 self.manipulation_smoke,
                 self.manipulation_apply_smoke,

@@ -1,20 +1,28 @@
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from source.interfaces import NavGoal, SimulationState
-from source.navigation import AStarNavPlanner, PCTNavPlanner
+from source.navigation import (
+    AStarNavPlanner,
+    PCTNavPlanner,
+    StairLocomotionExecutor,
+)
 from source.navigation.navlib import OccupancyGridMap
 from source.navigation.pct_adapter import PCTPlannerConfig
 from source.pipeline import FullPhysicsConfig, NavigationSettings
 from source.pipeline.config import PCT_MULTIFLOOR_LOCOMOTION_TASK
 from source.pipeline.navigation_smoke import (
     _navigation_carry_smoke_start,
+    _stair_locomotion_smoke_spec,
     create_navigation_carry_smoke_pipeline,
     create_navigation_components,
+    create_stair_locomotion_smoke_pipeline,
 )
 from source.tasks import JsonTaskProvider
 
@@ -24,15 +32,51 @@ TASK_PATH = PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json"
 LOCAL_PCT_SERVER = PROJECT_ROOT / "scripts/navigation/pct_grid_server.py"
 LOCAL_PCT_TOMOGRAM = PROJECT_ROOT / "source/scene/multifloor/mutifloor.pickle"
 LOCAL_PCT_WALKABLE = PROJECT_ROOT / "source/scene/multifloor/mutifloor_ply_walkable.npy"
+LOCAL_PCT_COLLISION = (
+    PROJECT_ROOT / "source/scene/multifloor/ply/3dgs_collision.ply"
+)
 
 
 def _config(tmp_path: Path, navigation: NavigationSettings) -> FullPhysicsConfig:
+    if navigation.global_planner == "pct":
+        navigation = replace(
+            navigation,
+            pct_server_script=(
+                navigation.pct_server_script or LOCAL_PCT_SERVER
+            ),
+            pct_tomogram_path=(
+                navigation.pct_tomogram_path or LOCAL_PCT_TOMOGRAM
+            ),
+            pct_walkable_path=(
+                navigation.pct_walkable_path or LOCAL_PCT_WALKABLE
+            ),
+            pct_collision_ply_path=(
+                navigation.pct_collision_ply_path or LOCAL_PCT_COLLISION
+            ),
+        )
     return FullPhysicsConfig(
         task_json=TASK_PATH,
         output_dir=tmp_path,
         dry_run=True,
         navigation=navigation,
     )
+
+
+def _spec_with_open_nav_map(tmp_path: Path):
+    """为 A*/fallback 测试生成独立地图，避免依赖旧 839920 本地资产。"""
+
+    map_dir = tmp_path / "nav_map"
+    map_dir.mkdir(parents=True, exist_ok=True)
+    grid = OccupancyGridMap(
+        np.zeros((160, 160), dtype=bool),
+        0.1,
+        (-6.0, -3.0, 0.0),
+    )
+    image_path = map_dir / "occupancy.pgm"
+    meta_path = map_dir / "map.json"
+    grid.save_pgm(image_path)
+    grid.save_meta_file(meta_path, image_path=image_path.name)
+    return replace(JsonTaskProvider().load(TASK_PATH), nav_map=str(meta_path))
 
 
 def _state(x: float, y: float, z: float = 0.35) -> SimulationState:
@@ -45,7 +89,7 @@ def _state(x: float, y: float, z: float = 0.35) -> SimulationState:
 
 
 def test_global_planner_astar_selects_astar(tmp_path: Path) -> None:
-    spec = JsonTaskProvider().load(TASK_PATH)
+    spec = _spec_with_open_nav_map(tmp_path)
     planner, _executor, _verifier = create_navigation_components(
         config=_config(tmp_path, NavigationSettings(global_planner="astar")),
         episode_spec=spec,
@@ -55,7 +99,7 @@ def test_global_planner_astar_selects_astar(tmp_path: Path) -> None:
 
 
 def test_global_planner_pct_selects_pct_with_astar_fallback(tmp_path: Path) -> None:
-    spec = JsonTaskProvider().load(TASK_PATH)
+    spec = _spec_with_open_nav_map(tmp_path)
     planner, _executor, _verifier = create_navigation_components(
         config=_config(
             tmp_path,
@@ -71,6 +115,25 @@ def test_global_planner_pct_selects_pct_with_astar_fallback(tmp_path: Path) -> N
 
     assert isinstance(planner, PCTNavPlanner)
     assert isinstance(planner.fallback_planner, AStarNavPlanner)
+
+
+def test_pct_rejects_missing_scene_asset_paths(tmp_path: Path) -> None:
+    """新场景漏配地图时必须失败，不能静默回落到别墅 PCT 资产。"""
+
+    spec = _spec_with_open_nav_map(tmp_path)
+    config = FullPhysicsConfig(
+        task_json=TASK_PATH,
+        output_dir=tmp_path,
+        dry_run=True,
+        navigation=NavigationSettings(
+            global_planner="pct",
+            pct_enabled=True,
+            pct_fallback_to_astar=False,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="pct_tomogram_path"):
+        create_navigation_components(config=config, episode_spec=spec)
 
 
 def test_pct_without_fallback_allows_missing_flat_nav_map(tmp_path: Path) -> None:
@@ -196,6 +259,86 @@ def test_pct_navigation_carry_smoke_uses_multifloor_step_budget(
     assert isinstance(carry_config, FullPhysicsConfig)
     assert carry_config.limits.navigation == 12000
     assert carry_config.limits.episode >= 15000
+
+
+def test_stair_locomotion_smoke_extends_goal_beyond_calibrated_exit(
+    tmp_path: Path,
+) -> None:
+    spec = JsonTaskProvider().load(
+        PROJECT_ROOT / "tasks/nav_pick_place_apple_multifloor_pct.json"
+    )
+    config = _config(
+        tmp_path,
+        NavigationSettings(global_planner="pct", pct_enabled=True),
+    )
+
+    stair_spec = _stair_locomotion_smoke_spec(config, spec)
+
+    assert stair_spec.start.x == 1.5
+    assert stair_spec.start.y == 5.7
+    assert stair_spec.start.z == 0.36742
+    assert stair_spec.start.yaw == pytest.approx(
+        math.atan2(6.27683 - 5.7, 1.51822 - 1.5)
+    )
+    exit_heading = math.atan2(7.05 - 7.79872, 2.70 - 2.69841)
+    assert stair_spec.pick_goal.x == pytest.approx(2.70 + math.cos(exit_heading))
+    assert stair_spec.pick_goal.y == pytest.approx(7.05 + math.sin(exit_heading))
+    assert stair_spec.pick_goal.z == 3.62628
+    assert stair_spec.place_goal is None
+    assert stair_spec.object_prim_path is None
+    assert stair_spec.raw_task["runtime_override"]["float_enabled"] is False
+    assert stair_spec.raw_task["runtime_override"]["global_planner"] == "pct"
+    assert stair_spec.raw_task["runtime_override"]["global_path"] == (
+        "pct_online_path_3d"
+    )
+    assert stair_spec.raw_task["runtime_override"]["manual_centerline"] is False
+    assert stair_spec.raw_task["runtime_override"]["stair_exit_xyz"] == [
+        2.70,
+        7.05,
+        3.0,
+    ]
+    assert stair_spec.raw_task["runtime_override"]["exit_extension_m"] == 1.0
+    assert "centerline" not in stair_spec.raw_task["runtime_override"]
+
+
+def test_stair_locomotion_smoke_uses_pct_planner_and_direct_executor(
+    tmp_path: Path,
+) -> None:
+    spec = JsonTaskProvider().load(
+        PROJECT_ROOT / "tasks/nav_pick_place_apple_multifloor_pct.json"
+    )
+    config = FullPhysicsConfig(
+        task_json=TASK_PATH,
+        output_dir=tmp_path,
+        navigation=NavigationSettings(
+            global_planner="pct",
+            pct_enabled=True,
+            pct_server_script=LOCAL_PCT_SERVER,
+            pct_tomogram_path=LOCAL_PCT_TOMOGRAM,
+            pct_walkable_path=LOCAL_PCT_WALKABLE,
+            pct_collision_ply_path=LOCAL_PCT_COLLISION,
+            pct_stair_float_enabled=True,
+        ),
+        stair_locomotion_smoke=True,
+    )
+
+    pipeline = create_stair_locomotion_smoke_pipeline(
+        config=config,
+        episode_spec=spec,
+        episode_seed=0,
+        episode_dir=tmp_path,
+        simulation=object(),
+    )
+
+    assert isinstance(pipeline.nav_planner, PCTNavPlanner)
+    assert isinstance(pipeline.machine.nav_executor, StairLocomotionExecutor)
+    assert pipeline.nav_planner.config.fallback_to_astar is False
+    assert pipeline.config.navigation.pct_stair_float_enabled is False
+    assert pipeline.config.navigation.global_planner == "pct"
+    assert pipeline.config.stair_locomotion_smoke is True
+    assert pipeline.episode_spec.raw_task["runtime_override"]["controller"] == (
+        "stair_heading_tracker"
+    )
 
 
 def test_pct_failure_falls_back_to_astar() -> None:

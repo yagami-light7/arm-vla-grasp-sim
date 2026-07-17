@@ -39,13 +39,13 @@ class PCTPlannerConfig:
         (1.5, 5.7, 0.6),
     )
     cross_floor_stair_exit_points: tuple[tuple[float, float, float], ...] = (
-        (2.90, 7.05, 3.0),
+        (2.70, 7.05, 3.0),
     )
     cross_floor_stair_midpoint_points: tuple[tuple[float, float, float], ...] = (
         (1.51822, 6.27683, 0.29486),
-        (2.94512, 9.14634, 1.64666),
+        (2.74512, 9.14634, 1.64666),
         (1.9202, 9.52807, 1.71919),
-        (2.89841, 7.79872, 2.61031),
+        (2.69841, 7.79872, 2.61031),
     )
     cross_floor_gateway_radius_m: float = 0.6
     robot_root_to_floor_m: float = 0.45
@@ -276,9 +276,10 @@ def _stair_approach_start_index(
 ) -> int:
     """在扶手区域之前选择足够长的平层点，用于提前完成楼梯入口转向。"""
 
-    selected = max(1, stair_start_index - 1)
+    # 楼梯 smoke 会直接从 gateway 出发，此时入口可能就是路径第 0 点。
+    selected = max(0, stair_start_index - 1)
     gateway_z = float(gateway[2])
-    for index in range(stair_start_index - 1, 0, -1):
+    for index in range(stair_start_index - 1, -1, -1):
         point = path_3d[index]
         if abs(float(point[2]) - gateway_z) > 0.10:
             continue
@@ -303,12 +304,18 @@ def _sample_stair_approach_curve(
     incoming_y = float(start[1]) - float(previous[1])
     incoming_norm = math.hypot(incoming_x, incoming_y)
     if incoming_norm <= 1.0e-6:
+        # smoke 从 gateway 附近起步时没有上一段来向，改用入口方向避免横向回钩。
+        incoming_x = float(gateway[0]) - float(start[0])
+        incoming_y = float(gateway[1]) - float(start[1])
+        incoming_norm = math.hypot(incoming_x, incoming_y)
+    if incoming_norm <= 1.0e-6:
         incoming_x, incoming_y, incoming_norm = 1.0, 0.0, 1.0
     incoming_x /= incoming_norm
     incoming_y /= incoming_norm
 
     distance = _xy_distance(start, gateway)
-    handle = min(0.55, max(0.25, 0.40 * distance))
+    # 控制柄不能长于短入口本身，否则 snap 点附近会产生先远离再折返的路径。
+    handle = min(0.55, 0.40 * distance)
     control_1 = (
         float(start[0]) + handle * incoming_x,
         float(start[1]) + handle * incoming_y,

@@ -26,6 +26,9 @@ from scripts.pipeline.run_full_physics_batch import (
     _read_summary,
     _run_child_process,
 )
+from scripts.pipeline.run_full_physics_pipeline import (
+    _parse_args as _parse_pipeline_args,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -51,26 +54,64 @@ class FullPhysicsBatchTest(unittest.TestCase):
 
         episode = _build_child_command(args, episode_index=0)
         command = episode.command
+        child_args = _parse_pipeline_args(command[3:])
 
-        self.assertTrue(args.task_json.endswith("nav_pick_place_cola_liangzhu_pct.json"))
-        self.assertEqual(args.global_planner, "pct")
-        self.assertEqual(args.pct_coord_mode, "identity")
-        self.assertTrue(args.pct_no_fallback)
-        self.assertEqual(args.policy_profile, "pct_multifloor")
+        self.assertEqual(args.scene_profile, "liangzhu")
+        self.assertIsNone(args.task_json)
+        self.assertEqual(
+            command[command.index("--scene-profile") + 1],
+            "liangzhu",
+        )
+        self.assertNotIn("--task-json", command)
+        self.assertNotIn("--pct-tomogram-path", command)
+        self.assertEqual(
+            child_args.task_json,
+            "tasks/nav_pick_place_cola_liangzhu_pct.json",
+        )
+        self.assertEqual(child_args.global_planner, "pct")
+        self.assertEqual(child_args.pct_coord_mode, "identity")
+        self.assertTrue(child_args.pct_no_fallback)
+        self.assertEqual(child_args.policy_profile, "pct_multifloor")
         self.assertTrue(args.require_locomotion_checkpoint)
-        self.assertEqual(args.navigation_visual_mode, "collision")
-        self.assertIn("--pct-no-fallback", command)
+        self.assertEqual(child_args.navigation_visual_mode, "full")
+        self.assertNotIn("--pct-no-fallback", command)
         self.assertIn("--require-locomotion-checkpoint", command)
         self.assertEqual(
-            command[command.index("--pct-collision-ply-path") + 1],
-            str(PROJECT_ROOT / "source/scene/liangzhu/ply/liangzhu_collision.ply"),
+            child_args.pct_collision_ply_path,
+            "source/scene/liangzhu/ply/liangzhu_collision.ply",
         )
         for flag in (
             "--pct-cross-floor-gateway",
             "--pct-cross-floor-stair-exit",
             "--pct-cross-floor-stair-midpoint",
         ):
-            self.assertEqual(command[command.index(flag) + 1], "none")
+            self.assertNotIn(flag, command)
+
+    def test_multi_floor_batch_reuses_single_pipeline_scene_profile(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "--scene-profile",
+                "multi_floor",
+                "--output-dir",
+                "/tmp/multi_floor_batch",
+            ]
+        )
+
+        command = _build_child_command(args, episode_index=0).command
+        child_args = _parse_pipeline_args(command[3:])
+
+        self.assertEqual(
+            command[command.index("--scene-profile") + 1],
+            "multi_floor",
+        )
+        self.assertEqual(
+            child_args.task_json,
+            "tasks/nav_pick_place_apple_multifloor_pct.json",
+        )
+        self.assertEqual(child_args.pct_coord_mode, "sim_to_pct_180deg")
+        self.assertFalse(child_args.randomize_task)
+        self.assertTrue(child_args.pct_stair_float)
+        self.assertEqual(child_args.overview_camera_mode, "auto")
 
     def test_full_physics_batch_builds_one_episode_command_without_plan_json(self) -> None:
         args = _build_parser().parse_args(
@@ -99,21 +140,20 @@ class FullPhysicsBatchTest(unittest.TestCase):
             Path("/tmp/full_physics_batch_test/episode_000002/summary.json"),
         )
         command = episode.command
+        child_args = _parse_pipeline_args(command[3:])
         self.assertNotIn("--full-physics", command)
         self.assertIn("--num-episodes", command)
         self.assertEqual(command[command.index("--num-episodes") + 1], "1")
         self.assertEqual(command[command.index("--seed") + 1], "102")
-        self.assertIn("--randomize-task", command)
-        self.assertIn("--randomize-base-goal", command)
+        self.assertNotIn("--randomize-task", command)
+        self.assertNotIn("--randomize-base-goal", command)
+        self.assertTrue(child_args.randomize_task)
+        self.assertTrue(child_args.randomize_base_goal)
         self.assertIn("--headless", command)
-        self.assertEqual(
-            command[command.index("--navigation-visual-mode") + 1],
-            "collision",
-        )
-        self.assertEqual(
-            command[command.index("--overview-camera-prim-path") + 1],
-            "/World/overview",
-        )
+        self.assertNotIn("--navigation-visual-mode", command)
+        self.assertEqual(child_args.navigation_visual_mode, "full")
+        self.assertNotIn("--overview-camera-prim-path", command)
+        self.assertEqual(child_args.overview_camera_prim_path, "/World/overview")
         self.assertNotIn("--auto-start-curobo-server", command)
         self.assertNotIn("--lock-base-during-manipulation", command)
         self.assertNotIn("--lock-support-joints-during-manipulation", command)
@@ -255,6 +295,22 @@ class FullPhysicsBatchTest(unittest.TestCase):
             command[command.index("--video-out") + 1],
             "/tmp/full_physics_batch_test/videos/episode_000001",
         )
+
+    def test_batch_forwards_dataset_camera_keys(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "--output-dir",
+                "/tmp/full_physics_batch_test",
+                "--dataset-camera-keys",
+                "front",
+                "wrist",
+            ]
+        )
+
+        command = _build_child_command(args, episode_index=0).command
+        child_args = _parse_pipeline_args(command[3:])
+
+        self.assertEqual(child_args.dataset_camera_keys, ["front", "wrist"])
 
     def test_progress_format_helpers(self) -> None:
         args = _build_parser().parse_args(

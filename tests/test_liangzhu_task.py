@@ -68,6 +68,7 @@ def test_liangzhu_fixed_task_loads_through_existing_episode_spec() -> None:
         == 0.01
     )
     assert episode.raw_task["navigation_execution"] == {
+        "extended_state_limits": False,
         "final_position_tolerance": 0.1,
         "place_position_tolerance": 0.15,
         "final_yaw_tolerance": 0.15,
@@ -351,8 +352,8 @@ def test_liangzhu_runtime_manifest_uses_identity_pct_frame() -> None:
     assert calibration["runtime_path_overlay_verified"] is False
 
 
-def test_liangzhu_runtime_manifest_keeps_unverified_runtime_gates_false() -> None:
-    """离线地图成功不能冒充 Isaac 场景、checkpoint 或真实导航已验收。"""
+def test_liangzhu_runtime_manifest_records_real_acceptance_boundaries() -> None:
+    """真实验收项应为真，同时保留当前主机 NuRec RGB 失败边界。"""
 
     manifest = json.loads(ASSET_MANIFEST_PATH.read_text(encoding="utf-8"))
 
@@ -363,29 +364,35 @@ def test_liangzhu_runtime_manifest_keeps_unverified_runtime_gates_false() -> Non
     assert scene_runtime["visual_prim_path"] == "/World/VisualScene/GaussianScene"
     assert scene_runtime["collision_floor_proxy_profile"] is None
     assert scene_runtime["legacy_yinluyuan_f2_floor_proxy_disabled"] is True
-    assert scene_runtime["default_navigation_visual_mode"] == "collision"
-    assert scene_runtime["gaussian_scene_loaded_by_default"] is False
+    assert scene_runtime["default_navigation_visual_mode"] == "full"
+    assert scene_runtime["gaussian_scene_loaded_by_default"] is True
     assert scene_runtime["overview_camera_prim_path"] == "/World/overview"
     assert scene_runtime["configuration_unit_verified"] is True
     assert scene_runtime["preflight_text_marker_verified"] is True
-    assert scene_runtime["runtime_resolution_verified"] is False
+    assert scene_runtime["runtime_resolution_verified"] is True
 
-    assert manifest["scene_collision"]["runtime_load_verified"] is False
+    assert manifest["scene_collision"]["runtime_load_verified"] is True
     assert manifest["scene_collision"]["payload_mesh_marker_verified"] is True
-    assert manifest["visual_scene"]["runtime_load_verified"] is False
+    assert manifest["visual_scene"]["runtime_load_verified"] is True
+    assert (
+        manifest["visual_scene"][
+            "full_scene_rgb_render_product_current_host_verified"
+        ]
+        is False
+    )
     assert manifest["visual_scene"]["package_members_verified"] == [
         "default.usda",
         "gauss.usda",
         "liangzhu.nurec",
     ]
     assert manifest["robot"]["asset_exists"] is True
-    assert manifest["robot"]["runtime_articulation_verified"] is False
+    assert manifest["robot"]["runtime_articulation_verified"] is True
     cola = manifest["objects"]["cola_01"]
     assert cola["prim_path"] == "/World/cola"
     assert cola["asset_and_texture_exist"] is True
-    assert cola["runtime_rigid_body_verified"] is False
-    assert manifest["pct"]["offline_probe"]["runtime_navigation_verified"] is False
-    assert manifest["locomotion"]["checkpoint_runtime_load_verified"] is False
+    assert cola["runtime_rigid_body_verified"] is True
+    assert manifest["pct"]["offline_probe"]["runtime_navigation_verified"] is True
+    assert manifest["locomotion"]["checkpoint_runtime_load_verified"] is True
     mesh_targets = manifest["manipulation_targets"]
     assert mesh_targets["mode"] == "sim_mesh_truth"
     assert mesh_targets["visual_localization_required"] is False
@@ -394,14 +401,14 @@ def test_liangzhu_runtime_manifest_keeps_unverified_runtime_gates_false() -> Non
     assert mesh_targets["top_down_curobo_plan_probe_verified"] is True
     assert mesh_targets["place_reuses_pick_top_down_orientation"] is True
     assert mesh_targets["mesh_truth_derivation_unit_verified"] is True
-    assert mesh_targets["runtime_pick_export_verified"] is False
-    assert mesh_targets["runtime_place_export_verified"] is False
+    assert mesh_targets["runtime_pick_export_verified"] is True
+    assert mesh_targets["runtime_place_export_verified"] is True
     collision = manifest["collision_relationship"]
     proxies = collision["task_local_curobo_support_proxies"]
     assert collision["physics_collision_layout"] == "single_merged_collision_prim"
     assert collision["semantic_mat_prim_verified"] is True
     assert proxies["configuration_unit_verified"] is True
-    assert proxies["runtime_export_verified"] is False
+    assert proxies["runtime_export_verified"] is True
     assert proxies["curobo_plan_avoidance_verified"] is False
     randomization = manifest["randomization"]
     assert randomization["phase"] == 1
@@ -414,7 +421,7 @@ def test_liangzhu_runtime_manifest_keeps_unverified_runtime_gates_false() -> Non
     assert randomization["target_region_in_base"] == "front"
     assert randomization["place_approach_origin"] == "pick_base_goal"
     assert randomization["offline_seed_sweep_verified"] is True
-    assert randomization["runtime_randomized_episode_verified"] is False
+    assert randomization["runtime_randomized_episode_verified"] is True
     assert manifest["data_export"]["training_action_dimension"] == 10
     assert manifest["data_export"]["control_action_dimension"] == 11
     assert manifest["data_export"]["schema_version"] == (
@@ -457,8 +464,16 @@ def test_liangzhu_runtime_manifest_keeps_unverified_runtime_gates_false() -> Non
         ]
         is True
     )
-    assert manifest["data_export"]["real_episode_export_verified"] is False
+    assert manifest["data_export"]["real_episode_export_verified"] is True
     assert (
         manifest["data_export"]["real_episode_training_eligible_verified"]
-        is False
+        is True
     )
+    acceptance = manifest["runtime_acceptance"]
+    assert acceptance["success"] is True
+    assert acceptance["stable_physics_success"] is True
+    assert acceptance["pure_physics_success"] is False
+    assert acceptance["row_count"] == 134
+    assert acceptance["camera_frames_each"] == 134
+    assert acceptance["subtask_directory_count"] == 6
+    assert acceptance["validator_error_count"] == 0

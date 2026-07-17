@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "name": "liangzhu",
+  "aliases": ["liangzhu_single_floor"],
+  "description": "良渚单层可乐搬运与批量数据采集场景。",
+  "capabilities": [
+    "navigation",
+    "manipulation",
+    "data_export",
+    "nurec_visual"
+  ],
+  "task_scene_profile": "liangzhu_single_floor",
+  "runtime_asset_manifest": "source/scene/liangzhu/runtime_asset_manifest.json",
+  "defaults": {
+    "task_json": "tasks/nav_pick_place_cola_liangzhu_pct.json",
+    "output_dir": "outputs/liangzhu",
+    "global_planner": "pct",
+    "pct_server_script": "scripts/navigation/pct_grid_server.py",
+    "pct_tomogram_path": "source/scene/liangzhu/pct/liangzhu_single_floor.pickle",
+    "pct_walkable_path": "source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy",
+    "pct_collision_ply_path": "source/scene/liangzhu/ply/liangzhu_collision.ply",
+    "pct_no_fallback": true,
+    "pct_coord_mode": "identity",
+    "pct_cross_floor_gateway": [],
+    "pct_cross_floor_stair_exit": [],
+    "pct_cross_floor_stair_midpoint": [],
+    "pct_stair_float": false,
+    "policy_profile": "pct_multifloor",
+    "locomotion_task": "RobotLab-Isaac-Velocity-Rough-Go2-X5-DogOnly-v0",
+    "locomotion_checkpoint": "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
+    "randomize_task": true,
+    "randomize_base_goal": true,
+    "navigation_visual_mode": "full",
+    "overview_camera_mode": "fixed",
+    "overview_camera_prim_path": "/World/overview",
+    "overview_camera_schedule": null,
+    "video_mode": "all"
+  },
+  "mode_defaults": {
+    "pct_plan_preview": {
+      "show_planned_trajectories": true
+    }
+  },
+  "usd_asset_bindings": [
+    {
+      "name": "liangzhu_gaussian_visual",
+      "prim_path": "/World/VisualScene/GaussianScene",
+      "arc_type": "reference",
+      "environment_variable": "LIANGZHU_VISUAL_USDZ",
+      "fallback_path": "/mnt/sage_data/usdz/Liangzhu/liangzhu_cropped_nozip64.usdz",
+      "package_member": "gauss.usda"
+    },
+    {
+      "name": "liangzhu_physics_collision",
+      "prim_path": "/World/PhysicsScene/CollisionScene",
+      "arc_type": "payload",
+      "environment_variable": "LIANGZHU_COLLISION_USD",
+      "fallback_path": "/mnt/sage_data/usd/Liangzhu/liangzhu_collision.usda"
+    }
+  ],
+  "required_assets": [
+    "tasks/nav_pick_place_cola_liangzhu_pct.json",
+    "source/scene/liangzhu/runtime_asset_manifest.json",
+    "source/scene/liangzhu/liangzhu.usda",
+    "source/scene/liangzhu/pct/liangzhu_single_floor.pickle",
+    "source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy",
+    "source/scene/liangzhu/ply/liangzhu_collision.ply",
+    "source/scene/objects/carpet.usd",
+    "source/scene/objects/cola/MesaTask-10K/MesaTask_Assets/can/0364ab96f338493c972248102b462aa4/usd/0364ab96f338493c972248102b462aa4.usd",
+    "checkpoints/go2_x5/pct_multifloor/model_26000.pt"
+  ]
+}

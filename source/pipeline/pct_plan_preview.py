@@ -10,13 +10,17 @@ from typing import Any
 from source.interfaces import EpisodeSpec
 from source.interfaces.simulation import SimulationState
 from source.navigation import PCTNavPlanner, PCTPlannerConfig
+from source.navigation.executor import (
+    optimize_pct_post_stair_plan_path,
+    optimize_pct_pre_stair_plan_path,
+)
 
 from .config import FullPhysicsConfig
 from .navigation_smoke import (
-    DEFAULT_PCT_COLLISION_PLY_PATH,
     DEFAULT_PCT_SERVER_SCRIPT,
-    DEFAULT_PCT_TOMOGRAM_PATH,
-    DEFAULT_PCT_WALKABLE_PATH,
+    _open_pct_local_grid_map,
+    _open_pct_post_stair_grid_map,
+    _required_pct_asset_path,
 )
 
 
@@ -126,17 +130,17 @@ class PCTPlanPreviewPipeline:
                 ),
                 server_python=self._optional_project_path(nav.pct_server_python),
                 tomogram_name=nav.pct_tomogram_name,
-                tomogram_path=(
-                    self._optional_project_path(nav.pct_tomogram_path)
-                    or DEFAULT_PCT_TOMOGRAM_PATH
+                tomogram_path=_required_pct_asset_path(
+                    nav.pct_tomogram_path,
+                    field_name="pct_tomogram_path",
                 ),
-                walkable_path=(
-                    self._optional_project_path(nav.pct_walkable_path)
-                    or DEFAULT_PCT_WALKABLE_PATH
+                walkable_path=_required_pct_asset_path(
+                    nav.pct_walkable_path,
+                    field_name="pct_walkable_path",
                 ),
-                collision_ply_path=(
-                    self._optional_project_path(nav.pct_collision_ply_path)
-                    or DEFAULT_PCT_COLLISION_PLY_PATH
+                collision_ply_path=_required_pct_asset_path(
+                    nav.pct_collision_ply_path,
+                    field_name="pct_collision_ply_path",
                 ),
                 global_vertical_obstacle_min_slices=(
                     nav.pct_global_vertical_obstacle_min_slices
@@ -191,6 +195,49 @@ class PCTPlanPreviewPipeline:
         if self.episode_spec.place_goal is not None:
             place_start = _state_from_goal(self.episode_spec.pick_goal)
             place_plan = planner.plan(place_start, self.episode_spec.place_goal)
+            pre_stair_grid_map = _open_pct_local_grid_map(
+                self.episode_spec,
+                self.config.navigation,
+            )
+            _optimized_pre_stair_path, pre_stair_optimization_report = (
+                optimize_pct_pre_stair_plan_path(
+                    place_plan,
+                    pre_stair_grid_map=pre_stair_grid_map,
+                    clearance_radius_m=(
+                        self.config.navigation.local_clearance_radius
+                    ),
+                    preserve_start_distance_m=1.0,
+                )
+            )
+            place_plan.metadata["pre_stair_path_optimization"] = (
+                pre_stair_optimization_report
+            )
+            post_stair_grid_map = _open_pct_post_stair_grid_map(
+                self.episode_spec,
+                self.config.navigation,
+            )
+            if post_stair_grid_map is not None:
+                _optimized_path, optimization_report = (
+                    optimize_pct_post_stair_plan_path(
+                        place_plan,
+                        post_stair_grid_map=post_stair_grid_map,
+                        min_z_delta_m=(
+                            self.config.navigation.pct_stair_float_min_z_delta_m
+                        ),
+                        approach_distance_m=(
+                            self.config.navigation.pct_stair_float_approach_distance_m
+                        ),
+                        exit_distance_m=(
+                            self.config.navigation.pct_stair_float_exit_distance_m
+                        ),
+                        clearance_radius_m=(
+                            self.config.navigation.local_clearance_radius
+                        ),
+                    )
+                )
+                place_plan.metadata["post_stair_path_optimization"] = (
+                    optimization_report
+                )
             segments.append(_segment_report("pick_to_place", place_plan))
         return segments
 

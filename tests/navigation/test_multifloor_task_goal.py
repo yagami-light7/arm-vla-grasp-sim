@@ -74,6 +74,37 @@ def test_multifloor_fixed_base_goals_are_not_object_centers() -> None:
     assert base.object_initial_pose[3:] == pytest.approx(
         (0.033854853713603555, -0.019953342379394102, -0.010068430908084697)
     )
+    assert base.raw_task["place"][
+        "place_release_peak_downward_speed_tolerance_mps"
+    ] == pytest.approx(0.55)
+
+
+def test_multifloor_lerobot_uses_fixed_six_subtask_contract() -> None:
+    task = JsonTaskProvider().load(TASK_PATH).raw_task
+    recording = task["recording"]
+    segmentation = task["subtask_segmentation"]
+
+    # 别墅与良渚必须共享同一训练数据契约，不能因场景切换退回未分段导出。
+    assert recording["front_camera"] is True
+    assert recording["wrist_camera"] is True
+    assert segmentation == {
+        "enabled": True,
+        "schema": "nav_straight_turn_stop__arm_approach_contact_retreat_v1",
+        "directory_export": True,
+        "output_layout": "episodes_task_episode_subtask_front_wrist_v3",
+        "min_segment_frames": 3,
+        "hysteresis_frames": 2,
+        "navigation": {
+            "stop_command_linear_max_mps": 0.03,
+            "stop_command_angular_max_rps": 0.08,
+            "stop_measured_linear_max_mps": 0.08,
+            "stop_measured_angular_max_rps": 0.2,
+            "turn_command_angular_min_rps": 0.12,
+            "turn_measured_angular_min_rps": 0.25,
+            "turn_yaw_delta_min_rad": 0.03,
+        },
+        "contact_label_source": "heuristic_action_and_kinematics",
+    }
 
 
 def test_navigation_verifier_checks_z_only_when_goal_has_z() -> None:

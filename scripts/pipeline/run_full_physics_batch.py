@@ -19,33 +19,20 @@ from typing import Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PIPELINE_ENTRY = PROJECT_ROOT / "scripts/pipeline/run_full_physics_pipeline.py"
-DEFAULT_LIANGZHU_TASK_JSON = "tasks/nav_pick_place_cola_liangzhu_pct.json"
-DEFAULT_LIANGZHU_PCT_SERVER_SCRIPT = "scripts/navigation/pct_grid_server.py"
-DEFAULT_LIANGZHU_PCT_TOMOGRAM = (
-    "source/scene/liangzhu/pct/liangzhu_single_floor.pickle"
-)
-DEFAULT_LIANGZHU_PCT_WALKABLE = (
-    "source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy"
-)
-DEFAULT_LIANGZHU_LOCOMOTION_CHECKPOINT = (
-    "checkpoints/go2_x5/pct_multifloor/model_26000.pt"
-)
-DEFAULT_LIANGZHU_COLLISION_PLY = (
-    "source/scene/liangzhu/ply/liangzhu_collision.ply"
-)
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from source.recording.training_action import (  # noqa: E402
     training_quality_success_verified,
 )
-from source.pipeline import DEFAULT_OVERVIEW_CAMERA_PRIM_PATH  # noqa: E402
+from source.scene.profiles import SceneProfileError, load_scene_profile  # noqa: E402
 
 
 _REAL_MODES = {
     "simulation_smoke": "--simulation-smoke",
     "navigation_smoke": "--navigation-smoke",
     "navigation_carry_smoke": "--navigation-carry-smoke",
+    "stair_locomotion_smoke": "--stair-locomotion-smoke",
     "manipulation_apply_smoke": "--manipulation-apply-smoke",
 }
 
@@ -136,11 +123,21 @@ def _build_parser() -> argparse.ArgumentParser:
         description="逐个子进程运行 full-physics episode，适用于真实 Isaac 自动化批量验证。",
     )
     parser.add_argument(
+        "--scene-profile",
+        default="liangzhu",
+        help="场景 profile 名称或别名；默认 liangzhu。",
+    )
+    parser.add_argument(
+        "--pct-multifloor",
+        action="store_const",
+        const="multi_floor",
+        dest="scene_profile",
+        help="兼容旧命令：等价于 --scene-profile multi_floor。",
+    )
+    parser.add_argument(
         "--task-json",
-        default=DEFAULT_LIANGZHU_TASK_JSON,
-        help=(
-            "任务 JSON 路径；默认使用良渚可乐到鼠标垫随机化任务。"
-        ),
+        default=None,
+        help="任务 JSON 路径；不传时由 scene profile 提供。",
     )
     parser.add_argument(
         "--output-dir",
@@ -157,8 +154,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--randomize-task",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="按 episode seed 随机采样 pick/place XY；默认开启。",
+        default=None,
+        help="按 episode seed 随机采样任务；不传时由 scene profile 决定。",
     )
     parser.add_argument(
         "--show-randomization-debug",
@@ -168,8 +165,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--randomize-base-goal",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="转发给单 episode pipeline：开启 pick/place base_goal 极坐标随机化；默认开启。",
+        default=None,
+        help="开启 base_goal 随机化；不传时由 scene profile 决定。",
     )
     parser.add_argument(
         "--headless",
@@ -180,60 +177,56 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--navigation-visual-mode",
         choices=("auto", "collision", "full"),
-        default="collision",
-        help=(
-            "转发物理场景视觉模式；稳定默认 collision，full 显式加载 GaussianScene。"
-        ),
+        default=None,
+        help="转发物理场景视觉模式；不传时由 scene profile 决定。",
     )
     parser.add_argument(
         "--global-planner",
         choices=("astar", "pct"),
-        default="pct",
-        help="转发全局规划器；batch 良渚稳定配置默认使用 pct。",
+        default=None,
+        help="转发全局规划器；不传时由 scene profile 决定。",
     )
     parser.add_argument(
         "--pct-server-script",
-        default=DEFAULT_LIANGZHU_PCT_SERVER_SCRIPT,
-        help="转发 PCT server 脚本路径；默认使用仓库内良渚 grid server。",
+        default=None,
+        help="转发 PCT server 脚本路径。",
     )
     parser.add_argument("--pct-server-python", help="转发 PCT server Python 路径。")
     parser.add_argument(
         "--pct-tomogram-path",
-        default=DEFAULT_LIANGZHU_PCT_TOMOGRAM,
-        help="转发 PCT tomogram 路径；默认使用良渚单层地图。",
+        default=None,
+        help="转发 PCT tomogram 路径。",
     )
     parser.add_argument(
         "--pct-walkable-path",
-        default=DEFAULT_LIANGZHU_PCT_WALKABLE,
-        help="转发 PCT walkable 路径；默认使用良渚单层地图。",
+        default=None,
+        help="转发 PCT walkable 路径。",
     )
     parser.add_argument(
         "--pct-collision-ply-path",
-        default=DEFAULT_LIANGZHU_COLLISION_PLY,
-        help=(
-            "转发 PCT collision PLY；默认使用仓库内良渚碰撞点云，"
-            "可通过 CLI 显式覆盖。"
-        ),
+        default=None,
+        help="转发 PCT collision PLY。",
     )
     fallback_group = parser.add_mutually_exclusive_group()
     fallback_group.add_argument(
         "--pct-no-fallback",
         action="store_true",
         dest="pct_no_fallback",
-        default=True,
-        help="禁止 PCT 失败时回退 A*；良渚 batch 默认开启。",
+        default=None,
+        help="禁止 PCT 失败时回退 A*。",
     )
     fallback_group.add_argument(
         "--pct-allow-fallback",
+        "--pct-fallback-to-astar",
         action="store_false",
         dest="pct_no_fallback",
-        help="兼容旧任务：允许 PCT 失败时回退 A*。",
+        help="允许 PCT 失败时回退 A*。",
     )
     parser.add_argument(
         "--pct-coord-mode",
         choices=("sim_to_pct_180deg", "identity"),
-        default="identity",
-        help="转发 Isaac 到 PCT 的坐标变换模式；良渚默认 identity。",
+        default=None,
+        help="转发 Isaac 到 PCT 的坐标变换模式。",
     )
     parser.add_argument(
         "--pct-cross-floor-gateway",
@@ -256,13 +249,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--policy-profile",
         choices=("flat", "pct_multifloor"),
-        default="pct_multifloor",
-        help="转发 locomotion policy profile；良渚默认 pct_multifloor。",
+        default=None,
+        help="转发 locomotion policy profile。",
     )
+    parser.add_argument("--locomotion-task", default=None, help="转发 locomotion task 名称。")
     parser.add_argument(
         "--locomotion-checkpoint",
-        default=DEFAULT_LIANGZHU_LOCOMOTION_CHECKPOINT,
-        help="转发 locomotion checkpoint；默认使用已验证的 Go2-X5 checkpoint。",
+        default=None,
+        help="转发 locomotion checkpoint。",
     )
     parser.add_argument(
         "--require-locomotion-checkpoint",
@@ -298,13 +292,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--record-video",
-        action="store_true",
-        help="转发给单 episode pipeline：启用展示/observation 视频录制；默认关闭。",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="转发视频录制开关；不传时沿用 scene profile 默认。",
+    )
+    parser.add_argument(
+        "--dataset-camera-keys",
+        nargs="+",
+        choices=("front", "wrist", "overview"),
+        default=None,
+        help="转发训练数据相机流；默认由单 episode pipeline 使用 front wrist overview。",
     )
     parser.add_argument(
         "--video-mode",
         choices=("overview", "front", "font", "wrist", "all"),
-        default="overview",
+        default=None,
         help=(
             "转发给单 episode pipeline：overview 为 third_person 展示视角，front/font 为前视 "
             "observation，wrist 为腕部 observation，all 同时导出 overview/front/wrist。"
@@ -329,13 +331,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--overview-camera-mode",
         choices=("fixed", "auto"),
-        default="fixed",
+        default=None,
         help="转发给单 episode pipeline：fixed 固定相机，auto 按阶段切换。",
     )
     parser.add_argument(
         "--overview-camera-prim-path",
-        default=DEFAULT_OVERVIEW_CAMERA_PRIM_PATH,
+        default=None,
         help="转发 image/video/GUI 共用的 overview Camera prim。",
+    )
+    parser.add_argument(
+        "--overview-camera-schedule",
+        default=None,
+        help="转发给单 episode pipeline：headless Camera0-8 切换规则 JSON。",
     )
     parser.add_argument(
         "--overview-capture-backend",
@@ -371,7 +378,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    return _build_parser().parse_args(argv)
+    args = _build_parser().parse_args(argv)
+    try:
+        args.scene_profile = load_scene_profile(
+            args.scene_profile,
+            PROJECT_ROOT,
+        ).name
+    except SceneProfileError as exc:
+        raise SystemExit(str(exc)) from exc
+    return args
 
 
 def _bool_flag(enabled: bool, enabled_flag: str, disabled_flag: str) -> str:
@@ -827,63 +842,81 @@ def _build_child_command(
         sys.executable,
         "-B",
         str(PIPELINE_ENTRY),
-        "--task-json",
-        str(_project_path(args.task_json)),
+        "--scene-profile",
+        str(args.scene_profile),
         "--output-dir",
         str(episode_output_dir),
         "--num-episodes",
         "1",
         "--seed",
         str(episode_seed),
-        _bool_flag(args.randomize_task, "--randomize-task", "--no-randomize-task"),
-        _bool_flag(
+        _bool_flag(args.headless, "--headless", "--no-headless"),
+    ]
+    if args.task_json:
+        command.extend(["--task-json", str(_project_path(args.task_json))])
+    if args.dataset_camera_keys is not None:
+        command.append("--dataset-camera-keys")
+        command.extend(str(value) for value in args.dataset_camera_keys)
+    for value, enabled_flag, disabled_flag in (
+        (args.randomize_task, "--randomize-task", "--no-randomize-task"),
+        (
             args.randomize_base_goal,
             "--randomize-base-goal",
             "--no-randomize-base-goal",
         ),
-        _bool_flag(args.headless, "--headless", "--no-headless"),
-        "--navigation-visual-mode",
-        str(args.navigation_visual_mode),
-        "--global-planner",
-        str(args.global_planner),
-        "--policy-profile",
-        str(args.policy_profile),
-        "--overview-camera-prim-path",
-        str(args.overview_camera_prim_path),
-    ]
-    if args.global_planner == "pct":
-        command.extend(["--pct-coord-mode", str(args.pct_coord_mode)])
-        for argument_name in (
-            "pct_server_script",
-            "pct_server_python",
-            "pct_tomogram_path",
-            "pct_walkable_path",
-            "pct_collision_ply_path",
-        ):
-            value = getattr(args, argument_name)
-            if value:
-                command.extend(
-                    [f"--{argument_name.replace('_', '-')}", str(_project_path(value))]
-                )
-        if args.pct_no_fallback:
-            command.append("--pct-no-fallback")
-        for argument_name in (
-            "pct_cross_floor_gateway",
-            "pct_cross_floor_stair_exit",
-            "pct_cross_floor_stair_midpoint",
-        ):
-            values = getattr(args, argument_name)
-            for value in (("none",) if values is None else values):
-                command.extend([f"--{argument_name.replace('_', '-')}", str(value)])
-    if args.locomotion_checkpoint:
-        command.extend(
-            [
-                "--locomotion-checkpoint",
-                str(_project_path(args.locomotion_checkpoint)),
-            ]
+        (
+            args.require_locomotion_checkpoint,
+            "--require-locomotion-checkpoint",
+            "--no-require-locomotion-checkpoint",
+        ),
+        (args.record_video, "--record-video", "--no-record-video"),
+    ):
+        if value is not None:
+            command.append(_bool_flag(bool(value), enabled_flag, disabled_flag))
+
+    for argument_name in (
+        "navigation_visual_mode",
+        "global_planner",
+        "policy_profile",
+        "pct_coord_mode",
+        "locomotion_task",
+        "overview_camera_mode",
+        "overview_camera_prim_path",
+        "video_mode",
+    ):
+        value = getattr(args, argument_name)
+        if value is not None:
+            command.extend([f"--{argument_name.replace('_', '-')}", str(value)])
+
+    for argument_name in (
+        "pct_server_script",
+        "pct_server_python",
+        "pct_tomogram_path",
+        "pct_walkable_path",
+        "pct_collision_ply_path",
+        "locomotion_checkpoint",
+    ):
+        value = getattr(args, argument_name)
+        if value:
+            command.extend(
+                [f"--{argument_name.replace('_', '-')}", str(_project_path(value))]
+            )
+
+    if args.pct_no_fallback is not None:
+        command.append(
+            "--pct-no-fallback" if args.pct_no_fallback else "--pct-allow-fallback"
         )
-    if args.require_locomotion_checkpoint:
-        command.append("--require-locomotion-checkpoint")
+    for argument_name in (
+        "pct_cross_floor_gateway",
+        "pct_cross_floor_stair_exit",
+        "pct_cross_floor_stair_midpoint",
+    ):
+        values = getattr(args, argument_name)
+        if values is None:
+            continue
+        for value in values:
+            command.extend([f"--{argument_name.replace('_', '-')}", str(value)])
+
     if args.mode == "dry_run":
         command.append("--dry-run")
     elif args.mode != "full_physics":
@@ -894,24 +927,28 @@ def _build_child_command(
         command.extend(["--pick-plan-json", str(_project_path(args.pick_plan_json))])
     if args.place_plan_json and args.mode != "full_physics":
         command.extend(["--place-plan-json", str(_project_path(args.place_plan_json))])
-    if args.record_video:
-        command.append("--record-video")
-        command.extend(["--video-mode", str(args.video_mode)])
-        command.extend(["--video-width", str(int(args.video_width))])
-        command.extend(["--video-height", str(int(args.video_height))])
-        command.extend(["--overview-camera-mode", str(args.overview_camera_mode)])
-        command.extend(["--overview-capture-backend", str(args.overview_capture_backend)])
+
+    command.extend(["--video-width", str(int(args.video_width))])
+    command.extend(["--video-height", str(int(args.video_height))])
+    command.extend(["--overview-capture-backend", str(args.overview_capture_backend)])
+    command.extend(
+        [
+            "--overview-initial-hold-frames",
+            str(int(args.overview_initial_hold_frames)),
+        ]
+    )
+    command.extend(["--overview-exposure", str(float(args.overview_exposure))])
+    command.extend(["--overview-gamma", str(float(args.overview_gamma))])
+    if args.overview_camera_schedule:
         command.extend(
             [
-                "--overview-initial-hold-frames",
-                str(int(args.overview_initial_hold_frames)),
+                "--overview-camera-schedule",
+                str(_project_path(args.overview_camera_schedule)),
             ]
         )
-        command.extend(["--overview-exposure", str(float(args.overview_exposure))])
-        command.extend(["--overview-gamma", str(float(args.overview_gamma))])
-        if args.video_out:
-            video_output_dir = _project_path(args.video_out) / f"episode_{episode_index:06d}"
-            command.extend(["--video-out", str(video_output_dir)])
+    if args.video_out:
+        video_output_dir = _project_path(args.video_out) / f"episode_{episode_index:06d}"
+        command.extend(["--video-out", str(video_output_dir)])
 
     return BatchEpisodeCommand(
         episode_index=episode_index,

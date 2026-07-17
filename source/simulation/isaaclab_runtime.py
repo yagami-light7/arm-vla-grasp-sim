@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,11 +33,14 @@ class IsaacLabNavigationRuntimeConfig:
     visual_prim_path: str = "/World/gauss"
     enable_scene_visual: bool = False
     viewport_camera_prim_path: str = "/World/overview"
+    auto_manage_viewport_camera: bool = True
     hide_navigation_collision_visual: bool = True
     scene_light_mode: str = "camera"
     camera_light_intensity: float = 3500.0
     camera_light_radius: float = 2.0
     camera_light_name: str = "camera_light"
+    # 场景可覆盖 IsaacLab RenderCfg；NuRec 在 Isaac Sim 5.1 中不能使用默认 DLSS。
+    render_antialiasing_mode: str | None = None
     # 数据相机严格对齐 DWA：Go2 头部前视、480x640 RGB、每个控制步更新。
     enable_front_camera: bool = False
     front_camera_height: int = 480
@@ -91,6 +95,7 @@ class IsaacLabNavigationRuntimeConfig:
     world_collision_clip_large_support_obstacles: bool = False
     world_collision_large_obstacle_clip_half_extent_m: float = 0.45
     show_randomization_debug: bool = False
+    show_velocity_command_debug: bool = False
 
 
 def _item(value: Any) -> float:
@@ -1357,12 +1362,51 @@ class IsaacLabNavigationRuntime:
         else:
             self._adapter.apply_base_command(*action.base_velocity)
         policy_action = self._adapter.compute_policy_action(refresh_observations=True)
+        self._update_velocity_command_visualization(action)
         self._runtime.action_manager.process_action(policy_action.to(self._runtime.device))
         self._last_action = action
         self._metadata["last_arm_action_report"] = arm_report
         self._metadata["last_gripper_action_report"] = gripper_report
         self._record_joint_action_apply(action, arm_report, gripper_report)
         self._action_prepared = True
+
+    def _update_velocity_command_visualization(self, action: RobotAction) -> None:
+        """按控制 tick 绘制实际进入 locomotion policy 的速度命令。"""
+
+        if not self._config.show_velocity_command_debug:
+            return
+        from source.diagnostics.planned_trajectories import draw_velocity_command
+
+        pose = self._adapter.get_base_pose_full()
+        effective_command_getter = getattr(
+            self._adapter,
+            "get_effective_base_command",
+            None,
+        )
+        effective_command = (
+            effective_command_getter()
+            if callable(effective_command_getter)
+            else action.base_velocity
+        )
+        report = draw_velocity_command(
+            robot_root_pose=(
+                float(pose["x"]),
+                float(pose["y"]),
+                float(pose["z"]),
+                *(float(value) for value in pose["quat_wxyz"]),
+            ),
+            base_velocity=effective_command,
+            source=action.source,
+        )
+        self._metadata["velocity_command_visualization"] = {
+            **report,
+            "requested_base_velocity": [
+                float(value) for value in action.base_velocity
+            ],
+            "effective_base_velocity": [
+                float(value) for value in effective_command
+            ],
+        }
 
     def _configure_manipulation_base_lock(self, action: RobotAction) -> None:
         """按状态机请求启停 root/support lock，并记录非纯物理 provenance。"""
@@ -2151,6 +2195,17 @@ class IsaacLabNavigationRuntime:
         from isaaclab.terrains import TerrainImporterCfg
         from source.navigation.adapters.terrain_utils import write_collision_terrain_wrapper
 
+        if self._config.render_antialiasing_mode is not None:
+            mode = str(self._config.render_antialiasing_mode)
+            if mode not in {"Off", "FXAA", "DLSS", "TAA", "DLAA"}:
+                raise ValueError(f"不支持的渲染抗锯齿模式：{mode}")
+            env_cfg.sim.render.antialiasing_mode = mode
+            self._metadata["render_antialiasing_report"] = {
+                "configured": True,
+                "mode": mode,
+                "source": "scene_profile",
+            }
+
         scene_usd = self._resolve_path(episode_spec.scene_usd)
         scene_runtime = resolve_scene_runtime_settings(
             episode_spec.raw_task,
@@ -2525,7 +2580,7 @@ class IsaacLabNavigationRuntime:
         )
 
     def _show_only_task_object(self, stage: Any, episode_spec: EpisodeSpec) -> dict[str, Any]:
-        """复用 baseline 语义：隐藏 apple/orange/bottle 中的非任务物体。"""
+        """只保留任务物体，并停用非任务物体的渲染与物理。"""
 
         from pxr import Usd, UsdGeom
 
@@ -2534,13 +2589,20 @@ class IsaacLabNavigationRuntime:
             self._hidden_distractor_root_paths = ()
             return {"applied": False, "reason": "object_prim_path_missing"}
 
+        object_prim = stage.GetPrimAtPath(object_prim_path)
+        if object_prim.IsValid() and not object_prim.IsActive():
+            object_prim.SetActive(True)
+
         object_prefix = object_prim_path.rstrip("/") + "/"
         keywords = ("apple", "orange", "bottle")
         candidate_roots: list[str] = []
         hidden_paths: list[str] = []
         shown_paths: list[str] = []
+        deactivated_roots: list[str] = []
 
-        for prim in stage.Traverse():
+        # 第二次调用发生在 collision patch 之后；TraverseAll 才能重新发现
+        # 首次调用中已经停用的干扰物，并持续保留规划排除根路径。
+        for prim in stage.TraverseAll():
             prim_path = str(prim.GetPath())
             if prim_path == object_prim_path or prim_path.startswith(object_prefix):
                 continue
@@ -2559,8 +2621,12 @@ class IsaacLabNavigationRuntime:
                 if child.IsA(UsdGeom.Imageable):
                     UsdGeom.Imageable(child).MakeInvisible()
                     hidden_paths.append(child_path)
+            if root_prim.IsActive():
+                root_prim.SetActive(False)
+            if not root_prim.IsActive():
+                deactivated_roots.append(root_path)
 
-        for prim in stage.Traverse():
+        for prim in stage.TraverseAll():
             prim_path = str(prim.GetPath())
             if prim_path == object_prim_path or prim_path.startswith(object_prefix):
                 if prim.IsA(UsdGeom.Imageable):
@@ -2575,6 +2641,8 @@ class IsaacLabNavigationRuntime:
             "shown_paths": shown_paths,
             "hidden_root_paths": hidden_root_paths,
             "hidden_paths": hidden_paths,
+            "deactivated_root_paths": deactivated_roots,
+            "distractor_physics_disabled": len(deactivated_roots) == len(hidden_root_paths),
             "planner_collision_exclusion_enabled": True,
         }
 
@@ -2586,6 +2654,8 @@ class IsaacLabNavigationRuntime:
     def _retry_viewport_after_stage_updates(self) -> None:
         """IsaacLab 创建窗口和 sublayer 解析可能滞后，前几帧允许轻量重试。"""
 
+        if not self._config.auto_manage_viewport_camera:
+            return
         if self._config.viewport_camera_prim_path in {"", "none", "None"}:
             return
         report = self._metadata.get("viewport_report")
@@ -2606,12 +2676,13 @@ class IsaacLabNavigationRuntime:
         report = configure_navigation_viewport(
             camera_prim_path=self._config.viewport_camera_prim_path,
             hide_collision_visual=self._config.hide_navigation_collision_visual,
+            apply_camera=self._config.auto_manage_viewport_camera,
         )
         report["configure_reason"] = reason
         report["configure_attempt"] = self._viewport_config_attempts
         self._metadata["viewport_report"] = report
         selected_camera = report.get("selected_camera_prim_path")
-        if selected_camera:
+        if selected_camera and report.get("camera_applied") is True:
             self._metadata["camera_prim_path"] = selected_camera
         return report
 
@@ -4208,10 +4279,17 @@ class IsaacLabNavigationRuntime:
         candidates.extend(
             [
                 self._project_root / "checkpoints/go2_x5/flat/model_8500.pt",
-                Path("/home/light/workspace/arm_vla/checkpoints/go2_x5/flat/model_8500.pt"),
-                Path("/home/light/workspace/DWA/flat/model_8500.pt"),
             ]
         )
+        external_checkpoint = os.environ.get("GO2_X5_FLAT_CHECKPOINT")
+        if external_checkpoint:
+            external_path = Path(external_checkpoint).expanduser()
+            candidates.insert(
+                1,
+                external_path
+                if external_path.is_absolute()
+                else self._project_root / external_path,
+            )
         for candidate in candidates:
             path = Path(candidate).expanduser().resolve()
             if path.is_file():

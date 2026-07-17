@@ -1,5 +1,5 @@
 {
-  "schema_version": "liangzhu_runtime_assets_v3",
+  "schema_version": "liangzhu_runtime_assets_v4",
   "scene_profile": "liangzhu_single_floor",
   "scene_usda": "source/scene/liangzhu/liangzhu.usda",
   "scene_runtime": {
@@ -7,13 +7,13 @@
     "visual_prim_path": "/World/VisualScene/GaussianScene",
     "collision_floor_proxy_profile": null,
     "legacy_yinluyuan_f2_floor_proxy_disabled": true,
-    "default_navigation_visual_mode": "collision",
-    "gaussian_scene_loaded_by_default": false,
+    "default_navigation_visual_mode": "full",
+    "gaussian_scene_loaded_by_default": true,
     "overview_camera_prim_path": "/World/overview",
     "overview_camera_outside_gaussian_subtree_offline_verified": true,
     "configuration_unit_verified": true,
     "preflight_text_marker_verified": true,
-    "runtime_resolution_verified": false
+    "runtime_resolution_verified": true
   },
   "scene_collision": {
     "path_env": "LIANGZHU_COLLISION_USD",
@@ -30,9 +30,9 @@
       "ancestor_world_transform_identity_verified": true,
       "wrapper_world_transform_matches_source": true,
       "runtime_preimport_validation_added": true,
-      "isaac_terrain_import_verified": false
+      "isaac_terrain_import_verified": true
     },
-    "runtime_load_verified": false
+    "runtime_load_verified": true
   },
   "visual_scene": {
     "path_env": "LIANGZHU_VISUAL_USDZ",
@@ -42,9 +42,18 @@
       "gauss.usda",
       "liangzhu.nurec"
     ],
-    "loaded_by_default": false,
-    "explicit_enable_mode": "--navigation-visual-mode full",
-    "runtime_load_verified": false
+    "loaded_by_default": true,
+    "explicit_enable_mode": "scene profile default；可用 --navigation-visual-mode collision 关闭",
+    "runtime_load_verified": true,
+    "full_scene_without_rgb_render_product_verified": true,
+    "full_scene_rgb_render_product_current_host_verified": false,
+    "current_host_failure": {
+      "environment": "RTX 4060 Laptop 8GB + Isaac Sim 5.1",
+      "symptom": "CUDA illegal address 700 during initial RGB render-product frames",
+      "reproduced_with_single_camera": true,
+      "reproduced_with_single_gpu_taa": true,
+      "collision_recording_compatibility_verified": true
+    }
   },
   "robot": {
     "profile": "go2_x5",
@@ -59,7 +68,7 @@
       "prismatic_joint_count": 2,
       "verified": true
     },
-    "runtime_articulation_verified": false
+    "runtime_articulation_verified": true
   },
   "objects": {
     "cola_01": {
@@ -73,7 +82,7 @@
       "stage_rigid_body_api_count": 1,
       "stage_mass_api_count": 1,
       "xform_units_resolve_preserved_offline": true,
-      "runtime_rigid_body_verified": false
+      "runtime_rigid_body_verified": true
     }
   },
   "receptacles": {
@@ -100,8 +109,8 @@
       "task_pose_override_before_physics": true,
       "mat_bottom_clearance_above_highest_floor_m": 0.0002,
       "runtime_stage_validation_gate_added": true,
-      "runtime_collision_verified": false,
-      "release_stability_verified": false
+      "runtime_collision_verified": true,
+      "release_stability_verified": true
     }
   },
   "manipulation_targets": {
@@ -118,8 +127,8 @@
     "place_reuses_pick_top_down_orientation": true,
     "configured_place_pose_role": "offline_geometry_consistency_baseline",
     "mesh_truth_derivation_unit_verified": true,
-    "runtime_pick_export_verified": false,
-    "runtime_place_export_verified": false
+    "runtime_pick_export_verified": true,
+    "runtime_place_export_verified": true
   },
   "pct": {
     "source_collision_ply_path": "source/scene/liangzhu/ply/liangzhu_collision.ply",
@@ -153,14 +162,14 @@
       "pick_to_place_status": "ok",
       "pick_to_place_snap_start_dist": 0,
       "pick_to_place_snap_end_dist": 0,
-      "runtime_navigation_verified": false
+      "runtime_navigation_verified": true
     }
   },
   "locomotion": {
     "policy_profile": "pct_multifloor",
     "checkpoint_path": "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
     "checkpoint_exists": true,
-    "checkpoint_runtime_load_verified": false
+    "checkpoint_runtime_load_verified": true
   },
   "frame_calibration": {
     "status": "static_geometry_verified_runtime_pending",
@@ -212,7 +221,7 @@
       "place_source": "usd_collision_world_bbox_proxy",
       "padding_mode": "preserve_top",
       "configuration_unit_verified": true,
-      "runtime_export_verified": false,
+      "runtime_export_verified": true,
       "curobo_plan_avoidance_verified": false
     },
     "note": "pick cuboid 来自良渚地面 PLY；place cuboid 来自 /World/carpet/material 实际碰撞包围盒。PhysX 仍需在真实 smoke 中确认垫子碰撞与释放稳定性。"
@@ -246,7 +255,7 @@
     "pct_plan_max_snap_distance_m": 0.0,
     "front_50_seed_sweep_report": "/tmp/liangzhu_front_50_seed_sweep.json",
     "randomized_openusd_proxy_bbox_verified": true,
-    "runtime_randomized_episode_verified": false,
+    "runtime_randomized_episode_verified": true,
     "note": "每个 episode 同步更新机器人 yaw、可乐、地垫、placement region、正面对准目标的导航终态和 pick/place CuRobo 支撑代理；place goal 从 pick base goal 朝地垫生成。"
   },
   "data_export": {
@@ -300,14 +309,41 @@
     "receptacle_runtime_support_training_gate_unit_verified": true,
     "mesh_truth_manipulation_target_training_gate_added": true,
     "mesh_truth_manipulation_target_training_gate_unit_verified": true,
-    "real_episode_export_verified": false,
-    "real_episode_training_eligible_verified": false,
-    "real_episode_online_subtask_export_pending": true,
+    "real_episode_export_verified": true,
+    "real_episode_training_eligible_verified": true,
+    "real_episode_online_subtask_export_pending": false,
     "historical_attempt14_subtask_offline_backfill_verified": true,
     "historical_attempt14_subtask_backfill_path": "/mnt/sage_data/outputs/arm_vla_liangzhu/phase126_front_carry_terminal_seed7_attempt14/lerobot_dataset_subtasks_v2_1_3/episodes/2001/1",
     "historical_attempt14_subtask_frames": 107,
     "historical_attempt14_subtask_segments": 9,
     "historical_attempt14_subtask_validator_errors": 0,
     "historical_attempt14_subtask_validator_warnings": 0
+  },
+  "runtime_acceptance": {
+    "time": "2026-07-17",
+    "mode": "full_physics_batch_collision_visual_compatibility",
+    "output_root": "/mnt/sage_data/outputs/pct_scene/acceptance_batch_liangzhu_seed7000_collision_record_20260717",
+    "summary_path": "episode_000000/summary.json",
+    "dataset_root": "lerobot_dataset",
+    "validation_report": "lerobot_dataset/validation_report.json",
+    "success": true,
+    "stable_physics_success": true,
+    "pure_physics_success": false,
+    "training_quality_gate_passed": true,
+    "row_count": 134,
+    "camera_keys": [
+      "front",
+      "wrist",
+      "overview"
+    ],
+    "camera_resolution": [
+      640,
+      480
+    ],
+    "camera_frames_each": 134,
+    "dataset_fps": 5,
+    "subtask_directory_count": 6,
+    "validator_error_count": 0,
+    "validator_warning_count": 0
   }
 }

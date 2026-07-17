@@ -26,12 +26,31 @@ def _requires_extended_pct_navigation_limits(
     config: FullPhysicsConfig,
     episode_spec: EpisodeSpec,
 ) -> bool:
-    """Keep the legacy long horizon for real multifloor scenes only."""
+    """按任务声明或起终楼层关系决定是否使用跨楼层长时限。"""
 
-    return (
-        config.locomotion.policy_profile == "pct_multifloor"
-        and episode_spec.raw_task.get("scene_profile") != "liangzhu_single_floor"
+    if config.locomotion.policy_profile != "pct_multifloor":
+        return False
+    raw_execution = episode_spec.raw_task.get("navigation_execution") or {}
+    if not isinstance(raw_execution, dict):
+        raise ValueError("task.navigation_execution 必须是对象")
+    explicit = raw_execution.get("extended_state_limits")
+    if explicit is not None:
+        if not isinstance(explicit, bool):
+            raise ValueError(
+                "task.navigation_execution.extended_state_limits 必须是布尔值"
+            )
+        return explicit
+    start_floor = (episode_spec.raw_task.get("start") or {}).get("floor_id")
+    place_floor = (
+        ((episode_spec.raw_task.get("place") or {}).get("base_goal") or {}).get(
+            "floor_id"
+        )
     )
+    if start_floor is not None and place_floor is not None:
+        return start_floor != place_floor
+    # 旧任务没有 scene_profile / navigation_execution 声明。保留其原有长时限，
+    # 新增场景则要求在 task 中显式声明能力，避免再按场景名称分支。
+    return "scene_profile" not in episode_spec.raw_task
 
 
 def _navigation_settings_for_episode(settings, episode_spec: EpisodeSpec):
@@ -209,6 +228,15 @@ def create_full_physics_pipeline(
                 settle_to_segment_start_skip_error_tolerance=0.005,
                 post_motion_hold_duration=post_motion_hold_duration,
                 post_motion_joint_error_tolerance=post_motion_joint_error_tolerance,
+                place_release_joint_error_tolerance=(
+                    full_physics_config.manipulation.place_release_joint_error_tolerance
+                ),
+                place_release_joint_velocity_tolerance=(
+                    full_physics_config.manipulation.place_release_joint_velocity_tolerance
+                ),
+                place_release_stability_window_duration=(
+                    full_physics_config.manipulation.place_release_stability_window_duration_s
+                ),
                 fail_on_strict_post_motion_state_unavailable=True,
                 require_close_progress_for_motion=True,
                 post_open_release_settle_duration=(

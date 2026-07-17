@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from scripts.pipeline.run_full_physics_pipeline import _build_parser, _keep_gui_open
+from scripts.pipeline.run_full_physics_pipeline import _keep_gui_open, _parse_args
 from source.diagnostics import randomization_debug_spec
 from source.pipeline import (
     BaseGoalRandomizationSettings,
@@ -58,15 +58,13 @@ class FullPhysicsRandomizationTest(unittest.TestCase):
         self.assertTrue(manipulation.reuse_pick_grasp_orientation_for_place)
 
     def test_cli_randomization_and_visualization_defaults(self) -> None:
-        args = _build_parser().parse_args(
-            ["--task-json", str(TASK_PATH), "--dry-run"]
-        )
+        args = _parse_args(["--task-json", str(TASK_PATH), "--dry-run"])
 
         self.assertTrue(args.randomize_task)
         self.assertTrue(args.randomize_base_goal)
         self.assertFalse(args.show_randomization_debug)
         self.assertFalse(args.keep_window_open)
-        self.assertEqual(args.navigation_visual_mode, "collision")
+        self.assertEqual(args.navigation_visual_mode, "full")
         self.assertEqual(args.overview_camera_mode, "fixed")
         self.assertEqual(args.overview_camera_prim_path, "/World/overview")
 
