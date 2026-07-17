@@ -447,6 +447,10 @@ class FullPhysicsLeRobotTest(unittest.TestCase):
             self.assertFalse(export["raw_images_saved"])
             self.assertEqual(export["camera_keys"], ["front", "overview"])
             self.assertIn("wrist", export["missing_camera_keys"])
+            self.assertIn(
+                "wrist",
+                export["camera_capture_transient_missing_keys"],
+            )
             self.assertFalse((episode_dir / "images/front").exists())
             info = json.loads(
                 (Path(export["dataset_path"]) / "meta/info.json").read_text(
@@ -510,6 +514,62 @@ class FullPhysicsLeRobotTest(unittest.TestCase):
             self.assertEqual(row["前摄像头图像"], "camera0_00000.jpg")
             self.assertEqual(row["腕部摄像头图像"], "wrist_00000.jpg")
             self.assertTrue((episode_dir / "images/wrist/wrist_00000.jpg").is_file())
+
+    def test_transient_primary_camera_warmup_is_not_a_dataset_missing_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            episode_dir = Path(tmp_dir) / "episode_000000"
+            recorder = JsonlEpisodeRecorder(
+                episode_dir,
+                lerobot_config=LeRobotRecordingConfig(
+                    enabled=True,
+                    control_dt=0.02,
+                    dataset_fps=10,
+                    image_height=48,
+                    image_width=64,
+                    camera_keys=("front", "wrist"),
+                    save_raw_images=False,
+                ),
+            )
+            recorder.save_task(
+                type(
+                    "Spec",
+                    (),
+                    {"raw_task": {"instruction": "Move the apple."}},
+                )()
+            )
+            image = np.full((48, 64, 3), 127, dtype=np.uint8)
+            states = (
+                replace(_state(1, image), camera_images={}),
+                replace(
+                    _state(6, image),
+                    camera_images={"front": image, "wrist": image},
+                ),
+                replace(
+                    _state(11, image),
+                    camera_images={"front": image, "wrist": image},
+                ),
+            )
+            for state in states:
+                recorder.record_step(
+                    StepRecord(
+                        step_index=state.step_index,
+                        timestamp=state.timestamp,
+                        pipeline_state="exec_pick",
+                        observation=state,
+                        action=RobotAction(source="arm"),
+                        post_step_observation=state,
+                    )
+                )
+
+            export = recorder.prepare_lerobot_export()
+
+            self.assertTrue(export["lerobot_exported"], export)
+            self.assertEqual(export["camera_keys"], ["front", "wrist"])
+            self.assertEqual(export["missing_camera_keys"], [])
+            self.assertIn(
+                "front",
+                export["camera_capture_transient_missing_keys"],
+            )
 
     def test_wrist_camera_generates_lerobot_video(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -633,7 +693,29 @@ class FullPhysicsLeRobotTest(unittest.TestCase):
                     (),
                     {
                         "raw_task": {
-                            "instruction": "Place the coke on the table.",
+                            "task_id": 2002,
+                            "episode_id": 1,
+                            "instruction": (
+                                "Pick up the coke can on box1 and place it on box2."
+                            ),
+                            "start": {"x": 0.0, "y": 0.0, "yaw": 0.0},
+                            "pick": {
+                                "base_goal": {"x": 1.0, "y": 0.0, "yaw": 0.0},
+                                "object_pose_world": {
+                                    "x": 1.0,
+                                    "y": 0.0,
+                                    "z": 0.2,
+                                },
+                                "target_support_id": "box1_01",
+                            },
+                            "place": {
+                                "enabled": True,
+                                "base_goal": {"x": 2.0, "y": 0.0, "yaw": 0.0},
+                                "target_receptacle_id": "box2_01",
+                                "placement_region": {
+                                    "center_xyz": [2.0, 0.0, 0.2]
+                                },
+                            },
                             "training_action": {
                                 "enabled": True,
                                 "schema": "base_xyyaw_tcp_base_rpy_gripper_v1",
@@ -649,6 +731,43 @@ class FullPhysicsLeRobotTest(unittest.TestCase):
                                 "source_gripper_joint_range_m": [0.0, 0.04],
                                 "action_alignment": "next_sample_executed_pose",
                                 "terminal_action": "hold_current_pose",
+                            },
+                            "subtask_segmentation": {
+                                "enabled": True,
+                                "schema": (
+                                    "nav_straight_turn_stop__"
+                                    "arm_approach_contact_retreat_v1"
+                                ),
+                                "directory_export": True,
+                                "output_layout": (
+                                    "episodes_task_episode_subtask_front_wrist_v3"
+                                ),
+                                "min_segment_frames": 1,
+                                "hysteresis_frames": 1,
+                            },
+                            "instruction_annotation": {
+                                "enabled": True,
+                                "schema": (
+                                    "relative_direction_segment_instruction_v1"
+                                ),
+                                "language": "en",
+                                "templates": {
+                                    "find_pick_box": (
+                                        "Turn toward your {direction} to find the box "
+                                        "with the coke can."
+                                    ),
+                                    "pick_from_front_box": (
+                                        "Pick up the coke can from the box in front of "
+                                        "you."
+                                    ),
+                                    "find_place_box": (
+                                        "Turn toward your {direction} to find the box "
+                                        "where you can place the coke can."
+                                    ),
+                                    "place_on_front_box": (
+                                        "Place the coke can on the box in front of you."
+                                    ),
+                                },
                             },
                         }
                     },
@@ -732,6 +851,30 @@ class FullPhysicsLeRobotTest(unittest.TestCase):
             self.assertNotEqual(first_action[0:2], [1.0, 2.0])
             self.assertEqual(len(table["control.action"][0].as_py()), 11)
             self.assertEqual(len(table["observation.base_pose"][0].as_py()), 7)
+            self.assertEqual(
+                table["instruction"].to_pylist(),
+                [
+                    "Turn toward your front-right to find the box where you can "
+                    "place the coke can."
+                ]
+                * 2,
+            )
+            self.assertEqual(
+                table["instruction_id"].to_pylist(),
+                ["find_place_box"] * 2,
+            )
+            self.assertEqual(
+                table["instruction_direction"].to_pylist(),
+                ["front-right", "front-right"],
+            )
+            self.assertTrue(
+                all(
+                    value is not None
+                    for value in table[
+                        "instruction_relative_bearing_rad"
+                    ].to_pylist()
+                )
+            )
             info = json.loads(
                 (
                     Path(export["dataset_path"])
@@ -740,6 +883,15 @@ class FullPhysicsLeRobotTest(unittest.TestCase):
             )
             self.assertEqual(info["features"]["action"]["shape"], [10])
             self.assertEqual(info["features"]["control.action"]["shape"], [11])
+            self.assertIn("instruction", info["features"])
+            self.assertIn("instruction_id", info["features"])
+            self.assertTrue(info["instruction_annotation_available"])
+            self.assertTrue(export["instruction_annotation_available"])
+            self.assertEqual(
+                info["instruction_annotation_schema"],
+                "relative_direction_segment_instruction_v1",
+            )
+            self.assertEqual(info["instruction_annotation_languages"], ["en"])
             self.assertEqual(info["training_action_alignment"], "next_sample_executed_pose")
 
             summary = json.loads(

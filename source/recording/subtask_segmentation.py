@@ -24,6 +24,17 @@ TASK_STAGES = ("nav_to_pick", "pick", "nav_to_place", "place")
 NAV_SUBTASKS = ("nav_straight", "nav_turn", "nav_stop")
 ARM_SUBTASKS = ("arm_approach", "arm_contact", "arm_retreat")
 SUBTASK_LABELS = (*NAV_SUBTASKS, *ARM_SUBTASKS)
+INSTRUCTION_ANNOTATION_SCHEMA = "relative_direction_segment_instruction_v1"
+RELATIVE_DIRECTION_LABELS = (
+    "front",
+    "front-left",
+    "left",
+    "back-left",
+    "back",
+    "back-right",
+    "right",
+    "front-right",
+)
 
 
 @dataclass(frozen=True)
@@ -319,6 +330,9 @@ def segment_episode_samples(
             "task_stage_frame_counts": {},
             "contact_label_source": config.contact_label_source,
             "config": config.metadata(),
+            "instruction_annotation": _instruction_annotation_metadata(
+                task if isinstance(task, dict) else {}
+            ),
         }
     if not math.isfinite(float(fps)) or float(fps) <= 0.0:
         raise ValueError("subtask segmentation fps 必须是有限正数")
@@ -385,6 +399,7 @@ def segment_episode_samples(
         contact_sources,
         short_reasons,
     )
+    _annotate_segment_instructions(samples, raw_task, segments)
     annotations: list[dict[str, Any]] = [dict() for _ in samples]
     for segment in segments:
         start = int(segment["global_start_frame"])
@@ -398,6 +413,17 @@ def segment_episode_samples(
                 "subtask_frame_index": local_index,
                 "label_source": segment["label_source"],
                 "contact_label_source": segment["contact_label_source"],
+                "instruction": segment["instruction"],
+                "instruction_id": segment["instruction_id"],
+                "instruction_target_id": segment["instruction_target_id"],
+                "instruction_direction": segment["instruction_direction"],
+                "instruction_relative_bearing_rad": segment[
+                    "instruction_relative_bearing_rad"
+                ],
+                "instruction_pose_source": segment["instruction_pose_source"],
+                "instruction_annotation_schema": segment[
+                    "instruction_annotation_schema"
+                ],
             }
     return {
         "frames": annotations,
@@ -407,7 +433,240 @@ def segment_episode_samples(
         "task_stage_frame_counts": dict(Counter(stages)),
         "contact_label_source": config.contact_label_source,
         "config": config.metadata(),
+        "instruction_annotation": _instruction_annotation_metadata(raw_task),
     }
+
+
+def relative_direction_label(relative_bearing_rad: float) -> str:
+    """把机器人局部目标方位量化为稳定的八方向英文标签。"""
+
+    angle = _wrap_angle(float(relative_bearing_rad))
+    if not math.isfinite(angle):
+        raise ValueError("relative_bearing_rad 必须是有限数值")
+    index = int(math.floor((angle + math.pi / 8.0) / (math.pi / 4.0))) % 8
+    return RELATIVE_DIRECTION_LABELS[index]
+
+
+def _instruction_annotation_config(task: dict[str, Any]) -> dict[str, Any] | None:
+    """校验可选的分段 instruction 模板。"""
+
+    raw = task.get("instruction_annotation")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("task.instruction_annotation 必须是对象")
+    if not bool(raw.get("enabled", True)):
+        return None
+    schema = str(raw.get("schema") or INSTRUCTION_ANNOTATION_SCHEMA)
+    if schema != INSTRUCTION_ANNOTATION_SCHEMA:
+        raise ValueError(
+            "task.instruction_annotation.schema 不受支持: "
+            f"{schema!r}"
+        )
+    templates = raw.get("templates")
+    if not isinstance(templates, dict):
+        raise ValueError("task.instruction_annotation.templates 必须是对象")
+    required_templates = (
+        "find_pick_box",
+        "pick_from_front_box",
+        "find_place_box",
+        "place_on_front_box",
+    )
+    normalized_templates: dict[str, str] = {}
+    for key in required_templates:
+        value = str(templates.get(key) or "").strip()
+        if not value:
+            raise ValueError(f"instruction template 不能为空: {key}")
+        normalized_templates[key] = value
+    for key in ("find_pick_box", "find_place_box"):
+        if "{direction}" not in normalized_templates[key]:
+            raise ValueError(f"instruction template 必须包含 {{direction}}: {key}")
+    return {
+        "enabled": True,
+        "schema": schema,
+        "language": str(raw.get("language") or "en"),
+        "templates": normalized_templates,
+        "direction_labels": list(RELATIVE_DIRECTION_LABELS),
+        "direction_bin_width_rad": math.pi / 4.0,
+        "direction_zero_axis": "robot_local_forward",
+        "positive_direction": "counter_clockwise_left",
+        "segment_anchor": "first_frame_base_pose",
+    }
+
+
+def _instruction_annotation_metadata(task: dict[str, Any]) -> dict[str, Any]:
+    config = _instruction_annotation_config(task)
+    if config is None:
+        return {
+            "enabled": False,
+            "schema": "episode_instruction_fallback",
+        }
+    return copy_instruction_config(config)
+
+
+def copy_instruction_config(config: dict[str, Any]) -> dict[str, Any]:
+    """复制只含 JSON 标量的 instruction 配置，避免下游意外修改任务。"""
+
+    return {
+        **config,
+        "templates": dict(config["templates"]),
+        "direction_labels": list(config["direction_labels"]),
+    }
+
+
+def _task_instruction_target(
+    task: dict[str, Any],
+    *,
+    target_kind: str,
+) -> tuple[tuple[float, float], str]:
+    """读取 pick 可乐或 place 箱桌中心的世界 XY。"""
+
+    if target_kind == "pick":
+        pick = task.get("pick")
+        pick = pick if isinstance(pick, dict) else {}
+        pose = pick.get("object_pose_world")
+        target_id = str(
+            pick.get("target_support_id")
+            or task.get("source_receptacle_id")
+            or "box1"
+        )
+        source = "task.pick.object_pose_world"
+    elif target_kind == "place":
+        place = task.get("place")
+        place = place if isinstance(place, dict) else {}
+        region = place.get("placement_region")
+        center = region.get("center_xyz") if isinstance(region, dict) else None
+        if isinstance(center, (list, tuple)) and len(center) >= 2:
+            values = (float(center[0]), float(center[1]))
+            if all(math.isfinite(value) for value in values):
+                return values, str(
+                    place.get("target_receptacle_id")
+                    or task.get("target_receptacle_id")
+                    or "box2"
+                )
+        pose = place.get("place_pose_world")
+        target_id = str(
+            place.get("target_receptacle_id")
+            or task.get("target_receptacle_id")
+            or "box2"
+        )
+        source = "task.place.place_pose_world"
+    else:
+        raise ValueError(f"未知 instruction target_kind: {target_kind}")
+    if not isinstance(pose, dict):
+        raise ValueError(f"{source} 缺失，无法生成分段 instruction")
+    try:
+        values = (float(pose["x"]), float(pose["y"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"{source} 缺少有限 XY") from exc
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError(f"{source} 包含非有限 XY")
+    return values, target_id
+
+
+def _segment_anchor_pose(
+    samples: Sequence[dict[str, Any]],
+    task: dict[str, Any],
+    segment: dict[str, Any],
+) -> tuple[float, float, float, str]:
+    """优先使用片段首帧真实底盘位姿，旧数据才回退到任务目标。"""
+
+    frame_index = int(segment["global_start_frame"])
+    raw_pose = samples[frame_index].get("base_pose")
+    if isinstance(raw_pose, (list, tuple)) and len(raw_pose) >= 7:
+        values = tuple(float(value) for value in raw_pose[:7])
+        if all(math.isfinite(value) for value in values):
+            return values[0], values[1], _quat_yaw(values[3:7]), "segment_first_frame"
+    stage = str(segment["task_stage"])
+    fallback = task.get("start") if stage == "nav_to_pick" else (
+        (task.get("pick") or {}).get("base_goal")
+        if isinstance(task.get("pick"), dict)
+        else None
+    )
+    if not isinstance(fallback, dict):
+        raise ValueError("分段 instruction 缺少有效底盘位姿")
+    try:
+        values = (
+            float(fallback["x"]),
+            float(fallback["y"]),
+            float(fallback.get("yaw", 0.0)),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("分段 instruction 回退底盘位姿无效") from exc
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("分段 instruction 回退底盘位姿包含非有限值")
+    return *values, "task_nominal_pose_fallback"
+
+
+def _annotate_segment_instructions(
+    samples: Sequence[dict[str, Any]],
+    task: dict[str, Any],
+    segments: list[dict[str, Any]],
+) -> None:
+    """按 task stage/subtask 给每个连续片段绑定固定 instruction。"""
+
+    config = _instruction_annotation_config(task)
+    episode_instruction = str(task.get("instruction") or "")
+    if config is None:
+        for segment in segments:
+            segment.update(
+                {
+                    "instruction": episode_instruction,
+                    "instruction_id": "episode_instruction",
+                    "instruction_target_id": "",
+                    "instruction_direction": None,
+                    "instruction_relative_bearing_rad": None,
+                    "instruction_pose_source": "episode_level",
+                    "instruction_annotation_schema": "episode_instruction_fallback",
+                }
+            )
+        return
+
+    templates = config["templates"]
+    for segment in segments:
+        stage = str(segment["task_stage"])
+        subtask = str(segment["subtask"])
+        is_pick_side = stage in {"nav_to_pick", "pick"}
+        target_kind = "pick" if is_pick_side else "place"
+        target_xy, target_id = _task_instruction_target(
+            task,
+            target_kind=target_kind,
+        )
+        direction = None
+        bearing = None
+        pose_source = "stage_action_instruction"
+        if stage == "nav_to_pick" and subtask == "nav_turn":
+            instruction_id = "find_pick_box"
+        elif stage == "nav_to_place" and subtask == "nav_turn":
+            instruction_id = "find_place_box"
+        elif is_pick_side:
+            instruction_id = "pick_from_front_box"
+        else:
+            instruction_id = "place_on_front_box"
+
+        if instruction_id in {"find_pick_box", "find_place_box"}:
+            base_x, base_y, base_yaw, pose_source = _segment_anchor_pose(
+                samples,
+                task,
+                segment,
+            )
+            target_bearing = math.atan2(target_xy[1] - base_y, target_xy[0] - base_x)
+            bearing = _wrap_angle(target_bearing - base_yaw)
+            direction = relative_direction_label(bearing)
+            instruction = templates[instruction_id].format(direction=direction)
+        else:
+            instruction = templates[instruction_id]
+        segment.update(
+            {
+                "instruction": instruction,
+                "instruction_id": instruction_id,
+                "instruction_target_id": target_id,
+                "instruction_direction": direction,
+                "instruction_relative_bearing_rad": bearing,
+                "instruction_pose_source": pose_source,
+                "instruction_annotation_schema": config["schema"],
+            }
+        )
 
 
 def _task_stages(
@@ -896,7 +1155,9 @@ def _finite_or_none(value: Any) -> float | None:
 
 __all__ = [
     "ARM_SUBTASKS",
+    "INSTRUCTION_ANNOTATION_SCHEMA",
     "NAV_SUBTASKS",
+    "RELATIVE_DIRECTION_LABELS",
     "SUBTASK_DIRECTORY_LAYOUT",
     "SUBTASK_LABELS",
     "SUBTASK_SCHEMA_VERSION",
@@ -904,6 +1165,7 @@ __all__ = [
     "SubtaskSegmentationConfig",
     "extract_action_semantics",
     "hydrate_sample_action_semantics",
+    "relative_direction_label",
     "segment_episode_samples",
     "task_requests_subtask_segmentation",
     "validate_subtask_segmentation_config",

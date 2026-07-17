@@ -280,6 +280,29 @@ class YawAlignTest(unittest.TestCase):
         self.assertEqual(command[1], 0.0)
         self.assertAlmostEqual(command[2], 2.0 * math.atan2(0.01, 0.10))
 
+    def test_goal_yaw_terminal_translates_laterally_without_turning_toward_xy(self) -> None:
+        command = compute_terminal_pose_command(
+            body_goal_x=0.031,
+            body_goal_y=0.099,
+            yaw_error=0.148,
+            distance_to_goal=math.hypot(0.031, 0.099),
+            config=TerminalPoseConfig(
+                position_tolerance=0.05,
+                yaw_tolerance=0.15,
+                max_vx=0.25,
+                max_vy=0.18,
+                yaw_max_wz=0.30,
+                prefer_goal_yaw_translation=True,
+            ),
+        )
+
+        self.assertGreater(command[0], 0.0)
+        self.assertAlmostEqual(command[1], 0.16)
+        self.assertAlmostEqual(command[2], 0.296)
+        # 旧 forward-only 模式会先原地朝 atan2(y, x) 大幅转向；新模式
+        # 只修正相对最终 yaw 的 0.148 rad 误差。
+        self.assertLess(command[2], 0.30)
+
 
 if __name__ == "__main__":
     unittest.main()

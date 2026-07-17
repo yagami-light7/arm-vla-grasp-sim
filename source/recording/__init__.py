@@ -16,6 +16,8 @@ from .subtask_export import (
     write_subtask_task_stub,
 )
 from .subtask_segmentation import (
+    INSTRUCTION_ANNOTATION_SCHEMA,
+    RELATIVE_DIRECTION_LABELS,
     SUBTASK_LABELS,
     SUBTASK_SCHEMA_VERSION,
     TASK_STAGES,
@@ -33,6 +35,8 @@ __all__ = [
     "DwaEpisodeWriter",
     "JsonlEpisodeRecorder",
     "LeRobotRecordingConfig",
+    "INSTRUCTION_ANNOTATION_SCHEMA",
+    "RELATIVE_DIRECTION_LABELS",
     "SUBTASK_LABELS",
     "SUBTASK_SCHEMA_VERSION",
     "TASK_STAGES",

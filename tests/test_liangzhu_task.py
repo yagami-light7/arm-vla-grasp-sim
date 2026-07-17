@@ -16,7 +16,7 @@ from source.tasks import JsonTaskProvider
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TASK_PATH = PROJECT_ROOT / "tasks/nav_pick_place_cola_liangzhu_pct.json"
-TARGET_PATH = PROJECT_ROOT / "tasks/liangzhu_placement_target.json"
+TARGET_PATH = PROJECT_ROOT / "tasks/liangzhu_mat_placement_target_legacy.json"
 ASSET_MANIFEST_PATH = (
     PROJECT_ROOT / "source/scene/liangzhu/runtime_asset_manifest.json"
 )
@@ -318,13 +318,9 @@ def test_liangzhu_runtime_manifest_uses_identity_pct_frame() -> None:
 
     manifest = json.loads(ASSET_MANIFEST_PATH.read_text(encoding="utf-8"))
     calibration = manifest["frame_calibration"]
-    mat_evidence = next(
-        item
-        for item in calibration["evidence"]
-        if item["name"] == "mat_carpet_place_target"
-    )
-    point = tuple(mat_evidence["world_xy"]) + (
-        mat_evidence["scene_floor_support_z"],
+    box2 = manifest["receptacles"]["box2_01"]
+    point = tuple(box2["nominal_support_center_xy"]) + (
+        box2["support_surface_z"],
     )
 
     pct_point = sim_to_pct_xyz(point, coord_mode="identity")
@@ -332,27 +328,27 @@ def test_liangzhu_runtime_manifest_uses_identity_pct_frame() -> None:
 
     assert pct_point == point
     assert restored == point
+    assert calibration["coord_mode"] == "identity"
     assert manifest["pct"]["coord_mode"] == "identity"
+    assert manifest["pct"]["randomized_seed_sweep_count"] == 20
+    assert manifest["pct"]["randomized_plan_request_count"] == 40
+    assert manifest["pct"]["randomized_seed_sweep_all_ok"] is True
+    assert manifest["pct"]["dynamic_box_keepouts_local_map_verified"] is True
     assert manifest["randomization"]["robot_yaw_range_deg"] == [-180.0, 180.0]
     assert manifest["randomization"]["placement_region_half_extent_xy_m"] == [
-        0.04,
-        0.04,
+        0.1,
+        0.05,
     ]
-    assert (
-        manifest["randomization"]["live_object_vertical_extent_audit_tolerance_m"]
-        == 0.01
-    )
-    robot_evidence = next(
-        item
-        for item in calibration["evidence"]
-        if item["name"] == "robot_start_floor"
-    )
-    assert robot_evidence["robot_yaw_runtime_range_deg"] == [-180.0, 180.0]
+    assert manifest["randomization"]["box1_xy_only"] is True
+    assert manifest["randomization"]["box2_xy_only"] is True
+    assert manifest["randomization"]["box_orientation_z_scale_preserved"] is True
+    assert calibration["box_orientation_policy"] == "preserve_authored_xform_ops"
+    assert calibration["box_position_policy"] == "root_translate_xy_only"
     assert calibration["runtime_path_overlay_verified"] is False
 
 
-def test_liangzhu_runtime_manifest_keeps_unverified_runtime_gates_false() -> None:
-    """离线地图成功不能冒充 Isaac 场景、checkpoint 或真实导航已验收。"""
+def test_liangzhu_runtime_manifest_records_real_box_pair_validation() -> None:
+    """真实 seed=5000 已覆盖场景、导航、操作和训练数据门禁。"""
 
     manifest = json.loads(ASSET_MANIFEST_PATH.read_text(encoding="utf-8"))
 
@@ -364,61 +360,67 @@ def test_liangzhu_runtime_manifest_keeps_unverified_runtime_gates_false() -> Non
     assert scene_runtime["collision_floor_proxy_profile"] is None
     assert scene_runtime["legacy_yinluyuan_f2_floor_proxy_disabled"] is True
     assert scene_runtime["default_navigation_visual_mode"] == "collision"
-    assert scene_runtime["gaussian_scene_loaded_by_default"] is False
     assert scene_runtime["overview_camera_prim_path"] == "/World/overview"
-    assert scene_runtime["configuration_unit_verified"] is True
-    assert scene_runtime["preflight_text_marker_verified"] is True
-    assert scene_runtime["runtime_resolution_verified"] is False
+    assert scene_runtime["box_pair_openusd_composition_verified"] is True
+    assert scene_runtime["full_physics_runtime_verified"] is True
 
-    assert manifest["scene_collision"]["runtime_load_verified"] is False
+    assert manifest["scene_collision"]["runtime_load_verified"] is True
     assert manifest["scene_collision"]["payload_mesh_marker_verified"] is True
+    assert manifest["visual_scene"]["loaded_by_default"] is False
+    assert manifest["visual_scene"]["explicit_enable_mode"] == (
+        "--navigation-visual-mode full"
+    )
     assert manifest["visual_scene"]["runtime_load_verified"] is False
-    assert manifest["visual_scene"]["package_members_verified"] == [
-        "default.usda",
-        "gauss.usda",
-        "liangzhu.nurec",
-    ]
     assert manifest["robot"]["asset_exists"] is True
-    assert manifest["robot"]["runtime_articulation_verified"] is False
+    assert manifest["robot"]["runtime_articulation_verified"] is True
+    assert manifest["robot"]["checkpoint_runtime_load_verified"] is True
     cola = manifest["objects"]["cola_01"]
     assert cola["prim_path"] == "/World/cola"
-    assert cola["asset_and_texture_exist"] is True
-    assert cola["runtime_rigid_body_verified"] is False
-    assert manifest["pct"]["offline_probe"]["runtime_navigation_verified"] is False
-    assert manifest["locomotion"]["checkpoint_runtime_load_verified"] is False
+    assert cola["stage_visual_mesh_count"] == 1
+    assert cola["stage_collision_api_count"] == 1
+    assert cola["stage_rigid_body_api_count"] == 1
+    assert cola["runtime_rigid_body_verified"] is True
+    assert manifest["pct"]["runtime_navigation_verified"] is True
     mesh_targets = manifest["manipulation_targets"]
     assert mesh_targets["mode"] == "sim_mesh_truth"
     assert mesh_targets["visual_localization_required"] is False
     assert mesh_targets["pick_grasp_mode"] == "top_down"
-    assert mesh_targets["top_down_reverse_approach_lift"] is True
-    assert mesh_targets["top_down_curobo_plan_probe_verified"] is True
     assert mesh_targets["place_reuses_pick_top_down_orientation"] is True
     assert mesh_targets["mesh_truth_derivation_unit_verified"] is True
-    assert mesh_targets["runtime_pick_export_verified"] is False
-    assert mesh_targets["runtime_place_export_verified"] is False
+    assert mesh_targets["runtime_pick_export_verified"] is True
+    assert mesh_targets["runtime_place_export_verified"] is True
     collision = manifest["collision_relationship"]
     proxies = collision["task_local_curobo_support_proxies"]
-    assert collision["physics_collision_layout"] == "single_merged_collision_prim"
-    assert collision["semantic_mat_prim_verified"] is True
-    assert proxies["configuration_unit_verified"] is True
-    assert proxies["runtime_export_verified"] is False
-    assert proxies["curobo_plan_avoidance_verified"] is False
+    assert collision["active_pick_support"] == "box1_01"
+    assert collision["active_target_receptacle"] == "box2_01"
+    assert proxies["openusd_bbox_verified"] is True
+    assert proxies["runtime_export_verified"] is True
+    assert proxies["curobo_plan_avoidance_verified"] is True
+    box1 = manifest["receptacles"]["box1_01"]
+    box2 = manifest["receptacles"]["box2_01"]
+    assert box1["translation_only_episode_override"] is True
+    assert box1["physx_contact_verified"] is True
+    assert box2["translation_only_episode_override"] is True
+    assert box2["collision_runtime_policy"] == (
+        "apply_static_mesh_collision_before_physics"
+    )
+    assert box2["physx_contact_verified"] is True
+    assert box2["release_stability_verified"] is True
     randomization = manifest["randomization"]
     assert randomization["phase"] == 1
-    assert randomization["mode"] == "robot_forward_sector_v1"
-    assert randomization["target_randomization_enabled"] is True
-    assert randomization["cola_mat_initial_overlap_rejected"] is True
-    assert randomization["dynamic_proxy_regeneration_implemented"] is True
-    assert randomization["pick_base_standoff_range_m"] == [0.35, 0.39]
-    assert randomization["place_base_standoff_range_m"] == [0.35, 0.39]
-    assert randomization["target_region_in_base"] == "front"
-    assert randomization["place_approach_origin"] == "pick_base_goal"
+    assert randomization["mode"] == "liangzhu_box_pair_xy_v1"
+    assert randomization["robot_spawn_policy"] == (
+        "between_box_centers_with_lateral_offset"
+    )
+    assert randomization["cola_xy_policy"] == "box1_center_local_safe_region"
+    assert randomization["cola_yaw_range_deg"] == [-180.0, 180.0]
+    assert randomization["dynamic_navigation_keepouts"] == ["box1", "box2"]
     assert randomization["offline_seed_sweep_verified"] is True
-    assert randomization["runtime_randomized_episode_verified"] is False
+    assert randomization["runtime_randomized_episode_verified"] is True
     assert manifest["data_export"]["training_action_dimension"] == 10
     assert manifest["data_export"]["control_action_dimension"] == 11
     assert manifest["data_export"]["schema_version"] == (
-        "full_physics_lerobot_v2.1.5"
+        "full_physics_lerobot_v2.2.0"
     )
     assert manifest["data_export"]["subtask_directory_layout"] == (
         "episodes_task_episode_subtask_front_wrist_v3"
@@ -434,31 +436,31 @@ def test_liangzhu_runtime_manifest_keeps_unverified_runtime_gates_false() -> Non
         "arm_contact",
         "arm_retreat",
     ]
-    assert manifest["data_export"]["gaussian_scene_required_for_training"] is False
-    assert (
-        manifest["data_export"]["synchronized_rgb_camera_gate_unit_verified"]
-        is True
+    assert manifest["data_export"]["instruction_annotation_schema"] == (
+        "relative_direction_segment_instruction_v1"
     )
-    assert manifest["data_export"]["collision_mode_rgb_training_eligible"] is True
-    assert manifest["data_export"]["overview_camera_prim_path"] == "/World/overview"
-    assert (
-        manifest["data_export"]["receptacle_runtime_support_training_gate_added"]
-        is True
-    )
-    assert (
-        manifest["data_export"][
-            "receptacle_runtime_support_training_gate_unit_verified"
-        ]
-        is True
-    )
-    assert (
-        manifest["data_export"][
-            "mesh_truth_manipulation_target_training_gate_unit_verified"
-        ]
-        is True
-    )
-    assert manifest["data_export"]["real_episode_export_verified"] is False
+    assert manifest["data_export"]["instruction_language"] == "en"
+    assert manifest["data_export"]["instruction_direction_labels"] == [
+        "front",
+        "front-left",
+        "left",
+        "back-left",
+        "back",
+        "back-right",
+        "right",
+        "front-right",
+    ]
+    assert manifest["data_export"]["per_frame_instruction_parquet_columns_added"] is True
+    assert manifest["data_export"]["per_frame_instruction_subtask_csv_columns_added"] is True
+    assert manifest["data_export"]["real_episode_export_verified"] is True
     assert (
         manifest["data_export"]["real_episode_training_eligible_verified"]
-        is False
+        is True
     )
+    validation = manifest["real_validation"]
+    assert validation["seed"] == 5000
+    assert validation["success"] is True
+    assert validation["final_state"] == "done"
+    assert validation["lerobot_frames"] == 283
+    assert validation["lerobot_validation_errors"] == 0
+    assert validation["subtask_directory_count"] == 6

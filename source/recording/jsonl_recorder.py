@@ -209,6 +209,9 @@ class JsonlEpisodeRecorder:
             "camera_keys_requested": list(self._lerobot_config.camera_keys),
             "camera_keys": camera_keys,
             "missing_camera_keys": writer_report["missing_camera_keys"],
+            "camera_capture_transient_missing_keys": writer_report[
+                "missing_camera_keys"
+            ],
             "video_paths": {
                 key: str(
                     self._dataset_writer.video_staging_root
@@ -330,6 +333,14 @@ class JsonlEpisodeRecorder:
                     "error": str(exc),
                 }
             payload = {**raw_payload, **conversion}
+        actual_camera_keys = set(payload.get("camera_keys") or ())
+        requested_camera_keys = set(raw_payload["camera_keys_requested"])
+        payload["camera_capture_transient_missing_keys"] = list(
+            raw_payload["camera_capture_transient_missing_keys"]
+        )
+        payload["missing_camera_keys"] = sorted(
+            requested_camera_keys - actual_camera_keys
+        )
         export_ready = bool(payload.get("lerobot_exported"))
         vla_action_available = bool(payload.get("vla_training_action_available"))
         subtask_export_available = bool(

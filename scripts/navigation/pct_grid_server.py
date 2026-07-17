@@ -912,12 +912,22 @@ def _handle_request(state: _State, line: str) -> dict[str, Any]:
             start[:2],
             start_slice,
             hard_obstacle_mask=hard_obstacle_mask,
+            preferred_xy=end[:2],
         )
         end_node, end_dist = _snap_to_walkable(
             state,
             end[:2],
             end_slice,
             hard_obstacle_mask=hard_obstacle_mask,
+            preferred_xy=start[:2],
+        )
+        snapped_start_xyz = state.grid_to_pct_xyz(start_node)
+        snapped_end_xyz = state.grid_to_pct_xyz(end_node)
+        snap_start_distance_m = float(
+            np.linalg.norm(np.asarray(snapped_start_xyz[:2]) - start[:2])
+        )
+        snap_end_distance_m = float(
+            np.linalg.norm(np.asarray(snapped_end_xyz[:2]) - end[:2])
         )
         gateway_mode: str | None = None
         if cross_floor and state.cross_floor_gateways:
@@ -956,6 +966,10 @@ def _handle_request(state: _State, line: str) -> dict[str, Any]:
                 "slice_end": end_slice,
                 "snap_start_dist": start_dist,
                 "snap_end_dist": end_dist,
+                "snap_start_distance_m": snap_start_distance_m,
+                "snap_end_distance_m": snap_end_distance_m,
+                "snapped_start_xyz": snapped_start_xyz,
+                "snapped_end_xyz": snapped_end_xyz,
                 "planner": "pct_grid",
                 "cross_floor": cross_floor,
                 "hard_obstacle_cells": int(hard_obstacle_mask.sum()),
@@ -999,6 +1013,10 @@ def _handle_request(state: _State, line: str) -> dict[str, Any]:
             "slice_end": end_slice,
             "snap_start_dist": start_dist,
             "snap_end_dist": end_dist,
+            "snap_start_distance_m": snap_start_distance_m,
+            "snap_end_distance_m": snap_end_distance_m,
+            "snapped_start_xyz": snapped_start_xyz,
+            "snapped_end_xyz": snapped_end_xyz,
             "planner": "pct_grid",
             "path_mode": path_mode,
             "cross_floor": cross_floor,
@@ -1175,7 +1193,17 @@ def _snap_to_walkable(
     si: int,
     *,
     hard_obstacle_mask: np.ndarray | None = None,
+    preferred_xy: np.ndarray | None = None,
 ) -> tuple[tuple[int, int, int], int]:
+    """Snap to a nearby free node without array-order directional bias.
+
+    The previous breadth-first search returned the first walkable neighbor in a
+    fixed ``(-x, -y)`` enumeration order.  Equal-distance snaps could therefore
+    point behind the requested route and changed when a map axis/origin changed.
+    We still preserve minimum BFS radius, but rank all free nodes in that layer
+    by metric distance to the query and then by distance to ``preferred_xy``.
+    """
+
     xi, yj = state.pct_xy_to_grid(pct_xy)
     start = (si, xi, yj)
     if state.is_walkable(start, hard_obstacle_mask=hard_obstacle_mask):
@@ -1183,19 +1211,58 @@ def _snap_to_walkable(
     visited = {(si, xi, yj)}
     queue = deque([(si, xi, yj, 0)])
     while queue:
-        csi, cxi, cyj, dist = queue.popleft()
-        node = (csi, cxi, cyj)
-        if state.is_walkable(node, hard_obstacle_mask=hard_obstacle_mask):
-            return node, dist
-        for nsi in range(max(0, csi - 1), min(state.n_slice, csi + 2)):
-            for dx, dy in _xy_neighbor_offsets(include_center=True):
-                nxt = (nsi, cxi + dx, cyj + dy)
-                if nxt in visited:
-                    continue
-                if 0 <= nxt[1] < state.dimx and 0 <= nxt[2] < state.dimy:
-                    visited.add(nxt)
-                    queue.append((nxt[0], nxt[1], nxt[2], dist + 1))
+        layer_distance = int(queue[0][3])
+        candidates: list[tuple[int, int, int]] = []
+        while queue and int(queue[0][3]) == layer_distance:
+            csi, cxi, cyj, dist = queue.popleft()
+            node = (csi, cxi, cyj)
+            if state.is_walkable(node, hard_obstacle_mask=hard_obstacle_mask):
+                candidates.append(node)
+                continue
+            for nsi in range(max(0, csi - 1), min(state.n_slice, csi + 2)):
+                for dx, dy in _xy_neighbor_offsets(include_center=True):
+                    nxt = (nsi, cxi + dx, cyj + dy)
+                    if nxt in visited:
+                        continue
+                    if 0 <= nxt[1] < state.dimx and 0 <= nxt[2] < state.dimy:
+                        visited.add(nxt)
+                        queue.append((nxt[0], nxt[1], nxt[2], dist + 1))
+        if candidates:
+            return min(
+                candidates,
+                key=lambda node: _snap_candidate_score(
+                    state,
+                    node,
+                    query_xy=pct_xy,
+                    preferred_xy=preferred_xy,
+                    requested_slice=si,
+                ),
+            ), layer_distance
     raise RuntimeError(f"slice {si} 附近找不到可走格")
+
+
+def _snap_candidate_score(
+    state: _State,
+    node: tuple[int, int, int],
+    *,
+    query_xy: np.ndarray,
+    preferred_xy: np.ndarray | None,
+    requested_slice: int,
+) -> tuple[float, float, int, int, int]:
+    point_xy = np.asarray(state.grid_to_pct_xyz(node)[:2], dtype=np.float64)
+    query_distance = float(np.linalg.norm(point_xy - np.asarray(query_xy)))
+    preferred_distance = (
+        0.0
+        if preferred_xy is None
+        else float(np.linalg.norm(point_xy - np.asarray(preferred_xy)))
+    )
+    return (
+        query_distance,
+        preferred_distance,
+        abs(int(node[0]) - int(requested_slice)),
+        int(node[1]),
+        int(node[2]),
+    )
 
 
 def _astar(

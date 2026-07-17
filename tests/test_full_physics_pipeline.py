@@ -675,7 +675,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
 
         self.assertEqual(
             args.task_json,
-            "tasks/nav_pick_place_cola_liangzhu_pct.json",
+            "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json",
         )
         self.assertEqual(args.global_planner, "pct")
         self.assertEqual(args.pct_coord_mode, "identity")

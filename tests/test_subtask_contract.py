@@ -10,9 +10,11 @@ from pathlib import Path
 from source.recording.lerobot_dataset import _resolve_subtask_episode_ids
 from source.recording.subtask_export import write_subtask_task_stub
 from source.recording.subtask_segmentation import (
+    RELATIVE_DIRECTION_LABELS,
     SUBTASK_DIRECTORY_LAYOUT,
     SubtaskSegmentationConfig,
     hydrate_sample_action_semantics,
+    relative_direction_label,
     segment_episode_samples,
     validate_subtask_segmentation_config,
 )
@@ -85,6 +87,130 @@ def test_legacy_segment_layout_configs_migrate_to_fixed_subtask_v3() -> None:
         assert config is not None
         assert config.output_layout == SUBTASK_DIRECTORY_LAYOUT
         assert config.config_source == "task_legacy_layout_migrated"
+
+
+def test_relative_bearing_uses_eight_english_direction_labels() -> None:
+    directions = tuple(
+        relative_direction_label(index * 3.141592653589793 / 4.0)
+        for index in range(8)
+    )
+
+    assert directions == RELATIVE_DIRECTION_LABELS
+    assert directions == (
+        "front",
+        "front-left",
+        "left",
+        "back-left",
+        "back",
+        "back-right",
+        "right",
+        "front-right",
+    )
+
+
+def test_each_segment_receives_the_expected_english_instruction() -> None:
+    task = _task()
+    task["pick"]["object_pose_world"] = {"x": -1.0, "y": 1.0, "z": 0.2}
+    task["pick"]["target_support_id"] = "box1_01"
+    task["place"].update(
+        {
+            "target_receptacle_id": "box2_01",
+            "placement_region": {"center_xyz": [1.0, -1.0, 0.2]},
+        }
+    )
+    task["instruction_annotation"] = {
+        "enabled": True,
+        "schema": "relative_direction_segment_instruction_v1",
+        "language": "en",
+        "templates": {
+            "find_pick_box": (
+                "Turn toward your {direction} to find the box with the coke can."
+            ),
+            "pick_from_front_box": (
+                "Pick up the coke can from the box in front of you."
+            ),
+            "find_place_box": (
+                "Turn toward your {direction} to find the box where you can place "
+                "the coke can."
+            ),
+            "place_on_front_box": (
+                "Place the coke can on the box in front of you."
+            ),
+        },
+    }
+    samples: list[dict] = []
+    _append(
+        samples,
+        3,
+        pipeline_state="exec_nav_to_pick",
+        command=(0.0, 0.0, 0.3),
+    )
+    _append(
+        samples,
+        3,
+        pipeline_state="exec_nav_to_pick",
+        command=(0.2, 0.0, 0.0),
+    )
+    _append(samples, 3, pipeline_state="exec_pick")
+    _append(
+        samples,
+        3,
+        pipeline_state="exec_nav_to_place",
+        command=(0.0, 0.0, -0.3),
+    )
+    _append(
+        samples,
+        3,
+        pipeline_state="exec_nav_to_place",
+        command=(0.2, 0.0, 0.0),
+    )
+    _append(samples, 3, pipeline_state="exec_place")
+
+    result = segment_episode_samples(
+        samples,
+        task,
+        config=SubtaskSegmentationConfig(
+            min_segment_frames=1,
+            hysteresis_frames=1,
+            config_source="instruction_contract_test",
+        ),
+        fps=5.0,
+    )
+    segments = result["segments"]
+    pick_turn = next(
+        segment
+        for segment in segments
+        if segment["task_stage"] == "nav_to_pick"
+        and segment["subtask"] == "nav_turn"
+    )
+    place_turn = next(
+        segment
+        for segment in segments
+        if segment["task_stage"] == "nav_to_place"
+        and segment["subtask"] == "nav_turn"
+    )
+    assert pick_turn["instruction_direction"] == "back-left"
+    assert pick_turn["instruction"] == (
+        "Turn toward your back-left to find the box with the coke can."
+    )
+    assert place_turn["instruction_direction"] == "front-right"
+    assert place_turn["instruction"] == (
+        "Turn toward your front-right to find the box where you can place the "
+        "coke can."
+    )
+    for segment in segments:
+        if segment in (pick_turn, place_turn):
+            continue
+        if segment["task_stage"] in {"nav_to_pick", "pick"}:
+            assert segment["instruction"] == (
+                "Pick up the coke can from the box in front of you."
+            )
+        else:
+            assert segment["instruction"] == (
+                "Place the coke can on the box in front of you."
+            )
+        assert segment["instruction_direction"] is None
+    assert all(frame["instruction"] for frame in result["frames"])
 
 
 def test_all_six_labels_preserve_stage_order_and_frame_coverage() -> None:

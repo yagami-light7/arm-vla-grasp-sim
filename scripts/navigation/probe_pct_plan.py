@@ -16,6 +16,7 @@ from source.interfaces.navigation import NavGoal
 from source.interfaces.simulation import SimulationState
 from source.navigation.pct_adapter import PCTNavPlanner, PCTPlannerConfig
 from source.pipeline.config import NavigationSettings
+from source.tasks import JsonTaskProvider
 
 
 DEFAULT_TASK_JSON = PROJECT_ROOT / "tasks/nav_pick_place_apple_multifloor_pct.json"
@@ -310,7 +311,7 @@ def _load_task(task_json: Path, report: dict[str, Any]) -> dict[str, Any] | None
         report["task_error"] = f"task JSON not found: {task_json}"
         return None
     try:
-        payload = json.loads(task_json.read_text(encoding="utf-8"))
+        payload = JsonTaskProvider().load(task_json).raw_task
     except Exception as exc:
         report["task_error"] = f"failed to read task JSON: {exc}"
         return None

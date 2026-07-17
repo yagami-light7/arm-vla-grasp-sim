@@ -2,8 +2,8 @@
   "project": "arm_vla_liangzhu",
   "branch": "liangzhu-deploy",
   "goal": "在良渚单层场景中复用原 pct_multifloor locomotion policy，跑通移动操作 pipeline，并导出可验证的数据。",
-  "current_phase": "phase_154_full_yaw_batch_real_verified",
-  "last_updated": "2026-07-16 00:23:46 CST",
+  "current_phase": "phase_156_composite_video_acceptance",
+  "last_updated": "2026-07-17 22:05:39 CST",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -41,7 +41,7 @@
     "tests_passing": false,
     "liangzhu_manual_place_target_added": true,
     "liangzhu_manual_table_target_active": false,
-    "liangzhu_active_target_receptacle": "mat_carpet_01",
+    "liangzhu_active_target_receptacle": "box2_01",
     "liangzhu_mat_placement_target_added": true,
     "liangzhu_mat_collision_geometry_offline_verified": true,
     "liangzhu_mat_above_scene_floor_offline_verified": true,
@@ -177,6 +177,27 @@
     "liangzhu_navigation_command_deadzone_guard_added": true,
     "liangzhu_navigation_angular_stall_detection_added": true,
     "liangzhu_navigation_settling_recovery_added": true,
+    "liangzhu_box_pair_task_active": true,
+    "liangzhu_box_pair_xy_randomization_added": true,
+    "liangzhu_box_pair_instruction_annotation_centralized": true,
+    "liangzhu_box_pair_instruction_annotation_real_export_verified": true,
+    "liangzhu_box_pair_six_subtask_directories_real_verified": true,
+    "liangzhu_box_pair_full_pipeline_annotation_audit_verified": true,
+    "liangzhu_navigation_exact_continuous_endpoints_added": true,
+    "liangzhu_navigation_supercover_visibility_refinement_added": true,
+    "liangzhu_navigation_live_path_reanchor_added": true,
+    "liangzhu_carry_geometry_clearance_departure_added": true,
+    "liangzhu_same_floor_rotation_hysteresis_added": true,
+    "liangzhu_same_floor_goal_yaw_translation_added": true,
+    "liangzhu_seed5002_goal_yaw_full_pipeline_real_verified": true,
+    "liangzhu_seed5003_goal_yaw_navigation_real_verified": true,
+    "liangzhu_seed5003_goal_yaw_full_pipeline_real_verified": false,
+    "liangzhu_arm_reachability_margin_handoff_added": false,
+    "liangzhu_composite_video_added": true,
+    "liangzhu_composite_video_same_step_sync": true,
+    "liangzhu_composite_video_unit_verified": true,
+    "liangzhu_full_pipeline_acceptance_validator_added": true,
+    "liangzhu_composite_video_real_pipeline_verified": false,
     "sage_multifloor_asset_pipeline_added": true,
     "sage_multifloor_ply_renamed": true,
     "sage_multifloor_usdz_available": true,
@@ -7378,6 +7399,150 @@
         "保持 0.040m 中心容差和实体边缘余量双重约束，扩大鼠标垫/可乐尺寸或 scale 时必须重新计算。",
         "建立关闭 manipulation base/support-joint lock 的 pure-physics 对照批次，并与当前 stable-physics 数据分开统计。"
       ]
+    },
+    {
+      "time": "2026-07-17 21:32:00 CST",
+      "summary": "针对 box1 -> box2 随机任务的多余转弯和 seed 5003 碰箱风险，从全局路径、局部路径、DWA 旋转门、携物离箱和末端 P 控制五层完成结构化诊断与修正。PCT 原始路线在问题 seed 中是两点直线，额外转弯并非全局拓扑错误。执行层现恢复实时连续端点，仅在 supercover 直线受阻时运行 local A* 并做 string pulling；携物阶段按支撑物 bbox 与机器人扫掠半径派生退出距离，停稳后从实时位姿重锚定；同层 DWA 使用旋转迟滞，末端控制在最终 yaw 下以 body-frame vx/vy 修正 XY。seed 5002 真实 full-physics 完整成功并导出有效 LeRobot；seed 5003 导航累计 yaw 从 407.71° 降到 233.06°，随后暴露独立的 CuRobo 可达裕量交接问题。",
+      "files_changed": [
+        "source/navigation/navlib/path_refinement.py",
+        "source/navigation/navlib/dwa.py",
+        "source/navigation/adapters/yaw_align.py",
+        "source/navigation/executor.py",
+        "source/pipeline/state_machine.py",
+        "tasks/liangzhu_placement_target.json",
+        "tests/navigation/test_path_refinement.py",
+        "tests/test_full_physics_navigation.py",
+        "tests/test_yaw_align.py",
+        "README.md",
+        "scripts/README.md",
+        "source/scene/liangzhu/runtime_asset_manifest.json",
+        "project.json"
+      ],
+      "problems": [
+        {
+          "problem": "更换地图原点、栅格相位或起始点后，机器人会追逐 PCT 吸附栅格中心和身后 waypoint，表现为不必要转弯、折返或原地踏步。",
+          "root_cause": "旧局部层把 PCT 离散吸附端点当成连续控制目标，并用固定 clearance 触发第二次栅格 A*；DWA 又从路径第一个索引开始追踪。",
+          "fix": "恢复 live start 与 task exact goal，在膨胀 occupancy 上做 supercover LoS；仅阻塞时 local A*，随后 string pull，并把实时位姿投影到整条路径以跳过身后 prefix。",
+          "prevention": "新增跨地图平移/旋转、栅格相位和 17 个初始 yaw 的 path refinement 回归，输出 local_refinement 与 path anchor metadata。"
+        },
+        {
+          "problem": "抓取后原地转向会让机器人扫掠 box1；同层末端数厘米位置误差还可能触发先转向位置、再转回最终 yaw 的约 190° 往返旋转。",
+          "root_cause": "执行器没有显式的操作区安全退出状态，DWA 旋转门缺少迟滞/停稳，旧 terminal controller 按非完整约束先朝向 XY 误差。",
+          "fix": "用支撑物 bbox、机器人扫掠半径和 margin 派生直线退出距离，完成 settle/reanchor；同层旋转门增加进入/退出迟滞；携物末端在最终 yaw 下使用 body-frame vx/vy 平移。",
+          "prevention": "seed 5002/5003 真实回归分别验证完整闭环和问题轨迹；审计 carry_departure、rotation_gate、rotation_settle 与 carry_goal_yaw_translation metadata。"
+        },
+        {
+          "problem": "seed 5003 新导航成功后 CuRobo plan_place 返回 None。",
+          "root_cause": "当前 place base-goal 与 0.08m 导航验收只约束底盘 pose，没有为实际末端目标预留机械臂可达裕量；该次 pre-place 目标在 arm-base 中约 0.4746m radial，处于规划边界。",
+          "fix": "本阶段明确隔离为 manipulation handoff，不回退或继续按场景重调 PCT/DWA。",
+          "prevention": "下一阶段将机械臂可达裕量纳入 base-goal 候选评分/验收，并在失败时允许有界底盘微调后重新规划，所有重试结构化记录。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "pytest navigation/full-physics focused regression excluding known missing legacy fixture",
+          "result": "passed",
+          "note": "254 passed、1 deselected。"
+        },
+        {
+          "command": "pytest -q tests",
+          "result": "passed_with_one_known_legacy_fixture_failure",
+          "note": "472 passed、1 skipped、1 failed；唯一失败是旧 apple/AStar fixture 缺少 source/scene/839920/nav_map/map.json。"
+        },
+        {
+          "command": "real full-physics --seed 5002 with goal-yaw terminal control",
+          "result": "passed",
+          "note": "完整 state_trace 到 done；physical_navigation_success=true、physical_manipulation_success=true、stable_physics_success=true、training_eligible=true。"
+        },
+        {
+          "command": "real full-physics --seed 5003 terminal regression",
+          "result": "navigation_passed_post_nav_place_plan_failed",
+          "note": "携物导航 930 ticks / 233.06° actual yaw；随后 CuRobo place_plan_failed，未记为完整 pipeline 成功。"
+        }
+      ],
+      "data_results": {
+        "seed5002_output_root": "/mnt/sage_data/outputs/arm_vla_liangzhu/nav_goal_yaw_terminal_seed5002_20260717_v4",
+        "seed5002_success": true,
+        "seed5002_carry_navigation_ticks": 897,
+        "seed5002_carry_navigation_duration_s": 17.92,
+        "seed5002_carry_actual_abs_yaw_deg": 254.41,
+        "seed5002_carry_commanded_abs_yaw_deg": 243.01,
+        "seed5002_lerobot_rows": 196,
+        "seed5002_lerobot_camera_frames_per_feature": 196,
+        "seed5002_lerobot_validator_errors": 0,
+        "seed5002_lerobot_validator_warnings": 0,
+        "seed5002_subtask_directory_count": 6,
+        "seed5002_contiguous_segment_count": 11,
+        "seed5002_pick_turn_instruction_direction": "right",
+        "seed5002_place_turn_instruction_direction": "back",
+        "seed5002_segment_instruction_schema": "relative_direction_segment_instruction_v1",
+        "seed5003_old_output_root": "/mnt/sage_data/outputs/arm_vla_liangzhu/nav_departure_settle_seed5003_20260717_v3",
+        "seed5003_new_output_root": "/mnt/sage_data/outputs/arm_vla_liangzhu/nav_goal_yaw_terminal_seed5003_20260717_v4_retry1",
+        "seed5003_old_carry_navigation_ticks": 1423,
+        "seed5003_new_carry_navigation_ticks": 930,
+        "seed5003_old_actual_abs_yaw_deg": 407.71,
+        "seed5003_new_actual_abs_yaw_deg": 233.06,
+        "seed5003_actual_abs_yaw_reduction_deg": 174.65,
+        "seed5003_navigation_success": true,
+        "seed5003_full_pipeline_success": false,
+        "pure_physics_success": false,
+        "stable_physics_success": true
+      },
+      "next_steps": [
+        "把 CuRobo 可达 workspace margin 作为 robot/manipulation profile 契约接入 base-goal 候选与导航验收，避免用逐场景 standoff/tolerance 调参掩盖交接问题。",
+        "完成上述交接后定向复跑 seed 5003，再运行独立多 seed box-pair batch 统计完整 pipeline 成功率和转弯分布。",
+        "保持地图仅提供 tomogram/walkable、坐标变换与动态几何；DWA/RL 响应参数归入可跨地图复用的 robot profile。"
+      ]
+    },
+    {
+      "time": "2026-07-17 22:05:39 CST",
+      "summary": "新增 overview/front/wrist 三视角同步拼接视频。composite 模式从同一次 simulation read 的 camera_images 取帧，overview 占左侧 2/3，front/wrist 位于右上/右下，三路等比例 letterbox 并带标签，默认输出单个 1280x720、25fps MP4。single 与 batch CLI 均支持 --video-mode composite；新增完整验收脚本，联合检查状态机、物理导航/操作、训练质量门、LeRobot validator 和 MP4 的分辨率/fps/帧数。真实复跑未与现有 Isaac Sim 并行启动，避免 8GB GPU 显存冲突。",
+      "files_changed": [
+        "source/recording/overview_video_recorder.py",
+        "source/pipeline/config.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "scripts/pipeline/run_full_physics_batch.py",
+        "scripts/pipeline/validate_full_pipeline_acceptance.py",
+        "tests/test_simulation_viewport.py",
+        "tests/test_full_pipeline_acceptance.py",
+        "tests/test_full_physics_batch.py",
+        "README.md",
+        "scripts/README.md",
+        "source/scene/liangzhu/runtime_asset_manifest.json",
+        "project.json"
+      ],
+      "tests": [
+        {
+          "command": "targeted composite/CLI/pipeline regression",
+          "result": "passed",
+          "note": "79 passed；包含三视角 panel 布局、实际单帧 MP4 编码、summary metadata、验收脚本正反例和 batch 参数转发。"
+        },
+        {
+          "command": "python -m py_compile composite-related modules and scripts",
+          "result": "passed",
+          "note": "recorder、config、single/batch CLI、验收脚本与测试语法通过。"
+        },
+        {
+          "command": "pytest -q tests",
+          "result": "passed_with_one_known_legacy_fixture_failure",
+          "note": "476 passed、1 skipped、1 failed；唯一失败仍是旧 apple/AStar fixture 缺少 source/scene/839920/nav_map/map.json。"
+        },
+        {
+          "command": "git diff --check",
+          "result": "passed",
+          "note": "无空白错误。"
+        },
+        {
+          "command": "real full-physics seed 5002 --video-mode composite",
+          "result": "not_run_gpu_busy",
+          "note": "GPU 已有 Isaac Sim 进程占用约 5.4GiB、CuRobo 服务约 0.56GiB；没有终止用户进程，也没有在 8GB GPU 上并行启动第二个仿真。"
+        }
+      ],
+      "next_steps": [
+        "现有 Isaac Sim 退出后运行 README 中 seed 5002 composite 验收命令；第二条 validator 命令应返回 0。",
+        "人工检查 episode_000001_composite.mp4 中三路画面方向、遮挡和曝光，再将 liangzhu_composite_video_real_pipeline_verified 更新为 true。",
+        "批量展示视频仅在确有需要时开启，训练数据 front/wrist 导出与 composite 展示视频保持相互独立。"
+      ]
     }
   ],
   "open_questions": [
@@ -7385,13 +7550,14 @@
     "现有几何随机化在 20-seed 回归中达到 100% 接受率后，是先扩大几何范围，还是保持当前范围并优先加入光照、相机噪声与遮挡随机化？"
   ],
   "known_limitations": [
+    "当前活动任务已切换为 box1 上抓取可乐并放到 box2。seed 5002 在最新导航结构下完整成功；seed 5003 的导航回归成功，但 CuRobo place 规划因实际 pre-place 目标约 0.4746m arm-base radial 而失败。base-goal 生成/导航验收尚未显式包含机械臂可达裕量，不能把该问题归因于 PCT/DWA，也不能通过逐地图调参宣称已解决。",
     "当前全向 yaw 的最新 v3 数据集是 validation_full_yaw_seed7000_n20_final_v2_20260715/lerobot_dataset，共 19 条 accepted episode；旧 validation_seed4013_n20_final_carry_map_v2 的 20 条数据只覆盖±30° yaw。phase146/147 历史数据仍是旧 front-only/连续 segment 目录，不能与 v3 直接混用。",
     "全向 yaw 的连续 20-seed batch 接受率为 95%（19/20）；唯一失败 seed 7018 在 0.040m placement center 修正后定向复跑通过，但这不能表述为同一次连续 batch 20/20。",
     "phase146 的 27 条扩展集混合 21 条当前参数与 6 条早期 placement/tolerance 参数；phase147 虽参数一致但仍是旧 front-only 目录，使用历史数据时必须显式区分配置和目录版本。",
     "当前 perception_mode=sim_ground_truth；抓取和放置 TCP 直接使用运行时 Mesh/PhysX 真值，RGB 仅用于 VLA 记录，不能描述为 RGB-D 目标检测或视觉定位成功。",
     "当前最新 20 条 accepted episode 使用 manipulation base lock 与 support-joint lock，因此 stable_physics_success=true 但 pure_physics_success=false；后续仍需建立无锁严格物理成功率。",
-    "良渚任务当前 pick 底盘末端位置容差为 0.10m，place 底盘交接容差为 0.15m，place 目标中心 XY 容差为 0.040m，Mesh extent 漂移容差为 0.010m；这些值已通过真实定向复验，但扩大随机范围前仍应重新统计。",
-    "当前只验证了可乐 top-down 抓取和地垫放置这一种资产/任务组合，尚未覆盖桌面放置、其他物体尺寸或多目标实例选择。",
+    "当前 box1 -> box2 任务的 pick 底盘末端位置容差为 0.10m，place 底盘交接容差为 0.08m，place 目标中心 XY/Z 容差为 0.05m/0.025m；seed 5003 表明仅满足底盘容差不等价于 CuRobo 具有稳健可达裕量。",
+    "当前只验证了可乐 top-down 抓取和 box 支撑面放置这一种活动资产/任务组合；旧地垫数据属于历史配置，尚未覆盖其他物体尺寸或多目标实例选择。",
     "任务没有可用 flat nav_map 时会显式禁用 PCT 到 A* fallback；PCT server 或资产失败会直接报错，不会静默回退。",
     "良渚 PCT tomogram/walkable 和大型 scene/checkpoint 资产为本地 ignored/runtime 文件，不应加入 Git；其他机器必须按 manifest 重新准备。",
     "source/scene/objects/carpet.usd、carpet.glb 与纹理是用户提供的本地大型未跟踪资产；当前任务依赖其固定 SHA256，不能把它们误当作已提交资产。",
@@ -7400,7 +7566,7 @@
     "当前 arm_contact 标签来自执行器动作语义、夹爪命令和目标/TCP 运动学启发式，metadata 已明确标记 heuristic_action_and_kinematics；接入可靠接触传感器前不能描述为真实力/触觉接触标签。",
     "attempt14 的真实轨迹只出现 nav_stop 与 nav_turn，没有满足阈值的 nav_straight；这是该条轨迹的运动事实，不是 schema 缺失，六类标签全集由 contract 测试覆盖。",
     "系统盘空间较紧，批量输出必须继续写入 /mnt/sage_data；attempt14 约 192MB，批量前仍应监控剩余容量。",
-    "最近一次良渚聚焦回归为 99 passed；扩大回归为 199 passed、1 skipped、1 failed，唯一失败依赖迁移后缺失的旧 apple/A* source/scene/839920/nav_map/map.json，不是良渚 PCT 回归。垫子 scale 配置与测试已统一为 (0.3,0.2,0.005)，但仓库 tests_passing 仍保持 false。",
+    "最近一次导航/pipeline 聚焦回归为 254 passed、1 deselected；全仓回归为 472 passed、1 skipped、1 failed，唯一失败依赖迁移后缺失的旧 apple/A* source/scene/839920/nav_map/map.json，不是良渚 PCT 回归，因此仓库 tests_passing 仍保持 false。",
     "共享 CuRobo server 属于其他 worktree 的外部服务；兼容性握手和本轮复用已验证，pipeline 不拥有其生命周期，批量运行前仍需 ping。"
   ]
 }

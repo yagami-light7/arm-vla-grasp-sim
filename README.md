@@ -183,6 +183,7 @@ source/
 ├── tasks/                                  # task loader 与随机化逻辑
 │   ├── task_loader.py                      # JSON task -> EpisodeSpec
 │   ├── randomizer.py                       # 通用 pick/place XY 和 base_goal 随机化
+│   ├── box_pair_randomization.py           # 良渚 box1 -> box2 联合随机化
 │   └── forward_sector_randomization.py     # 良渚机器人前向扇区联合随机化
 ├── scene/                                  # USD 场景、物体资产和导航地图
 │   └── liangzhu/                           # 良渚 USDA、PCT 单层地图、collision PLY 和 manifest
@@ -190,7 +191,9 @@ source/
 └── robot_lab/                              # Isaac Lab extension / Go2-X5 task registration
 
 tasks/
-└── nav_pick_place_cola_liangzhu_pct.json   # 当前默认良渚可乐到鼠标垫任务
+├── nav_pick_place_cola_box1_to_box2_liangzhu_pct.json # 当前默认良渚 box1 -> box2 任务
+├── liangzhu_placement_target.json          # 抓放、随机化、subtask、instruction 单一配置源
+└── nav_pick_place_cola_liangzhu_pct.json   # 旧可乐到鼠标垫任务，仅兼容保留
 
 checkpoints/
 └── go2_x5/pct_multifloor/model_26000.pt    # 当前默认 locomotion checkpoint
@@ -246,7 +249,7 @@ batch 结束会打印以下表格：
 | 列                           | 内容                                        |
 | ---------------------------- | ------------------------------------------- |
 | `Episode`                    | episode 编号和 seed                         |
-| `随机化 Pick / Place XY`     | 本次随机化后的 pick/place 目标 XY           |
+| `随机化 Pick / Place XY`     | 本次随机化后的可乐/box2 目标 XY             |
 | `随机化 BaseGoal / 相对目标` | pick/place base_goal 和相对目标的 XY 偏移   |
 | `Pipeline 成功`              | 成功 / 失败                                 |
 | `失败 State`                 | 失败时状态机 state                          |
@@ -269,7 +272,162 @@ lerobot_manifest.json / lerobot_dataset/                           失败时删�
 
 batch 合并统一数据集时只合并成功并通过最终物理来源质量门的 episode。
 
-### 良渚 Phase 1 联合随机化
+### 当前良渚 box1 -> box2 任务
+
+默认任务是：
+
+```text
+Pick up the coke can on box1 and place it on box2.
+```
+
+入口文件为 `tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json`。抓取点、
+放置点、box 几何、随机化、六类 subtask 和英文 instruction 模板统一维护在
+`tasks/liangzhu_placement_target.json`；task loader 在运行前将其中的
+`task_overrides` 合并到 EpisodeSpec，不再要求在多个 JSON 中同步修改同一套标注。
+
+当前随机化模式为 `liangzhu_box_pair_xy_v1`：
+
+| 项目 | 当前分布 | 不变量 |
+| --- | --- | --- |
+| box1 根位姿 | nominal XY 各加 `Uniform(-0.12m, 0.12m)` | 根 Z、authored orient、scale、xform op 顺序不变 |
+| box2 根位姿 | nominal XY 各加 `Uniform(-0.12m, 0.12m)` | 根 Z、authored orient、scale、xform op 顺序不变 |
+| 机器人位置 | 两个 box 中心连线的 `0.4..0.6` 区间，另加 `±0.18m` 横向偏移 | 使用 collision PLY 重新求地面高度；与两个 box 保持净空 |
+| 机器人 yaw | `Uniform(-180°, 180°)` | roll/pitch 不随机 |
+| 可乐位置 | box1 中心局部安全区，半宽 `0.08m × 0.06m` | 由 box1 顶面和可乐 bbox 半高求 Z，并保留桌边余量 |
+| 可乐 yaw | `Uniform(-180°, 180°)` | roll/pitch 为 0 |
+| box2 placement region | box2 中心半宽 `0.10m × 0.05m` | 保留桌边余量 |
+| pick/place standoff | 各 `Uniform(0.50m, 0.54m)` | 底盘最终正面朝向目标 |
+
+每次采样会同步更新 robot reset、box1/box2 stage translate、可乐 pose、box2
+placement region、pick/place base goal、两个 CuRobo 支撑 proxy 和 PCT 局部动态
+keepout。box2 原资产没有 authored collision，runtime 会在 physics 初始化前为
+`/World/box2/node_0` 添加静态 mesh collision；不会保存或修改 USD 资产。
+
+布局最多尝试 300 次，并拒绝桌间距不足、机器人/导航交接点离桌过近、可乐越出
+box1 安全区或 collision PLY 地面支撑不满足约束的样本。同一个 task/config/seed 会
+复现相同布局。当前已完成 20 seed 的静态随机化和 40 次 PCT 请求检查；这不等价于
+新 box 任务已经完成多 seed 真实 full-physics batch 验收。
+
+当前默认任务的 pick 导航容差为 `0.10m`，place 交接容差为 `0.08m`；box2
+`pre_place_clearance` 与 `retreat_clearance` 均为 `0.08m`。完成通用导航接口修正后，
+seed 5000 已在宿主机 RTX 4060 上真实跑通：PCT + RL locomotion + CuRobo + PhysX
+状态机到达 `done`，抓取最大抬升 `0.2389m`，放置 XY/Z 误差分别为
+`0.0080m / 0.0077m`。LeRobot 导出 291 帧、6 个固定 subtask 目录，front/wrist
+各 291 张，validator 为 0 error / 0 warning。输出证据位于：
+
+```text
+/mnt/sage_data/outputs/arm_vla_liangzhu/
+nav_structure_seed5000_20260717_v1
+```
+
+这证明单条真实闭环和数据格式可用，不代表当前 box 随机分布已经获得多 seed 成功率；
+开始正式量产前仍需运行独立 batch。
+
+#### 地图无关的导航路径接口
+
+seed 5000 的 PCT 两段全局路线本来都是两点直线。旧实现出现额外转弯的触发链是：
+
+1. PCT 将连续世界坐标吸附到 `0.2m` 栅格中心；旧局部层把这个吸附点误当成机器人
+   的真实控制起点。
+2. 局部层额外使用 `max(0.4m, 2 * resolution)` 的隐藏 clearance 门禁；合法的
+   `0.2m` 末端操作通道也会被判定为需要重新 A*。
+3. A* 再次输出栅格中心，首个 waypoint 可能落在机器人后方；DWA 会忠实地先追这个
+   人造点，形成反向首转、折返和原地踏步。
+
+低层 RL policy 对异常角速度命令的相关系数为 `0.989`，说明它执行了局部层给出的
+命令；根因不在 locomotion policy，也不需要逐地图重调 DWA/PCT 参数。当前统一策略为：
+
+```text
+PCT 全局拓扑路径
+-> 用机器人实时 XY / 精确目标 XY 恢复连续端点
+-> 在已膨胀 occupancy configuration space 中做 supercover 线段检查
+-> 直线可通行时直接使用两点路径
+-> 直线阻塞时才运行 local A*，并对结果做 line-of-sight string pulling
+-> DWA 首帧把机器人投影到整条路径，跳过已经位于身后的 path prefix
+-> 携物离开支撑物时先按支撑物 bbox 与机器人扫掠半径计算安全退出距离
+-> 退出后停稳并使用实时位姿重新锚定剩余路径
+-> 末端 P 控制器在保持最终 yaw 的同时用 body-frame vx/vy 修正剩余 XY
+```
+
+仅当机器人所在单个栅格因离散化被标记占用时，局部层才临时恢复该一个 start cell；
+目标占用、越界或任一输出线段碰撞都会结构化失败，不再静默清障或退回原始路径。PCT
+吸附同时使用目标方向作为同层候选的 tie-break，并导出吸附前后坐标与距离，避免固定
+网格轴顺序造成场景相关偏置。
+
+修正后的 seed 5000 两段局部路径均为精确两点直线，`turn_count=0`。与旧实现相比，
+导航控制步数从 1773 降到 1504，角速度命令绝对积分从 `692.7°` 降到 `603.0°`，
+转向方向反复切换从 18 次降到 6 次。剩余旋转来自随机初始 yaw、目标位于身后以及
+操作位姿最终 yaw 对齐，而不是栅格 waypoint 绕行。
+
+box1 抓取后的携物导航还增加了两个与地图无关的执行约束：安全退出距离由当前支撑物
+世界 bbox、机器人扫掠半径和配置余量实时计算，而不是写死 box1 坐标；同层 DWA 的
+原地旋转门使用进入/退出迟滞和停稳窗口，避免航向误差在阈值附近反复切换。所有退出
+进度、重锚定位姿、旋转门和末端控制模式都写入导航 frame metadata，可区分全局路径、
+局部跟踪和操作交接问题。
+
+旧末端控制器在“XY 已进入较宽交接区、但仍有数厘米误差”时，会先转向这个微小位置
+误差，前进后再转回操作最终 yaw。seed 5003 因此额外执行了约 `95° + 95°` 的往返旋转。
+当前同层携物收尾直接在最终 yaw 下生成 body-frame `vx/vy`，只用连续 P 控制修正 yaw；
+跨楼层 profile 保留旧的非完整约束兼容路径。真实回归结果如下：
+
+| seed / 版本 | 携物导航 ticks | 实际 yaw 累计 | 角速度命令累计 | 结果 |
+| --- | ---: | ---: | ---: | --- |
+| 5003 / 旧末端控制 | 1423 | 407.71° | 417.87° | pipeline 成功，但末端有往返旋转 |
+| 5003 / 最终 yaw 平移收尾 | 930 | 233.06° | 237.64° | 导航成功；后续 CuRobo place 规划失败 |
+| 5002 / 最终 yaw 平移收尾 | 897 | 254.41° | 243.01° | 完整 pipeline 到 `done` |
+
+seed 5003 的新导航比旧版本少 493 ticks、少约 `174.65°` 实际旋转，且离开 box1 后
+机器人中心与 box1 中心的最小距离保持 `0.6264m`。它随后失败在 CuRobo
+`plan_place`：实际底盘误差把 pre-place 目标推到 arm-base 半径约 `0.4746m` 的边界；
+这不是 PCT 或 DWA 失败。它暴露了下一项跨层契约：base-goal 候选和导航验收应显式
+预留机械臂可达裕量，必要时触发小范围底盘二次对位，而不是继续按地图重调局部规划器。
+
+seed 5002 已验证上述改动不破坏完整闭环：抓取、携物导航、CuRobo 放置、释放验证和
+LeRobot 导出全部成功；数据集为 196 行，front/wrist/overview 各 196 帧，validator
+为 0 error / 0 warning，`training_eligible=true`。证据目录为：
+
+```text
+/mnt/sage_data/outputs/arm_vla_liangzhu/
+nav_goal_yaw_terminal_seed5002_20260717_v4
+```
+
+换场景时仍需要提供正确的 PCT tomogram/walkable、坐标标定、机器人半径膨胀和动态
+keepout；这些是场景输入，不是需要重新调一套控制器。机器人 footprint、RL policy
+速度响应/死区和执行延迟属于 robot profile，应标定一次后跨地图复用；支撑物尺寸、
+操作目标和机械臂可达裕量属于 task/manipulation contract，应由几何与可达性检查派生。
+跨不同地图原点、地图旋转、起点栅格相位和 17 个初始 yaw 的回归测试由
+`tests/navigation/test_path_refinement.py` 覆盖。
+
+#### 分段英文 instruction annotation
+
+subtask 标签和六目录结构保持不变：
+
+```text
+nav_straight / nav_turn / nav_stop /
+arm_approach / arm_contact / arm_retreat
+```
+
+每个连续 segment 在首帧绑定一条固定 instruction。`nav_turn` 用首帧机器人 yaw 与
+当前目标的相对方位生成八方向标签；其他抓取侧/放置侧 segment 使用固定动作指令：
+
+| 阶段 | 触发条件 | `instruction_id` | 英文模板 |
+| --- | --- | --- | --- |
+| 寻找 box1 | `nav_to_pick + nav_turn` | `find_pick_box` | `Turn toward your {direction} to find the box with the coke can.` |
+| 前进并抓取 | 其余 `nav_to_pick` 与全部 `pick` | `pick_from_front_box` | `Pick up the coke can from the box in front of you.` |
+| 寻找 box2 | `nav_to_place + nav_turn` | `find_place_box` | `Turn toward your {direction} to find the box where you can place the coke can.` |
+| 前进并放置 | 其余 `nav_to_place` 与全部 `place` | `place_on_front_box` | `Place the coke can on the box in front of you.` |
+
+八方向标签统一为 `front`、`front-left`、`left`、`back-left`、`back`、
+`back-right`、`right`、`front-right`。annotation schema 为
+`relative_direction_segment_instruction_v1`，语言固定为 `en`。同一固定类别目录内
+可能同时出现 pick-side 与 place-side 行，因此 instruction 按帧/连续 segment 保存，
+不能只根据六个目录名推断。
+
+### 旧良渚可乐到鼠标垫随机化（兼容/历史）
+
+以下 `robot_forward_sector_v1`、鼠标垫参数和 2026-07-15/16 实测只描述旧任务
+`tasks/nav_pick_place_cola_liangzhu_pct.json`，不再是 CLI 默认，也不能作为当前
+box1 -> box2 真实运行成功率。
 
 良渚可乐到鼠标垫任务使用任务级随机化模式：
 
@@ -508,7 +666,7 @@ P 控制器持续输出很小的线速度/角速度时，策略可能只踏步�
 - `navigation_settling` 期间若机器人漂回容差外，会恢复末端控制，而不是永久保持零命令。
 - 良渚单层任务使用默认 `5000` 导航 step 上限；`12000` 只保留给真实多楼层长路径。
 
-当前良渚 task 的 pick 底盘末端位置容差为 `0.10m`，place 底盘交接使用独立的 `0.15m`，
+旧可乐到鼠标垫 task 的 pick 底盘末端位置容差为 `0.10m`，place 底盘交接使用独立的 `0.15m`，
 place 目标物体中心 XY 容差为 `0.040m`，Mesh truth 物体竖直 extent 审计容差为 `0.010m`。
 按 `0.3 x 0.2m` 鼠标垫与约 `0.0343m` 可乐足迹半径计算，即使落在该中心容差边界，
 短边仍保留约 `0.0257m` 的实体边缘余量。
@@ -623,7 +781,7 @@ outputs/run_name/episode_000000/
     ├── meta/
     │   └── subtasks.jsonl
     └── episodes/
-        └── 2001/                         # task_id
+        └── 2002/                         # 当前 box1 -> box2 task_id
             └── 1/                        # episode_id
                 ├── task.csv
                 ├── 1-1/
@@ -701,6 +859,24 @@ subtask:    nav_straight / nav_turn / nav_stop /
 
 切分默认使用 3 帧最短片段和 2 帧迟滞；必要的短接触或终端对齐片段会保留并记录原因。当前 `arm_contact` 来源为动作语义与运动学启发式，不会冒充真实接触传感器标签。
 
+当前 box1 -> box2 任务还会把分段 instruction 写入 parquet 和每个固定类别目录的
+`data.csv`。`task.csv` 保存 annotation schema/language；同一连续 segment 内这些字段
+保持不变：
+
+```text
+instruction
+instruction_id
+instruction_target_id
+instruction_direction
+instruction_relative_bearing_rad
+instruction_pose_source
+instruction_annotation_schema
+```
+
+其中 `instruction_direction` 只在寻找 box 的 `nav_turn` segment 中取八方向英文标签；
+动作 segment 为空值。episode 级 `task_index` 和总任务 instruction 继续保留，用于兼容
+标准 LeRobot task metadata，不替代上述逐帧 instruction。
+
 每个 `episode_XXXXXX.parquet` 的列：
 
 | 列 | 类型 | 说明 |
@@ -718,6 +894,13 @@ subtask:    nav_straight / nav_turn / nav_stop /
 | `task_stage` | `string` | 统一任务阶段：`nav_to_pick`、`pick`、`nav_to_place` 或 `place`。 |
 | `subtask` | `string` | 当前连续动作标签，取值为上面的六类之一。 |
 | `subtask_segment_index` | `int64` | episode 内连续片段编号，从 1 开始。 |
+| `instruction` | `string` | 当前连续 segment 的英文自然语言指令。 |
+| `instruction_id` | `string` | 四类模板 ID，例如 `find_pick_box`。 |
+| `instruction_target_id` | `string` | 当前目标实例 ID，寻找/抓取为可乐，寻找/放置为 box2。 |
+| `instruction_direction` | `string` | 寻找指令的八方向标签；非寻找 segment 为空。 |
+| `instruction_relative_bearing_rad` | `float32` | segment 首帧机器人到目标的相对方位；非寻找 segment 为 null。 |
+| `instruction_pose_source` | `string` | 用于生成方位的机器人 pose 来源。 |
+| `instruction_annotation_schema` | `string` | 当前为 `relative_direction_segment_instruction_v1`。 |
 | `action` | `list[float32] × 10` | VLA 训练动作：下一采样时刻实际执行到的底盘/TCP/夹爪位姿。 |
 | `control.action` | `list[float32] × 11` | 同步保存的原始底盘、机械臂和夹爪控制目标。 |
 | `next.done` | `bool` | episode 末帧为 `True`，其余帧为 `False`。 |
@@ -899,7 +1082,7 @@ Rerun 路径内容：
 
 ## 五、常见运行命令
 
-以下命令均在当前良渚 worktree 中运行。入口已默认使用良渚可乐任务、
+以下命令均在当前良渚 worktree 中运行。入口已默认使用良渚 box1 可乐到 box2 任务、
 PCT 单层地图、`pct_multifloor` policy/checkpoint、identity 坐标、仓库内 collision
 PLY 和 `/World/overview`，不需重复传入整组稳定参数。
 
@@ -913,8 +1096,8 @@ cd /home/light/workspace/arm_vla_liangzhu
 PYTHONDONTWRITEBYTECODE=1 \
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_pipeline.py \
-  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/gui_seed7000 \
-  --seed 7000 \
+  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/box_pair_gui_seed5000 \
+  --seed 5000 \
   --no-headless \
   --keep-window-open
 ```
@@ -928,10 +1111,45 @@ GUI 只建议用于单条观察。`--keep-window-open` 会在 pipeline 结束后
 PYTHONDONTWRITEBYTECODE=1 \
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_pipeline.py \
-  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/single_seed7000 \
-  --seed 7000 \
+  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/box_pair_single_seed5000 \
+  --seed 5000 \
   --headless
 ```
+
+### 三视角视频完整验收
+
+`composite` 使用同一个 simulation step 的 `overview/front/wrist` 图像，overview 位于
+左侧 2/3，front/wrist 分别位于右上和右下。三路都保持原始宽高比并带英文标签，默认
+输出 1280×720、25fps。以下命令同时验收状态机、物理导航/操作、LeRobot 数据和拼接视频：
+
+```bash
+set -euo pipefail
+cd /home/light/workspace/arm_vla_liangzhu
+export PYTHONDONTWRITEBYTECODE=1
+
+OUT=/mnt/sage_data/outputs/arm_vla_liangzhu/acceptance_composite_seed5002_$(date +%Y%m%d_%H%M%S)
+
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
+  scripts/pipeline/run_full_physics_pipeline.py \
+  --output-dir "$OUT" \
+  --seed 5002 \
+  --headless \
+  --record-video \
+  --video-mode composite
+
+/data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
+  scripts/pipeline/validate_full_pipeline_acceptance.py \
+  --episode-dir "$OUT/episode_000000"
+```
+
+拼接视频位于：
+
+```text
+$OUT/episode_000000/overview_videos/episode_000001_composite.mp4
+```
+
+验收脚本要求 `final_state=done`、导航/操作/稳定物理/训练质量门全部通过、LeRobot
+`error_count=0` 且 `warning_count=0`，并校验 MP4 帧数、25fps 和 1280×720 分辨率。
 
 ### Headless batch 数据采集
 
@@ -939,16 +1157,19 @@ PYTHONDONTWRITEBYTECODE=1 \
 PYTHONDONTWRITEBYTECODE=1 \
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_batch.py \
-  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/batch_seed7000_n20 \
+  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/box_pair_batch_seed5000_n20 \
   --num-episodes 20 \
-  --seed 7000
+  --seed 5000
 ```
 
-batch 默认使用已经验证的良渚任务、联合随机化、PCT 单层地图、identity 坐标、禁止 A*
+batch 默认使用当前 box1 -> box2 任务、联合随机化、PCT 单层地图、identity 坐标、禁止 A*
 fallback、`pct_multifloor` locomotion policy/checkpoint、headless 模式、固定 `/World/overview`
 相机、仓库内 collision PLY 和 collision 视觉模式。除输出目录、episode 数和 seed 外，
-无需重复传入稳定参数。当前机器人 yaw 由 task JSON 在 `[-180°, 180°]`
-内采样；这不是 CLI 参数。
+无需重复传入稳定参数。box1/box2 只随机 XY；机器人在两箱之间生成且 yaw 在
+`[-180°, 180°]` 内采样；可乐在 box1 中央安全区随机 XY/yaw。这些范围由
+`tasks/liangzhu_placement_target.json` 管理，不是 CLI 参数。当前已有 seed 5000 的真实
+headless full-physics 成功证据；首次量产仍应先运行独立小批次统计，而不能把单条成功
+等同于 batch 稳定率。
 
 ### 复现固定任务
 
@@ -963,7 +1184,7 @@ PYTHONDONTWRITEBYTECODE=1 \
   --headless
 ```
 
-关闭 task randomization 后使用 task JSON 中的 nominal 机器人、可乐、鼠标垫和
+关闭 task randomization 后使用 annotation JSON 中的 nominal 机器人、box1、box2、可乐和
 base goal；`--seed` 仍会记录，但不会改变该固定布局。
 
 ### 显示随机化区域
@@ -972,8 +1193,8 @@ base goal；`--seed` 仍会记录，但不会改变该固定布局。
 PYTHONDONTWRITEBYTECODE=1 \
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_pipeline.py \
-  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/randomization_debug_seed7000 \
-  --seed 7000 \
+  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/box_pair_debug_seed5000 \
+  --seed 5000 \
   --show-randomization-debug \
   --show-planned-trajectories \
   --no-headless \
@@ -986,8 +1207,8 @@ PYTHONDONTWRITEBYTECODE=1 \
 PYTHONDONTWRITEBYTECODE=1 \
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B \
   scripts/pipeline/run_full_physics_pipeline.py \
-  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/gui_gaussian_seed7000 \
-  --seed 7000 \
+  --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/box_pair_gaussian_seed5000 \
+  --seed 5000 \
   --navigation-visual-mode full \
   --no-headless \
   --keep-window-open
@@ -1003,17 +1224,17 @@ conda activate isaac_locomani
 
 python -B \
   scripts/pipeline/validate_lerobot_episode.py \
-  --dataset-root /mnt/sage_data/outputs/arm_vla_liangzhu/batch_seed7000_n20/lerobot_dataset
+  --dataset-root /mnt/sage_data/outputs/arm_vla_liangzhu/box_pair_batch_seed5000_n20/lerobot_dataset
 
 conda activate lerobot_rerun
 
 python \
   tools/lerobot_to_rerun.py \
   --repo-id full_physics_dataset \
-  --root /mnt/sage_data/outputs/arm_vla_liangzhu/batch_seed7000_n20/lerobot_dataset \
+  --root /mnt/sage_data/outputs/arm_vla_liangzhu/box_pair_batch_seed5000_n20/lerobot_dataset \
   --episode-index 0 \
   --max-frames 200 \
-  --out /mnt/sage_data/outputs/arm_vla_liangzhu/batch_seed7000_n20/episode_000000.rrd
+  --out /mnt/sage_data/outputs/arm_vla_liangzhu/box_pair_batch_seed5000_n20/episode_000000.rrd
 ```
 
 ## 附录：CLI 参数表
@@ -1022,18 +1243,19 @@ python \
 
 默认模式是 full-physics。下表只列日常运行和验收需要的参数；完整试验性 PCT/
 楼梯参数以 `python -B scripts/pipeline/run_full_physics_pipeline.py --help` 为准。
-机器人 yaw 范围、扇形半径和物体间距属于 task 配置，不是 CLI 参数；当前
-`robot_yaw_range_deg=[-180, 180]`。只在需要 smoke/debug 时传模式参数。
+box XY 范围、机器人生成区间/yaw、可乐中央安全区和物体间距属于 annotation
+配置，不是 CLI 参数；当前 `robot_yaw_range_deg=[-180, 180]`。只在需要
+smoke/debug 时传模式参数。
 
 
 | 参数                                                 | 类型 / 默认                     | 说明                                                |
 | ---------------------------------------------------- | ------------------------------- | --------------------------------------------------- |
-| `--task-json`                                        | 良渚可乐任务                    | 默认 `tasks/nav_pick_place_cola_liangzhu_pct.json`  |
+| `--task-json`                                        | 良渚 box1 -> box2 任务          | 默认 `tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json` |
 | `--output-dir`                                       | `outputs/full_physics_pipeline` | 输出目录；真实采集建议使用 `/mnt/sage_data`       |
 | `--num-episodes`                                     | `1`                             | episode 数量；真实 Isaac 模式当前只支持 1           |
 | `--seed`                                             | `0`                             | episode seed；相同 task/config/seed 复现同一布局       |
-| `--randomize-task` / `--no-randomize-task`           | 默认开启                        | 随机化机器人 yaw、可乐、鼠标垫及同步目标             |
-| `--show-randomization-debug`                         | 默认关闭                        | 显示矩形/前向扇区和采样点 USD guide                 |
+| `--randomize-task` / `--no-randomize-task`           | 默认开启                        | 联合随机化 box XY、机器人 pose、可乐 pose 及同步目标 |
+| `--show-randomization-debug`                         | 默认关闭                        | 显示 box/目标/导航交接点 USD guide                   |
 | `--show-planned-trajectories`                        | 默认关闭                        | 显示 PCT 路径和 CuRobo TCP 轨迹 guide                   |
 | `--randomize-base-goal` / `--no-randomize-base-goal` | 默认开启                        | 是否随机化 pick/place 导航交接 base_goal            |
 | `--keep-window-open` / `--no-keep-window-open`       | 默认关闭                        | 结束后保留 GUI；必须配合`--no-headless`             |
@@ -1048,9 +1270,9 @@ python \
 | `--locomotion-checkpoint`                            | Go2-X5 model_26000              | 默认使用仓库 checkpoint                              |
 | `--require-locomotion-checkpoint`                    | 默认开启                        | checkpoint 缺失时立即失败                            |
 | `--record-video`                                     | 默认关闭                        | 启用 episode 展示/observation MP4 录制；展示视频固定 25fps |
-| `--video-mode`                                       | `overview`                      | `overview` 使用第三人称视角；`front`/`font` 使用前视 observation；`wrist` 使用腕部 observation；`all` 同时导出三路 |
+| `--video-mode`                                       | `overview`                      | `composite` 将同步 overview/front/wrist 拼成单个视频；其余支持 `overview`/`front`/`font`/`wrist`/`all` |
 | `--video-out`                                        | 可选                            | 视频输出目录或单个`.mp4`；多路/多 episode 请传目录  |
-| `--video-width` / `--video-height`                   | `1280` / `720`                  | overview 捕获分辨率；不改变 front/wrist observation |
+| `--video-width` / `--video-height`                   | `1280` / `720`                  | overview 捕获或 composite 输出分辨率；不改变 observation 原始分辨率 |
 | `--overview-camera-mode`                             | `fixed`                         | 默认固定使用指定 overview；`auto` 才按阶段发现相机  |
 | `--overview-camera-prim-path`                        | `/World/overview`               | image/video/GUI 共用的 overview Camera prim          |
 | `--overview-capture-backend`                         | `viewport`                      | overview 取帧后端；`viewport` 抓最终视口画面最接近 GUI，`render_product` 使用 Replicator RGB，`auto` 先 viewport 后回退 |
@@ -1076,12 +1298,12 @@ python \
 
 | 参数                                                 | 类型 / 默认   | 说明                                        |
 | ---------------------------------------------------- | ------------- | ------------------------------------------- |
-| `--task-json`                                        | 良渚可乐任务  | 默认 `tasks/nav_pick_place_cola_liangzhu_pct.json` |
+| `--task-json`                                        | 良渚 box1 -> box2 任务 | 默认 `tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json` |
 | `--output-dir`                                       | 必填          | batch 输出目录；必须使用新目录，避免混入旧摘要       |
 | `--num-episodes`                                     | `1`           | episode 数量                                |
 | `--seed`                                             | `0`           | 首个 seed，后续使用`seed + episode_index`   |
 | `--randomize-task` / `--no-randomize-task`           | 默认开启      | 是否按 task profile 随机化完整 episode 布局 |
-| `--show-randomization-debug`                         | 默认关闭      | 显示矩形/前向扇区；通常只用于 GUI 单 episode |
+| `--show-randomization-debug`                         | 默认关闭      | 显示 box/目标/交接点；通常只用于 GUI 单 episode |
 | `--randomize-base-goal` / `--no-randomize-base-goal` | 默认开启      | 是否随机化导航交接 base_goal                |
 | `--headless` / `--no-headless`                       | 默认 headless | batch 是否无界面运行；量产不建议 `--no-headless`     |
 | `--navigation-visual-mode`                           | `collision`   | 稳定默认不加载 GaussianScene；`full` 可显式启用    |
@@ -1100,9 +1322,9 @@ python \
 | `--progress-interval-s`                              | `5.0`         | heartbeat 进度打印间隔                      |
 | `--color` / `--no-color`                             | 默认开启      | 是否使用 ANSI 彩色输出；保存 CI 日志时建议关闭       |
 | `--record-video`                                     | 默认关闭      | 转发给单 episode pipeline，启用 MP4 录制；展示视频固定 25fps |
-| `--video-mode`                                       | `overview`    | `overview`/`front`/`font`/`wrist`/`all`；`font` 是 `front` 兼容别名 |
+| `--video-mode`                                       | `overview`    | 支持 `composite` 三视角拼接，以及 `overview`/`front`/`font`/`wrist`/`all` |
 | `--video-out`                                        | 可选          | 视频输出根目录；batch 会写入其下的`episode_XXXXXX/`子目录，不支持单个`.mp4` |
-| `--video-width` / `--video-height`                   | `1280` / `720`| overview 捕获分辨率；不改变 front/wrist observation |
+| `--video-width` / `--video-height`                   | `1280` / `720`| overview 捕获或 composite 输出分辨率；不改变 observation 原始分辨率 |
 | `--overview-camera-mode`                             | `fixed`       | 默认固定使用指定 overview；`auto` 保留动态发现 |
 | `--overview-camera-prim-path`                        | `/World/overview` | image/video/GUI 共用的 overview Camera prim |
 | `--overview-capture-backend`                         | `viewport`    | overview 取帧后端；`viewport` 最接近 GUI，`render_product` 用于排查 fallback |

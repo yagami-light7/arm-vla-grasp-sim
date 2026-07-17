@@ -90,6 +90,9 @@ _THIRD_PERSON_ROLE_INDEX = {
 }
 _FALLBACK_CAPTURE_ROOT = "/World/overview_video_cameras"
 _FALLBACK_AFTER_DISCOVERY_ATTEMPTS = 60
+_COMPOSITE_STREAM = "composite"
+_COMPOSITE_VIEW_KEYS = ("overview", "front", "wrist")
+_COMPOSITE_LAYOUT_VERSION = "overview_left_front_wrist_right_v1"
 _FALLBACK_THIRD_PERSON_SOURCE_TOKENS = {
     1: ("top", "persp", "front", "right"),
     2: ("right", "persp", "front", "top"),
@@ -300,6 +303,155 @@ def _image_to_rgb_uint8(
     return np.ascontiguousarray(array)
 
 
+def _letterbox_rgb(
+    image: Any,
+    *,
+    width: int,
+    height: int,
+    background_value: int = 12,
+) -> np.ndarray:
+    """等比例缩放 RGB 图像并居中放入固定尺寸 panel。"""
+
+    if width <= 0 or height <= 0:
+        raise ValueError(f"panel size must be positive, got {width}x{height}")
+    frame = _image_to_rgb_uint8(image)
+    source_height, source_width = frame.shape[:2]
+    if source_width <= 0 or source_height <= 0:
+        raise ValueError(f"source image has invalid shape: {frame.shape}")
+    scale = min(float(width) / source_width, float(height) / source_height)
+    target_width = max(1, min(width, int(round(source_width * scale))))
+    target_height = max(1, min(height, int(round(source_height * scale))))
+    import cv2
+
+    interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+    resized = cv2.resize(
+        frame,
+        (target_width, target_height),
+        interpolation=interpolation,
+    )
+    panel = np.full(
+        (height, width, 3),
+        int(np.clip(background_value, 0, 255)),
+        dtype=np.uint8,
+    )
+    offset_x = (width - target_width) // 2
+    offset_y = (height - target_height) // 2
+    panel[
+        offset_y : offset_y + target_height,
+        offset_x : offset_x + target_width,
+    ] = resized
+    return panel
+
+
+def _draw_panel_label(
+    canvas: np.ndarray,
+    *,
+    label: str,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+) -> None:
+    """在 panel 左上角绘制不遮挡主体过多的英文视角标签。"""
+
+    import cv2
+
+    shortest_side = max(1, min(width, height))
+    font_scale = min(0.9, max(0.4, shortest_side / 520.0))
+    thickness = 2 if shortest_side >= 300 else 1
+    (text_width, text_height), baseline = cv2.getTextSize(
+        label,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        font_scale,
+        thickness,
+    )
+    padding_x = max(6, int(round(8 * font_scale)))
+    padding_y = max(4, int(round(6 * font_scale)))
+    banner_width = min(width, text_width + 2 * padding_x)
+    banner_height = min(height, text_height + baseline + 2 * padding_y)
+    cv2.rectangle(
+        canvas,
+        (x, y),
+        (x + max(0, banner_width - 1), y + max(0, banner_height - 1)),
+        (0, 0, 0),
+        thickness=-1,
+    )
+    cv2.putText(
+        canvas,
+        label,
+        (x + padding_x, y + padding_y + text_height),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        font_scale,
+        (255, 255, 255),
+        thickness,
+        lineType=cv2.LINE_AA,
+    )
+
+
+def compose_multiview_frame(
+    camera_images: dict[str, Any],
+    *,
+    width: int = 1280,
+    height: int = 720,
+) -> np.ndarray:
+    """将同步 overview/front/wrist 拼成 overview 主视图 + 右侧双视图。"""
+
+    if width < 6 or height < 4:
+        raise ValueError(
+            f"composite output size must be at least 6x4, got {width}x{height}"
+        )
+    missing = [key for key in _COMPOSITE_VIEW_KEYS if camera_images.get(key) is None]
+    if missing:
+        raise ValueError(
+            "composite video requires synchronized camera images: "
+            + ", ".join(missing)
+        )
+
+    overview_width = max(1, int(round(width * 2.0 / 3.0)))
+    overview_width = min(width - 1, overview_width)
+    side_width = width - overview_width
+    front_height = height // 2
+    wrist_height = height - front_height
+    panel_specs = (
+        ("overview", "OVERVIEW", 0, 0, overview_width, height),
+        ("front", "FRONT", overview_width, 0, side_width, front_height),
+        (
+            "wrist",
+            "WRIST",
+            overview_width,
+            front_height,
+            side_width,
+            wrist_height,
+        ),
+    )
+    canvas = np.zeros((height, width, 3), dtype=np.uint8)
+    import cv2
+
+    for key, label, x, y, panel_width, panel_height in panel_specs:
+        panel = _letterbox_rgb(
+            camera_images[key],
+            width=panel_width,
+            height=panel_height,
+        )
+        canvas[y : y + panel_height, x : x + panel_width] = panel
+        cv2.rectangle(
+            canvas,
+            (x, y),
+            (x + panel_width - 1, y + panel_height - 1),
+            (72, 72, 72),
+            thickness=1,
+        )
+        _draw_panel_label(
+            canvas,
+            label=label,
+            x=x,
+            y=y,
+            width=panel_width,
+            height=panel_height,
+        )
+    return np.ascontiguousarray(canvas)
+
+
 def _capture_buffer_bytes(buffer: Any, buffer_size: int) -> bytes:
     """把 Kit viewport 回调缓冲复制为独立字节串。"""
 
@@ -443,6 +595,11 @@ class OverviewVideoRecorder:
                 camera_images=camera_images,
                 timestamp=timestamp,
             )
+        if _COMPOSITE_STREAM in self.modes:
+            self._add_composite_frame(
+                camera_images=camera_images,
+                timestamp=timestamp,
+            )
 
     def _add_overview_frame(
         self,
@@ -498,6 +655,33 @@ class OverviewVideoRecorder:
             self._warn_once(f"{stream} video frame write failed: {type(exc).__name__}: {exc}")
             return
         self._last_capture_timestamps[stream] = float(timestamp)
+
+    def _add_composite_frame(
+        self,
+        *,
+        camera_images: dict[str, Any] | None,
+        timestamp: float,
+    ) -> None:
+        """把同一 simulation step 的三路相机拼接后写入单一视频。"""
+
+        if not self._should_capture(_COMPOSITE_STREAM, timestamp):
+            return
+        try:
+            frame = compose_multiview_frame(
+                camera_images or {},
+                width=int(getattr(self.settings, "width", 1280)),
+                height=int(getattr(self.settings, "height", 720)),
+            )
+            self._write_video_frame(frame, stream=_COMPOSITE_STREAM)
+        except Exception as exc:
+            self._mark_dropped(_COMPOSITE_STREAM)
+            self._warn_once(
+                "composite video frame write failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return
+        self._capture_backend = "synchronized_camera_images"
+        self._last_capture_timestamps[_COMPOSITE_STREAM] = float(timestamp)
 
     def discover_cameras(self, stage: Any) -> dict[str, Any]:
         """Discover UsdGeom.Camera prims and rank non-observation overview candidates."""
@@ -704,6 +888,17 @@ class OverviewVideoRecorder:
             "capture_error": self._capture_error,
             "writer_backends": dict(self._writer_backends),
         }
+        if _COMPOSITE_STREAM in self.modes:
+            summary["composite_layout"] = {
+                "version": _COMPOSITE_LAYOUT_VERSION,
+                "view_keys": list(_COMPOSITE_VIEW_KEYS),
+                "synchronization": "same_simulation_step",
+                "overview_panel": "left_two_thirds",
+                "front_panel": "right_top",
+                "wrist_panel": "right_bottom",
+                "aspect_policy": "letterbox_no_distortion",
+                "labels": True,
+            }
         if self._camera_trajectory_enabled():
             summary["camera_trajectory"] = {
                 "enabled": True,
@@ -1525,4 +1720,4 @@ class OverviewVideoRecorder:
         print(f"{self.log_prefix} warning: {message}", flush=True)
 
 
-__all__ = ["OverviewVideoRecorder"]
+__all__ = ["OverviewVideoRecorder", "compose_multiview_frame"]

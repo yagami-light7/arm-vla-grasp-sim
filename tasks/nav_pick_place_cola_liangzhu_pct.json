@@ -376,7 +376,7 @@
     }
   },
   "notes": {
-    "placement_annotation": "tasks/liangzhu_placement_target.json",
+    "placement_annotation": "tasks/liangzhu_mat_placement_target_legacy.json",
     "runtime_asset_manifest": "source/scene/liangzhu/runtime_asset_manifest.json",
     "fixed_place_target": false,
     "runtime_mesh_truth_place_target": true,

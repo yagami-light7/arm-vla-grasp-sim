@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 from pathlib import Path
+import pickle
 
 import numpy as np
 
@@ -22,8 +24,62 @@ from source.tasks import JsonTaskProvider
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TASK_PATH = PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json"
 LOCAL_PCT_SERVER = PROJECT_ROOT / "scripts/navigation/pct_grid_server.py"
-LOCAL_PCT_TOMOGRAM = PROJECT_ROOT / "source/scene/multifloor/mutifloor.pickle"
-LOCAL_PCT_WALKABLE = PROJECT_ROOT / "source/scene/multifloor/mutifloor_ply_walkable.npy"
+
+
+def _write_flat_nav_map(tmp_path: Path) -> Path:
+    map_dir = tmp_path / "flat_nav_map"
+    map_dir.mkdir()
+    np.save(map_dir / "occupancy.npy", np.zeros((20, 20), dtype=bool))
+    map_json = map_dir / "map.json"
+    map_json.write_text(
+        json.dumps(
+            {
+                "image": "occupancy.npy",
+                "resolution": 0.2,
+                "origin": [-2.0, -2.0, 0.0],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return map_json
+
+
+def _write_pct_assets(tmp_path: Path) -> tuple[Path, Path, Path]:
+    tomogram_path = tmp_path / "tomogram.pickle"
+    walkable_path = tmp_path / "walkable.npy"
+    collision_ply_path = tmp_path / "collision.ply"
+    traversability = np.full((4, 20, 20), 50.0, dtype=np.float32)
+    zeros = np.zeros_like(traversability)
+    tomogram = {
+        "data": np.stack(
+            [traversability, zeros, zeros, zeros, zeros],
+            axis=0,
+        ),
+        "resolution": 0.2,
+        "center": np.array([0.0, 0.0], dtype=np.float64),
+        "slice_h0": 0.0,
+        "slice_dh": 0.2,
+    }
+    with tomogram_path.open("wb") as stream:
+        pickle.dump(tomogram, stream)
+    np.save(walkable_path, np.ones((4, 20, 20), dtype=bool))
+    ply_header = (
+        "ply\n"
+        "format binary_little_endian 1.0\n"
+        "element vertex 1\n"
+        "property float x\n"
+        "property float y\n"
+        "property float z\n"
+        "element face 0\n"
+        "property list uchar int vertex_indices\n"
+        "end_header\n"
+    ).encode("ascii")
+    far_vertex = np.array(
+        [(100.0, 100.0, 100.0)],
+        dtype=np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4")]),
+    )
+    collision_ply_path.write_bytes(ply_header + far_vertex.tobytes())
+    return tomogram_path, walkable_path, collision_ply_path
 
 
 def _config(tmp_path: Path, navigation: NavigationSettings) -> FullPhysicsConfig:
@@ -45,7 +101,10 @@ def _state(x: float, y: float, z: float = 0.35) -> SimulationState:
 
 
 def test_global_planner_astar_selects_astar(tmp_path: Path) -> None:
-    spec = JsonTaskProvider().load(TASK_PATH)
+    spec = replace(
+        JsonTaskProvider().load(TASK_PATH),
+        nav_map=str(_write_flat_nav_map(tmp_path)),
+    )
     planner, _executor, _verifier = create_navigation_components(
         config=_config(tmp_path, NavigationSettings(global_planner="astar")),
         episode_spec=spec,
@@ -55,7 +114,9 @@ def test_global_planner_astar_selects_astar(tmp_path: Path) -> None:
 
 
 def test_global_planner_pct_selects_pct_with_astar_fallback(tmp_path: Path) -> None:
-    spec = JsonTaskProvider().load(TASK_PATH)
+    nav_map = _write_flat_nav_map(tmp_path)
+    tomogram_path, walkable_path, collision_ply_path = _write_pct_assets(tmp_path)
+    spec = replace(JsonTaskProvider().load(TASK_PATH), nav_map=str(nav_map))
     planner, _executor, _verifier = create_navigation_components(
         config=_config(
             tmp_path,
@@ -64,6 +125,9 @@ def test_global_planner_pct_selects_pct_with_astar_fallback(tmp_path: Path) -> N
                 pct_enabled=True,
                 pct_planner_root=tmp_path / "pct",
                 pct_fallback_to_astar=True,
+                pct_tomogram_path=tomogram_path,
+                pct_walkable_path=walkable_path,
+                pct_collision_ply_path=collision_ply_path,
             ),
         ),
         episode_spec=spec,
@@ -74,6 +138,7 @@ def test_global_planner_pct_selects_pct_with_astar_fallback(tmp_path: Path) -> N
 
 
 def test_pct_without_fallback_allows_missing_flat_nav_map(tmp_path: Path) -> None:
+    tomogram_path, walkable_path, collision_ply_path = _write_pct_assets(tmp_path)
     spec = replace(
         JsonTaskProvider().load(TASK_PATH),
         nav_map="source/scene/multifloor/nav_map/map.json",
@@ -86,6 +151,9 @@ def test_pct_without_fallback_allows_missing_flat_nav_map(tmp_path: Path) -> Non
                 global_planner="pct",
                 pct_enabled=True,
                 pct_fallback_to_astar=False,
+                pct_tomogram_path=tomogram_path,
+                pct_walkable_path=walkable_path,
+                pct_collision_ply_path=collision_ply_path,
             ),
         ),
         episode_spec=spec,
@@ -94,12 +162,13 @@ def test_pct_without_fallback_allows_missing_flat_nav_map(tmp_path: Path) -> Non
     assert isinstance(planner, PCTNavPlanner)
     assert planner.fallback_planner is None
     assert planner.config.server_script == LOCAL_PCT_SERVER
-    assert planner.config.tomogram_path == LOCAL_PCT_TOMOGRAM
-    assert planner.config.walkable_path == LOCAL_PCT_WALKABLE
+    assert planner.config.tomogram_path == tomogram_path
+    assert planner.config.walkable_path == walkable_path
     assert executor.local_map is not None
 
 
 def test_pct_with_fallback_and_missing_flat_nav_map_disables_fallback(tmp_path: Path) -> None:
+    tomogram_path, walkable_path, collision_ply_path = _write_pct_assets(tmp_path)
     spec = replace(
         JsonTaskProvider().load(TASK_PATH),
         nav_map="source/scene/multifloor/nav_map/map.json",
@@ -112,6 +181,9 @@ def test_pct_with_fallback_and_missing_flat_nav_map_disables_fallback(tmp_path: 
                 global_planner="pct",
                 pct_enabled=True,
                 pct_fallback_to_astar=True,
+                pct_tomogram_path=tomogram_path,
+                pct_walkable_path=walkable_path,
+                pct_collision_ply_path=collision_ply_path,
             ),
         ),
         episode_spec=spec,

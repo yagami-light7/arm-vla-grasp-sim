@@ -19,7 +19,9 @@ from typing import Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PIPELINE_ENTRY = PROJECT_ROOT / "scripts/pipeline/run_full_physics_pipeline.py"
-DEFAULT_LIANGZHU_TASK_JSON = "tasks/nav_pick_place_cola_liangzhu_pct.json"
+DEFAULT_LIANGZHU_TASK_JSON = (
+    "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json"
+)
 DEFAULT_LIANGZHU_PCT_SERVER_SCRIPT = "scripts/navigation/pct_grid_server.py"
 DEFAULT_LIANGZHU_PCT_TOMOGRAM = (
     "source/scene/liangzhu/pct/liangzhu_single_floor.pickle"
@@ -139,7 +141,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--task-json",
         default=DEFAULT_LIANGZHU_TASK_JSON,
         help=(
-            "任务 JSON 路径；默认使用良渚可乐到鼠标垫随机化任务。"
+            "任务 JSON 路径；默认使用良渚 box1 可乐搬运到 box2 的随机化任务。"
         ),
     )
     parser.add_argument(
@@ -158,7 +160,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--randomize-task",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="按 episode seed 随机采样 pick/place XY；默认开启。",
+        help="按 episode seed 随机采样双箱 XY、桌间机器人和 box1 上可乐；默认开启。",
     )
     parser.add_argument(
         "--show-randomization-debug",
@@ -169,7 +171,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--randomize-base-goal",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="转发给单 episode pipeline：开启 pick/place base_goal 极坐标随机化；默认开启。",
+        help="转发给单 episode pipeline：开启面向 box1/box2 的 base_goal 距离随机化；默认开启。",
     )
     parser.add_argument(
         "--headless",
@@ -303,11 +305,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--video-mode",
-        choices=("overview", "front", "font", "wrist", "all"),
+        choices=("overview", "front", "font", "wrist", "composite", "all"),
         default="overview",
         help=(
             "转发给单 episode pipeline：overview 为 third_person 展示视角，front/font 为前视 "
-            "observation，wrist 为腕部 observation，all 同时导出 overview/front/wrist。"
+            "observation，wrist 为腕部 observation，composite 输出同步三视角拼接视频，"
+            "all 同时导出 overview/front/wrist 三路独立视频。"
         ),
     )
     parser.add_argument(
@@ -318,13 +321,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--video-width",
         type=int,
         default=1280,
-        help="转发给单 episode pipeline：overview 捕获宽度，默认 1280。",
+        help="转发给单 episode pipeline：overview 捕获或 composite 输出宽度。",
     )
     parser.add_argument(
         "--video-height",
         type=int,
         default=720,
-        help="转发给单 episode pipeline：overview 捕获高度，默认 720。",
+        help="转发给单 episode pipeline：overview 捕获或 composite 输出高度。",
     )
     parser.add_argument(
         "--overview-camera-mode",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -475,6 +476,7 @@ def _open_pct_local_grid_map(episode_spec: EpisodeSpec, nav) -> OccupancyGridMap
         nav,
         z=_local_map_reference_z(episode_spec),
         include_task_object_keepout=True,
+        navigation_phase="nav_to_pick",
     )
 
 
@@ -489,6 +491,7 @@ def _open_pct_carry_local_grid_map(
         nav,
         z=_local_map_reference_z(episode_spec),
         include_task_object_keepout=False,
+        navigation_phase="nav_to_place",
     )
 
 
@@ -508,7 +511,60 @@ def _open_pct_post_stair_grid_map(
         nav,
         z=float(episode_spec.place_goal.z),
         include_task_object_keepout=False,
+        navigation_phase="nav_to_place",
     )
+
+
+def _task_navigation_keepouts(
+    episode_spec: EpisodeSpec,
+    *,
+    navigation_phase: str,
+) -> tuple[dict[str, Any], ...]:
+    """读取任务动态桌子等局部导航障碍，支持每个障碍独立半径。"""
+
+    raw_keepouts = episode_spec.raw_task.get("navigation_dynamic_keepouts")
+    if raw_keepouts is None:
+        return ()
+    if not isinstance(raw_keepouts, list):
+        raise ValueError("task.navigation_dynamic_keepouts 必须是数组")
+    output: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for index, raw_keepout in enumerate(raw_keepouts):
+        field = f"task.navigation_dynamic_keepouts[{index}]"
+        if not isinstance(raw_keepout, dict):
+            raise ValueError(f"{field} 必须是对象")
+        keepout_id = str(raw_keepout.get("id") or index)
+        if keepout_id in seen_ids:
+            raise ValueError(f"{field}.id 重复: {keepout_id}")
+        seen_ids.add(keepout_id)
+        phases = raw_keepout.get("phases", ["nav_to_pick", "nav_to_place"])
+        if not isinstance(phases, list) or not all(
+            isinstance(value, str) for value in phases
+        ):
+            raise ValueError(f"{field}.phases 必须是字符串数组")
+        if navigation_phase not in phases:
+            continue
+        center = raw_keepout.get("center_xy")
+        if not isinstance(center, (list, tuple)) or len(center) != 2:
+            raise ValueError(f"{field}.center_xy 必须包含两个数值")
+        try:
+            center_xy = (float(center[0]), float(center[1]))
+            radius_m = float(raw_keepout.get("radius_m"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field} 的 center_xy/radius_m 必须是数值") from exc
+        if not all(math.isfinite(value) for value in (*center_xy, radius_m)):
+            raise ValueError(f"{field} 包含非有限数值")
+        if radius_m <= 0.0:
+            raise ValueError(f"{field}.radius_m 必须大于零")
+        output.append(
+            {
+                **raw_keepout,
+                "id": keepout_id,
+                "center_xy": center_xy,
+                "radius_m": radius_m,
+            }
+        )
+    return tuple(output)
 
 
 def _open_pct_grid_map_at_z(
@@ -517,6 +573,7 @@ def _open_pct_grid_map_at_z(
     *,
     z: float,
     include_task_object_keepout: bool = True,
+    navigation_phase: str = "nav_to_pick",
 ) -> OccupancyGridMap:
     """按指定世界高度创建 PCT 单楼层局部避障地图。"""
 
@@ -564,6 +621,15 @@ def _open_pct_grid_map_at_z(
             grid_map,
             centers_xy=keepout_centers,
             radius_m=float(nav.pct_task_object_keepout_radius),
+        )
+    for keepout in _task_navigation_keepouts(
+        episode_spec,
+        navigation_phase=navigation_phase,
+    ):
+        grid_map = add_circular_keepouts(
+            grid_map,
+            centers_xy=[keepout["center_xy"]],
+            radius_m=float(keepout["radius_m"]),
         )
     return grid_map
 

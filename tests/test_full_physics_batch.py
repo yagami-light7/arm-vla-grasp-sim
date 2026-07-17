@@ -52,7 +52,11 @@ class FullPhysicsBatchTest(unittest.TestCase):
         episode = _build_child_command(args, episode_index=0)
         command = episode.command
 
-        self.assertTrue(args.task_json.endswith("nav_pick_place_cola_liangzhu_pct.json"))
+        self.assertTrue(
+            args.task_json.endswith(
+                "nav_pick_place_cola_box1_to_box2_liangzhu_pct.json"
+            )
+        )
         self.assertEqual(args.global_planner, "pct")
         self.assertEqual(args.pct_coord_mode, "identity")
         self.assertTrue(args.pct_no_fallback)
@@ -254,6 +258,26 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertEqual(
             command[command.index("--video-out") + 1],
             "/tmp/full_physics_batch_test/videos/episode_000001",
+        )
+
+        composite_args = _build_parser().parse_args(
+            [
+                "--task-json",
+                str(TASK_PATH),
+                "--output-dir",
+                "/tmp/full_physics_batch_test",
+                "--record-video",
+                "--video-mode",
+                "composite",
+            ]
+        )
+        composite_command = _build_child_command(
+            composite_args,
+            episode_index=0,
+        ).command
+        self.assertEqual(
+            composite_command[composite_command.index("--video-mode") + 1],
+            "composite",
         )
 
     def test_progress_format_helpers(self) -> None:

@@ -12,6 +12,7 @@ from scripts.navigation.pct_grid_server import (
     _ordered_stair_midpoints,
     _parse_cross_floor_gateways,
     _same_floor_direct_path,
+    _snap_to_walkable,
     _stair_progress_allowed,
     _stair_same_slice_progress_allowed,
     _vertical_transition_path_is_walkable,
@@ -44,6 +45,43 @@ class _FakeState:
             and 0 <= y < 30
             and node not in self.blocked
         )
+
+
+class _SnapState:
+    def __init__(self) -> None:
+        self.n_slice = 1
+        self.dimx = 7
+        self.dimy = 7
+        self.free = {(0, 2, 3), (0, 4, 3)}
+
+    def pct_xy_to_grid(self, xy: np.ndarray) -> tuple[int, int]:
+        return int(round(float(xy[0]))), int(round(float(xy[1])))
+
+    def grid_to_pct_xyz(self, node: tuple[int, int, int]) -> list[float]:
+        return [float(node[1]), float(node[2]), float(node[0])]
+
+    def is_walkable(
+        self,
+        node: tuple[int, int, int],
+        *,
+        hard_obstacle_mask: np.ndarray | None = None,
+    ) -> bool:
+        del hard_obstacle_mask
+        return node in self.free
+
+
+def test_snap_to_walkable_breaks_equal_distance_tie_toward_route_goal() -> None:
+    state = _SnapState()
+
+    node, distance = _snap_to_walkable(
+        state,  # type: ignore[arg-type]
+        np.asarray([3.0, 3.0]),
+        0,
+        preferred_xy=np.asarray([10.0, 3.0]),
+    )
+
+    assert distance == 1
+    assert node == (0, 4, 3)
 
 
 def test_same_floor_direct_path_accepts_clear_robot_width_corridor() -> None:

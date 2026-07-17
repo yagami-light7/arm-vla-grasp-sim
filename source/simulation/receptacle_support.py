@@ -239,11 +239,16 @@ def inspect_task_receptacle_support_usd(
     stage = Usd.Stage.Open(str(scene_path))
     if stage is None:
         raise RuntimeError(f"failed to open scene USD: {scene_path}")
-    return inspect_task_receptacle_support_stage(
+    from .task_scene_pose import apply_task_receptacle_pose
+
+    scene_pose_report = apply_task_receptacle_pose(stage, raw_task)
+    report = inspect_task_receptacle_support_stage(
         stage,
         raw_task,
         source=source,
     )
+    report["task_scene_pose_report"] = scene_pose_report
+    return report
 
 
 def _validate_placement_region(

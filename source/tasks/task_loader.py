@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -28,12 +29,65 @@ def _nav_goal(pose: Pose2D) -> NavGoal:
 
 
 class JsonTaskProvider:
-    """Load current task JSON files without introducing a second schema."""
+    """加载现有任务 JSON，并合并其显式引用的标注配置。"""
 
     def load(self, path: str | Path) -> EpisodeSpec:
         task_path = Path(path).expanduser().resolve()
         raw_task = json.loads(task_path.read_text(encoding="utf-8"))
+        raw_task = _merge_annotation_config(raw_task, task_path=task_path)
         return episode_spec_from_dict(raw_task)
+
+
+def _deep_merge_mapping(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """递归合并配置对象；列表与标量由标注文件整体覆盖。"""
+
+    merged = dict(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_mapping(dict(merged[key]), value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _merge_annotation_config(
+    raw_task: dict[str, Any],
+    *,
+    task_path: Path,
+) -> dict[str, Any]:
+    """把任务引用的 pick/place 标注文件作为任务专属字段唯一真值。"""
+
+    annotation_raw = raw_task.get("annotation_config")
+    if annotation_raw is None:
+        return raw_task
+    if not isinstance(annotation_raw, str) or not annotation_raw.strip():
+        raise ValueError("task.annotation_config 必须是非空路径字符串")
+    annotation_path = Path(annotation_raw).expanduser()
+    if not annotation_path.is_absolute():
+        annotation_path = task_path.parent / annotation_path
+    annotation_path = annotation_path.resolve()
+    if not annotation_path.is_file():
+        raise FileNotFoundError(f"task annotation_config 不存在: {annotation_path}")
+    raw_bytes = annotation_path.read_bytes()
+    try:
+        annotation = json.loads(raw_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"task annotation_config 不是有效 UTF-8 JSON: {annotation_path}") from exc
+    if not isinstance(annotation, dict):
+        raise ValueError("task annotation_config 顶层必须是对象")
+    overrides = annotation.get("task_overrides")
+    if not isinstance(overrides, dict):
+        raise ValueError("task annotation_config.task_overrides 必须是对象")
+    merged = _deep_merge_mapping(raw_task, overrides)
+    merged["annotation_config"] = annotation_raw
+    merged["annotation_config_report"] = {
+        "path": str(annotation_path),
+        "schema_version": annotation.get("schema_version"),
+        "annotation_id": annotation.get("annotation_id"),
+        "sha256": hashlib.sha256(raw_bytes).hexdigest(),
+        "task_overrides_applied": True,
+    }
+    return merged
 
 
 def episode_spec_from_dict(raw_task: dict[str, Any]) -> EpisodeSpec:

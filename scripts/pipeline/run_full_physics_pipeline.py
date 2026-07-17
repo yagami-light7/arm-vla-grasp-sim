@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Any, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_LIANGZHU_TASK_JSON = "tasks/nav_pick_place_cola_liangzhu_pct.json"
+DEFAULT_LIANGZHU_TASK_JSON = (
+    "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json"
+)
 DEFAULT_LIANGZHU_PCT_SERVER_SCRIPT = "scripts/navigation/pct_grid_server.py"
 DEFAULT_LIANGZHU_PCT_TOMOGRAM = (
     "source/scene/liangzhu/pct/liangzhu_single_floor.pickle"
@@ -204,7 +206,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--task-json",
         default=DEFAULT_LIANGZHU_TASK_JSON,
-        help="任务 JSON 路径；默认使用良渚可乐到鼠标垫随机化任务。",
+        help="任务 JSON 路径；默认使用良渚 box1 可乐搬运到 box2 的随机化任务。",
     )
     parser.add_argument(
         "--output-dir",
@@ -282,15 +284,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--record-video",
         action="store_true",
-        help="启用展示用 overview 视频录制；默认关闭。",
+        help="启用展示用单视角或三视角拼接视频录制；默认关闭。",
     )
     parser.add_argument(
         "--video-mode",
-        choices=("overview", "front", "font", "wrist", "all"),
+        choices=("overview", "front", "font", "wrist", "composite", "all"),
         default="overview",
         help=(
             "录制视频类型：overview 为第三人称展示视角，front/font 为前视 observation "
-            "camera，wrist 为腕部 observation camera，all 同时导出 overview/front/wrist。"
+            "camera，wrist 为腕部 observation camera，composite 将同步的 "
+            "overview/front/wrist 拼成单个视频，all 同时导出三路独立视频。"
         ),
     )
     parser.add_argument(
@@ -301,13 +304,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--video-width",
         type=int,
         default=1280,
-        help="overview 捕获宽度，默认 1280；front/wrist observation 不受影响。",
+        help="overview 捕获或 composite 输出宽度，默认 1280。",
     )
     parser.add_argument(
         "--video-height",
         type=int,
         default=720,
-        help="overview 捕获高度，默认 720；front/wrist observation 不受影响。",
+        help="overview 捕获或 composite 输出高度，默认 720。",
     )
     parser.add_argument(
         "--overview-camera-mode",
@@ -1278,7 +1281,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                     config.recording.enabled
                                     and "front" in config.recording.camera_keys
                                 )
-                                or "front" in video_modes
+                                or bool({"front", "composite"} & video_modes)
                             ),
                             front_camera_height=config.recording.image_height,
                             front_camera_width=config.recording.image_width,
@@ -1287,13 +1290,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                                     config.recording.enabled
                                     and "wrist" in config.recording.camera_keys
                                 )
-                                or "wrist" in video_modes
+                                or bool({"wrist", "composite"} & video_modes)
                             ),
                             wrist_camera_height=config.recording.image_height,
                             wrist_camera_width=config.recording.image_width,
                             enable_overview_camera=(
-                                config.recording.enabled
-                                and "overview" in config.recording.camera_keys
+                                (
+                                    config.recording.enabled
+                                    and "overview" in config.recording.camera_keys
+                                )
+                                or "composite" in video_modes
                             ),
                             overview_camera_prim_path=(
                                 config.recording.overview_camera_prim_path
