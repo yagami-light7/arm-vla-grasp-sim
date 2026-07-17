@@ -1,23 +1,18 @@
 # PCT Scene: Go2-X5 多场景移动操作与数据采集
 
-PCT Scene 用一套代码运行良渚单层任务和别墅多楼层任务。使用
-`--scene-profile` 选择场景后，程序会加载对应的任务、PCT 地图、坐标变换、随机化、
-楼梯配置、视觉层和 overview 相机。切换场景不需要更换 worktree，也不需要重复输入整组参数。
+PCT Scene 用一套代码运行良渚单层任务和别墅多楼层任务。使用`--scene-profile` 选择场景后，程序会加载对应的任务、PCT 地图、坐标变换、随机化、楼梯配置、视觉层和 overview 相机。切换场景不需要更换 worktree，也不需要重复输入整组参数。
 
 ## 场景与流程
 
 
-| Profile | 任务与默认行为 |
-| --- | --- |
-| `liangzhu` | 良渚单层任务，将可乐搬到鼠标垫。开启任务随机化，使用 `identity` PCT 坐标和 Gaussian 视觉层；overview 相机固定为 `/World/overview`。 |
-| `multi_floor` | 别墅多楼层任务，将苹果从 F1 搬到 F2。使用 `sim_to_pct_180deg` PCT 坐标、楼梯锚点和 collision 视觉；关闭任务随机化，overview 相机按阶段切换。 |
+| Profile       | 任务与默认行为                                                                                                                              |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `liangzhu`    | 良渚单层任务，将可乐搬到鼠标垫。开启任务随机化，使用`identity` PCT 坐标和 Gaussian 视觉层；overview 相机固定为 `/World/overview`。          |
+| `multi_floor` | 别墅多楼层任务，将苹果从 F1 搬到 F2。使用`sim_to_pct_180deg` PCT 坐标、楼梯锚点和 collision 视觉；关闭任务随机化，overview 相机按阶段切换。 |
 
-兼容别名：`liangzhu_single_floor` 对应 `liangzhu`；`multifloor`、`pct_multifloor` 和
-`villa` 对应 `multi_floor`。
+兼容别名：`liangzhu_single_floor` 对应 `liangzhu`；`multifloor`、`pct_multifloor` 和`villa` 对应 `multi_floor`。
 
-场景配置位于 `configs/scenes/*.json`。CLI 参数的优先级高于 profile 默认值，
-调试时可以只覆盖需要修改的选项。兼容参数 `--pct-multifloor` 等价于
-`--scene-profile multi_floor`。
+场景配置位于 `configs/scenes/*.json`。CLI 参数的优先级高于 profile 默认值，调试时可以只覆盖需要修改的选项。兼容参数 `--pct-multifloor` 等价于`--scene-profile multi_floor`。
 
 一个 episode 依次执行导航、抓取、携物导航、放置和数据导出：
 
@@ -40,24 +35,23 @@ graph LR
 
 ### 1.1 系统要求
 
-已验证环境为 Ubuntu Linux、支持 CUDA 12.x 的 NVIDIA 驱动、Python 3.11、
-Isaac Sim 5.1、Isaac Lab 2.3.x 和 cuRobo 0.8.x。显存少于 12 GB 时，建议使用
+已验证环境为 Ubuntu Linux、支持 CUDA 12.x 的 NVIDIA 驱动、Python 3.11、Isaac Sim 5.1、Isaac Lab 2.3.x 和 cuRobo 0.8.x。显存少于 12 GB 时，建议使用
 collision 视觉模式采集数据。
 
 安装系统依赖并确认驱动可用：
 
 ```bash
 sudo apt update
-sudo apt install -y git ffmpeg build-essential cmake ninja-build libgl1 libglib2.0-0
+sudo apt install -y git git-lfs ffmpeg build-essential cmake ninja-build libgl1 libglib2.0-0
 
 nvidia-smi
+git lfs install
 conda --version
 ```
 
 如果系统尚未安装 conda，请先安装 Miniforge、Miniconda 或 Anaconda，然后重新打开终端。
 
-实际显存需求取决于场景和视觉模式。良渚 full/Gaussian 模式使用 NuRec 资产，
-8 GB RTX 4060 Laptop 已知会在 RGB render product 启动后触发 CUDA illegal address 700。
+实际显存需求取决于场景和视觉模式。良渚 full/Gaussian 模式使用 NuRec 资产，8 GB RTX 4060 Laptop 已知会在 RGB render product 启动后触发 CUDA illegal address 700。
 
 ### 1.2 获取代码
 
@@ -65,10 +59,10 @@ conda --version
 git clone https://github.com/yagami-light7/arm-vla-grasp-sim.git pct_scene
 cd pct_scene
 git checkout pct_scene
+git lfs pull
 ```
 
-场景运行时资产请按
-`source/scene/<scene>/runtime_asset_manifest.json` 中的清单准备。
+Git LFS 只会下载已纳入版本控制的大文件。其他运行时资产请按`source/scene/<scene>/runtime_asset_manifest.json` 中的清单准备。
 
 ### 1.3 创建 Isaac 仿真环境
 
@@ -91,8 +85,7 @@ python -m pip install -e "../curobo[cu12]"
 python -m pip install -r requirements/isaacsim51_runtime.txt
 ```
 
-requirements 文件只安装已验证的常规 Python 依赖。Isaac Sim、Isaac Lab 和
-cuRobo 需要按上述步骤单独安装。Go2-X5 task 包已放在 `source/robot_lab`，不用重复安装。
+requirements 文件只安装已验证的常规 Python 依赖。Isaac Sim、Isaac Lab 和 cuRobo 需要按上述步骤单独安装。Go2-X5 task 包已放在 `source/robot_lab`，不用重复安装。
 
 验证 Python 环境：
 
@@ -128,31 +121,15 @@ python -m pip install -r requirements/lerobot_rerun.txt
 git clone https://github.com/BoZhiStudying233/PCT.git external/PCT
 ```
 
-小型场景文件已随仓库发布。USDZ 和其他大体积资产不进入 Git，请按下表放置：
-
-| 场景 | 文件 | 仓库内放置路径 |
-| --- | --- | --- |
-| 良渚 | `liangzhu_cropped_nozip64.usdz` | `source/scene/liangzhu/usdz/liangzhu_cropped_nozip64.usdz` |
-| 良渚 | `liangzhu_collision.usda` | `source/scene/liangzhu/usd/liangzhu_collision.usda` |
-| 良渚 | `carpet.usd` | `source/scene/objects/carpet.usd` |
-| 别墅 | `multifloor.usdz` | `source/scene/multifloor/usdz/multifloor.usdz` |
-
-目录不存在时可以先创建：
-
-```bash
-mkdir -p source/scene/liangzhu/usd source/scene/liangzhu/usdz
-mkdir -p source/scene/multifloor/usdz
-```
-
-良渚 USDA 默认使用上表中的相对路径。如果资产必须放在其他磁盘，可以用环境变量覆盖：
+良渚场景的 visual 和 collision 资产可以放在任意磁盘，然后通过环境变量绑定：
 
 ```bash
 export LIANGZHU_VISUAL_USDZ=/path/to/liangzhu_cropped_nozip64.usdz
 export LIANGZHU_COLLISION_USD=/path/to/liangzhu_collision.usda
 ```
 
-每个场景的完整资产清单位于
-`source/scene/<scene>/runtime_asset_manifest.json`。其他场景的地图不能替代这些文件。
+别墅场景的 visual 和 collision 资产使用相对路径。运行前请按 manifest 补齐
+`source/scene/multifloor` 下的 runtime 资产。其他场景的地图不能替代这些文件。
 
 ### 1.6 检查部署
 
@@ -496,7 +473,7 @@ python \
 smoke 测试和调试。
 
 
-| 参数                                                 | 类型 / 默认            | 说明                                                                                                                    |
+| 参数                                         | 类型 / 默认            | 说明                                                                                                                    |
 | ---------------------------------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `--scene-profile`                                    | `liangzhu`             | 选择场景；可用`--list-scene-profiles` 查看，别墅使用 `multi_floor`                                                      |
 | `--list-scene-profiles` / `--check-scene-assets`     | 只读检查               | 列出动态发现的 profile，或检查所选场景资产后退出                                                                        |
