@@ -2,8 +2,8 @@
   "project": "pct_scene",
   "branch": "pct_scene",
   "goal": "在同一代码库中通过 scene profile 选择良渚单层或别墅多楼层 PCT 场景，并支持后续场景扩展、移动操作与可验证数据导出。",
-  "current_phase": "phase_158_cross_worktree_batch_and_composite_acceptance",
-  "last_updated": "2026-07-18 15:23:04 CST",
+  "current_phase": "phase_165_unified_full_visual_authored_stage_lighting_auto",
+  "last_updated": "2026-07-19 00:59:19 CST",
   "status": {
     "unified_scene_profile_loader_added": true,
     "unified_scene_profile_dynamic_discovery_verified": true,
@@ -21,6 +21,11 @@
     "liangzhu_box_pair_batch20_success_rate": 0.9,
     "liangzhu_box_pair_batch20_dataset_rows": 4096,
     "liangzhu_box_pair_batch20_validator_verified": true,
+    "liangzhu_supported_upright_object_initialization_added": true,
+    "liangzhu_object_initialization_pose_gate_added": true,
+    "liangzhu_historical_seed7_topple_reproduced": true,
+    "liangzhu_historical_seed7_topple_rejected_by_regression": true,
+    "liangzhu_seed7_supported_upright_real_full_pipeline_verified": true,
     "liangzhu_arm_vla_seed0_to_4_alignment_verified": true,
     "cross_worktree_headless_attempted_episode_count": 25,
     "cross_worktree_training_accepted_episode_count": 23,
@@ -113,9 +118,9 @@
     "final_video_visual_ready": false,
     "tests_passing": true,
     "final_full_test_suite_passed": true,
-    "final_full_test_passed_count": 493,
+    "final_full_test_passed_count": 563,
     "final_full_test_skipped_count": 2,
-    "final_full_test_subtests_passed_count": 9,
+    "final_full_test_subtests_passed_count": 15,
     "liangzhu_manual_place_target_added": true,
     "liangzhu_manual_table_target_active": false,
     "liangzhu_active_target_receptacle": "mat_carpet_01",
@@ -469,6 +474,9 @@
     "scene_camera_light_default_added": true,
     "scene_stage_light_fallback_added": true,
     "phase72_lighting_targeted_tests_passing": true,
+    "scene_light_auto_visual_payload_added": true,
+    "both_scene_profiles_full_visual_authored_lights_auto_enabled": true,
+    "phase165_scene_light_auto_runtime_unit_verified": true,
     "pct_stair_float_tail_straightened": true,
     "pct_stair_float_tail_frames_490_500_verified": true,
     "pct_stair_float_release_route_corridor_cleared": true,
@@ -884,6 +892,35 @@
       "manager_reuse_verified": true,
       "manager_close_preserved_external_server": true
     },
+    "d436_front_wrist_intrinsics_configured": true,
+    "d436_exact_opencv_pinhole_renderer_schema_added": true,
+    "d436_exact_opencv_pinhole_renderer_runtime_verified": false,
+    "d436_standard_usd_pinhole_fallback_runtime_verified": true,
+    "d436_calibrated_resolution_wh": [640, 480],
+    "wrist_camera_hand_eye_extrinsics_configured": true,
+    "wrist_camera_hand_eye_runtime_render_verified": false,
+    "wrist_camera_visual_alignment_v1_added": true,
+    "wrist_camera_visual_alignment_v1_rejected_by_user": true,
+    "wrist_camera_visual_alignment_v2_added": true,
+    "wrist_camera_visual_alignment_v2_rejected_due_object_near_plane_intersection": true,
+    "wrist_camera_visual_alignment_v2_training_rejection_gate_added": true,
+    "wrist_camera_visual_alignment_v3_added": true,
+    "wrist_camera_visual_alignment_offset_camera_xyz_m": [0.0, -0.02, 0.0],
+    "wrist_camera_visual_alignment_optical_z_offset_m": 0.0,
+    "wrist_camera_visual_alignment_mount_position_xyz_m": [0.0666580792, 0.0028071889, 0.0935779972],
+    "wrist_camera_visual_alignment_corrected_gripper_root_depth_m": 0.06710842,
+    "wrist_camera_visual_alignment_tcp_depth_m": 0.12697417,
+    "wrist_camera_visual_alignment_near_clipping_m": 0.03,
+    "wrist_camera_visual_alignment_real_image_verified": true,
+    "wrist_camera_visual_alignment_user_accepted": false,
+    "wrist_camera_visual_alignment_metric_recalibration_verified": false,
+    "wrist_camera_visual_alignment_mesh_aabb_clearance_verified": true,
+    "wrist_camera_visual_alignment_pipeline_verified": false,
+    "wrist_camera_visual_alignment_source_worktree_evidence_available": true,
+    "wrist_camera_object_clearance_training_gate_added": true,
+    "wrist_camera_object_clearance_training_gate_unit_verified": true,
+    "wrist_camera_object_clearance_source_worktree_runtime_verified": true,
+    "wrist_camera_visual_alignment_v1_silhouette_width_reduction_at_y350": 0.2324,
     "disk_free_gb": 2.7,
     "full_episode_estimated_output_gb": 1.1,
     "real_episode_count": 1,
@@ -7615,6 +7652,239 @@
         "保持良渚 profile 默认 full/NuRec；当前 8GB + Isaac Sim 5.1 的数据采集使用显式 collision 兼容覆盖，并在数据 metadata 中区分视觉来源。",
         "把别墅无 stair-float 的纯物理楼梯 stall 作为独立 locomotion 任务处理，不回退已经验证的统一 profile 架构。"
       ]
+    },
+    {
+      "time": "2026-07-18 22:04:54 CST",
+      "summary": "同步良渚 worktree 的 D436 相机标定：front/wrist 使用同一套 640x480 精确 OpenCV 内参，wrist 使用 arm_link6_T_camera_color_optical 手眼标定外参，front 保留原 base/head_cam 外参。相机生成时写入 Isaac Sim 5.1 OpenCV pinhole schema，并同步覆盖 IsaacLab 对外报告的 K。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/simulation/isaaclab_runtime.py",
+        "tests/test_isaaclab_navigation_runtime.py"
+      ],
+      "tests": [
+        {
+          "command": "pct_scene tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "51 passed、2 skipped；覆盖精确 USD OpenCV schema 属性、metadata、分辨率门禁和 IsaacLab K 覆盖，未启动 GPU 仿真。"
+        },
+        {
+          "command": "pct_scene tests/test_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "61 passed；确认 runtime 内参覆盖报告进入最终 simulation_report。"
+        }
+      ],
+      "next_steps": [
+        "用户释放 GPU 后分别用 liangzhu 与 multi_floor profile 做单 episode 三相机验收。",
+        "核对输出 metadata 中 front/wrist 的 K 与 USD OpenCV pinhole schema 属性。"
+      ]
+    },
+    {
+      "time": "2026-07-18 22:28:14 CST",
+      "summary": "同步 wrist camera 视觉对齐 v1：保留原始手眼标定，在 camera_color_optical 坐标系沿 Z 轴向后平移 0.05m，最终 arm_link6 安装位置为 (0.0137464699, 0.0028437438, 0.1035959946)。预计夹爪根部横向投影由约 285px 缩小到 163px；metadata 保留原始值、修正量和启发式来源。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "source/simulation/isaaclab_runtime.py",
+        "tests/test_isaaclab_navigation_runtime.py"
+      ],
+      "tests": [
+        {
+          "command": "pct_scene tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "51 passed、2 skipped；验证有效外参、原始标定与视觉修正 metadata。"
+        }
+      ],
+      "next_steps": [
+        "分别用 liangzhu 与 multi_floor profile 导出 wrist 帧，确认修正不引入机械臂穿模或目标出视野。",
+        "后续迭代只调整显式 visual alignment offset，不覆盖原始手眼标定。"
+      ]
+    },
+    {
+      "time": "2026-07-18 22:40:02 CST",
+      "summary": "同步真实启动中发现的 D436 lens schema 兼容修复：显式尝试加载 schema，并在 API 仍不可用时回退到标准 USD pinhole，同时报告实际 K。arm_vla_liangzhu 的同代码 seed 5002 已完整通过，首帧末端轮廓宽度缩小 23.24%；pct_scene 本身尚未单独启动真实 pipeline。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/simulation/isaaclab_runtime.py",
+        "tests/test_isaaclab_navigation_runtime.py"
+      ],
+      "tests": [
+        {
+          "command": "pct_scene focused runtime + full pipeline regression",
+          "result": "passed",
+          "note": "112 passed、2 skipped。"
+        }
+      ],
+      "next_steps": [
+        "需要时再用 pct_scene 的 liangzhu profile 做独立真实复验；当前不把另一 worktree 的成功写成 pct_scene 真实成功。"
+      ]
+    },
+    {
+      "time": "2026-07-18 22:56:18 CST",
+      "summary": "同步 wrist camera 视觉对齐 v2。纠正 v1 沿光轴后移的方向错误，保留原始手眼旋转并沿 camera_color_optical +Z 前移 0.04m；最终 arm_link6 安装位置为 (0.0896326297, 0.0025368080, 0.0552100820)。夹爪根部深度约 27.1mm，进入 30mm near clipping，以裁掉底座并保留双爪。用户已确认良渚源 worktree 的新 wrist 图像效果良好；pct_scene 代码和文档已同步，但未把源 worktree 的真实运行记为 pct_scene 独立 pipeline 验证。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "source/simulation/isaaclab_runtime.py",
+        "tests/test_isaaclab_navigation_runtime.py"
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "51 passed、2 skipped；验证 v2 有效外参、near clipping metadata 与双爪对齐目标。"
+        },
+        {
+          "command": "arm_vla_liangzhu seed 5002 real full-physics + acceptance validator",
+          "result": "source_worktree_passed",
+          "note": "源 worktree final_state=done，198 rows、0 error/0 warning，composite 989 frames；作为同代码良渚 profile 的运行证据，不标记为 pct_scene 独立运行。"
+        }
+      ],
+      "next_steps": [
+        "当前无需继续调整 wrist 外参。",
+        "若要验收统一 worktree 自身，可在 pct_scene 下分别用 liangzhu 与 multi_floor profile 各运行一条 episode。"
+      ]
+    },
+    {
+      "time": "2026-07-18 23:21:51 CST",
+      "summary": "同步 wrist 视觉对齐 v3 和目标近裁剪训练门。v2 沿 optical +Z 前移 0.04m 会让可乐近表面进入 30mm near clipping，已由源 worktree 的 release 帧复现孔洞，因此明确作废。v3 不再改变光轴深度，仅沿 camera_color_optical -Y 平移 0.02m，将近端夹爪移到画面下方。运行时逐步计算 wrist-camera 到目标圆柱近表面的视锥内余量，低于 near clipping + 10mm 时自动拒绝训练 episode。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/recording/jsonl_recorder.py",
+        "source/recording/training_action.py",
+        "source/simulation/isaaclab_runtime.py",
+        "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "tests/test_scene_runtime.py"
+      ],
+      "tests": [
+        {
+          "command": "pct_scene focused wrist runtime, recording and full-pipeline regression",
+          "result": "passed",
+          "note": "142 passed、2 skipped；包含 frame 185 实际位姿回归、旧 v2 metadata 强制拒绝和训练质量门测试。"
+        },
+        {
+          "command": "arm_vla_liangzhu v3 seed 5002 real full-physics + acceptance validator",
+          "result": "source_worktree_passed",
+          "note": "源 worktree final_state=done、199 rows、0 error/0 warning；3770 个相关 clearance 采样 0 次违规。该结果仅作为同实现的源运行证据，不标记为 pct_scene 独立真实运行。"
+        }
+      ],
+      "data_results": {
+        "source_output_root": "/mnt/sage_data/outputs/arm_vla_liangzhu/wrist_visual_alignment_v3_safe_seed5002_20260718_2315",
+        "effective_mount_position_xyz_m": [0.0666580792, 0.0028071889, 0.0935779972],
+        "visual_alignment_offset_camera_xyz_m": [0.0, -0.02, 0.0],
+        "source_clearance_violation_count": 0,
+        "source_minimum_object_surface_margin_over_near_clip_m": 0.034655937669428316,
+        "pct_scene_real_pipeline_verified": false,
+        "user_visual_acceptance": false,
+        "metric_recalibration": false
+      },
+      "next_steps": [
+        "用户先人工验收源 worktree 的 v3 wrist 帧；确认前不标记 user_accepted。",
+        "需要统一 worktree 独立运行证据时，在 pct_scene 的 liangzhu profile 下运行一条真实 composite episode，并检查 clearance report。",
+        "禁止使用 v2 近裁剪方案或对应输出训练 VLA。"
+      ]
+    },
+    {
+      "time": "2026-07-19 00:34:27 CST",
+      "summary": "在统一 pct_scene worktree 中复现并修复良渚 seed 7 的可乐初始化倾倒。历史请求/落稳姿态相差 96.03°、XY 漂移 84.07mm，旧门禁仅检查速度和宽松总位移。新增 supported_upright_v1 两阶段策略、live PhysX reset、8 步竖直沉降后 sleep，以及状态机 XY/Z/姿态强制门；不修改 USD xform，抓取接触仍自动唤醒动态刚体。第一次真实尝试发现持续纠姿会产生 0.706rad/s 角速度并 timeout，改为两阶段后同 seed 完整通过 nav-pick-place 和数据验收。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "source/pipeline/state_machine.py",
+        "source/simulation/isaaclab_runtime.py",
+        "source/simulation/object_initialization.py",
+        "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "tests/test_scene_runtime.py"
+      ],
+      "tests": [
+        {
+          "command": "focused initialization/runtime/state-machine regression",
+          "result": "passed",
+          "note": "136 passed、2 skipped。"
+        },
+        {
+          "command": "run_full_physics_pipeline.py --scene-profile liangzhu --seed 7 --headless",
+          "result": "passed",
+          "note": "final_state=done；pick/place 成功；251 LeRobot rows；1252 帧 composite、0 dropped。"
+        },
+        {
+          "command": "validate_full_pipeline_acceptance.py",
+          "result": "passed",
+          "note": "stable_physics_success=true、training_eligible=true、0 error/0 warning。"
+        }
+      ],
+      "data_results": {
+        "historical_output_root": "/mnt/sage_data/outputs/pct_scene/liangzhu_headless_batch20_seed0_standofffix_20260718_v2/episode_000007",
+        "historical_orientation_error_deg": 96.02923481327791,
+        "historical_horizontal_displacement_m": 0.0840743736995116,
+        "first_fix_timeout_output_root": "/mnt/sage_data/outputs/pct_scene/seed7_object_init_upright_fix_20260719",
+        "verified_output_root": "/mnt/sage_data/outputs/pct_scene/seed7_object_init_upright_fix_v2_20260719/episode_000000",
+        "settled_step_index": 47,
+        "settled_orientation_error_deg": 0.000004829673078902933,
+        "settled_horizontal_displacement_m": 1.8578078824285667e-7,
+        "settled_vertical_displacement_m": 0.004952002851564163,
+        "lerobot_rows": 251,
+        "validator_errors": 0,
+        "validator_warnings": 0,
+        "composite_frames": 1252,
+        "composite_dropped_frames": 0,
+        "stable_physics_success": true,
+        "pure_physics_success": false,
+        "pct_scene_real_pipeline_verified": true
+      },
+      "next_steps": [
+        "批量量产前运行多个随机 seed 的小规模回归，统计初始化门和 Z 沉降分布。",
+        "保持严格门禁；若新 seed 被拒绝，应检查碰撞/支撑配置，不直接放宽阈值。",
+        "由用户验收后手动提交；Codex 不 commit、不 push。"
+      ]
+    },
+    {
+      "time": "2026-07-19 00:59:19 CST",
+      "summary": "同步良渚 worktree 的视觉-灯光自动联动，并适配统一 scene profile 架构。--scene-light-mode 默认改为 auto；IsaacLab runtime 使用 scene profile 解析后的最终 enable_scene_visual：liangzhu 或 multi_floor 只要选择 full，就自动启用各自 USDA 中编写的 DomeLight、SphereLight、RectLight 等 stage lights并隐藏 camera_light；collision 自动使用相机补光。显式 camera/stage 仍可覆盖。runtime metadata 记录 requested_mode、resolved_mode 和 scene_visual_enabled。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "scripts/README.md",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "source/pipeline/config.py",
+        "source/scene/liangzhu/runtime_asset_manifest.json",
+        "source/scene/multifloor/runtime_asset_manifest.json",
+        "source/simulation/isaaclab_runtime.py",
+        "source/simulation/lighting.py",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_full_physics_randomization.py",
+        "tests/test_isaaclab_navigation_runtime.py"
+      ],
+      "tests": [
+        {
+          "command": "pytest tests/test_full_physics_pipeline.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "118 passed、2 skipped、4 subtests passed；包含 runtime mock，直接确认 full+auto->stage 与 collision+auto->camera。"
+        },
+        {
+          "command": "pytest tests/test_full_physics_batch.py tests/test_full_physics_randomization.py tests/test_liangzhu_task.py tests/test_scene_profiles.py tests/test_scene_runtime.py",
+          "result": "passed",
+          "note": "64 passed；旧随机化 CLI 测试改为经过真实 _parse_args scene-profile 入口，不改变生产随机化逻辑。"
+        },
+        {
+          "command": "pytest tests",
+          "result": "passed",
+          "note": "563 passed、2 skipped、15 subtests passed；4 条 warning 仅为沙盒内 NVML 不可用。"
+        }
+      ],
+      "next_steps": [
+        "用户现在可在任一 scene profile 中只传 --navigation-visual-mode full，无需再传 --scene-light-mode stage。",
+        "真实运行后检查 scene_lighting_report：requested_mode=auto、resolved_mode=stage，并核对 light_visibility_updates 中自定义 Light prim 为 inherited。",
+        "本阶段未主动启动 full Gaussian/NuRec GPU episode；8GB GPU 的 full+RGB render product CUDA 700 风险保持不变。"
+      ]
     }
   ],
   "open_questions": [
@@ -7623,6 +7893,7 @@
     "良渚 full/NuRec 训练相机录制应优先在更大显存 GPU 上复验，还是升级到提供更新 NuRec/Replicator 支持的 Isaac Sim 版本？两种环境都必须先做单 episode validator 验收。"
   ],
   "known_limitations": [
+    "supported_upright_v1 已用历史 seed 7 定向真实验证，但尚未完成新的连续多 seed batch；大规模采集前仍需统计初始化通过率和箱面沉降分布。",
     "当前全向 yaw 的最新 v3 数据集是 validation_full_yaw_seed7000_n20_final_v2_20260715/lerobot_dataset，共 19 条 accepted episode；旧 validation_seed4013_n20_final_carry_map_v2 的 20 条数据只覆盖±30° yaw。phase146/147 历史数据仍是旧 front-only/连续 segment 目录，不能与 v3 直接混用。",
     "全向 yaw 的连续 20-seed batch 接受率为 95%（19/20）；唯一失败 seed 7018 在 0.040m placement center 修正后定向复跑通过，但这不能表述为同一次连续 batch 20/20。",
     "phase146 的 27 条扩展集混合 21 条当前参数与 6 条早期 placement/tolerance 参数；phase147 虽参数一致但仍是旧 front-only 目录，使用历史数据时必须显式区分配置和目录版本。",
@@ -7633,12 +7904,12 @@
     "任务没有可用 flat nav_map 时会显式禁用 PCT 到 A* fallback；PCT server 或资产失败会直接报错，不会静默回退。",
     "良渚 PCT tomogram/walkable 和大型 scene/checkpoint 资产为本地 ignored/runtime 文件，不应加入 Git；其他机器必须按 manifest 重新准备。",
     "source/scene/objects/carpet.usd、carpet.glb 与纹理是用户提供的本地大型未跟踪资产；当前任务依赖其固定 SHA256，不能把它们误当作已提交资产。",
-    "统一后的良渚 profile 默认使用 full 视觉并加载 GaussianScene；RTX 4060 Laptop 8GB + Isaac Sim 5.1 上 full/NuRec 与任一 IsaacLab RGB render product 同时启用会稳定触发 CUDA illegal address 700，单相机、single-GPU 和 TAA 仍能复现。当前 collision 兼容模式已完成 134 帧三相机数据校验，但视觉域与 full/NuRec 不同，必须在数据集 metadata 和训练配方中区分。",
+    "统一后的良渚和 multi_floor profile 量产默认均为 collision；显式 full 会加载完整视觉并通过 scene-light-mode=auto 自动启用对应 USDA authored stage lights。RTX 4060 Laptop 8GB + Isaac Sim 5.1 上良渚 full/NuRec 与任一 IsaacLab RGB render product 同时启用会稳定触发 CUDA illegal address 700，单相机、single-GPU 和 TAA 仍能复现。当前 collision 兼容模式已完成 134 帧三相机数据校验，但视觉域与 full/NuRec 不同，必须在数据集 metadata 和训练配方中区分。",
     "GUI 可能在 viewport/timeline 未继续推进时保留 pick 最后一帧；量产 batch 已在 headless 下验证，GUI 卡帧必须用 events.jsonl/summary.json 和同 seed headless 复验区分于状态机失败。",
     "当前 arm_contact 标签来自执行器动作语义、夹爪命令和目标/TCP 运动学启发式，metadata 已明确标记 heuristic_action_and_kinematics；接入可靠接触传感器前不能描述为真实力/触觉接触标签。",
     "attempt14 的真实轨迹只出现 nav_stop 与 nav_turn，没有满足阈值的 nav_straight；这是该条轨迹的运动事实，不是 schema 缺失，六类标签全集由 contract 测试覆盖。",
     "系统盘空间较紧，批量输出必须继续写入 /mnt/sage_data；attempt14 约 192MB，批量前仍应监控剩余容量。",
-    "统一 worktree 已移除测试对旧 source/scene/839920/nav_map/map.json 的隐式依赖，当前最终全量回归为 493 passed、2 skipped、9 subtests passed；垫子 scale 配置与测试统一为 (0.3,0.2,0.005)。",
+    "统一 worktree 已移除测试对旧 source/scene/839920/nav_map/map.json 的隐式依赖，当前最终全量回归为 563 passed、2 skipped、15 subtests passed；垫子 scale 配置与测试统一为 (0.3,0.2,0.005)。",
     "别墅 stair-locomotion-smoke 会关闭 stair-float 并隔离测试纯低层 policy；当前真实运行在第一段约 (1.72,5.88) 复现 stair_locomotion_stalled，与原 arm_vla_pct phase167/168 结果一致。PCT 跨层规划本身成功，默认完整 multi_floor pipeline 仍使用并记录 stair-float workaround。",
     "别墅默认完整 pipeline 已用方向分解的释放门禁真实通过并导出 849 行数据；向下落座阈值为任务级 0.55m/s，而向上、水平速度和水平位移继续使用严格默认值。该结果依赖 stair-float 与 manipulation lock，因此 stable_physics_success=true、pure_physics_success=false。",
     "共享 CuRobo server 属于其他 worktree 的外部服务；兼容性握手和本轮复用已验证，pipeline 不拥有其生命周期，批量运行前仍需 ping。"

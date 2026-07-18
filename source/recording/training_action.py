@@ -236,14 +236,69 @@ def training_mesh_truth_manipulation_targets_verified(
     )
 
 
+def task_requires_wrist_camera_object_clearance(task: dict[str, Any]) -> bool:
+    """返回任务是否要求 wrist 图像通过目标物体近裁剪安全门禁。"""
+
+    recording = task.get("recording")
+    recording = recording if isinstance(recording, dict) else {}
+    config = recording.get("wrist_camera_object_clearance")
+    return bool(
+        isinstance(config, dict)
+        and config.get("enabled", False)
+        and config.get("required_for_training", False)
+    )
+
+
+def training_wrist_camera_object_clearance_verified(
+    summary: dict[str, Any],
+) -> bool:
+    """拒绝 wrist 近裁剪面切入抓持物体的训练 episode。"""
+
+    simulation_report = summary.get("simulation_report")
+    simulation_report = (
+        simulation_report if isinstance(simulation_report, dict) else {}
+    )
+    wrist_camera_report = simulation_report.get("wrist_camera_report")
+    wrist_camera_report = (
+        wrist_camera_report if isinstance(wrist_camera_report, dict) else {}
+    )
+    calibration = wrist_camera_report.get("calibration")
+    calibration = calibration if isinstance(calibration, dict) else {}
+    extrinsics_source = wrist_camera_report.get(
+        "source", calibration.get("extrinsics_source")
+    )
+    if extrinsics_source == "hand_eye_calibration_with_visual_alignment_v2":
+        return False
+
+    raw_task = summary.get("task_config")
+    if not isinstance(raw_task, dict) or not task_requires_wrist_camera_object_clearance(
+        raw_task
+    ):
+        return True
+    report = simulation_report.get("wrist_camera_object_clearance_report")
+    return bool(
+        isinstance(report, dict)
+        and report.get("enabled") is True
+        and report.get("required_for_training") is True
+        and report.get("shape") == "cylinder_local_z"
+        and report.get("camera_extrinsics_source")
+        == "hand_eye_calibration_with_visual_alignment_v3"
+        and isinstance(report.get("considered_sample_count"), int)
+        and report["considered_sample_count"] > 0
+        and report.get("violation_count") == 0
+        and report.get("verified") is True
+    )
+
+
 def training_quality_success_verified(summary: dict[str, Any]) -> bool:
-    """物理来源、RGB、支撑体和 Mesh-truth 操作目标必须同时通过。"""
+    """物理来源、RGB、支撑体、Mesh-truth 与 wrist clearance 必须同时通过。"""
 
     return bool(
         physical_execution_success_verified(summary)
         and training_visual_source_verified(summary)
         and training_receptacle_support_verified(summary)
         and training_mesh_truth_manipulation_targets_verified(summary)
+        and training_wrist_camera_object_clearance_verified(summary)
     )
 
 

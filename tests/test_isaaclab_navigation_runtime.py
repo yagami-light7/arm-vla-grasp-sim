@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import inspect
 import json
+import sys
 import unittest
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -18,17 +20,36 @@ from source.navigation.adapters.isaaclab_go2_adapter import (
     Go2LocomotionAdapter,
 )
 from source.simulation.isaaclab_runtime import (
+    D436_CAMERA_CX_PX,
+    D436_CAMERA_CY_PX,
+    D436_CAMERA_FX_PX,
+    D436_CAMERA_FY_PX,
+    D436_CAMERA_RESOLUTION_WH,
+    FRONT_CAMERA_MOUNT_POS_XYZ_M,
+    FRONT_CAMERA_MOUNT_ROT_WXYZ,
+    FRONT_CAMERA_PRIM_PATH,
+    WRIST_CAMERA_HAND_EYE_POS_XYZ_M,
+    WRIST_CAMERA_MOUNT_POS_XYZ_M,
+    WRIST_CAMERA_MOUNT_ROT_WXYZ,
+    WRIST_CAMERA_PRIM_PATH,
+    WRIST_CAMERA_VISUAL_ALIGNMENT_OFFSET_CAMERA_XYZ_M,
     IsaacLabNavigationRuntime,
     IsaacLabNavigationRuntimeConfig,
+    _apply_d436_camera_opencv_pinhole_schema,
     _collision_candidate_sort_key,
+    _compute_wrist_camera_object_clearance_sample,
     _derive_mesh_truth_place_pose,
     _dedupe_root_paths,
     _path_is_excluded_by_roots,
     _prim_keyword_match_text,
+    _front_camera_calibration_metadata,
+    _overwrite_d436_intrinsic_matrices,
     _retarget_height_scanners,
     _resolve_rigid_body_prim_path,
     _task_world_collision_cuboids,
     _transform_authored_aabb_to_live_rigid_pose,
+    _validate_d436_camera_calibration_resolution,
+    _wrist_camera_calibration_metadata,
 )
 from source.simulation.collision_patch import (
     gripper_collision_patch_report,
@@ -869,6 +890,34 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         self.assertEqual(config.scene_light_mode, "camera")
         self.assertGreater(config.camera_light_intensity, 0.0)
 
+    def test_runtime_scene_light_auto_follows_effective_visual_payload(self) -> None:
+        for scene_visual_enabled, expected_mode in ((True, "stage"), (False, "camera")):
+            with self.subTest(
+                scene_visual_enabled=scene_visual_enabled,
+                expected_mode=expected_mode,
+            ):
+                runtime = object.__new__(IsaacLabNavigationRuntime)
+                runtime._config = IsaacLabNavigationRuntimeConfig(
+                    enable_scene_visual=scene_visual_enabled,
+                    scene_light_mode="auto",
+                )
+                with patch(
+                    "source.simulation.lighting.configure_scene_lighting",
+                    return_value={"applied": True, "mode": expected_mode},
+                ) as configure:
+                    report = runtime._configure_scene_lighting(
+                        object(),
+                        reason="unit_test",
+                    )
+
+                self.assertEqual(configure.call_args.kwargs["mode"], expected_mode)
+                self.assertEqual(report["requested_mode"], "auto")
+                self.assertEqual(report["resolved_mode"], expected_mode)
+                self.assertEqual(
+                    report["scene_visual_enabled"],
+                    scene_visual_enabled,
+                )
+
     def test_height_scanners_follow_runtime_navigation_terrain(self) -> None:
         scanner = type("ScannerCfg", (), {"mesh_prim_paths": ["/World/ground"]})()
         scanner_base = type("ScannerCfg", (), {"mesh_prim_paths": ["/World/ground"]})()
@@ -1011,16 +1060,188 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
             [],
         )
 
-    def test_wrist_camera_uses_arm_link6_mount(self) -> None:
+    def test_front_and_wrist_camera_use_d436_calibrated_intrinsics(self) -> None:
         source_text = (
             PROJECT_ROOT / "source/simulation/isaaclab_runtime.py"
         ).read_text(encoding="utf-8")
 
-        self.assertIn(
-            'prim_path="{ENV_REGEX_NS}/Robot/arm_link6/arm_vla_camera"',
-            source_text,
+        self.assertEqual(D436_CAMERA_RESOLUTION_WH, (640, 480))
+        self.assertAlmostEqual(D436_CAMERA_FX_PX, 383.44608095)
+        self.assertAlmostEqual(D436_CAMERA_FY_PX, 383.52724198)
+        self.assertAlmostEqual(D436_CAMERA_CX_PX, 324.33479864)
+        self.assertAlmostEqual(D436_CAMERA_CY_PX, 238.90275478)
+        self.assertIn("OmniLensDistortionOpenCvPinholeAPI", source_text)
+        self.assertIn("func=_make_d436_camera_spawn_function()", source_text)
+
+        front = _front_camera_calibration_metadata()
+        wrist = _wrist_camera_calibration_metadata()
+        self.assertEqual(front["prim_path"], FRONT_CAMERA_PRIM_PATH)
+        self.assertEqual(front["position_xyz_m"], list(FRONT_CAMERA_MOUNT_POS_XYZ_M))
+        self.assertEqual(front["rotation_wxyz"], list(FRONT_CAMERA_MOUNT_ROT_WXYZ))
+        self.assertEqual(wrist["prim_path"], WRIST_CAMERA_PRIM_PATH)
+        self.assertEqual(wrist["position_xyz_m"], list(WRIST_CAMERA_MOUNT_POS_XYZ_M))
+        self.assertEqual(wrist["rotation_wxyz"], list(WRIST_CAMERA_MOUNT_ROT_WXYZ))
+        self.assertEqual(wrist["frame"], "arm_link6_T_camera_color_optical")
+        self.assertEqual(
+            wrist["raw_hand_eye_position_xyz_m"],
+            list(WRIST_CAMERA_HAND_EYE_POS_XYZ_M),
         )
-        self.assertIn("focal_length=18.0", source_text)
+        self.assertEqual(
+            wrist["visual_alignment"]["translation_xyz_m"],
+            list(WRIST_CAMERA_VISUAL_ALIGNMENT_OFFSET_CAMERA_XYZ_M),
+        )
+        self.assertFalse(wrist["visual_alignment"]["metric_recalibration"])
+        self.assertAlmostEqual(
+            wrist["visual_alignment"]["corrected_gripper_root_depth_m"],
+            0.06710842,
+        )
+        self.assertAlmostEqual(wrist["visual_alignment"]["near_clipping_range_m"], 0.03)
+        self.assertFalse(wrist["visual_alignment"]["gripper_root_expected_clipped"])
+        self.assertTrue(wrist["visual_alignment"]["preserves_optical_depth"])
+        self.assertEqual(
+            wrist["visual_alignment"]["alignment_goal"],
+            "move_gripper_base_below_image_keep_object_depth",
+        )
+        self.assertEqual(front["intrinsic_matrix"], wrist["intrinsic_matrix"])
+        self.assertEqual(front["distortion_coefficients"], [0.0] * 12)
+        self.assertEqual(wrist["distortion_coefficients"], [0.0] * 12)
+
+    def test_wrist_camera_vertical_reframe_avoids_coke_near_plane_intersection(self) -> None:
+        tcp_pose = (
+            -0.45438412500174064,
+            3.393663691446971,
+            0.2733301541955287,
+            0.5108464374599632,
+            0.48869183796949855,
+            0.5132395639544236,
+            -0.48662239449940103,
+        )
+        object_pose = (
+            -0.45561206340789795,
+            3.3738296031951904,
+            0.2761901617050171,
+            -0.6576460599899292,
+            -0.6488342881202698,
+            -0.27924594283103943,
+            -0.26179635524749756,
+        )
+        common = {
+            "tcp_pose_world": tcp_pose,
+            "object_pose_world": object_pose,
+            "object_radius_m": 0.03,
+            "object_half_length_m": 0.05364498018521855,
+            "near_clipping_m": 0.03,
+            "minimum_surface_margin_m": 0.01,
+        }
+
+        safe = _compute_wrist_camera_object_clearance_sample(**common)
+        clipped_v2 = _compute_wrist_camera_object_clearance_sample(
+            **common,
+            camera_position_link6_xyz_m=(
+                0.0896326297,
+                0.0025368080,
+                0.0552100820,
+            ),
+        )
+
+        self.assertTrue(safe["potentially_visible"])
+        self.assertTrue(safe["verified"])
+        self.assertFalse(safe["near_plane_intersection"])
+        self.assertGreater(safe["surface_depth_m"], 0.06)
+        self.assertFalse(clipped_v2["verified"])
+        self.assertTrue(clipped_v2["near_plane_intersection"])
+        self.assertLess(clipped_v2["surface_depth_m"], 0.03)
+
+    def test_d436_calibration_rejects_non_calibrated_resolution(self) -> None:
+        _validate_d436_camera_calibration_resolution("front", 640, 480)
+        _validate_d436_camera_calibration_resolution("wrist", 640, 480)
+
+        with self.assertRaisesRegex(ValueError, "front camera.*640x480"):
+            _validate_d436_camera_calibration_resolution("front", 320, 240)
+
+    def test_d436_intrinsic_matrix_override_preserves_exact_fx_fy_and_center(self) -> None:
+        matrices = np.ones((2, 3, 3), dtype=np.float64)
+
+        count = _overwrite_d436_intrinsic_matrices(matrices)
+
+        self.assertEqual(count, 2)
+        expected = np.array(
+            [
+                [D436_CAMERA_FX_PX, 0.0, D436_CAMERA_CX_PX],
+                [0.0, D436_CAMERA_FY_PX, D436_CAMERA_CY_PX],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+        np.testing.assert_allclose(matrices[0], expected)
+        np.testing.assert_allclose(matrices[1], expected)
+
+    def test_d436_opencv_schema_receives_exact_intrinsics_and_zero_distortion(self) -> None:
+        class FakeAttribute:
+            def __init__(self, name: str, values: dict[str, object]):
+                self._name = name
+                self._values = values
+
+            def IsValid(self) -> bool:
+                return True
+
+            def Set(self, value: object) -> bool:
+                self._values[self._name] = value
+                return True
+
+        class FakePrim:
+            def __init__(self):
+                self.api_names: list[str] = []
+                self.values: dict[str, object] = {}
+
+            def ApplyAPI(self, api_name: str) -> bool:
+                self.api_names.append(api_name)
+                return True
+
+            def GetAttribute(self, name: str) -> FakeAttribute:
+                return FakeAttribute(name, self.values)
+
+        prim = FakePrim()
+
+        fake_pxr = SimpleNamespace(
+            Gf=SimpleNamespace(Vec2i=lambda *values: tuple(values))
+        )
+        with patch.dict(sys.modules, {"pxr": fake_pxr}):
+            _apply_d436_camera_opencv_pinhole_schema(prim)
+
+        self.assertEqual(prim.api_names, ["OmniLensDistortionOpenCvPinholeAPI"])
+        self.assertEqual(prim.values["omni:lensdistortion:model"], "opencvPinhole")
+        self.assertEqual(
+            tuple(prim.values["omni:lensdistortion:opencvPinhole:imageSize"]),
+            D436_CAMERA_RESOLUTION_WH,
+        )
+        for name, expected_value in {
+            "fx": D436_CAMERA_FX_PX,
+            "fy": D436_CAMERA_FY_PX,
+            "cx": D436_CAMERA_CX_PX,
+            "cy": D436_CAMERA_CY_PX,
+        }.items():
+            self.assertEqual(
+                prim.values[f"omni:lensdistortion:opencvPinhole:{name}"],
+                expected_value,
+            )
+        for name in (
+            "k1",
+            "k2",
+            "p1",
+            "p2",
+            "k3",
+            "k4",
+            "k5",
+            "k6",
+            "s1",
+            "s2",
+            "s3",
+            "s4",
+        ):
+            self.assertEqual(
+                prim.values[f"omni:lensdistortion:opencvPinhole:{name}"],
+                0.0,
+            )
 
     def test_object_pose_writer_reuses_existing_xform_ops(self) -> None:
         source_text = (
@@ -1877,6 +2098,112 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         tcp_pose = runtime._read_tcp_pose()  # type: ignore[attr-defined]
 
         self.assertEqual(tcp_pose, (1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0))
+
+    def test_object_settle_action_stabilizes_supported_upright_pose_in_physics(self) -> None:
+        runtime, _adapter, _fake_runtime_obj = _fake_runtime()
+
+        class FakeRigidView:
+            def __init__(self, owner):
+                self.owner = owner
+                self.velocities = []
+
+            def set_world_poses(self, *, positions, orientations) -> None:
+                self.owner.position = np.asarray(
+                    positions.detach().cpu().tolist()[0],
+                    dtype=np.float64,
+                )
+                self.owner.orientation = np.asarray(
+                    orientations.detach().cpu().tolist()[0],
+                    dtype=np.float64,
+                )
+
+            def set_velocities(self, velocities) -> None:
+                values = velocities.detach().cpu().tolist()[0]
+                self.velocities.append(values)
+                self.owner.linear_velocity = np.asarray(values[:3], dtype=np.float64)
+
+        class FakeObject:
+            def __init__(self):
+                self.position = np.asarray((1.1, 2.1, 0.45), dtype=np.float64)
+                self.orientation = np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float64)
+                self.linear_velocity = np.asarray((0.2, -0.1, -0.3), dtype=np.float64)
+                self._rigid_prim_view = FakeRigidView(self)
+
+            def get_world_pose(self):
+                return self.position.copy(), self.orientation.copy()
+
+            def get_linear_velocity(self):
+                return self.linear_velocity.copy()
+
+        expected_world_quaternion = (0.70710678, 0.70710678, 0.0, 0.0)
+        spec = EpisodeSpec(
+            task_id=1,
+            episode_id=1,
+            instruction="test",
+            scene_usd="scene.usd",
+            nav_map="",
+            start=NavGoal(0.0, 0.0, 0.0),
+            pick_goal=NavGoal(0.0, 0.0, 0.0),
+            place_goal=None,
+            object_prim_path="/World/cola",
+            object_initial_pose=(1.0, 2.0, 0.5, 0.0, 0.0, 0.0),
+            place_target_pose=None,
+            raw_task={
+                "object_initialization": {
+                    "enabled": True,
+                    "mode": "supported_upright_v1",
+                    "dynamic_settle_steps_before_sleep": 1,
+                }
+            },
+        )
+        fake_object = FakeObject()
+        runtime._object = fake_object  # type: ignore[attr-defined]
+        runtime._episode_spec = spec  # type: ignore[attr-defined]
+        runtime._metadata["object_pose_setup_report"] = {  # type: ignore[attr-defined]
+            "authored_world_quaternion_wxyz": list(expected_world_quaternion)
+        }
+        sleep_reports = []
+        runtime._set_object_sleeping = (  # type: ignore[method-assign]
+            lambda *, enabled: sleep_reports.append(enabled)
+            or {"applied": True, "sleeping": enabled}
+        )
+
+        runtime.apply(
+            RobotAction(
+                source="object_settle",
+                metadata={"object_settle_active": True},
+            )
+        )
+
+        self.assertTrue(
+            np.allclose(fake_object.position, np.asarray((1.0, 2.0, 0.45)))
+        )
+        self.assertTrue(
+            np.allclose(fake_object.orientation, expected_world_quaternion)
+        )
+        self.assertTrue(
+            np.allclose(
+                fake_object._rigid_prim_view.velocities[-1],
+                [0.0, 0.0, -0.3, 0.0, 0.0, 0.0],
+            )
+        )
+        self.assertTrue(
+            runtime._metadata[  # type: ignore[attr-defined]
+                "used_object_initialization_pose_stabilization"
+            ]
+        )
+        self.assertEqual(
+            runtime._metadata[  # type: ignore[attr-defined]
+                "object_initialization_pose_stabilization_apply_count"
+            ],
+            1,
+        )
+        self.assertEqual(sleep_reports, [True])
+        self.assertTrue(
+            runtime._metadata[  # type: ignore[attr-defined]
+                "last_object_initialization_pose_stabilization_report"
+            ]["supported_pose_frozen_until_contact"]
+        )
 
 
 class FakeJointPositionMatrix:

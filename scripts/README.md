@@ -104,4 +104,8 @@ $ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
   --keep-window-open
 ```
 
+`--scene-light-mode auto` 是默认值：`full` 会自动启用所选 scene profile 的 USDA
+stage lights，`collision` 会自动使用相机补光；通常无需额外传
+`--scene-light-mode stage`，但仍可显式指定 `camera` 或 `stage` 覆盖。
+
 不要在无标记的情况下混合 collision 与 full 视觉数据。

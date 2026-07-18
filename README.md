@@ -34,6 +34,15 @@ graph LR
 - box2 放置区为中心局部 `0.10m × 0.05m`；pick standoff 为 `0.50..0.54m`，place standoff 为 `0.48..0.51m`。后者为 `0.08m` 导航交接容差预留了机械臂可达裕量。
 - 采样同步更新 robot/object/box pose、支撑 bbox、CuRobo proxy、placement/base goal、PCT/DWA keepout 和 rejection metadata；最多尝试 300 次。
 
+良渚 box1 任务还启用 `supported_upright_v1` 可乐初始化策略：前 8 个控制步允许
+Z 向沉降但保持随机化请求的 XY/直立姿态，接触箱面后 sleep，抓取接触再由 PhysX
+自动唤醒。导航前强制检查 XY/Z 偏差均不超过 `0.02m`、姿态角误差不超过
+`0.10rad`；超限以 `object_initialization_pose_invalid` 拒绝。历史 seed 7 的
+旧结果曾倾倒 `96.03°` 并漂移 `84.07mm`，修复后同 seed 倾角约
+`0.000005°`、XY 漂移约 `0.00019mm`，且完整 pipeline 与 251 行 LeRobot 数据均
+通过验收。输出为
+`/mnt/sage_data/outputs/pct_scene/seed7_object_init_upright_fix_v2_20260719/episode_000000`。
+
 当前属于 Phase 1 几何随机化：不随机光照、材质或相机，抓放目标使用
 live Mesh/PhysX 真值，RGB 用于数据记录而非当前控制定位。
 
@@ -276,6 +285,11 @@ $ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
 
 该命令使用 `full` Gaussian/NuRec 视觉，但不创建 RGB render product，适合在采集数据前检查场景、随机化和轨迹。在 8 GB RTX 4060 Laptop 与Isaac Sim 5.1 的已验证环境中，使用以下命令采集数据：
 
+灯光模式默认是 `auto`。只要最终视觉模式为 `full`，runtime 就会自动显示该场景
+USDA 中编写的 `DomeLight`、`SphereLight`、`RectLight` 等 stage lights，并关闭
+相机补光；`collision` 模式自动使用相机补光。因此上述命令无需再添加
+`--scene-light-mode stage`。需要覆盖自动行为时仍可显式指定 `camera` 或 `stage`。
+
 ```bash
 $ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
   --scene-profile liangzhu \
@@ -464,6 +478,27 @@ batch 会在输出根目录中保留每个源 episode，并将通过质量检查
 图像作为 LeRobot video feature 存储，不直接写入 Parquet。数据集的完整 schema、
 坐标系、单位和夹爪约定会写入 `meta/info.json` 和每个 episode 的 `task.csv`。
 
+front 与 wrist 均使用 D436 的 640×480 标定内参：`fx=383.44608095`、
+`fy=383.52724198`、`cx=324.33479864`、`cy=238.90275478`，OpenCV
+pinhole 的 12 个畸变系数均为 0。runtime 会尝试启用
+`OmniLensDistortionOpenCvPinholeAPI`；当前 IsaacLab 5.1 headless 实测回退到标准
+USD pinhole，实际渲染 K 为 `fx=fy=383.486661465`、`cx=320`、`cy=240`，最大
+偏差约 4.3 px，并记录在 `camera_runtime_intrinsics_report`。wrist camera 挂载在
+`arm_link6`。原始 `arm_link6_T_camera_color_optical` 手眼标定为位置
+`(0.0559054476, 0.0026732239, 0.0767149320)` m、wxyz 四元数
+`(0.3377891849, -0.6214992221, 0.6185057335, -0.3421810063)`。由于标定板弯曲，
+当前在 ROS optical frame 沿相机 `-Y` 平移 `0.02 m` 作为可追溯的视觉对齐
+修正，最终仿真安装位置为 `(0.0666580792, 0.0028071889, 0.0935779972)` m，
+旋转保持不变。该平移把夹爪近端移到图像下方，同时保持相机到 TCP 的光轴深度
+约 `0.1270 m`。禁止通过 optical `+Z` 前移和近裁剪隐藏底座：`+0.04 m` 已在
+良渚真实 pipeline 中复现 near clipping 切入可乐 mesh。box1→box2 任务启用逐帧
+wrist/目标表面间距门禁，要求可见目标表面至少位于 near clipping 之后 `0.01 m`；
+违规 episode 不进入训练集。历史 metadata 中若出现
+`hand_eye_calibration_with_visual_alignment_v2`，pipeline 重新处理该 summary 时会直接拒绝，
+对应输出不得用于 VLA 训练。该值来自实机画面约束，不是新的精密手眼标定。front camera
+仅更新为同一套内参，安装外参仍沿用现有
+`base/head_cam` 配置。front/wrist 请求非 640×480 分辨率时 runtime 会直接报错。
+
 ## 3. 常用命令与 CLI 参数
 
 ### 3.1 常用命令
@@ -492,7 +527,8 @@ PYTHONDONTWRITEBYTECODE=1 "$ISAAC_PYTHON" -B \
 
 GUI 适合观察单个 episode。`--keep-window-open` 会在 pipeline 结束后保留窗口。
 判断运行结果时，以 `summary.json` 和 `events.jsonl` 为准。该命令使用良渚默认的
-full/NuRec 场景，但不创建训练相机 render product。
+full/NuRec 场景并自动启用 USDA authored stage lights，但不创建训练相机 render
+product。
 
 #### Headless 单次 full-physics
 
@@ -601,7 +637,7 @@ smoke 测试和调试。
 | `--keep-window-open` / `--no-keep-window-open`       | 默认关闭               | 结束后保留 GUI；必须配合`--no-headless`                                                                                 |
 | `--headless` / `--no-headless`                       | 默认`--no-headless`    | 是否无界面运行                                                                                                          |
 | `--navigation-visual-mode`                           | 由 profile 提供        | 两个 profile 量产默认均为`collision`；良渚 GUI 可显式用 `full` 调试 Gaussian/NUREC                                      |
-| `--scene-light-mode`                                 | `camera`               | `camera` 用于保存图像；`stage` 使用 USD 原场景灯光                                                                      |
+| `--scene-light-mode`                                 | `auto`                 | 最终为 `full` 时自动使用当前 profile 的 USD 原场景灯光，`collision` 自动使用相机补光；可用 `camera`/`stage` 覆盖       |
 | `--global-planner`                                   | `pct`                  | 良渚默认使用 PCT；可切换为`astar`                                                                                       |
 | `--pct-collision-ply-path`                           | 由 profile 提供        | 每个场景必须声明自己的 collision PLY，禁止静默借用别墅地图                                                              |
 | `--pct-no-fallback` / `--pct-allow-fallback`         | 默认禁止回退           | 默认 PCT 失败即拒绝 episode                                                                                             |

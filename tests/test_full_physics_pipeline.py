@@ -11,6 +11,7 @@ from pathlib import Path
 from scripts.pipeline.run_full_physics_pipeline import (
     _build_parser,
     _locomotion_runtime_kwargs,
+    _navigation_visual_runtime_kwargs,
     _navigation_smoke_viewport_runtime_kwargs,
     _parse_args,
     main,
@@ -54,6 +55,7 @@ from source.pipeline.state_machine import (
 )
 from source.recording import JsonlEpisodeRecorder
 from source.simulation import InMemorySimulationRuntime
+from source.simulation.lighting import resolve_scene_light_mode
 from source.tasks import JsonTaskProvider
 
 
@@ -710,6 +712,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertTrue(args.randomize_task)
         self.assertTrue(args.randomize_base_goal)
         self.assertEqual(args.navigation_visual_mode, "collision")
+        self.assertEqual(args.scene_light_mode, "auto")
         self.assertEqual(args.overview_camera_mode, "fixed")
         self.assertEqual(args.overview_camera_prim_path, "/World/overview")
         self.assertFalse(args.pct_stair_float)
@@ -754,6 +757,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertFalse(args.keep_window_open)
         self.assertEqual(args.output_dir, "outputs/multi_floor")
         self.assertEqual(args.navigation_visual_mode, "collision")
+        self.assertEqual(args.scene_light_mode, "auto")
         self.assertTrue(args.record_video)
         self.assertEqual(args.video_mode, "composite")
         self.assertEqual(
@@ -761,6 +765,43 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             "configs/recording/multifloor_overview_camera_schedule.json",
         )
         self.assertTrue(args.pct_stair_float)
+
+    def test_full_visual_auto_uses_stage_lights_for_both_scene_profiles(self) -> None:
+        for argv in (
+            ["--scene-profile", "liangzhu", "--navigation-visual-mode", "full"],
+            ["--pct-multifloor", "--navigation-visual-mode", "full"],
+        ):
+            with self.subTest(argv=argv):
+                args = _parse_args(argv)
+                visual_runtime = _navigation_visual_runtime_kwargs(
+                    args.policy_profile,
+                    args.navigation_visual_mode,
+                )
+
+                self.assertTrue(visual_runtime["enable_scene_visual"])
+                self.assertEqual(
+                    resolve_scene_light_mode(
+                        args.scene_light_mode,
+                        scene_visual_enabled=bool(
+                            visual_runtime["enable_scene_visual"]
+                        ),
+                    ),
+                    "stage",
+                )
+
+    def test_scene_light_auto_and_explicit_override_modes(self) -> None:
+        self.assertEqual(
+            resolve_scene_light_mode("auto", scene_visual_enabled=False),
+            "camera",
+        )
+        self.assertEqual(
+            resolve_scene_light_mode("camera", scene_visual_enabled=True),
+            "camera",
+        )
+        self.assertEqual(
+            resolve_scene_light_mode("stage", scene_visual_enabled=False),
+            "stage",
+        )
 
     def test_pct_multifloor_stable_preset_preserves_explicit_overrides(self) -> None:
         args = _parse_args(
@@ -1416,6 +1457,82 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             )
             self.assertTrue(
                 simulation.read().metadata["object_settle_final_report"]["applied"]
+            )
+
+    def test_full_physics_rejects_historical_seed7_toppled_cola_during_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            task_path = (
+                PROJECT_ROOT
+                / "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json"
+            )
+            config = FullPhysicsConfig(
+                task_json=task_path,
+                output_dir=root,
+                full_physics=True,
+                navigation=_liangzhu_pct_navigation_settings(),
+                manipulation=ManipulationSettings(
+                    settle_object_before_navigation=True,
+                    object_settle_max_steps=5,
+                    object_settle_required_stable_steps=2,
+                ),
+            )
+            spec = JsonTaskProvider().load(task_path)
+            simulation = InMemorySimulationRuntime()
+            pipeline = create_full_physics_pipeline(
+                config=config,
+                episode_spec=spec,
+                episode_seed=7,
+                episode_dir=root / "episode",
+                simulation=simulation,  # type: ignore[arg-type]
+            )
+
+            build = pipeline.machine.tick(simulation.read())
+            simulation.apply(build.action)
+            reset = pipeline.machine.tick(simulation.read())
+            simulation.apply(reset.action)
+            simulation.step(render=False)
+
+            state = simulation.read()
+            toppled = replace(
+                state,
+                object_pose=(
+                    -0.513323962688446,
+                    6.43435525894165,
+                    0.167711079120636,
+                    0.43538790941238403,
+                    0.4164320230484009,
+                    0.22225421667099,
+                    -0.7665668725967407,
+                ),
+                object_velocity=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                metadata={
+                    **state.metadata,
+                    "object_pose_setup_report": {
+                        "authored_world_quaternion_wxyz": [
+                            0.6917987507794513,
+                            0.6917987507794512,
+                            -0.14633690040448005,
+                            -0.1463369004044801,
+                        ]
+                    },
+                },
+            )
+            rejected = pipeline.machine.tick(toppled)
+
+            self.assertEqual(pipeline.machine.state, PipelineState.FAILED)
+            self.assertEqual(
+                pipeline.machine.failure_reason,
+                "object_initialization_pose_invalid",
+            )
+            report = next(
+                event.metadata
+                for event in rejected.events
+                if event.name == "episode_failed"
+            )
+            self.assertEqual(
+                report["failure_reason"],
+                "object_initialization_pose_invalid",
             )
 
     def test_full_physics_waits_for_base_stability_before_pct_navigation(self) -> None:

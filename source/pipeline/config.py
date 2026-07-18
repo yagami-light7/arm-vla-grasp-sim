@@ -288,9 +288,9 @@ class RecordingSettings:
 
 @dataclass(frozen=True)
 class SceneLightingSettings:
-    """真实 Isaac stage 的灯光模式；默认先服务相机保存图像。"""
+    """真实 Isaac stage 的灯光模式；默认跟随有效视觉负载。"""
 
-    scene_light_mode: str = "camera"
+    scene_light_mode: str = "auto"
     camera_light_intensity: float = 3500.0
     camera_light_radius: float = 2.0
 
@@ -715,8 +715,8 @@ class FullPhysicsConfig:
             raise ValueError("recording primary_camera_key must be included in camera_keys")
         if not self.recording.overview_camera_prim_path.startswith("/"):
             raise ValueError("recording overview_camera_prim_path 必须是绝对 prim path")
-        if self.lighting.scene_light_mode not in {"camera", "stage"}:
-            raise ValueError("scene_light_mode 必须是 camera 或 stage")
+        if self.lighting.scene_light_mode not in {"auto", "camera", "stage"}:
+            raise ValueError("scene_light_mode 必须是 auto、camera 或 stage")
         if self.lighting.camera_light_intensity <= 0:
             raise ValueError("camera_light_intensity 必须为正数")
         if self.lighting.camera_light_radius <= 0:

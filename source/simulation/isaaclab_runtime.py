@@ -11,11 +11,448 @@ from typing import Any
 
 from source.interfaces import EpisodeSpec, RobotAction, SimulationState
 
+from .object_initialization import resolve_object_initialization_policy
 from .receptacle_support import (
     inspect_task_receptacle_support_stage,
     inspect_task_receptacle_support_usd,
 )
 from .scene_runtime import resolve_scene_runtime_settings
+
+FRONT_CAMERA_PRIM_PATH = "{ENV_REGEX_NS}/Robot/base/head_cam"
+FRONT_CAMERA_MOUNT_POS_XYZ_M = (0.28, 0.0, 0.07)
+FRONT_CAMERA_MOUNT_ROT_WXYZ = (0.5, -0.5, 0.5, -0.5)
+WRIST_CAMERA_PRIM_PATH = "{ENV_REGEX_NS}/Robot/arm_link6/arm_vla_camera"
+WRIST_CAMERA_CALIBRATION_FRAME = "arm_link6_T_camera_color_optical"
+D436_CAMERA_RESOLUTION_WH = (640, 480)
+WRIST_CAMERA_HAND_EYE_POS_XYZ_M = (
+    0.0559054476,
+    0.0026732239,
+    0.0767149320,
+)
+# 标定板弯曲时仅凭 PnP 无法可靠恢复精确外参。根据实机 wrist 图像只看到双爪、
+# 看不到夹爪根部的特征，在 camera_color_optical 坐标系沿 -Y 平移 20 mm，
+# 将近端夹爪移到画面下方。禁止再沿 optical +Z 前移：该方向会缩短相机到 TCP
+# 与抓持物体的深度，并使 30 mm near clipping 切入可乐 mesh。
+WRIST_CAMERA_VISUAL_ALIGNMENT_OFFSET_CAMERA_XYZ_M = (0.0, -0.02, 0.0)
+WRIST_CAMERA_MOUNT_POS_XYZ_M = (
+    0.0666580792,
+    0.0028071889,
+    0.0935779972,
+)
+WRIST_CAMERA_MOUNT_ROT_WXYZ = (
+    0.3377891849,
+    -0.6214992221,
+    0.6185057335,
+    -0.3421810063,
+)
+D436_CAMERA_FX_PX = 383.44608095
+D436_CAMERA_FY_PX = 383.52724198
+D436_CAMERA_CX_PX = 324.33479864
+D436_CAMERA_CY_PX = 238.90275478
+D436_CAMERA_DISTORTION_COEFFICIENTS = (0.0,) * 12
+D436_CAMERA_FALLBACK_FOCAL_LENGTH_MM = 18.0
+D436_CAMERA_FALLBACK_FX_FY_PX = 383.486661465
+D436_CAMERA_FALLBACK_CX_PX = 320.0
+D436_CAMERA_FALLBACK_CY_PX = 240.0
+# 普通 USD pinhole 仅作为 schema 不可用时的近似 fallback；精确渲染由 OpenCV schema 决定。
+D436_CAMERA_FALLBACK_HORIZONTAL_APERTURE_MM = 30.040158257372415
+D436_CAMERA_FALLBACK_VERTICAL_APERTURE_MM = 22.530118693029312
+WRIST_CAMERA_NEAR_CLIPPING_M = 0.03
+WRIST_CAMERA_TCP_OFFSET_LINK6_XYZ_M = (0.15757, 0.0, 0.0)
+
+
+def _d436_camera_intrinsics_metadata() -> dict[str, Any]:
+    """返回 front/wrist 共用的 D436 640x480 标定内参。"""
+
+    width, height = D436_CAMERA_RESOLUTION_WH
+    return {
+        "resolution_wh": [width, height],
+        "intrinsic_matrix": [
+            [D436_CAMERA_FX_PX, 0.0, D436_CAMERA_CX_PX],
+            [0.0, D436_CAMERA_FY_PX, D436_CAMERA_CY_PX],
+            [0.0, 0.0, 1.0],
+        ],
+        "intrinsics": {
+            "fx": D436_CAMERA_FX_PX,
+            "fy": D436_CAMERA_FY_PX,
+            "cx": D436_CAMERA_CX_PX,
+            "cy": D436_CAMERA_CY_PX,
+        },
+        "distortion_model": "opencv_pinhole",
+        "distortion_coefficients": list(D436_CAMERA_DISTORTION_COEFFICIENTS),
+        "renderer_schema_requested": "OmniLensDistortionOpenCvPinholeAPI",
+        "standard_usd_pinhole_fallback_intrinsics": {
+            "fx": D436_CAMERA_FALLBACK_FX_FY_PX,
+            "fy": D436_CAMERA_FALLBACK_FX_FY_PX,
+            "cx": D436_CAMERA_FALLBACK_CX_PX,
+            "cy": D436_CAMERA_FALLBACK_CY_PX,
+        },
+    }
+
+
+def _front_camera_calibration_metadata() -> dict[str, Any]:
+    """返回 front camera 的既有外参与新 D436 内参。"""
+
+    return {
+        "frame": "base_T_front_camera_color_optical",
+        "parent_link": "base",
+        "prim_path": FRONT_CAMERA_PRIM_PATH,
+        "position_xyz_m": list(FRONT_CAMERA_MOUNT_POS_XYZ_M),
+        "rotation_wxyz": list(FRONT_CAMERA_MOUNT_ROT_WXYZ),
+        "convention": "ros",
+        "extrinsics_source": "dwa_play_nav_cs",
+        **_d436_camera_intrinsics_metadata(),
+    }
+
+
+def _wrist_camera_calibration_metadata() -> dict[str, Any]:
+    """返回与 RGB 数据一同导出的 wrist camera 手眼标定参数。"""
+
+    return {
+        "frame": WRIST_CAMERA_CALIBRATION_FRAME,
+        "parent_link": "arm_link6",
+        "prim_path": WRIST_CAMERA_PRIM_PATH,
+        "position_xyz_m": list(WRIST_CAMERA_MOUNT_POS_XYZ_M),
+        "rotation_wxyz": list(WRIST_CAMERA_MOUNT_ROT_WXYZ),
+        "convention": "ros",
+        "extrinsics_source": "hand_eye_calibration_with_visual_alignment_v3",
+        "raw_hand_eye_position_xyz_m": list(WRIST_CAMERA_HAND_EYE_POS_XYZ_M),
+        "raw_hand_eye_rotation_wxyz": list(WRIST_CAMERA_MOUNT_ROT_WXYZ),
+        "visual_alignment": {
+            "method": "image_plane_vertical_reframe_with_grasp_clearance",
+            "offset_frame": "camera_color_optical",
+            "translation_xyz_m": list(
+                WRIST_CAMERA_VISUAL_ALIGNMENT_OFFSET_CAMERA_XYZ_M
+            ),
+            "rotation_rpy_rad": [0.0, 0.0, 0.0],
+            "raw_gripper_root_depth_m": 0.06710842,
+            "corrected_gripper_root_depth_m": 0.06710842,
+            "raw_tcp_depth_m": 0.12697417,
+            "corrected_tcp_depth_m": 0.12697417,
+            "near_clipping_range_m": WRIST_CAMERA_NEAR_CLIPPING_M,
+            "gripper_root_expected_clipped": False,
+            "predicted_initial_finger_top_v_px": 318.5,
+            "alignment_goal": "move_gripper_base_below_image_keep_object_depth",
+            "preserves_optical_depth": True,
+            "metric_recalibration": False,
+        },
+        **_d436_camera_intrinsics_metadata(),
+    }
+
+
+def _normalized_quaternion_wxyz(raw: Any, *, field_name: str) -> tuple[float, ...]:
+    """将 wxyz 四元数归一化，供纯 Python 相机安全检查使用。"""
+
+    try:
+        values = tuple(float(value) for value in raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} 必须是 4 维数值") from exc
+    if len(values) != 4 or not all(math.isfinite(value) for value in values):
+        raise ValueError(f"{field_name} 必须是 4 维有限数值")
+    norm = math.sqrt(sum(value * value for value in values))
+    if norm <= 1.0e-12:
+        raise ValueError(f"{field_name} 不能是零四元数")
+    return tuple(value / norm for value in values)
+
+
+def _rotate_vector_wxyz(quaternion: Any, vector: Any) -> tuple[float, float, float]:
+    """使用 wxyz 四元数旋转三维向量。"""
+
+    qw, qx, qy, qz = _normalized_quaternion_wxyz(
+        quaternion,
+        field_name="quaternion_wxyz",
+    )
+    try:
+        vx, vy, vz = (float(value) for value in vector)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("vector 必须是 3 维数值") from exc
+    if not all(math.isfinite(value) for value in (vx, vy, vz)):
+        raise ValueError("vector 必须是 3 维有限数值")
+    tx = 2.0 * (qy * vz - qz * vy)
+    ty = 2.0 * (qz * vx - qx * vz)
+    tz = 2.0 * (qx * vy - qy * vx)
+    return (
+        vx + qw * tx + qy * tz - qz * ty,
+        vy + qw * ty + qz * tx - qx * tz,
+        vz + qw * tz + qx * ty - qy * tx,
+    )
+
+
+def _compute_wrist_camera_object_clearance_sample(
+    *,
+    tcp_pose_world: Any,
+    object_pose_world: Any,
+    object_radius_m: float,
+    object_half_length_m: float,
+    near_clipping_m: float,
+    minimum_surface_margin_m: float,
+    camera_position_link6_xyz_m: Any = WRIST_CAMERA_MOUNT_POS_XYZ_M,
+) -> dict[str, Any]:
+    """计算圆柱目标与 wrist 相机近裁剪面的保守间距。"""
+
+    try:
+        tcp_pose = tuple(float(value) for value in tcp_pose_world)
+        object_pose = tuple(float(value) for value in object_pose_world)
+        camera_position = tuple(float(value) for value in camera_position_link6_xyz_m)
+        radius = float(object_radius_m)
+        half_length = float(object_half_length_m)
+        near_clipping = float(near_clipping_m)
+        minimum_margin = float(minimum_surface_margin_m)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("wrist camera clearance 输入必须是数值") from exc
+    if len(tcp_pose) != 7 or len(object_pose) != 7 or len(camera_position) != 3:
+        raise ValueError("tcp/object pose 必须为 7 维，camera position 必须为 3 维")
+    if not all(
+        math.isfinite(value)
+        for value in (*tcp_pose, *object_pose, *camera_position)
+    ):
+        raise ValueError("wrist camera clearance pose 必须全部有限")
+    if radius <= 0.0 or half_length <= 0.0 or near_clipping <= 0.0:
+        raise ValueError("物体尺寸和 near clipping 必须为正数")
+    if minimum_margin < 0.0 or not all(
+        math.isfinite(value)
+        for value in (radius, half_length, near_clipping, minimum_margin)
+    ):
+        raise ValueError("minimum surface margin 必须为非负有限数")
+
+    tcp_quaternion = tcp_pose[3:7]
+    object_quaternion = object_pose[3:7]
+    tcp_offset_world = _rotate_vector_wxyz(
+        tcp_quaternion,
+        WRIST_CAMERA_TCP_OFFSET_LINK6_XYZ_M,
+    )
+    link6_position_world = tuple(
+        tcp_pose[index] - tcp_offset_world[index] for index in range(3)
+    )
+    camera_offset_world = _rotate_vector_wxyz(tcp_quaternion, camera_position)
+    camera_center_world = tuple(
+        link6_position_world[index] + camera_offset_world[index]
+        for index in range(3)
+    )
+    camera_axis_link6 = {
+        "x": _rotate_vector_wxyz(WRIST_CAMERA_MOUNT_ROT_WXYZ, (1.0, 0.0, 0.0)),
+        "y": _rotate_vector_wxyz(WRIST_CAMERA_MOUNT_ROT_WXYZ, (0.0, 1.0, 0.0)),
+        "z": _rotate_vector_wxyz(WRIST_CAMERA_MOUNT_ROT_WXYZ, (0.0, 0.0, 1.0)),
+    }
+    camera_axis_world = {
+        axis: _rotate_vector_wxyz(tcp_quaternion, vector)
+        for axis, vector in camera_axis_link6.items()
+    }
+    relative_world = tuple(
+        object_pose[index] - camera_center_world[index] for index in range(3)
+    )
+
+    def _dot(left: Any, right: Any) -> float:
+        return float(sum(float(left[index]) * float(right[index]) for index in range(3)))
+
+    center_camera = tuple(
+        _dot(relative_world, camera_axis_world[axis]) for axis in ("x", "y", "z")
+    )
+    object_axis_world = _rotate_vector_wxyz(
+        object_quaternion,
+        (0.0, 0.0, 1.0),
+    )
+    axis_alignment = min(1.0, abs(_dot(camera_axis_world["z"], object_axis_world)))
+    projected_half_depth = (
+        half_length * axis_alignment
+        + radius * math.sqrt(max(0.0, 1.0 - axis_alignment * axis_alignment))
+    )
+    center_depth = center_camera[2]
+    surface_depth = center_depth - projected_half_depth
+    far_surface_depth = center_depth + projected_half_depth
+    surface_clearance = surface_depth - near_clipping
+
+    width, height = D436_CAMERA_RESOLUTION_WH
+    bounding_sphere_radius = math.hypot(half_length, radius)
+    depth_for_fov = max(center_depth, near_clipping)
+    horizontal_limit = (
+        depth_for_fov
+        * max(D436_CAMERA_CX_PX, width - D436_CAMERA_CX_PX)
+        / D436_CAMERA_FX_PX
+        + bounding_sphere_radius
+    )
+    vertical_limit = (
+        depth_for_fov
+        * max(D436_CAMERA_CY_PX, height - D436_CAMERA_CY_PX)
+        / D436_CAMERA_FY_PX
+        + bounding_sphere_radius
+    )
+    potentially_visible = bool(
+        far_surface_depth > near_clipping
+        and abs(center_camera[0]) <= horizontal_limit
+        and abs(center_camera[1]) <= vertical_limit
+    )
+    verified = bool(not potentially_visible or surface_clearance >= minimum_margin)
+    return {
+        "shape": "cylinder_local_z",
+        "camera_center_world_xyz_m": list(camera_center_world),
+        "object_center_camera_xyz_m": list(center_camera),
+        "object_axis_camera_z_abs_dot": axis_alignment,
+        "projected_half_depth_m": projected_half_depth,
+        "surface_depth_m": surface_depth,
+        "far_surface_depth_m": far_surface_depth,
+        "near_clipping_m": near_clipping,
+        "minimum_surface_margin_m": minimum_margin,
+        "surface_clearance_m": surface_clearance,
+        "potentially_visible": potentially_visible,
+        "near_plane_intersection": bool(
+            potentially_visible
+            and surface_depth < near_clipping < far_surface_depth
+        ),
+        "verified": verified,
+    }
+
+
+def _validate_d436_camera_calibration_resolution(
+    camera_name: str,
+    width: int,
+    height: int,
+) -> None:
+    """拒绝把 640x480 标定参数静默用于其他渲染分辨率。"""
+
+    expected_width, expected_height = D436_CAMERA_RESOLUTION_WH
+    if (int(width), int(height)) != (expected_width, expected_height):
+        raise ValueError(
+            f"{camera_name} camera 的 D436 标定内参仅适用于 "
+            f"{expected_width}x{expected_height}，当前请求为 {width}x{height}"
+        )
+
+
+def _apply_d436_camera_opencv_pinhole_schema(prim: Any) -> bool:
+    """在 USD Camera 上写入 Isaac Sim 5.1 支持的完整 OpenCV 内参。"""
+
+    from pxr import Gf
+
+    try:
+        schema_applied = prim.ApplyAPI("OmniLensDistortionOpenCvPinholeAPI")
+    except Exception:
+        # IsaacLab 的精简 headless experience 可能未加载 lens-distortion schema。
+        # 标准 USD pinhole fallback 已按平均焦距配置，不能因此阻塞 pipeline。
+        return False
+    if not schema_applied:
+        return False
+    attributes: tuple[tuple[str, Any], ...] = (
+        ("omni:lensdistortion:model", "opencvPinhole"),
+        (
+            "omni:lensdistortion:opencvPinhole:imageSize",
+            Gf.Vec2i(*D436_CAMERA_RESOLUTION_WH),
+        ),
+        ("omni:lensdistortion:opencvPinhole:fx", D436_CAMERA_FX_PX),
+        ("omni:lensdistortion:opencvPinhole:fy", D436_CAMERA_FY_PX),
+        ("omni:lensdistortion:opencvPinhole:cx", D436_CAMERA_CX_PX),
+        ("omni:lensdistortion:opencvPinhole:cy", D436_CAMERA_CY_PX),
+    )
+    coefficient_names = (
+        "k1",
+        "k2",
+        "p1",
+        "p2",
+        "k3",
+        "k4",
+        "k5",
+        "k6",
+        "s1",
+        "s2",
+        "s3",
+        "s4",
+    )
+    attributes += tuple(
+        (f"omni:lensdistortion:opencvPinhole:{name}", value)
+        for name, value in zip(
+            coefficient_names,
+            D436_CAMERA_DISTORTION_COEFFICIENTS,
+        )
+    )
+    for attribute_name, value in attributes:
+        attribute = prim.GetAttribute(attribute_name)
+        if not attribute.IsValid() or not attribute.Set(value):
+            return False
+    return True
+
+
+def _enable_d436_lens_distortion_schema() -> dict[str, Any]:
+    """显式启用 Isaac Sim camera schema；失败时由标准 USD pinhole 安全回退。"""
+
+    extension_name = "omni.usd.schema.omni_lens_distortion"
+    try:
+        import omni.kit.app
+
+        manager = omni.kit.app.get_app().get_extension_manager()
+        enabled_before = bool(manager.is_extension_enabled(extension_name))
+        if not enabled_before:
+            manager.set_extension_enabled_immediate(extension_name, True)
+        enabled_after = bool(manager.is_extension_enabled(extension_name))
+    except Exception as exc:
+        return {
+            "requested": True,
+            "extension": extension_name,
+            "enabled": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    return {
+        "requested": True,
+        "extension": extension_name,
+        "enabled_before": enabled_before,
+        "enabled": enabled_after,
+    }
+
+
+def _make_d436_camera_spawn_function() -> Any:
+    """构造先写入标定 schema、再克隆到各环境的 Camera spawner。"""
+
+    from isaaclab.sim.spawners.sensors.sensors import spawn_camera
+    from isaaclab.sim.utils import clone
+
+    @clone
+    def _spawn_calibrated_d436_camera(
+        prim_path: str,
+        cfg: Any,
+        translation: tuple[float, float, float] | None = None,
+        orientation: tuple[float, float, float, float] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        # 调用未包装实现，确保标定 schema 在 clone 复制 source prim 前写入。
+        prim = spawn_camera.__wrapped__(
+            prim_path,
+            cfg,
+            translation=translation,
+            orientation=orientation,
+            **kwargs,
+        )
+        _apply_d436_camera_opencv_pinhole_schema(prim)
+        return prim
+
+    return _spawn_calibrated_d436_camera
+
+
+def _overwrite_d436_intrinsic_matrices(matrices: Any) -> int:
+    """把 IsaacLab 的居中近似 K 改为渲染器实际使用的标定 K。"""
+
+    shape = tuple(int(value) for value in getattr(matrices, "shape", ()))
+    if len(shape) < 2 or shape[-2:] != (3, 3):
+        raise ValueError(f"camera intrinsic matrix shape 非法：{shape}")
+    matrices[..., :, :] = 0.0
+    matrices[..., 0, 0] = D436_CAMERA_FX_PX
+    matrices[..., 0, 2] = D436_CAMERA_CX_PX
+    matrices[..., 1, 1] = D436_CAMERA_FY_PX
+    matrices[..., 1, 2] = D436_CAMERA_CY_PX
+    matrices[..., 2, 2] = 1.0
+    return math.prod(shape[:-2]) if len(shape) > 2 else 1
+
+
+def _overwrite_d436_fallback_intrinsic_matrices(matrices: Any) -> int:
+    """写入标准 USD pinhole 在当前分辨率下实际使用的中心主点近似 K。"""
+
+    shape = tuple(int(value) for value in getattr(matrices, "shape", ()))
+    if len(shape) < 2 or shape[-2:] != (3, 3):
+        raise ValueError(f"camera intrinsic matrix shape 非法：{shape}")
+    matrices[..., :, :] = 0.0
+    matrices[..., 0, 0] = D436_CAMERA_FALLBACK_FX_FY_PX
+    matrices[..., 0, 2] = D436_CAMERA_FALLBACK_CX_PX
+    matrices[..., 1, 1] = D436_CAMERA_FALLBACK_FX_FY_PX
+    matrices[..., 1, 2] = D436_CAMERA_FALLBACK_CY_PX
+    matrices[..., 2, 2] = 1.0
+    return math.prod(shape[:-2]) if len(shape) > 2 else 1
 
 
 @dataclass(frozen=True)
@@ -45,7 +482,7 @@ class IsaacLabNavigationRuntimeConfig:
     enable_front_camera: bool = False
     front_camera_height: int = 480
     front_camera_width: int = 640
-    # 末端相机外参与 DWA ground-pick 环境保持一致；输出分辨率由 recorder 配置统一。
+    # 末端相机使用 arm_link6_T_camera_color_optical 手眼标定，只支持 640x480。
     enable_wrist_camera: bool = False
     wrist_camera_height: int = 480
     wrist_camera_width: int = 640
@@ -1131,6 +1568,9 @@ class IsaacLabNavigationRuntime:
             "used_base_teleport": False,
             "used_direct_joint_state": False,
             "used_object_teleport": False,
+            "used_object_initialization_pose_stabilization": False,
+            "object_initialization_pose_stabilization_apply_count": 0,
+            "last_object_initialization_pose_stabilization_report": None,
             "used_kinematic_object_follow": False,
             "used_visual_replay": False,
             "used_manipulation_base_lock": False,
@@ -1239,6 +1679,7 @@ class IsaacLabNavigationRuntime:
         self._navigation_object_relative_pose = None
         self._navigation_object_follow_root_target = None
         self._navigation_object_follow_target_pose = None
+        self._metadata.pop("wrist_camera_object_clearance_report", None)
         self._metadata.update(
             {
                 "seed": int(seed),
@@ -1268,6 +1709,9 @@ class IsaacLabNavigationRuntime:
                 "used_navigation_support_joint_lock": False,
                 "used_navigation_joint_pose_lock": False,
                 "used_object_teleport": False,
+                "used_object_initialization_pose_stabilization": False,
+                "object_initialization_pose_stabilization_apply_count": 0,
+                "last_object_initialization_pose_stabilization_report": None,
                 "used_kinematic_object_follow": False,
                 "navigation_object_follow_active": False,
                 "navigation_object_follow_apply_count": 0,
@@ -1285,6 +1729,9 @@ class IsaacLabNavigationRuntime:
                 "last_navigation_joint_pose_lock_report": None,
                 # reset 事件写入初始位姿，不属于导航执行中的 teleport。
                 "reset_pose_source": "isaaclab_reset_event",
+                "object_initialization_policy": resolve_object_initialization_policy(
+                    episode_spec.raw_task
+                ),
             }
         )
         self._metadata["object_reset_for_navigation_report"] = (
@@ -1318,6 +1765,11 @@ class IsaacLabNavigationRuntime:
         root_linear = robot.data.root_lin_vel_w[0]
         root_angular = robot.data.root_ang_vel_w[0]
         object_pose, object_velocity = self._read_object_state()
+        tcp_pose = self._read_tcp_pose()
+        self._update_wrist_camera_object_clearance(
+            tcp_pose_world=tcp_pose,
+            object_pose_world=object_pose,
+        )
         metadata = {
             **self._metadata,
             "environment_terminated": self._environment_terminated,
@@ -1345,7 +1797,7 @@ class IsaacLabNavigationRuntime:
             ),
             joint_positions=_as_tuple(robot.data.joint_pos[0]),
             joint_velocities=_as_tuple(robot.data.joint_vel[0]),
-            tcp_pose=self._read_tcp_pose(),
+            tcp_pose=tcp_pose,
             object_pose=object_pose,
             object_velocity=object_velocity,
             camera_images=self._read_camera_images(),
@@ -1354,6 +1806,7 @@ class IsaacLabNavigationRuntime:
 
     def apply(self, action: RobotAction) -> None:
         self._require_ready()
+        self._apply_object_initialization_pose_stabilization(action)
         self._configure_manipulation_base_lock(action)
         arm_report = self._stage_arm_target(action)
         gripper_report = self._stage_gripper_target(action)
@@ -2053,6 +2506,9 @@ class IsaacLabNavigationRuntime:
             agent_cfg: RslRlBaseRunnerCfg,
         ) -> None:
             self._metadata["visual_scene_report"] = self._load_visual_scene(episode_spec)
+            self._metadata["d436_lens_distortion_schema_report"] = (
+                _enable_d436_lens_distortion_schema()
+            )
             self._configure_env(env_cfg, episode_spec, sim_utils)
             env_cfg.seed = int(agent_cfg.seed)
             env = gym.make(
@@ -2067,6 +2523,9 @@ class IsaacLabNavigationRuntime:
                     )
                     else None
                 ),
+            )
+            self._metadata["camera_runtime_intrinsics_report"] = (
+                self._apply_d436_runtime_intrinsics(env.unwrapped)
             )
             if self._config.patch_gripper_collision or self._config.patch_apple_collision:
                 from source.simulation.collision_patch import (
@@ -2178,6 +2637,65 @@ class IsaacLabNavigationRuntime:
                 label="after_object_reader_initialize",
             )
         )
+
+    def _apply_d436_runtime_intrinsics(self, runtime: Any) -> dict[str, Any]:
+        """让 IsaacLab 对外暴露的 K 与 OpenCV schema 的实际渲染内参一致。"""
+
+        camera_sensors = []
+        if self._config.enable_front_camera:
+            camera_sensors.append(("front", "head_camera"))
+        if self._config.enable_wrist_camera:
+            camera_sensors.append(("wrist", "arm_camera"))
+        report: dict[str, Any] = {
+            "applied": True,
+            "intrinsics": _d436_camera_intrinsics_metadata(),
+            "cameras": {},
+        }
+        for camera_name, sensor_name in camera_sensors:
+            try:
+                sensor = runtime.scene[sensor_name]
+                matrices = sensor._data.intrinsic_matrices
+                sensor_prims = sensor._sensor_prims
+                camera_prim = sensor_prims[0].GetPrim()
+                model_attribute = camera_prim.GetAttribute("omni:lensdistortion:model")
+                renderer_schema_applied = bool(
+                    model_attribute.IsValid()
+                    and model_attribute.Get() == "opencvPinhole"
+                )
+                if renderer_schema_applied:
+                    matrix_count = _overwrite_d436_intrinsic_matrices(matrices)
+                    effective_intrinsics = {
+                        "fx": D436_CAMERA_FX_PX,
+                        "fy": D436_CAMERA_FY_PX,
+                        "cx": D436_CAMERA_CX_PX,
+                        "cy": D436_CAMERA_CY_PX,
+                    }
+                else:
+                    matrix_count = _overwrite_d436_fallback_intrinsic_matrices(
+                        matrices
+                    )
+                    effective_intrinsics = {
+                        "fx": D436_CAMERA_FALLBACK_FX_FY_PX,
+                        "fy": D436_CAMERA_FALLBACK_FX_FY_PX,
+                        "cx": D436_CAMERA_FALLBACK_CX_PX,
+                        "cy": D436_CAMERA_FALLBACK_CY_PX,
+                    }
+            except (KeyError, AttributeError, TypeError, ValueError) as exc:
+                report["applied"] = False
+                report["cameras"][camera_name] = {
+                    "applied": False,
+                    "sensor_name": sensor_name,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                continue
+            report["cameras"][camera_name] = {
+                "applied": True,
+                "sensor_name": sensor_name,
+                "matrix_count": matrix_count,
+                "renderer_schema_applied": renderer_schema_applied,
+                "effective_intrinsics": effective_intrinsics,
+            }
+        return report
 
     def _robot_prim_path(self) -> str:
         """兼容不同 Isaac Lab 版本的 Articulation 路径字段。"""
@@ -2366,22 +2884,29 @@ class IsaacLabNavigationRuntime:
                 keyword_rest_offset=self._config.apple_collision_rest_offset,
             )
         if self._config.enable_front_camera:
-            # 与 DWA/play_nav_cs.py 使用同一相机内参、外参和 ROS optical frame 约定。
+            _validate_d436_camera_calibration_resolution(
+                "front",
+                self._config.front_camera_width,
+                self._config.front_camera_height,
+            )
+            # 保留 DWA/play_nav_cs.py 的安装外参；内参改用 D436 640x480 标定值。
             env_cfg.scene.head_camera = CameraCfg(
-                prim_path="{ENV_REGEX_NS}/Robot/base/head_cam",
+                prim_path=FRONT_CAMERA_PRIM_PATH,
                 update_period=0.0,
                 height=self._config.front_camera_height,
                 width=self._config.front_camera_width,
                 data_types=["rgb"],
                 spawn=sim_utils.PinholeCameraCfg(
-                    focal_length=24.0,
+                    func=_make_d436_camera_spawn_function(),
+                    focal_length=D436_CAMERA_FALLBACK_FOCAL_LENGTH_MM,
                     focus_distance=400.0,
-                    horizontal_aperture=20.955,
+                    horizontal_aperture=D436_CAMERA_FALLBACK_HORIZONTAL_APERTURE_MM,
+                    vertical_aperture=D436_CAMERA_FALLBACK_VERTICAL_APERTURE_MM,
                     clipping_range=(0.1, 1.0e5),
                 ),
                 offset=CameraCfg.OffsetCfg(
-                    pos=(0.28, 0.0, 0.07),
-                    rot=(0.5, -0.5, 0.5, -0.5),
+                    pos=FRONT_CAMERA_MOUNT_POS_XYZ_M,
+                    rot=FRONT_CAMERA_MOUNT_ROT_WXYZ,
                     convention="ros",
                 ),
             )
@@ -2394,25 +2919,32 @@ class IsaacLabNavigationRuntime:
                 ],
                 "data_types": ["rgb"],
                 "source": "dwa_play_nav_cs",
+                "calibration": _front_camera_calibration_metadata(),
             }
         if self._config.enable_wrist_camera:
-            # 对齐 DWA ground-pick 的 arm_camera：挂在稳定存在的 arm_link6，
-            # 相机原点于夹爪中心略微偏移，沿末端局部 +X 方向观察。
+            _validate_d436_camera_calibration_resolution(
+                "wrist",
+                self._config.wrist_camera_width,
+                self._config.wrist_camera_height,
+            )
+            # 使用 arm_link6_T_camera_color_optical 手眼标定结果。
             env_cfg.scene.arm_camera = CameraCfg(
-                prim_path="{ENV_REGEX_NS}/Robot/arm_link6/arm_vla_camera",
+                prim_path=WRIST_CAMERA_PRIM_PATH,
                 update_period=0.0,
                 height=self._config.wrist_camera_height,
                 width=self._config.wrist_camera_width,
                 data_types=["rgb"],
                 spawn=sim_utils.PinholeCameraCfg(
-                    focal_length=18.0,
+                    func=_make_d436_camera_spawn_function(),
+                    focal_length=D436_CAMERA_FALLBACK_FOCAL_LENGTH_MM,
                     focus_distance=400.0,
-                    horizontal_aperture=20.955,
-                    clipping_range=(0.03, 5.0),
+                    horizontal_aperture=D436_CAMERA_FALLBACK_HORIZONTAL_APERTURE_MM,
+                    vertical_aperture=D436_CAMERA_FALLBACK_VERTICAL_APERTURE_MM,
+                    clipping_range=(WRIST_CAMERA_NEAR_CLIPPING_M, 5.0),
                 ),
                 offset=CameraCfg.OffsetCfg(
-                    pos=(0.0, 0.0, 0.10),
-                    rot=(0.353553, -0.612372, 0.612372, -0.353553),
+                    pos=WRIST_CAMERA_MOUNT_POS_XYZ_M,
+                    rot=WRIST_CAMERA_MOUNT_ROT_WXYZ,
                     convention="ros",
                 ),
             )
@@ -2425,7 +2957,8 @@ class IsaacLabNavigationRuntime:
                     self._config.wrist_camera_width,
                 ],
                 "data_types": ["rgb"],
-                "source": "dwa_ground_pick_arm_camera",
+                "source": "hand_eye_calibration_with_visual_alignment_v3",
+                "calibration": _wrist_camera_calibration_metadata(),
             }
         if self._config.enable_overview_camera:
             import omni.usd
@@ -2553,16 +3086,28 @@ class IsaacLabNavigationRuntime:
     def _configure_scene_lighting(self, stage: Any, *, reason: str) -> dict[str, Any]:
         """根据 runtime 配置切换 stage light / camera light。"""
 
-        from source.simulation.lighting import configure_scene_lighting
+        from source.simulation.lighting import (
+            configure_scene_lighting,
+            resolve_scene_light_mode,
+        )
+
+        requested_mode = str(self._config.scene_light_mode).lower()
+        resolved_mode = resolve_scene_light_mode(
+            requested_mode,
+            scene_visual_enabled=bool(self._config.enable_scene_visual),
+        )
 
         report = configure_scene_lighting(
             stage=stage,
-            mode=self._config.scene_light_mode,
+            mode=resolved_mode,
             camera_light_name=self._config.camera_light_name,
             camera_light_intensity=self._config.camera_light_intensity,
             camera_light_radius=self._config.camera_light_radius,
         )
         report["reason"] = reason
+        report["requested_mode"] = requested_mode
+        report["resolved_mode"] = resolved_mode
+        report["scene_visual_enabled"] = bool(self._config.enable_scene_visual)
         return report
 
     def _hide_object_collision_visual(self, stage: Any) -> dict[str, Any]:
@@ -2855,6 +3400,176 @@ class IsaacLabNavigationRuntime:
             "rigid_body_prim_path": rigid_body_prim_path,
         }
 
+    def _object_initialization_target_world_pose(
+        self,
+        episode_spec: EpisodeSpec,
+        *,
+        pose_report: dict[str, Any] | None = None,
+    ) -> tuple[
+        tuple[float, float, float],
+        tuple[float, float, float, float],
+    ]:
+        if episode_spec.object_initial_pose is None:
+            raise RuntimeError("object initialization target pose is unavailable")
+        x, y, z, roll, pitch, yaw = episode_spec.object_initial_pose
+        report = pose_report or self._metadata.get("object_pose_setup_report") or {}
+        authored_quaternion = report.get("authored_world_quaternion_wxyz")
+        if isinstance(authored_quaternion, (list, tuple)) and len(
+            authored_quaternion
+        ) >= 4:
+            world_quaternion = tuple(
+                float(authored_quaternion[index]) for index in range(4)
+            )
+        else:
+            world_quaternion = _quat_wxyz_from_rpy(roll, pitch, yaw)
+        return (
+            (float(x), float(y), float(z)),
+            world_quaternion,
+        )
+
+    def _write_object_physics_state(
+        self,
+        *,
+        position_xyz: tuple[float, float, float],
+        quaternion_wxyz: tuple[float, float, float, float],
+        velocity_xyz_rpy: tuple[float, float, float, float, float, float],
+    ) -> dict[str, Any]:
+        """Write the live PhysX state without rewriting authored USD xform ops."""
+
+        if self._object is None:
+            return {"applied": False, "reason": "object_reader_unavailable"}
+        rigid_view = getattr(self._object, "_rigid_prim_view", None)
+        if rigid_view is None or not hasattr(rigid_view, "set_world_poses"):
+            raise RuntimeError("SingleRigidPrim 缺少 GPU world pose 写入接口。")
+        if not hasattr(rigid_view, "set_velocities"):
+            raise RuntimeError("SingleRigidPrim 缺少 GPU 合并速度写入接口。")
+        import torch
+
+        device = getattr(self._runtime, "device", "cpu")
+        rigid_view.set_world_poses(
+            positions=torch.tensor(
+                [position_xyz],
+                dtype=torch.float32,
+                device=device,
+            ),
+            orientations=torch.tensor(
+                [quaternion_wxyz],
+                dtype=torch.float32,
+                device=device,
+            ),
+        )
+        rigid_view.set_velocities(
+            torch.tensor(
+                [velocity_xyz_rpy],
+                dtype=torch.float32,
+                device=device,
+            )
+        )
+        return {
+            "applied": True,
+            "position_xyz": list(position_xyz),
+            "quaternion_wxyz": list(quaternion_wxyz),
+            "velocity_xyz_rpy": list(velocity_xyz_rpy),
+            "pose_write_api": "RigidPrim.set_world_poses_physics_tensor",
+            "usd_xform_ops_modified": False,
+        }
+
+    def _stabilize_object_initialization_pose(
+        self,
+        episode_spec: EpisodeSpec,
+        *,
+        timing: str,
+        preserve_vertical_velocity: bool,
+    ) -> dict[str, Any]:
+        if self._object is None:
+            return {"applied": False, "reason": "object_reader_unavailable"}
+        requested_position, requested_quaternion = (
+            self._object_initialization_target_world_pose(episode_spec)
+        )
+        current_position_raw, current_quaternion_raw = self._object.get_world_pose()
+        current_position = tuple(float(value) for value in _as_tuple(current_position_raw))
+        current_quaternion = tuple(
+            float(value) for value in _as_tuple(current_quaternion_raw)
+        )
+        current_linear_velocity = tuple(
+            float(value) for value in _as_tuple(self._object.get_linear_velocity())
+        )
+        target_position = (
+            requested_position[0],
+            requested_position[1],
+            current_position[2],
+        )
+        target_velocity = (
+            0.0,
+            0.0,
+            current_linear_velocity[2] if preserve_vertical_velocity else 0.0,
+            0.0,
+            0.0,
+            0.0,
+        )
+        write_report = self._write_object_physics_state(
+            position_xyz=target_position,
+            quaternion_wxyz=requested_quaternion,
+            velocity_xyz_rpy=target_velocity,
+        )
+        apply_count = int(
+            self._metadata.get(
+                "object_initialization_pose_stabilization_apply_count",
+                0,
+            )
+        ) + 1
+        report = {
+            **write_report,
+            "timing": timing,
+            "apply_count": apply_count,
+            "requested_position_xyz": list(requested_position),
+            "pose_before": [*current_position, *current_quaternion],
+            "preserved_current_z": True,
+            "preserved_vertical_velocity": bool(preserve_vertical_velocity),
+            "initialization_only": True,
+        }
+        self._metadata.update(
+            {
+                "used_object_initialization_pose_stabilization": True,
+                "object_initialization_pose_stabilization_apply_count": apply_count,
+                "last_object_initialization_pose_stabilization_report": report,
+            }
+        )
+        return report
+
+    def _apply_object_initialization_pose_stabilization(
+        self,
+        action: RobotAction,
+    ) -> None:
+        if action.metadata.get("object_settle_active") is not True:
+            return
+        if self._episode_spec is None:
+            return
+        policy = resolve_object_initialization_policy(self._episode_spec.raw_task)
+        if not policy.get("enabled") or not policy.get(
+            "stabilize_xy_and_orientation_during_settle"
+        ):
+            return
+        stabilization_report = self._stabilize_object_initialization_pose(
+            self._episode_spec,
+            timing="before_object_settle_physics_step",
+            preserve_vertical_velocity=True,
+        )
+        dynamic_steps = int(policy["dynamic_settle_steps_before_sleep"])
+        if int(stabilization_report.get("apply_count", 0)) < dynamic_steps:
+            return
+        sleep_report = self._set_object_sleeping(enabled=True)
+        stabilization_report.update(
+            {
+                "dynamic_settle_steps_before_sleep": dynamic_steps,
+                "sleep_after_dynamic_settle": sleep_report,
+                "supported_pose_frozen_until_contact": True,
+            }
+        )
+        self._metadata[
+            "last_object_initialization_pose_stabilization_report"
+        ] = stabilization_report
+
     def prepare_object_for_pick(self, episode_spec: EpisodeSpec) -> dict[str, Any]:
         """对齐 baseline：规划前恢复 task 姿态并清零速度。
 
@@ -2894,6 +3609,18 @@ class IsaacLabNavigationRuntime:
 
         if self._object is None:
             return {"applied": False, "reason": "object_reader_unavailable"}
+        initialization_policy = resolve_object_initialization_policy(
+            episode_spec.raw_task
+        )
+        stabilization_report: dict[str, Any] | None = None
+        if initialization_policy.get("enabled") and initialization_policy.get(
+            "stabilize_xy_and_orientation_during_settle"
+        ):
+            stabilization_report = self._stabilize_object_initialization_pose(
+                episode_spec,
+                timing="finalize_object_settle",
+                preserve_vertical_velocity=False,
+            )
         import torch
 
         position, orientation = self._object.get_world_pose()
@@ -2939,6 +3666,8 @@ class IsaacLabNavigationRuntime:
             "requested_quaternion_wxyz": requested_quaternion,
             "requested_position_error_m": requested_position_error,
             "requested_orientation_error_rad": requested_orientation_error,
+            "object_initialization_policy": initialization_policy,
+            "initialization_pose_stabilization_report": stabilization_report,
             "sleep_report": sleep_report,
             "baseline_source": "settled_physx_pose",
         }
@@ -2964,8 +3693,6 @@ class IsaacLabNavigationRuntime:
                 "reason": "object_reader_or_initial_pose_missing",
             }
 
-        import torch
-
         x, y, z, roll, pitch, yaw = episode_spec.object_initial_pose
         if self._settled_object_pose is None:
             pose_report = self._apply_object_pose(episode_spec)
@@ -2987,18 +3714,28 @@ class IsaacLabNavigationRuntime:
                 "reason": "reuse_settled_physx_pose",
                 "settled_pose": self._settled_object_pose,
             }
-        device = getattr(self._runtime, "device", "cpu")
-        # 不能调用 SingleRigidPrim.set_world_pose：该 API 会把传入的世界四元数
-        # 直接写回根 Orient，破坏任务 RPY 与 unitsResolve 的局部组合语义。
-        # 物体位姿已在 stage/PhysX 初始化前写入；这里仅清速度并让其休眠。
-        # SingleRigidPrim 没有公开 set_velocities，但内部 RigidPrim view 提供
-        # GPU tensor pipeline 所需的合并速度 API。
-        rigid_view = getattr(self._object, "_rigid_prim_view", None)
-        if rigid_view is None or not hasattr(rigid_view, "set_velocities"):
-            raise RuntimeError("SingleRigidPrim 缺少 GPU 合并速度写入接口。")
-        rigid_view.set_velocities(
-            torch.zeros((1, 6), dtype=torch.float32, device=device)
+        initialization_policy = resolve_object_initialization_policy(
+            episode_spec.raw_task
         )
+        live_pose_write_report: dict[str, Any] | None = None
+        if initialization_policy.get("enabled") and initialization_policy.get(
+            "restore_pose_after_runtime_reset"
+        ):
+            live_pose_write_report = self._write_object_physics_state(
+                position_xyz=target_position,
+                quaternion_wxyz=world_quaternion,
+                velocity_xyz_rpy=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            )
+        else:
+            import torch
+
+            device = getattr(self._runtime, "device", "cpu")
+            rigid_view = getattr(self._object, "_rigid_prim_view", None)
+            if rigid_view is None or not hasattr(rigid_view, "set_velocities"):
+                raise RuntimeError("SingleRigidPrim 缺少 GPU 合并速度写入接口。")
+            rigid_view.set_velocities(
+                torch.zeros((1, 6), dtype=torch.float32, device=device)
+            )
         sleep_report = self._set_object_sleeping(enabled=sleep_until_contact)
         actual_position, actual_orientation = self._object.get_world_pose()
         report = {
@@ -3013,8 +3750,18 @@ class IsaacLabNavigationRuntime:
             "actual_position_xyz": list(_as_tuple(actual_position)),
             "actual_quaternion_wxyz": list(_as_tuple(actual_orientation)),
             "object_pose_apply_report": pose_report,
-            "live_pose_write_skipped": True,
-            "live_pose_write_skip_reason": "preserve_root_orient_and_units_resolve",
+            "object_initialization_policy": initialization_policy,
+            "live_pose_write_applied": bool(
+                live_pose_write_report
+                and live_pose_write_report.get("applied") is True
+            ),
+            "live_pose_write_report": live_pose_write_report,
+            "live_pose_write_skipped": live_pose_write_report is None,
+            "live_pose_write_skip_reason": (
+                None
+                if live_pose_write_report is not None
+                else "task_object_initialization_policy_disabled"
+            ),
             "linear_velocity_zeroed": True,
             "angular_velocity_zeroed": True,
             "velocity_write_api": "set_velocities",
@@ -4235,6 +4982,110 @@ class IsaacLabNavigationRuntime:
             return None
         position, quaternion = matrix_to_pose(matrix)
         return (*_as_tuple(position), *_as_tuple(quaternion))
+
+    def _wrist_camera_object_clearance_config(self) -> dict[str, Any] | None:
+        """解析任务级 wrist 近裁剪安全门禁。"""
+
+        if self._episode_spec is None:
+            return None
+        raw_task = self._episode_spec.raw_task
+        recording = raw_task.get("recording") if isinstance(raw_task, dict) else None
+        recording = recording if isinstance(recording, dict) else {}
+        raw = recording.get("wrist_camera_object_clearance")
+        if not isinstance(raw, dict) or not raw.get("enabled", False):
+            return None
+        shape = str(raw.get("shape") or "").strip().lower()
+        if shape != "cylinder_local_z":
+            raise RuntimeError(
+                "recording.wrist_camera_object_clearance.shape "
+                "当前只支持 cylinder_local_z"
+            )
+        try:
+            config = {
+                "enabled": True,
+                "required_for_training": bool(
+                    raw.get("required_for_training", False)
+                ),
+                "shape": shape,
+                "object_radius_m": float(raw["object_radius_m"]),
+                "object_half_length_m": float(raw["object_half_length_m"]),
+                "near_clipping_m": float(
+                    raw.get("near_clipping_m", WRIST_CAMERA_NEAR_CLIPPING_M)
+                ),
+                "minimum_surface_margin_m": float(
+                    raw.get("minimum_surface_margin_m", 0.01)
+                ),
+            }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "recording.wrist_camera_object_clearance 尺寸配置无效"
+            ) from exc
+        return config
+
+    def _update_wrist_camera_object_clearance(
+        self,
+        *,
+        tcp_pose_world: Any,
+        object_pose_world: Any,
+    ) -> None:
+        """聚合整条 episode 中 wrist 近裁剪面与目标物体的最小间距。"""
+
+        config = self._wrist_camera_object_clearance_config()
+        if config is None:
+            return
+        previous = self._metadata.get("wrist_camera_object_clearance_report")
+        previous = previous if isinstance(previous, dict) else {}
+        sample_count = int(previous.get("sample_count", 0)) + 1
+        unavailable_count = int(previous.get("unavailable_sample_count", 0))
+        considered_count = int(previous.get("considered_sample_count", 0))
+        violation_count = int(previous.get("violation_count", 0))
+        worst_sample = previous.get("worst_sample")
+        latest_sample = None
+        if tcp_pose_world is None or object_pose_world is None:
+            unavailable_count += 1
+        else:
+            latest_sample = _compute_wrist_camera_object_clearance_sample(
+                tcp_pose_world=tcp_pose_world,
+                object_pose_world=object_pose_world,
+                object_radius_m=config["object_radius_m"],
+                object_half_length_m=config["object_half_length_m"],
+                near_clipping_m=config["near_clipping_m"],
+                minimum_surface_margin_m=config["minimum_surface_margin_m"],
+            )
+            latest_sample.update(
+                {
+                    "step_index": self._step_calls,
+                    "timestamp": (
+                        float(self._step_calls) * float(self._runtime.step_dt)
+                        if self._runtime is not None
+                        else None
+                    ),
+                    "action_source": self._last_action.source,
+                }
+            )
+            if latest_sample["potentially_visible"]:
+                considered_count += 1
+                if not latest_sample["verified"]:
+                    violation_count += 1
+                if (
+                    not isinstance(worst_sample, dict)
+                    or float(latest_sample["surface_clearance_m"])
+                    < float(worst_sample.get("surface_clearance_m", math.inf))
+                ):
+                    worst_sample = dict(latest_sample)
+        self._metadata["wrist_camera_object_clearance_report"] = {
+            **config,
+            "camera_extrinsics_source": (
+                "hand_eye_calibration_with_visual_alignment_v3"
+            ),
+            "sample_count": sample_count,
+            "unavailable_sample_count": unavailable_count,
+            "considered_sample_count": considered_count,
+            "violation_count": violation_count,
+            "verified": bool(considered_count > 0 and violation_count == 0),
+            "worst_sample": worst_sample,
+            "latest_sample": latest_sample,
+        }
 
     def _read_camera_images(self) -> dict[str, Any]:
         """只暴露当前渲染完成的 tensor；JPEG 编码由 5 Hz recorder 负责。"""
