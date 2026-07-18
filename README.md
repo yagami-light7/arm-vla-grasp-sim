@@ -53,10 +53,9 @@ live Mesh/PhysX 真值，RGB 用于数据记录而非当前控制定位。
 
 ```bash
 sudo apt update
-sudo apt install -y git git-lfs ffmpeg build-essential cmake ninja-build libgl1 libglib2.0-0
+sudo apt install -y git ffmpeg build-essential cmake ninja-build libgl1 libglib2.0-0
 
 nvidia-smi
-git lfs install
 conda --version
 ```
 
@@ -67,13 +66,13 @@ conda --version
 ### 1.2 获取代码
 
 ```bash
-git clone https://github.com/yagami-light7/arm-vla-grasp-sim.git pct_scene
+git clone --branch pct_scene --single-branch \
+  https://github.com/yagami-light7/arm-vla-grasp-sim.git \
+  pct_scene
 cd pct_scene
-git checkout pct_scene
-git lfs pull
 ```
 
-Git LFS 只会下载已纳入版本控制的大文件。其他运行时资产请按`source/scene/<scene>/runtime_asset_manifest.json` 中的清单准备。
+场景和物体等运行时资产不在 Git 仓库中，请按第 1.5 节的说明从网盘下载并放到指定目录。
 
 ### 1.3 创建 Isaac 仿真环境
 

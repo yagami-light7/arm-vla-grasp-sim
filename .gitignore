@@ -1,4 +1,5 @@
 project_status.json
+project.json
 object_pose_debug_report.json
 CLEANUP_INVENTORY.md
 CLEANUP_REPORT.md
@@ -41,6 +42,7 @@ events.out.tfevents*
 source/scene/liangzhu/
 source/scene/multifloor/
 source/scene/objects/
+
 
 # 随仓库发布的模型权重。
 !checkpoints/go2_x5/pct_multifloor/model_26000.pt
