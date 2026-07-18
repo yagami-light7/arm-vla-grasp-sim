@@ -11,6 +11,7 @@ from pathlib import Path
 from scripts.pipeline.run_full_physics_pipeline import (
     _build_parser,
     _locomotion_runtime_kwargs,
+    _navigation_visual_runtime_kwargs,
     main,
 )
 from source.diagnostics import (
@@ -50,6 +51,7 @@ from source.pipeline.state_machine import (
 )
 from source.recording import JsonlEpisodeRecorder
 from source.simulation import InMemorySimulationRuntime
+from source.simulation.lighting import resolve_scene_light_mode
 from source.tasks import JsonTaskProvider
 
 
@@ -791,6 +793,43 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         )
         self.assertTrue(args.require_locomotion_checkpoint)
         self.assertEqual(args.navigation_visual_mode, "collision")
+        self.assertEqual(args.scene_light_mode, "auto")
+
+    def test_scene_light_auto_follows_effective_visual_payload(self) -> None:
+        self.assertEqual(
+            resolve_scene_light_mode("auto", scene_visual_enabled=True),
+            "stage",
+        )
+        self.assertEqual(
+            resolve_scene_light_mode("auto", scene_visual_enabled=False),
+            "camera",
+        )
+
+    def test_full_visual_cli_automatically_selects_stage_lights(self) -> None:
+        args = _build_parser().parse_args(["--navigation-visual-mode", "full"])
+        visual_runtime = _navigation_visual_runtime_kwargs(
+            "pct_multifloor",
+            args.navigation_visual_mode,
+        )
+
+        self.assertTrue(visual_runtime["enable_scene_visual"])
+        self.assertEqual(
+            resolve_scene_light_mode(
+                args.scene_light_mode,
+                scene_visual_enabled=bool(visual_runtime["enable_scene_visual"]),
+            ),
+            "stage",
+        )
+
+    def test_scene_light_explicit_override_is_preserved(self) -> None:
+        self.assertEqual(
+            resolve_scene_light_mode("camera", scene_visual_enabled=True),
+            "camera",
+        )
+        self.assertEqual(
+            resolve_scene_light_mode("stage", scene_visual_enabled=False),
+            "stage",
+        )
 
     def test_cli_can_enable_planned_trajectory_visualization(self) -> None:
         args = _build_parser().parse_args(

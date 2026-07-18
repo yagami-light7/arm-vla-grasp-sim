@@ -17,6 +17,8 @@
     "collision_floor_proxy_profile": null,
     "legacy_yinluyuan_f2_floor_proxy_disabled": true,
     "default_navigation_visual_mode": "collision",
+    "default_scene_light_mode": "auto",
+    "full_visual_uses_authored_stage_lights": true,
     "overview_camera_prim_path": "/World/overview",
     "overview_camera_outside_gaussian_subtree_offline_verified": true,
     "box_pair_openusd_composition_verified": true,
@@ -34,6 +36,7 @@
     "composed_prim_path": "/World/VisualScene/GaussianScene",
     "loaded_by_default": false,
     "explicit_enable_mode": "--navigation-visual-mode full",
+    "authored_stage_lights_auto_enabled": true,
     "runtime_load_verified": false
   },
   "robot": {

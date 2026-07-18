@@ -18,6 +18,26 @@ _LIGHT_TYPE_NAMES = {
 }
 
 
+def resolve_scene_light_mode(
+    requested_mode: str,
+    *,
+    scene_visual_enabled: bool,
+) -> str:
+    """Resolve the CLI-facing lighting mode to a concrete runtime mode.
+
+    ``auto`` follows the visual payload: the complete authored scene uses its
+    stage lights, while collision-only navigation keeps the camera-mounted
+    fill lights that make diagnostic images readable.
+    """
+
+    normalized_mode = str(requested_mode).lower()
+    if normalized_mode == "auto":
+        return "stage" if scene_visual_enabled else "camera"
+    if normalized_mode not in {"camera", "stage"}:
+        raise ValueError("场景灯光模式必须是 auto、camera 或 stage。")
+    return normalized_mode
+
+
 def _emit(logger: Callable[[str], None] | None, message: str) -> None:
     if logger is not None:
         logger(f"[scene-lighting] {message}")
@@ -161,4 +181,4 @@ def configure_scene_lighting(
     }
 
 
-__all__ = ["configure_scene_lighting"]
+__all__ = ["configure_scene_lighting", "resolve_scene_light_mode"]

@@ -202,6 +202,8 @@ pick-side 和 place-side segment 分别使用固定英文抓取/放置指令。s
 
 - `perception_mode=sim_ground_truth`：RGB 用于 VLA 记录，不代表 RGB-D 定位成功。
 - 默认 `--navigation-visual-mode collision`；显式使用 `full` 才加载 GaussianScene。
+- `--scene-light-mode auto` 为默认值；`full` 自动启用 USDA 内编写的 stage lights，
+  `collision` 自动使用相机补光，也可显式指定 `camera` 或 `stage` 覆盖。
 - `/World/overview` 是 GUI/image/video 的默认 overview 相机。
 - full-physics 成败以 `summary.json`、`events.jsonl` 和 LeRobot validator 为准，不以
   GUI 最后一帧判断。

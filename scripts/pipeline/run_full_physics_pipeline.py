@@ -265,9 +265,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--scene-light-mode",
-        choices=("camera", "stage"),
+        choices=("auto", "camera", "stage"),
         default=SceneLightingSettings().scene_light_mode,
-        help="真实 Isaac stage 灯光模式；camera 为保存图像默认，stage 使用 USD 原场景灯光。",
+        help=(
+            "真实 Isaac stage 灯光模式；默认 auto：full 视觉使用 USD 原场景灯光，"
+            "collision 视觉使用相机补光；camera/stage 可显式覆盖。"
+        ),
     )
     parser.add_argument(
         "--camera-light-intensity",

@@ -2,8 +2,8 @@
   "project": "arm_vla_liangzhu",
   "branch": "liangzhu-deploy",
   "goal": "在良渚单层场景中复用原 pct_multifloor locomotion policy，跑通移动操作 pipeline，并导出可验证的数据。",
-  "current_phase": "phase_164_supported_upright_object_initialization",
-  "last_updated": "2026-07-19 00:34:27 CST",
+  "current_phase": "phase_165_full_visual_authored_stage_lighting_auto",
+  "last_updated": "2026-07-19 00:52:33 CST",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -428,6 +428,9 @@
     "scene_camera_light_default_added": true,
     "scene_stage_light_fallback_added": true,
     "phase72_lighting_targeted_tests_passing": true,
+    "scene_light_auto_visual_payload_added": true,
+    "scene_full_visual_authored_lights_auto_enabled": true,
+    "phase165_scene_light_auto_unit_verified": true,
     "pct_stair_float_tail_straightened": true,
     "pct_stair_float_tail_frames_490_500_verified": true,
     "pct_stair_float_release_route_corridor_cleared": true,
@@ -7902,6 +7905,38 @@
         "保持 0.02m XY/Z 与 0.10rad 姿态门，不用放宽阈值掩盖错误资产碰撞或支撑面配置。",
         "由用户验收后手动 git add/commit/push；Codex 不主动提交。"
       ]
+    },
+    {
+      "time": "2026-07-19 00:52:33 CST",
+      "summary": "将完整视觉与场景灯光默认联动。CLI 的 --scene-light-mode 默认改为 auto；IsaacLab runtime 根据最终 enable_scene_visual 解析灯光：--navigation-visual-mode full 自动选择 stage，显示完整 USDA sublayer 中用户编写的 DomeLight、SphereLight、RectLight 等 Light prim，并隐藏 camera_light；collision 自动选择 camera，保留原有诊断图像补光。显式 camera/stage 仍具有最高优先级。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "scripts/README.md",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "source/pipeline/config.py",
+        "source/scene/liangzhu/runtime_asset_manifest.json",
+        "source/simulation/isaaclab_runtime.py",
+        "source/simulation/lighting.py",
+        "tests/test_full_physics_pipeline.py"
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q tests/test_full_physics_pipeline.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "106 passed、1 skipped；覆盖 full+auto->stage、collision+auto->camera 和显式覆盖。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q tests/test_full_physics_batch.py tests/test_full_physics_randomization.py tests/test_liangzhu_task.py tests/test_scene_runtime.py",
+          "result": "passed",
+          "note": "55 passed。"
+        }
+      ],
+      "next_steps": [
+        "用户可直接运行 --navigation-visual-mode full，无需再追加 --scene-light-mode stage。",
+        "若需确认具体灯光 prim 的运行时可见性，检查 summary/runtime metadata 中 scene_lighting_report 的 requested_mode=auto、resolved_mode=stage 和 light_visibility_updates。",
+        "本阶段未主动占用 GPU 运行完整 Gaussian episode；8GB GPU 上仍需注意 full+三路相机的显存风险。"
+      ]
     }
   ],
   "open_questions": [
@@ -7921,7 +7956,7 @@
     "任务没有可用 flat nav_map 时会显式禁用 PCT 到 A* fallback；PCT server 或资产失败会直接报错，不会静默回退。",
     "良渚 PCT tomogram/walkable 和大型 scene/checkpoint 资产为本地 ignored/runtime 文件，不应加入 Git；其他机器必须按 manifest 重新准备。",
     "source/scene/objects/carpet.usd、carpet.glb 与纹理是用户提供的本地大型未跟踪资产；当前任务依赖其固定 SHA256，不能把它们误当作已提交资产。",
-    "稳定 CLI 默认使用 collision 视觉模式，不加载 GaussianScene；需要 Gaussian 背景时可显式传 --navigation-visual-mode full，但 RTX 4060 Laptop 8GB 上 full + 三路相机曾触发 CUDA illegal address 700。",
+    "稳定 CLI 默认使用 collision 视觉模式，不加载 GaussianScene；需要 Gaussian 背景时可显式传 --navigation-visual-mode full，full 现在会通过 scene-light-mode=auto 自动启用 USDA authored stage lights。本阶段联动逻辑已通过单元/配置回归，但未重新运行真实 full Gaussian episode；RTX 4060 Laptop 8GB 上 full + 三路相机曾触发 CUDA illegal address 700。",
     "GUI 可能在 viewport/timeline 未继续推进时保留 pick 最后一帧；量产 batch 已在 headless 下验证，GUI 卡帧必须用 events.jsonl/summary.json 和同 seed headless 复验区分于状态机失败。",
     "当前 arm_contact 标签来自执行器动作语义、夹爪命令和目标/TCP 运动学启发式，metadata 已明确标记 heuristic_action_and_kinematics；接入可靠接触传感器前不能描述为真实力/触觉接触标签。",
     "attempt14 的真实轨迹只出现 nav_stop 与 nav_turn，没有满足阈值的 nav_straight；这是该条轨迹的运动事实，不是 schema 缺失，六类标签全集由 contract 测试覆盖。",

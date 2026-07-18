@@ -3032,16 +3032,28 @@ class IsaacLabNavigationRuntime:
     def _configure_scene_lighting(self, stage: Any, *, reason: str) -> dict[str, Any]:
         """根据 runtime 配置切换 stage light / camera light。"""
 
-        from source.simulation.lighting import configure_scene_lighting
+        from source.simulation.lighting import (
+            configure_scene_lighting,
+            resolve_scene_light_mode,
+        )
+
+        requested_mode = str(self._config.scene_light_mode).lower()
+        resolved_mode = resolve_scene_light_mode(
+            requested_mode,
+            scene_visual_enabled=bool(self._config.enable_scene_visual),
+        )
 
         report = configure_scene_lighting(
             stage=stage,
-            mode=self._config.scene_light_mode,
+            mode=resolved_mode,
             camera_light_name=self._config.camera_light_name,
             camera_light_intensity=self._config.camera_light_intensity,
             camera_light_radius=self._config.camera_light_radius,
         )
         report["reason"] = reason
+        report["requested_mode"] = requested_mode
+        report["resolved_mode"] = resolved_mode
+        report["scene_visual_enabled"] = bool(self._config.enable_scene_visual)
         return report
 
     def _hide_object_collision_visual(self, stage: Any) -> dict[str, Any]:

@@ -1296,6 +1296,11 @@ PYTHONDONTWRITEBYTECODE=1 \
 稳定默认是 `collision`。`full` 会加载 GaussianScene；在 8 GB GPU 上不建议将
 `full` 与多路相机批量采集同时开启。
 
+灯光模式默认是 `auto`：使用 `--navigation-visual-mode full` 时会自动显示 USDA
+中编写的 `DomeLight`、`SphereLight`、`RectLight` 等 stage lights，并关闭相机
+补光灯；`collision` 模式则继续使用相机补光。通常无需再追加
+`--scene-light-mode stage`，只有需要覆盖自动行为时才显式传 `camera` 或 `stage`。
+
 ### 验证 LeRobot 数据集并导出 Rerun
 
 ```bash
@@ -1340,7 +1345,7 @@ smoke/debug 时传模式参数。
 | `--keep-window-open` / `--no-keep-window-open`       | 默认关闭                        | 结束后保留 GUI；必须配合`--no-headless`             |
 | `--headless` / `--no-headless`                       | 默认`--no-headless`             | 是否无界面运行                                      |
 | `--navigation-visual-mode`                           | `collision`                     | 稳定默认不加载 GaussianScene；`full` 显式加载，`auto` 保留兼容 |
-| `--scene-light-mode`                                 | `camera`                        | `camera` 用于保存图像；`stage` 使用 USD 原场景灯光          |
+| `--scene-light-mode`                                 | `auto`                          | `full` 自动使用 USD 原场景灯光，`collision` 自动使用相机补光；可用 `camera`/`stage` 覆盖 |
 | `--global-planner`                                   | `pct`                           | 良渚默认使用 PCT；可显式切换 `astar`                 |
 | `--pct-collision-ply-path`                           | 仓库内良渚 PLY                  | 默认 `source/scene/liangzhu/ply/liangzhu_collision.ply` |
 | `--pct-no-fallback` / `--pct-allow-fallback`         | 默认禁止回退                    | 默认 PCT 失败即拒绝 episode                          |
