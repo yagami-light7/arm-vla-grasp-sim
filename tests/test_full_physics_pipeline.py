@@ -38,6 +38,7 @@ from source.pipeline import (
     PCT_MULTIFLOOR_LOCOMOTION_TASK,
     PipelineState,
     StateLimits,
+    VideoRecordingSettings,
 )
 from source.pipeline.dry_run import create_dry_run_pipeline
 from source.pipeline.isaac_compat import patch_numpy_for_isaacsim
@@ -872,11 +873,35 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             output_dir=PROJECT_ROOT / "outputs/test",
             headless=False,
             stair_locomotion_smoke=True,
+            video=VideoRecordingSettings(
+                enabled=True,
+                mode="composite",
+                overview_camera_mode="auto",
+            ),
         )
         regular_gui_config = replace(stair_config, stair_locomotion_smoke=False)
 
         self.assertTrue(_should_auto_switch_overview_camera(stair_config))
         self.assertTrue(_should_auto_switch_overview_camera(regular_gui_config))
+
+    def test_multifloor_gui_defaults_to_auto_overview_composite(self) -> None:
+        args = _parse_args(
+            [
+                "--scene-profile",
+                "multi_floor",
+                "--seed",
+                "0",
+                "--output-dir",
+                "/tmp/multi_floor_gui",
+                "--no-headless",
+                "--keep-window-open",
+            ]
+        )
+
+        self.assertFalse(args.headless)
+        self.assertTrue(args.keep_window_open)
+        self.assertEqual(args.overview_camera_mode, "auto")
+        self.assertEqual(args.video_mode, "composite")
 
     def test_stair_locomotion_smoke_rejects_explicit_float(self) -> None:
         with self.assertRaisesRegex(SystemExit, "固定禁用 Float"):

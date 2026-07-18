@@ -408,6 +408,86 @@ class SimulationViewportTest(unittest.TestCase):
             finally:
                 capture.release()
 
+    def test_composite_uses_auto_switched_overview_frame(self) -> None:
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(
+                mode="composite",
+                width=600,
+                height=360,
+                overview_initial_hold_frames=0,
+            ),
+            episode_dir=".",
+            episode_id=5,
+            auto_switch_camera=True,
+        )
+        recorder._discovery_done = True  # noqa: SLF001
+        recorder._overview_cameras = (  # noqa: SLF001
+            _CameraCandidate(
+                path="/World/Camera1",
+                name="Camera1",
+                normalized_text="/world/camera1 camera1",
+                is_observation=False,
+                overview_score=100,
+            ),
+        )
+        recorder._all_cameras = recorder._overview_cameras  # noqa: SLF001
+        recorder._camera_schedule = {  # noqa: SLF001
+            "default_camera": "/World/Camera0",
+            "rules": [
+                {
+                    "states": ["exec_nav_to_pick"],
+                    "camera": "/World/Camera1",
+                }
+            ],
+        }
+        switched_overview = np.zeros((90, 160, 3), dtype=np.uint8)
+        switched_overview[:, :, 0] = 255
+        fixed_observation_overview = np.zeros((90, 160, 3), dtype=np.uint8)
+        fixed_observation_overview[:, :, 2] = 255
+        camera_images = {
+            "overview": fixed_observation_overview,
+            "front": np.zeros((90, 160, 3), dtype=np.uint8),
+            "wrist": np.zeros((90, 160, 3), dtype=np.uint8),
+        }
+
+        with (
+            mock.patch.object(
+                recorder,
+                "set_active_camera",
+                return_value={
+                    "applied": True,
+                    "reason": None,
+                    "render_camera_prim_path": "/World/Camera1",
+                },
+            ),
+            mock.patch.object(
+                recorder,
+                "_capture_frame",
+                return_value=switched_overview,
+            ),
+            mock.patch.object(
+                recorder,
+                "_write_video_frame",
+                return_value=0,
+            ) as write_frame,
+        ):
+            recorder.add_frame(
+                state="exec_nav_to_pick",
+                timestamp=0.0,
+                step_index=10,
+                camera_images=camera_images,
+            )
+
+        composite_frame = write_frame.call_args.args[0]
+        self.assertEqual(write_frame.call_args.kwargs["stream"], "composite")
+        self.assertGreater(int(composite_frame[180, 200, 0]), 200)
+        self.assertLess(int(composite_frame[180, 200, 2]), 50)
+        self.assertEqual(recorder._current_camera_path, "/World/Camera1")  # noqa: SLF001
+        self.assertEqual(
+            recorder._capture_backend,  # noqa: SLF001
+            "scheduled_overview_plus_synchronized_observations",
+        )
+
     def test_overview_recorder_saves_low_frequency_jpeg_frames(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             recorder = OverviewVideoRecorder(

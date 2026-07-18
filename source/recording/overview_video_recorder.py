@@ -556,7 +556,13 @@ class OverviewVideoRecorder:
 
     @property
     def _overview_frame_count(self) -> int:
-        return int(self._stream_frame_counts.get("overview", 0))
+        if "overview" in self._stream_frame_counts:
+            return int(self._stream_frame_counts["overview"])
+        return int(self._stream_frame_counts.get(_COMPOSITE_STREAM, 0))
+
+    @property
+    def _uses_scheduled_overview(self) -> bool:
+        return "overview" in self.modes or _COMPOSITE_STREAM in self.modes
 
     def start_episode(self) -> None:
         if not self.enabled:
@@ -582,7 +588,7 @@ class OverviewVideoRecorder:
             f"out={{{', '.join(f'{key}: {value}' for key, value in self.output_paths.items())}}}",
             flush=True,
         )
-        if "overview" in self.modes:
+        if self._uses_scheduled_overview:
             self._discover_cameras_from_current_stage()
         if self._camera_trajectory_enabled():
             self._camera_trajectory_path.parent.mkdir(parents=True, exist_ok=True)
@@ -599,12 +605,14 @@ class OverviewVideoRecorder:
     ) -> None:
         if not self.enabled:
             return
-        if "overview" in self.modes:
-            self._add_overview_frame(
+        scheduled_overview_frame = None
+        if self._uses_scheduled_overview:
+            scheduled_overview_frame = self._add_overview_frame(
                 state=state,
                 timestamp=timestamp,
                 step_index=step_index,
                 robot_root_pose=robot_root_pose,
+                write_overview_stream="overview" in self.modes,
             )
         if "front" in self.modes:
             self._add_observation_frame(
@@ -622,6 +630,7 @@ class OverviewVideoRecorder:
             self._add_composite_frame(
                 camera_images=camera_images,
                 timestamp=timestamp,
+                scheduled_overview_frame=scheduled_overview_frame,
             )
 
     def _add_overview_frame(
@@ -631,7 +640,8 @@ class OverviewVideoRecorder:
         timestamp: float,
         step_index: int,
         robot_root_pose: tuple[float, ...] | None,
-    ) -> None:
+        write_overview_stream: bool = True,
+    ) -> np.ndarray | None:
         if not self._discovery_done or self._should_rediscover_cameras():
             self._discover_cameras_from_current_stage()
         if self.auto_switch_camera:
@@ -648,27 +658,32 @@ class OverviewVideoRecorder:
             if manual_camera:
                 self._active_viewport_camera_path = manual_camera
                 self._current_camera_path = manual_camera
-        if not self._should_capture("overview", timestamp):
-            return
+        capture_stream = "overview" if write_overview_stream else _COMPOSITE_STREAM
+        if not self._should_capture(capture_stream, timestamp):
+            return None
         try:
             frame = self._capture_frame()
         except Exception as exc:  # pragma: no cover - depends on live Kit runtime.
-            self._mark_dropped("overview")
             self._capture_error = str(exc)
             self._warn_once(f"overview capture failed: {type(exc).__name__}: {exc}")
-            return
+            if write_overview_stream:
+                self._mark_dropped("overview")
+            return None
         if frame is None:
-            self._mark_dropped("overview")
-            return
-        written_frame_index = self._write_video_frame(frame, stream="overview")
-        self._maybe_write_overview_image(frame, timestamp=timestamp)
-        self._write_camera_trajectory_frame(
-            state=state,
-            timestamp=timestamp,
-            step_index=step_index,
-            frame_index=written_frame_index,
-        )
-        self._last_capture_timestamps["overview"] = float(timestamp)
+            if write_overview_stream:
+                self._mark_dropped("overview")
+            return None
+        if write_overview_stream:
+            written_frame_index = self._write_video_frame(frame, stream="overview")
+            self._maybe_write_overview_image(frame, timestamp=timestamp)
+            self._write_camera_trajectory_frame(
+                state=state,
+                timestamp=timestamp,
+                step_index=step_index,
+                frame_index=written_frame_index,
+            )
+            self._last_capture_timestamps["overview"] = float(timestamp)
+        return frame
 
     def _maybe_write_overview_image(self, frame: np.ndarray, *, timestamp: float) -> None:
         """按数据集频率保存自动切换后的 overview JPEG。"""
@@ -717,14 +732,18 @@ class OverviewVideoRecorder:
         *,
         camera_images: dict[str, Any] | None,
         timestamp: float,
+        scheduled_overview_frame: np.ndarray | None = None,
     ) -> None:
-        """把同一 simulation step 的三路相机拼接后写入单一视频。"""
+        """把自动调度的 overview 与同一步 front/wrist 拼成单一视频。"""
 
         if not self._should_capture(_COMPOSITE_STREAM, timestamp):
             return
         try:
+            composite_images = dict(camera_images or {})
+            if scheduled_overview_frame is not None:
+                composite_images["overview"] = scheduled_overview_frame
             frame = compose_multiview_frame(
-                camera_images or {},
+                composite_images,
                 width=int(getattr(self.settings, "width", 1280)),
                 height=int(getattr(self.settings, "height", 720)),
             )
@@ -736,7 +755,11 @@ class OverviewVideoRecorder:
                 f"{type(exc).__name__}: {exc}"
             )
             return
-        self._capture_backend = "synchronized_camera_images"
+        self._capture_backend = (
+            "scheduled_overview_plus_synchronized_observations"
+            if scheduled_overview_frame is not None
+            else "synchronized_camera_images_overview_fallback"
+        )
         self._last_capture_timestamps[_COMPOSITE_STREAM] = float(timestamp)
 
     def discover_cameras(self, stage: Any) -> dict[str, Any]:

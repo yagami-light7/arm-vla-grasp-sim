@@ -26,13 +26,9 @@ from .state_machine import FullPhysicsStateMachine
 
 
 def _should_auto_switch_overview_camera(config: FullPhysicsConfig) -> bool:
-    """headless、楼梯或固定相机模式由 recorder 管理 overview 相机。"""
+    """让录像器按配置管理 overview，相机调度不受 GUI/headless 限制。"""
 
-    return bool(
-        config.headless
-        or config.stair_locomotion_smoke
-        or config.video.overview_camera_mode == "fixed"
-    )
+    return config.video.overview_camera_mode in {"auto", "fixed"}
 
 
 class FullPhysicsPipeline:
