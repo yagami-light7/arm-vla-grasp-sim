@@ -52,7 +52,7 @@ def Xform "World"
         token visibility = "invisible"
 
         def Xform "GaussianScene" (
-            prepend references = @./usdz/liangzhu_cropped_nozip64.usdz[gauss.usda]@
+            prepend references = @./usdz/lingzhu.usdz[gauss.usda]@
         )
         {
             double3 xformOp:rotateXYZ = (270, 0, 0)

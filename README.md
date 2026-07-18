@@ -5,10 +5,10 @@ PCT Scene 用一套代码运行良渚单层任务和别墅多楼层任务。使�
 ## 场景与流程
 
 
-| Profile           | 任务与默认行为                                                                                                                              |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `liangzhu`              | 良渚单层任务，将可乐搬到鼠标垫。开启任务随机化，使用`identity` PCT 坐标和 Gaussian 视觉层；overview 相机固定为 `/World/overview`。          |
-| `multi_floor`           | 别墅多楼层任务，将苹果从 F1 搬到 F2。使用`sim_to_pct_180deg` PCT 坐标、楼梯锚点和 collision 视觉；关闭任务随机化，overview 相机按阶段切换。 |
+| Profile       | 任务与默认行为                                                                                                                              |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `liangzhu`    | 良渚单层任务，将可乐搬到鼠标垫。开启任务随机化，使用`identity` PCT 坐标和 Gaussian 视觉层；overview 相机固定为 `/World/overview`。          |
+| `multi_floor` | 别墅多楼层任务，将苹果从 F1 搬到 F2。使用`sim_to_pct_180deg` PCT 坐标、楼梯锚点和 collision 视觉；关闭任务随机化，overview 相机按阶段切换。 |
 
 兼容别名：`liangzhu_single_floor` 对应 `liangzhu`；`multifloor`、`pct_multifloor` 和`villa` 对应 `multi_floor`。
 
@@ -35,8 +35,7 @@ graph LR
 
 ### 1.1 系统要求
 
-已验证环境为 Ubuntu Linux、支持 CUDA 12.x 的 NVIDIA 驱动、Python 3.11、Isaac Sim 5.1、Isaac Lab 2.3.x 和 cuRobo 0.8.x。显存少于 12 GB 时，建议使用
-collision 视觉模式采集数据。
+已验证环境为 Ubuntu Linux、支持 CUDA 12.x 的 NVIDIA 驱动、Python 3.11、Isaac Sim 5.1、Isaac Lab 2.3.x 和 cuRobo 0.8.x。显存少于 12 GB 时，建议使用collision 视觉模式采集数据。
 
 安装系统依赖并确认驱动可用：
 
@@ -121,15 +120,87 @@ python -m pip install -r requirements/lerobot_rerun.txt
 git clone https://github.com/BoZhiStudying233/PCT.git external/PCT
 ```
 
-良渚场景的 visual 和 collision 资产可以放在任意磁盘，然后通过环境变量绑定：
+部分大型 USDZ 和 USD 资产不随 Git 仓库发布。最简单的部署方式是保持文件名不变，
+并将它们复制到下表中的仓库相对路径。按此方式放置后，不需要设置资产路径或修改
+USDA 文件。
 
-```bash
-export LIANGZHU_VISUAL_USDZ=/path/to/liangzhu_cropped_nozip64.usdz
-export LIANGZHU_COLLISION_USD=/path/to/liangzhu_collision.usda
+| 场景 | 资产用途 | 文件名 | 放置位置（相对于仓库根目录） | 来源 |
+| --- | --- | --- | --- | --- |
+| 良渚 | Gaussian/NuRec 视觉 | `lingzhu.usdz` | `source/scene/liangzhu/usdz/lingzhu.usdz` | 自行复制 |
+| 良渚 | 物理碰撞 | `liangzhu_collision.usda` | `source/scene/liangzhu/usd/liangzhu_collision.usda` | 自行复制 |
+| 良渚 | 放置目标鼠标垫 | `carpet.usd` | `source/scene/objects/carpet.usd` | 自行复制 |
+| 别墅 | Gaussian/NuRec 视觉 | `multifloor.usdz` | `source/scene/multifloor/usdz/multifloor.usdz` | 自行复制 |
+| 别墅 | 物理碰撞 | `multifloor_collision.usd` | `source/scene/multifloor/usd/multifloor_collision.usd` | 仓库已提供 |
+
+完成后的关键目录应为：
+
+```text
+source/scene/
+├── liangzhu/
+│   ├── liangzhu.usda
+│   ├── usd/
+│   │   └── liangzhu_collision.usda
+│   └── usdz/
+│       └── lingzhu.usdz
+├── multifloor/
+│   ├── usda/
+│   │   └── multifloor.usda
+│   ├── usd/
+│   │   └── multifloor_collision.usd
+│   └── usdz/
+│       └── multifloor.usdz
+└── objects/
+    └── carpet.usd
 ```
 
-别墅场景的 visual 和 collision 资产使用相对路径。运行前请按 manifest 补齐
-`source/scene/multifloor` 下的 runtime 资产。其他场景的地图不能替代这些文件。
+例如，下载的资产当前位于 `/path/to/assets/` 时，可以在仓库根目录执行：
+
+```bash
+mkdir -p source/scene/liangzhu/usd source/scene/liangzhu/usdz
+mkdir -p source/scene/multifloor/usd source/scene/multifloor/usdz
+mkdir -p source/scene/objects
+
+cp /path/to/assets/lingzhu.usdz \
+  source/scene/liangzhu/usdz/lingzhu.usdz
+cp /path/to/assets/liangzhu_collision.usda \
+  source/scene/liangzhu/usd/liangzhu_collision.usda
+cp /path/to/assets/carpet.usd \
+  source/scene/objects/carpet.usd
+cp /path/to/assets/multifloor.usdz \
+  source/scene/multifloor/usdz/multifloor.usdz
+```
+
+仓库已经提供 `source/scene/multifloor/usd/multifloor_collision.usd`。如果本地缺少该
+文件，请确认当前分支和仓库文件完整，不要用其他场景的碰撞文件替代。
+
+良渚场景还支持将大型资产放在仓库外。只有采用这种布局时，才需要设置环境变量：
+
+```bash
+export LIANGZHU_VISUAL_USDZ=/absolute/path/to/lingzhu.usdz
+export LIANGZHU_COLLISION_USD=/absolute/path/to/liangzhu_collision.usda
+```
+
+环境变量的优先级高于仓库默认路径。如果以前设置过这些变量，现在想使用仓库内的
+相对路径，请先执行：
+
+```bash
+unset LIANGZHU_VISUAL_USDZ LIANGZHU_COLLISION_USD
+```
+
+可以用以下命令检查所有默认路径：
+
+```bash
+ls -lh \
+  source/scene/liangzhu/usdz/lingzhu.usdz \
+  source/scene/liangzhu/usd/liangzhu_collision.usda \
+  source/scene/objects/carpet.usd \
+  source/scene/multifloor/usdz/multifloor.usdz \
+  source/scene/multifloor/usd/multifloor_collision.usd
+```
+
+文件名区分大小写。以上命令应在仓库根目录执行，也就是能看到 `README.md`、
+`configs/` 和 `source/` 的目录。每个场景的完整清单位于
+`source/scene/<scene>/runtime_asset_manifest.json`。
 
 ### 1.6 检查部署
 
@@ -308,27 +379,50 @@ python tools/lerobot_to_rerun.py \
 
 ### 2.5 输出内容
 
-full-physics 成功后会保留运行诊断文件，并导出 LeRobot v2 数据集。单个 episode
-的主要文件如下：
+full-physics 成功后会保留运行诊断文件，并导出 LeRobot v2.1 数据集。默认情况下，`--output-dir` 指向本次运行的输出根目录，单个 episode 位于其下的`episode_000000/`：
 
 ```text
-episode_000000/
-├── task.json                  # 任务、seed 和随机化结果
-├── events.jsonl              # 状态机事件
-├── summary.json              # 运行结果与数据质量检查
-├── frames.jsonl              # 原始帧级记录
-├── images/                     # 相机图像
-├── videos/                     # 相机视频
-└── lerobot_dataset/
-    ├── data/                   # Parquet episode
-    ├── videos/                 # front / wrist 视频
-    ├── meta/                   # LeRobot metadata
-    └── episodes/               # VLA 训练兼容目录
+<output-dir>/
+├── .runtime/                              # 运行时场景绑定
+├── startup_status.json                    # 启动状态
+├── batch_summary.jsonl                    # episode 结果索引
+└── episode_000000/
+    ├── task.json                          # 任务、seed 和随机化结果
+    ├── events.jsonl                      # 状态机事件
+    ├── frames.jsonl                      # 原始帧级记录
+    ├── summary.json                      # 运行结果与数据质量检查
+    ├── data.csv                          # 同步采样记录
+    ├── samples.jsonl                     # LeRobot 转换所需的帧数据
+    ├── lerobot_manifest.json             # 本 episode 的导出清单
+    ├── images/                           # front、wrist、overview 原始图像
+    ├── recording_videos/                 # LeRobot 转换前的相机视频
+    ├── overview_videos/                  # 展示视频，仅 --record-video 时生成
+    └── lerobot_dataset/
+        ├── data/chunk-000/
+        │   └── episode_000000.parquet    # 标准 LeRobot episode
+        ├── videos/chunk-000/
+        │   ├── observation.images.front/
+        │   ├── observation.images.wrist/
+        │   └── observation.images.overview/
+        ├── meta/                         # info、tasks、episodes 和 subtask 元数据
+        ├── validation_report.json        # 数据集校验结果
+        └── episodes/
+            └── <task_id>/
+                └── <episode_id>/
+                    ├── task.csv
+                    ├── <episode_id>-1/   # nav_straight
+                    ├── <episode_id>-2/   # nav_turn
+                    ├── <episode_id>-3/   # nav_stop
+                    ├── <episode_id>-4/   # arm_approach
+                    ├── <episode_id>-5/   # arm_contact
+                    └── <episode_id>-6/   # arm_retreat
 ```
 
-batch 会在输出根目录中保留每个源 episode，并将通过质量检查的数据合并到
-`lerobot_dataset/`。`batch_summary.jsonl` 记录每个 episode 的结果，
-`lerobot_export_manifest.json` 记录合并来源。
+六个 subtask 目录都包含 `data.csv`、`images/front/` 和 `images/wrist/`。某类subtask 没有有效帧时，对应目录仍会保留，但 `data.csv` 只有表头。标准 LeRobotParquet 同时保存 `task_stage`、`subtask` 和 `subtask_segment_index` 字段，因此既可按完整 episode 训练，也可直接使用 `episodes/` 下已经切分的数据。
+
+使用 `--no-record-dataset` 时，只保留任务和运行诊断文件，不生成 `data.csv`、`samples.jsonl`、相机图像、相机视频或 `lerobot_dataset/`。
+
+batch 会在输出根目录中保留每个源 episode，并将通过质量检查的数据合并到`lerobot_dataset/`。`batch_summary.jsonl` 记录每个 episode 的结果，`lerobot_export_manifest.json` 记录合并来源。
 
 数据集包含以下主要训练字段：
 
@@ -473,7 +567,7 @@ python \
 smoke 测试和调试。
 
 
-| 参数                                         | 类型 / 默认            | 说明                                                                                                                    |
+| 参数                                                 | 类型 / 默认            | 说明                                                                                                                    |
 | ---------------------------------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `--scene-profile`                                    | `liangzhu`             | 选择场景；可用`--list-scene-profiles` 查看，别墅使用 `multi_floor`                                                      |
 | `--list-scene-profiles` / `--check-scene-assets`     | 只读检查               | 列出动态发现的 profile，或检查所选场景资产后退出                                                                        |

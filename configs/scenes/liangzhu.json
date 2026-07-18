@@ -47,7 +47,7 @@
       "prim_path": "/World/VisualScene/GaussianScene",
       "arc_type": "reference",
       "environment_variable": "LIANGZHU_VISUAL_USDZ",
-      "fallback_path": "source/scene/liangzhu/usdz/liangzhu_cropped_nozip64.usdz",
+      "fallback_path": "source/scene/liangzhu/usdz/lingzhu.usdz",
       "package_member": "gauss.usda"
     },
     {

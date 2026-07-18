@@ -36,7 +36,7 @@
     "runtime_load_verified": true
   },
   "visual_scene": {
-    "path": "source/scene/liangzhu/usdz/liangzhu_cropped_nozip64.usdz",
+    "path": "source/scene/liangzhu/usdz/lingzhu.usdz",
     "path_env": "LIANGZHU_VISUAL_USDZ",
     "composed_prim_path": "/World/VisualScene/GaussianScene",
     "package_members_verified": [
