@@ -989,6 +989,8 @@ class FullPhysicsStateMachine:
         self._carry_gripper_target: dict[str, Any] | None = None
         self._carry_arm_home_target: dict[str, Any] | None = None
         self._carry_object_tcp_offset: tuple[float, float, float] | None = None
+        self._place_expected_object_tcp_offset: tuple[float, float, float] | None = None
+        self._place_pre_release_object_tcp_offset_report: dict[str, Any] = {}
         self._pick_peak_object_lift_height_m: float | None = None
         self._pick_peak_object_pose: tuple[float, ...] | None = None
         self._pick_peak_step_index: int | None = None
@@ -1877,6 +1879,7 @@ class FullPhysicsStateMachine:
                         place_return_home_report,
                     )
                 )
+        self._reset_place_release_tracking(observation)
         visualization_event = self._visualize_planned_trajectory(
             plan,
             trajectory_type="manipulation",
@@ -1891,7 +1894,36 @@ class FullPhysicsStateMachine:
         return RobotAction.idle(source="place_plan"), events
 
     def _exec_place(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
-        return self._execute_arm(observation, PipelineState.VERIFY_PLACE_SUCCESS)
+        action, events = self._execute_arm(
+            observation,
+            PipelineState.VERIFY_PLACE_SUCCESS,
+        )
+        if action.metadata.get("event_marker") != "gripper_open":
+            return action, events
+        offset_report = self._place_object_tcp_offset_report(observation)
+        self._place_pre_release_object_tcp_offset_report = offset_report
+        if (
+            observation.metadata.get("simulation_backend")
+            == "isaaclab_manager_based_rl"
+            and observation.metadata.get("execution_provenance_verified") is True
+            and not offset_report.get("within_tolerance", False)
+        ):
+            events = [event for event in events if event.name != "gripper_open"]
+            events.extend(
+                self._fail(
+                    "place_object_slipped_before_release",
+                    observation,
+                    offset_report,
+                )
+            )
+            return RobotAction.idle(source="place_release_blocked"), events
+        return action, events
+
+    def _reset_place_release_tracking(self, observation: SimulationState) -> None:
+        """Capture the carried object/TCP relation immediately before place execution."""
+
+        self._place_expected_object_tcp_offset = _object_tcp_offset(observation)
+        self._place_pre_release_object_tcp_offset_report = {}
 
     def _visualize_planned_trajectory(
         self,
@@ -2251,6 +2283,41 @@ class FullPhysicsStateMachine:
             "tcp_pose": observation.tcp_pose,
             "read_only_check": True,
             "object_pose_modified": False,
+        }
+
+    def _place_object_tcp_offset_report(
+        self,
+        observation: SimulationState,
+    ) -> dict[str, Any]:
+        """松爪前检查物体是否仍保持 place 规划时的 TCP 相对位置。"""
+
+        expected = self._place_expected_object_tcp_offset
+        actual = _object_tcp_offset(observation)
+        tolerance = float(
+            self.config.manipulation.place_release_object_tcp_offset_tolerance_m
+        )
+        if expected is None or actual is None:
+            return {
+                "available": False,
+                "within_tolerance": False,
+                "reason": "object_or_tcp_pose_unavailable",
+                "expected_object_tcp_offset_xyz": expected,
+                "actual_object_tcp_offset_xyz": actual,
+                "tolerance_m": tolerance,
+            }
+        delta = tuple(
+            actual_value - expected_value
+            for actual_value, expected_value in zip(actual, expected)
+        )
+        drift = math.sqrt(sum(value * value for value in delta))
+        return {
+            "available": True,
+            "within_tolerance": drift <= tolerance,
+            "expected_object_tcp_offset_xyz": expected,
+            "actual_object_tcp_offset_xyz": actual,
+            "offset_delta_xyz": delta,
+            "offset_drift_m": drift,
+            "tolerance_m": tolerance,
         }
 
     def _initialize_navigation_carry_smoke_targets(self) -> None:
@@ -2955,6 +3022,22 @@ class FullPhysicsStateMachine:
             terminal=self.state.terminal,
             metadata={"next_state": self.state.value},
         )
+
+
+def _object_tcp_offset(
+    observation: SimulationState,
+) -> tuple[float, float, float] | None:
+    """返回物体中心相对 TCP 的世界坐标偏移。"""
+
+    if observation.object_pose is None or observation.tcp_pose is None:
+        return None
+    return tuple(
+        float(object_value) - float(tcp_value)
+        for object_value, tcp_value in zip(
+            observation.object_pose[:3],
+            observation.tcp_pose[:3],
+        )
+    )
 
 
 def _metadata_tuple(metadata: dict[str, Any], key: str) -> tuple[Any, ...] | None:

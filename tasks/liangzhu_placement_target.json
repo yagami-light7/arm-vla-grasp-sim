@@ -266,7 +266,9 @@
       "retreat_clearance": 0.08,
       "settle_steps": 120,
       "place_xy_tolerance": 0.05,
-      "place_z_tolerance": 0.025
+      "place_z_tolerance": 0.025,
+      "place_linear_velocity_tolerance_mps": 0.1,
+      "place_angular_velocity_tolerance_rps": 2.0
     },
     "randomization": {
       "enabled": true,
@@ -368,8 +370,8 @@
           0.54
         ],
         "place_base_standoff_range_m": [
-          0.5,
-          0.54
+          0.48,
+          0.51
         ],
         "base_approach_angle_noise_deg": 0.0,
         "base_goal_table_min_clearance_m": 0.2,

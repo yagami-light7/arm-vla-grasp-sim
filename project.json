@@ -2,8 +2,8 @@
   "project": "arm_vla_liangzhu",
   "branch": "liangzhu-deploy",
   "goal": "在良渚单层场景中复用原 pct_multifloor locomotion policy，跑通移动操作 pipeline，并导出可验证的数据。",
-  "current_phase": "phase_156_composite_video_acceptance",
-  "last_updated": "2026-07-17 22:05:39 CST",
+  "current_phase": "phase_163_wrist_camera_safe_reframe_and_clearance_gate",
+  "last_updated": "2026-07-18 23:21:51 CST",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -197,7 +197,17 @@
     "liangzhu_composite_video_same_step_sync": true,
     "liangzhu_composite_video_unit_verified": true,
     "liangzhu_full_pipeline_acceptance_validator_added": true,
-    "liangzhu_composite_video_real_pipeline_verified": false,
+    "liangzhu_composite_video_real_pipeline_verified": true,
+    "liangzhu_box_pair_alignment_batch5_attempted": true,
+    "liangzhu_box_pair_alignment_batch5_success_count": 5,
+    "liangzhu_box_pair_alignment_batch5_dataset_rows": 1004,
+    "liangzhu_box_pair_alignment_batch5_validator_verified": true,
+    "liangzhu_box_pair_pct_scene_seed0_to_4_alignment_verified": true,
+    "pct_scene_liangzhu_batch20_attempted": true,
+    "pct_scene_liangzhu_batch20_success_count": 18,
+    "pct_scene_liangzhu_batch20_success_rate": 0.9,
+    "cross_worktree_headless_attempted_episode_count": 25,
+    "cross_worktree_training_accepted_episode_count": 23,
     "sage_multifloor_asset_pipeline_added": true,
     "sage_multifloor_ply_renamed": true,
     "sage_multifloor_usdz_available": true,
@@ -828,6 +838,37 @@
       "manager_reuse_verified": true,
       "manager_close_preserved_external_server": true
     },
+    "d436_front_wrist_intrinsics_configured": true,
+    "d436_exact_opencv_pinhole_renderer_schema_added": true,
+    "d436_exact_opencv_pinhole_renderer_runtime_verified": false,
+    "d436_standard_usd_pinhole_fallback_runtime_verified": true,
+    "d436_calibrated_resolution_wh": [640, 480],
+    "wrist_camera_hand_eye_extrinsics_configured": true,
+    "wrist_camera_hand_eye_runtime_render_verified": true,
+    "wrist_camera_visual_alignment_v1_added": true,
+    "wrist_camera_visual_alignment_v1_rejected_by_user": true,
+    "wrist_camera_visual_alignment_v2_added": true,
+    "wrist_camera_visual_alignment_v2_rejected_due_object_near_plane_intersection": true,
+    "wrist_camera_visual_alignment_v2_training_rejection_gate_added": true,
+    "wrist_camera_visual_alignment_v3_added": true,
+    "wrist_camera_visual_alignment_offset_camera_xyz_m": [0.0, -0.02, 0.0],
+    "wrist_camera_visual_alignment_optical_z_offset_m": 0.0,
+    "wrist_camera_visual_alignment_mount_position_xyz_m": [0.0666580792, 0.0028071889, 0.0935779972],
+    "wrist_camera_visual_alignment_corrected_gripper_root_depth_m": 0.06710842,
+    "wrist_camera_visual_alignment_tcp_depth_m": 0.12697417,
+    "wrist_camera_visual_alignment_near_clipping_m": 0.03,
+    "wrist_camera_visual_alignment_real_image_verified": true,
+    "wrist_camera_visual_alignment_user_accepted": false,
+    "wrist_camera_visual_alignment_metric_recalibration_verified": false,
+    "wrist_camera_visual_alignment_mesh_aabb_clearance_verified": true,
+    "wrist_camera_visual_alignment_pipeline_verified": true,
+    "wrist_camera_visual_alignment_seed5002_training_eligible": true,
+    "wrist_camera_object_clearance_training_gate_added": true,
+    "wrist_camera_object_clearance_training_gate_runtime_verified": true,
+    "wrist_camera_object_clearance_seed5002_violation_count": 0,
+    "wrist_camera_object_clearance_seed5002_min_surface_depth_m": 0.06465593766942831,
+    "wrist_camera_object_clearance_seed5002_min_surface_margin_m": 0.034655937669428316,
+    "wrist_camera_visual_alignment_v1_silhouette_width_reduction_at_y350": 0.2324,
     "disk_free_gb": 2.7,
     "full_episode_estimated_output_gb": 1.1,
     "real_episode_count": 1,
@@ -7543,6 +7584,250 @@
         "人工检查 episode_000001_composite.mp4 中三路画面方向、遮挡和曝光，再将 liangzhu_composite_video_real_pipeline_verified 更新为 true。",
         "批量展示视频仅在确有需要时开启，训练数据 front/wrist 导出与 composite 展示视频保持相互独立。"
       ]
+    },
+    {
+      "time": "2026-07-18 15:23:04 CST",
+      "summary": "完成良渚 box1->box2 随机化、pct_scene 迁移和双 worktree 小规模真实 headless 验收。pct_scene seeds 0..19 尝试 20 条，18 条完整成功并合并为 4096 行 LeRobot 数据；seed 7/19 在最终释放动力学质量门被结构化拒绝。arm_vla_liangzhu 用相同 seeds 0..4 复跑 5/5 成功，合并为 1004 行。两边随机化器与 placement config 字节一致，seed 0..4 的随机化和派生任务 JSON 哈希一致。25 条 composite 视频全部从同一仿真 step 拼接 overview/front/wrist，1280x720、25 FPS、零丢帧。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "source/tasks/box_pair_randomization.py",
+        "tasks/liangzhu_placement_target.json",
+        "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json",
+        "source/recording/overview_video_recorder.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "scripts/pipeline/run_full_physics_batch.py"
+      ],
+      "tests": [
+        {
+          "command": "arm_vla_liangzhu focused scene/composite/pipeline/batch regression",
+          "result": "passed",
+          "note": "94 passed。"
+        },
+        {
+          "command": "pct_scene focused scene/composite/pipeline/batch regression",
+          "result": "passed",
+          "note": "104 passed、11 subtests passed。"
+        },
+        {
+          "command": "real arm_vla_liangzhu headless batch seeds 0..4",
+          "result": "passed",
+          "note": "5/5 pipeline 成功并通过训练质量门；1004 rows，validator 0 error / 0 warning，5/5 composite 零丢帧。"
+        },
+        {
+          "command": "real pct_scene headless batch seeds 0..19",
+          "result": "passed_with_quality_rejections",
+          "note": "18/20 进入统一训练集；4096 rows，validator 0 error / 0 warning。两条释放失败保留原始诊断但未混入训练数据。"
+        },
+        {
+          "command": "normalized task JSON SHA256 comparison for seeds 0..4",
+          "result": "passed",
+          "note": "randomization 与 start/pick/place/keepout/spatial/mesh-truth 派生字段全部一致；仅排除 worktree 绝对 PLY 路径。"
+        }
+      ],
+      "data_results": {
+        "arm_vla_liangzhu_output_root": "/mnt/sage_data/outputs/arm_vla_liangzhu/alignment_batch5_seed0_composite_20260718",
+        "arm_vla_liangzhu_attempted": 5,
+        "arm_vla_liangzhu_accepted": 5,
+        "arm_vla_liangzhu_rows": 1004,
+        "pct_scene_output_root": "/mnt/sage_data/outputs/pct_scene/liangzhu_headless_batch20_seed0_standofffix_20260718_v2",
+        "pct_scene_attempted": 20,
+        "pct_scene_accepted": 18,
+        "pct_scene_rows": 4096,
+        "pct_scene_failure_seeds": [7, 19],
+        "pct_scene_failure_reasons": ["place_release_pose_error", "place_release_ejected"],
+        "cross_worktree_attempted": 25,
+        "cross_worktree_training_accepted": 23,
+        "camera_keys": ["front", "overview", "wrist"],
+        "composite_resolution": [1280, 720],
+        "composite_fps": 25,
+        "composite_dropped_frames": 0,
+        "validator_errors": 0,
+        "validator_warnings": 0
+      },
+      "next_steps": [
+        "保持释放质量门不变，单独提高 place approach/release 的 object-TCP 跟踪和低冲击落座稳定性。",
+        "Phase 1 几何随机化稳定后再引入光照、材质、相机噪声和遮挡，不把 sim_ground_truth 描述为 RGB-D 感知。",
+        "由用户验收后手动 git add/commit/push；Codex 不主动提交。"
+      ]
+    },
+    {
+      "time": "2026-07-18 22:04:54 CST",
+      "summary": "将 front/wrist 两路相机统一为 D436 640x480 精确标定内参，并把 wrist 外参替换为 arm_link6_T_camera_color_optical 手眼标定结果。相机生成时写入 Isaac Sim 5.1 OpenCV pinhole schema，避免 IsaacLab 普通 pinhole 对 fx/fy 和主点的近似；同时覆盖 IsaacLab 对外报告的 K，并拒绝非标定分辨率。front 只更新内参，保留原 base/head_cam 安装外参。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/simulation/isaaclab_runtime.py",
+        "tests/test_isaaclab_navigation_runtime.py"
+      ],
+      "tests": [
+        {
+          "command": "PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B -m pytest -q -p no:cacheprovider tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "50 passed、1 skipped；覆盖精确 USD OpenCV schema 属性、metadata、分辨率门禁和 IsaacLab K 覆盖，未启动 GPU 仿真。"
+        },
+        {
+          "command": "tests/test_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "50 passed；确认 runtime 内参覆盖报告进入最终 simulation_report。"
+        }
+      ],
+      "next_steps": [
+        "用户释放 GPU 后运行单 episode composite 验收，检查 wrist 视野方向并核对 metadata 中 OpenCV schema 与精确 K。",
+        "若 front 使用的是另一台独立标定相机，应提供该相机自己的 K；当前按用户要求与 wrist 共用本次 D436 内参。"
+      ]
+    },
+    {
+      "time": "2026-07-18 22:28:14 CST",
+      "summary": "根据实机/仿真 wrist 图像中的夹爪自遮挡宽度增加视觉对齐修正。保留原始手眼标定旋转与位置，在 camera_color_optical 坐标系沿 Z 轴向后平移 0.05m，最终 arm_link6 安装位置为 (0.0137464699, 0.0028437438, 0.1035959946)。按 URDF 两指根部几何估算，夹爪根部深度从约 67mm 增至 117mm，理论横向投影由约 285px 降至 163px。metadata 同时记录原始标定、修正量和非精密重标定属性。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "source/simulation/isaaclab_runtime.py",
+        "tests/test_isaaclab_navigation_runtime.py"
+      ],
+      "tests": [
+        {
+          "command": "tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "50 passed、1 skipped；验证有效外参、原始标定与视觉修正 metadata。"
+        }
+      ],
+      "next_steps": [
+        "运行单 episode 重新导出 wrist 图像，比较夹爪轮廓宽度和目标可见区域。",
+        "若遮挡仍偏大，优先在 optical Z offset 的 -0.04m 到 -0.07m 范围内迭代，不根据非同场景照片修改旋转。"
+      ]
+    },
+    {
+      "time": "2026-07-18 22:40:02 CST",
+      "summary": "完成 wrist camera 视觉对齐 v1 的真实 full-physics 验收。首次启动发现 headless experience 未注册 lens-distortion schema，已增加显式扩展加载和标准 USD pinhole fallback；第二次 seed 5002 完整通过 nav-pick-place、稳定物理、训练质量门、LeRobot 与 composite 视频验收。相同 seed 的首帧黑色末端轮廓在 y=350 的宽度从 370px 降至 284px，缩小 23.24%；y=325/375/400 也分别从 309/380/385px 降至 231/289/300px。画面明显更接近窄视野遮挡，但由于实机照片不是同一机器人姿态/场景，仍不标记为精确 sim-real 外参验证。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/simulation/isaaclab_runtime.py",
+        "tests/test_isaaclab_navigation_runtime.py"
+      ],
+      "tests": [
+        {
+          "command": "focused runtime + full pipeline regression",
+          "result": "passed",
+          "note": "100 passed、1 skipped。"
+        },
+        {
+          "command": "real full-physics seed 5002 + validate_full_pipeline_acceptance.py",
+          "result": "passed",
+          "note": "final_state=done；200 LeRobot rows，0 error/0 warning；composite 1001 frames、1280x720、25fps、0 dropped。"
+        }
+      ],
+      "data_results": {
+        "output_root": "/mnt/sage_data/outputs/arm_vla_liangzhu/wrist_visual_alignment_v1_seed5002_20260718_2230_v2",
+        "silhouette_width_y350_old_px": 370,
+        "silhouette_width_y350_new_px": 284,
+        "silhouette_width_reduction_ratio": 0.2324,
+        "renderer_schema_applied": false,
+        "effective_renderer_intrinsics": {"fx": 383.486661465, "fy": 383.486661465, "cx": 320, "cy": 240}
+      },
+      "next_steps": [
+        "用户人工检查 composite 与 wrist_00000/00050/00170/00199；当前修正改善明显但不应视为精密标定。",
+        "只有获得同机械臂关节姿态、同目标相对位姿的实机帧后，才继续调整旋转或横向偏移。"
+      ]
+    },
+    {
+      "time": "2026-07-18 22:56:18 CST",
+      "summary": "纠正 wrist 视觉对齐 v1 的光轴方向错误：用户指出实机 D436 安装更靠前且画面只看到双爪。v2 保留原始手眼旋转，在 camera_color_optical 坐标系沿 +Z 前移 0.04m，最终 arm_link6 安装位置为 (0.0896326297, 0.0025368080, 0.0552100820)。夹爪根部深度由约 67.1mm 降为 27.1mm，进入 30mm near clipping，首帧已裁掉底座并只保留双爪；用户确认新图像效果良好。相同 seed 5002 的真实 full-physics pipeline 完整成功，并同步修改 pct_scene worktree。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "source/simulation/isaaclab_runtime.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "/mnt/sage_data/workspace/pct_scene/README.md",
+        "/mnt/sage_data/workspace/pct_scene/project.json",
+        "/mnt/sage_data/workspace/pct_scene/source/simulation/isaaclab_runtime.py",
+        "/mnt/sage_data/workspace/pct_scene/tests/test_isaaclab_navigation_runtime.py"
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "arm_vla_liangzhu 50 passed、1 skipped；pct_scene 51 passed、2 skipped。"
+        },
+        {
+          "command": "run_full_physics_pipeline.py --seed 5002 --headless --record-video --video-mode composite",
+          "result": "passed",
+          "note": "final_state=done；stable_physics_success=true；training_eligible=true。"
+        },
+        {
+          "command": "validate_full_pipeline_acceptance.py",
+          "result": "passed",
+          "note": "198 LeRobot rows，0 error/0 warning；composite 989 frames、1280x720、25fps、0 dropped。"
+        }
+      ],
+      "data_results": {
+        "output_root": "/mnt/sage_data/outputs/arm_vla_liangzhu/wrist_visual_alignment_v2_forward_seed5002_20260718_2250",
+        "wrist_first_frame": "episode_000000/images/wrist/wrist_00000.jpg",
+        "effective_mount_position_xyz_m": [0.0896326297, 0.002536808, 0.055210082],
+        "corrected_gripper_root_depth_m": 0.02710842,
+        "near_clipping_m": 0.03,
+        "user_visual_acceptance": true,
+        "metric_recalibration": false
+      },
+      "next_steps": [
+        "保留当前 v2，不再根据非同姿态照片继续前移或修改旋转。",
+        "若后续需要毫米级 sim-real 对齐，采集同关节姿态、同抓持位姿、同目标距离的实机/仿真成对图像后再优化完整 SE(3) 外参。"
+      ]
+    },
+    {
+      "time": "2026-07-18 23:21:51 CST",
+      "summary": "否决 wrist 视觉对齐 v2：沿 optical +Z 前移 0.04m 后，夹爪根部和可乐近表面只相差约 4mm，利用 30mm near clipping 隐藏夹爪底座时会不可避免地切穿可乐；真实导出 wrist_00185.jpg 已复现孔洞。v3 恢复原始手眼标定光轴深度，只沿 camera_color_optical -Y 平移 0.02m，把近端夹爪移到画面下方，同时保持目标表面远离近裁剪面。新增逐仿真步 wrist-camera/目标圆柱表面距离监控与训练质量门，任何视锥内目标表面余量低于 10mm 的 episode 都会被标记为不可训练。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/recording/jsonl_recorder.py",
+        "source/recording/training_action.py",
+        "source/simulation/isaaclab_runtime.py",
+        "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "tests/test_scene_runtime.py"
+      ],
+      "tests": [
+        {
+          "command": "focused wrist runtime, recording and full-pipeline regression",
+          "result": "passed",
+          "note": "130 passed、1 skipped；包含 frame 185 实际位姿回归和旧 v2 metadata 强制拒绝测试，证明 v2 会切入近裁剪面而 v3 保留安全余量。"
+        },
+        {
+          "command": "run_full_physics_pipeline.py --seed 5002 --headless --record-video --video-mode composite",
+          "result": "passed",
+          "note": "final_state=done；stable_physics_success=true；训练质量门通过；wrist clearance 3770 个相关采样中 0 次违规。"
+        },
+        {
+          "command": "validate_full_pipeline_acceptance.py",
+          "result": "passed",
+          "note": "199 LeRobot rows，0 error/0 warning；composite 994 frames、1280x720、25fps、0 dropped；training_eligible=true。"
+        }
+      ],
+      "data_results": {
+        "invalid_v2_output_root": "/mnt/sage_data/outputs/arm_vla_liangzhu/wrist_visual_alignment_v2_forward_seed5002_20260718_2250",
+        "output_root": "/mnt/sage_data/outputs/arm_vla_liangzhu/wrist_visual_alignment_v3_safe_seed5002_20260718_2315",
+        "effective_mount_position_xyz_m": [0.0666580792, 0.0028071889, 0.0935779972],
+        "visual_alignment_offset_camera_xyz_m": [0.0, -0.02, 0.0],
+        "critical_release_frame": "episode_000000/images/wrist/wrist_00185.jpg",
+        "clearance_sample_count": 3977,
+        "clearance_considered_sample_count": 3770,
+        "clearance_violation_count": 0,
+        "minimum_object_surface_depth_m": 0.06465593766942831,
+        "minimum_object_surface_margin_over_near_clip_m": 0.034655937669428316,
+        "user_visual_acceptance": false,
+        "metric_recalibration": false
+      },
+      "next_steps": [
+        "用户人工验收 v3 的 pick、carry、release 帧和 composite 视频；确认前不把 visual_alignment_user_accepted 标记为 true。",
+        "禁止将 v2 输出用于 VLA 训练；后续批量数据必须保留 wrist_camera_object_clearance_report 并通过训练质量门。",
+        "pct_scene 已同步代码与单元测试，但仍需在需要时由 pct_scene 自身运行一条真实 episode，不能把源 worktree 的运行冒充为目标 worktree 独立验证。"
+      ]
     }
   ],
   "open_questions": [
@@ -7550,6 +7835,7 @@
     "现有几何随机化在 20-seed 回归中达到 100% 接受率后，是先扩大几何范围，还是保持当前范围并优先加入光照、相机噪声与遮挡随机化？"
   ],
   "known_limitations": [
+    "2026-07-18 当前 box1->box2 连续 seeds 0..19 在 pct_scene 的真实接受率为 90%（18/20）。seed 7 的最终姿态 Z 误差比 0.025m 阈值高约 0.000055m 且释放峰值较大；seed 19 出现水平释放速度超限。两条均完成导航、抓取和 place 动作，但被质量门正确排除，说明剩余瓶颈是释放动力学鲁棒性，不是 PCT/DWA 或数据导出。",
     "当前活动任务已切换为 box1 上抓取可乐并放到 box2。seed 5002 在最新导航结构下完整成功；seed 5003 的导航回归成功，但 CuRobo place 规划因实际 pre-place 目标约 0.4746m arm-base radial 而失败。base-goal 生成/导航验收尚未显式包含机械臂可达裕量，不能把该问题归因于 PCT/DWA，也不能通过逐地图调参宣称已解决。",
     "当前全向 yaw 的最新 v3 数据集是 validation_full_yaw_seed7000_n20_final_v2_20260715/lerobot_dataset，共 19 条 accepted episode；旧 validation_seed4013_n20_final_carry_map_v2 的 20 条数据只覆盖±30° yaw。phase146/147 历史数据仍是旧 front-only/连续 segment 目录，不能与 v3 直接混用。",
     "全向 yaw 的连续 20-seed batch 接受率为 95%（19/20）；唯一失败 seed 7018 在 0.040m placement center 修正后定向复跑通过，但这不能表述为同一次连续 batch 20/20。",

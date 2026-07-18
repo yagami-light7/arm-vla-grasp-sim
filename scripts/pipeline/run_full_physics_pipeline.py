@@ -283,13 +283,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--record-video",
-        action="store_true",
-        help="启用展示用单视角或三视角拼接视频录制；默认关闭。",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "是否录制展示视频；完整 pipeline 默认开启 composite，"
+            "可用 --no-record-video 显式关闭。"
+        ),
     )
     parser.add_argument(
         "--video-mode",
         choices=("overview", "front", "font", "wrist", "composite", "all"),
-        default="overview",
+        default="composite",
         help=(
             "录制视频类型：overview 为第三人称展示视角，front/font 为前视 observation "
             "camera，wrist 为腕部 observation camera，composite 将同步的 "
@@ -766,6 +770,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     manipulation_smoke = mode == "manipulation_smoke"
     manipulation_apply_smoke = mode == "manipulation_apply_smoke"
     full_physics = mode == "full_physics"
+    if args.record_video is None:
+        # 真实完整 pipeline 默认产出三视角展示视频；dry-run/smoke 不隐式录制。
+        args.record_video = bool(full_physics)
     flat_episode_output = os.environ.get("FULL_PHYSICS_FLAT_EPISODE_OUTPUT") == "1"
     if (full_physics or pick_smoke) and (args.pick_plan_json or args.place_plan_json):
         raise SystemExit("full-physics / pick-smoke 模式禁止使用离线 plan JSON；pick/place 必须按当前仿真状态在线规划。")

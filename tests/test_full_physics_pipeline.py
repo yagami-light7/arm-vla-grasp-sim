@@ -524,6 +524,91 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             self.assertFalse(report["object_pose_modified"])
             self.assertGreater(report["object_tcp_offset_drift_m"], 0.10)
 
+    def test_place_release_offset_uses_task_scoped_tolerance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            task_path = (
+                PROJECT_ROOT
+                / "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json"
+            )
+            config = FullPhysicsConfig(
+                task_json=task_path,
+                output_dir=Path(tmp_dir),
+                dry_run=True,
+            )
+            spec = JsonTaskProvider().load(task_path)
+            pipeline = create_dry_run_pipeline(
+                config=config,
+                episode_spec=spec,
+                episode_seed=1,
+                episode_dir=Path(tmp_dir) / "episode",
+            )
+            pipeline.machine.config = replace(
+                pipeline.machine.config,
+                manipulation=replace(
+                    pipeline.machine.config.manipulation,
+                    place_release_object_tcp_offset_tolerance_m=0.03,
+                ),
+            )
+            pipeline.machine._place_expected_object_tcp_offset = (0.01, 0.0, -0.02)
+            observation = SimulationState(
+                step_index=10,
+                timestamp=0.5,
+                robot_root_pose=(0.0, 0.0, 0.35, 1.0, 0.0, 0.0, 0.0),
+                robot_root_velocity=(0.0,) * 6,
+                tcp_pose=(1.0, 2.0, 0.8, 1.0, 0.0, 0.0, 0.0),
+                object_pose=(1.01, 2.0, 0.805, 1.0, 0.0, 0.0, 0.0),
+            )
+
+            report = pipeline.machine._place_object_tcp_offset_report(observation)
+
+            self.assertTrue(report["available"])
+            self.assertTrue(report["within_tolerance"])
+            self.assertAlmostEqual(report["offset_drift_m"], 0.025)
+            self.assertEqual(report["tolerance_m"], 0.03)
+
+    def test_place_release_tracking_uses_place_execution_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            task_path = (
+                PROJECT_ROOT
+                / "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json"
+            )
+            config = FullPhysicsConfig(
+                task_json=task_path,
+                output_dir=Path(tmp_dir),
+                dry_run=True,
+            )
+            spec = JsonTaskProvider().load(task_path)
+            pipeline = create_dry_run_pipeline(
+                config=config,
+                episode_spec=spec,
+                episode_seed=1,
+                episode_dir=Path(tmp_dir) / "episode",
+            )
+            pipeline.machine._place_expected_object_tcp_offset = (9.0, 9.0, 9.0)
+            pipeline.machine._place_pre_release_object_tcp_offset_report = {
+                "within_tolerance": False
+            }
+            observation = SimulationState(
+                step_index=20,
+                timestamp=1.0,
+                robot_root_pose=(0.0, 0.0, 0.35, 1.0, 0.0, 0.0, 0.0),
+                robot_root_velocity=(0.0,) * 6,
+                tcp_pose=(1.0, 2.0, 0.8, 1.0, 0.0, 0.0, 0.0),
+                object_pose=(1.01, 1.99, 0.815, 1.0, 0.0, 0.0, 0.0),
+            )
+
+            pipeline.machine._reset_place_release_tracking(observation)
+
+            expected_offset = pipeline.machine._place_expected_object_tcp_offset
+            self.assertIsNotNone(expected_offset)
+            assert expected_offset is not None
+            for actual, expected in zip(expected_offset, (0.01, -0.01, 0.015)):
+                self.assertAlmostEqual(actual, expected)
+            self.assertEqual(
+                pipeline.machine._place_pre_release_object_tcp_offset_report,
+                {},
+            )
+
     def test_pick_only_task_fails_with_structured_place_reason(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             summary, _pipeline = self._run_task(

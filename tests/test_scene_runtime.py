@@ -23,9 +23,11 @@ from source.simulation.receptacle_support import (
 from source.recording.training_action import (
     physical_execution_success_verified,
     task_requires_mesh_truth_manipulation_targets,
+    task_requires_wrist_camera_object_clearance,
     training_mesh_truth_manipulation_targets_verified,
     training_quality_success_verified,
     training_receptacle_support_verified,
+    training_wrist_camera_object_clearance_verified,
 )
 from source.tasks import JsonTaskProvider
 
@@ -132,6 +134,59 @@ def test_vla_training_gate_requires_synchronized_rgb_after_physical_success() ->
 
     summary["training_visual_source_verified"] = True
     assert training_quality_success_verified(summary) is True
+
+
+def test_vla_training_gate_rejects_wrist_camera_object_near_plane_intersection() -> None:
+    clearance_config = {
+        "enabled": True,
+        "required_for_training": True,
+        "shape": "cylinder_local_z",
+    }
+    summary = {
+        "success": True,
+        "failure_reason": None,
+        "success_semantics": "strict_physical_execution",
+        "execution_provenance_verified": True,
+        "task_config": {
+            "training_action": {"enabled": True},
+            "recording": {"wrist_camera_object_clearance": clearance_config},
+        },
+        "training_visual_source_verified": True,
+        "simulation_report": {
+            "wrist_camera_object_clearance_report": {
+                **clearance_config,
+                "camera_extrinsics_source": (
+                    "hand_eye_calibration_with_visual_alignment_v3"
+                ),
+                "considered_sample_count": 12,
+                "violation_count": 1,
+                "verified": False,
+            }
+        },
+    }
+
+    assert task_requires_wrist_camera_object_clearance(summary["task_config"])
+    assert training_wrist_camera_object_clearance_verified(summary) is False
+    assert training_quality_success_verified(summary) is False
+
+    report = summary["simulation_report"]["wrist_camera_object_clearance_report"]
+    report["violation_count"] = 0
+    report["verified"] = True
+    assert training_wrist_camera_object_clearance_verified(summary) is True
+    assert training_quality_success_verified(summary) is True
+
+
+def test_rejected_wrist_visual_alignment_v2_is_never_training_eligible() -> None:
+    summary = {
+        "task_config": {},
+        "simulation_report": {
+            "wrist_camera_report": {
+                "source": "hand_eye_calibration_with_visual_alignment_v2"
+            }
+        },
+    }
+
+    assert training_wrist_camera_object_clearance_verified(summary) is False
 
 
 def test_liangzhu_task_receptacle_pose_is_resolved_before_physics() -> None:

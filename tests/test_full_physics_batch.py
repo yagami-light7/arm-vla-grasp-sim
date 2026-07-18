@@ -280,6 +280,40 @@ class FullPhysicsBatchTest(unittest.TestCase):
             "composite",
         )
 
+        default_args = _build_parser().parse_args(
+            [
+                "--task-json",
+                str(TASK_PATH),
+                "--output-dir",
+                "/tmp/full_physics_batch_test",
+            ]
+        )
+        default_command = _build_child_command(
+            default_args,
+            episode_index=0,
+        ).command
+        self.assertIn("--record-video", default_command)
+        self.assertEqual(
+            default_command[default_command.index("--video-mode") + 1],
+            "composite",
+        )
+
+        disabled_args = _build_parser().parse_args(
+            [
+                "--task-json",
+                str(TASK_PATH),
+                "--output-dir",
+                "/tmp/full_physics_batch_test",
+                "--no-record-video",
+            ]
+        )
+        disabled_command = _build_child_command(
+            disabled_args,
+            episode_index=0,
+        ).command
+        self.assertIn("--no-record-video", disabled_command)
+        self.assertNotIn("--video-mode", disabled_command)
+
     def test_progress_format_helpers(self) -> None:
         args = _build_parser().parse_args(
             [

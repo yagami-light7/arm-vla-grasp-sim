@@ -296,7 +296,8 @@ Pick up the coke can on box1 and place it on box2.
 | 可乐位置 | box1 中心局部安全区，半宽 `0.08m × 0.06m` | 由 box1 顶面和可乐 bbox 半高求 Z，并保留桌边余量 |
 | 可乐 yaw | `Uniform(-180°, 180°)` | roll/pitch 为 0 |
 | box2 placement region | box2 中心半宽 `0.10m × 0.05m` | 保留桌边余量 |
-| pick/place standoff | 各 `Uniform(0.50m, 0.54m)` | 底盘最终正面朝向目标 |
+| pick standoff | `Uniform(0.50m, 0.54m)` | 底盘最终正面朝向可乐 |
+| place standoff | `Uniform(0.48m, 0.51m)` | 底盘最终正面朝向 box2，并为 `0.08m` 导航交接容差预留机械臂可达裕量 |
 
 每次采样会同步更新 robot reset、box1/box2 stage translate、可乐 pose、box2
 placement region、pick/place base goal、两个 CuRobo 支撑 proxy 和 PCT 局部动态
@@ -305,8 +306,30 @@ keepout。box2 原资产没有 authored collision，runtime 会在 physics 初�
 
 布局最多尝试 300 次，并拒绝桌间距不足、机器人/导航交接点离桌过近、可乐越出
 box1 安全区或 collision PLY 地面支撑不满足约束的样本。同一个 task/config/seed 会
-复现相同布局。当前已完成 20 seed 的静态随机化和 40 次 PCT 请求检查；这不等价于
-新 box 任务已经完成多 seed 真实 full-physics batch 验收。
+复现相同布局。除 20 seed 静态随机化和 40 次 PCT 请求检查外，2026-07-18 已完成两份
+worktree 的真实 headless full-physics batch：
+
+| worktree / seeds | 尝试 | 完整成功并进入统一数据集 | 数据集帧数 | validator | composite |
+| --- | ---: | ---: | ---: | --- | --- |
+| `arm_vla_liangzhu` / `0..4` | 5 | 5 | 1004 | 0 error / 0 warning | 5/5，零丢帧 |
+| `pct_scene` / `0..19` | 20 | 18 | 4096 | 0 error / 0 warning | 20/20，零丢帧 |
+
+两边合计尝试 25 条、通过训练质量门并导出 23 条。`pct_scene` 的 seed 7 和 seed 19
+分别在最终放置验证中以 `place_release_pose_error` 和 `place_release_ejected` 被拒绝；
+两条都已完成导航、抓取和放置动作，失败原始数据保留但没有混入统一训练数据集。没有
+通过放宽 validator 隐藏这两个释放动力学问题。
+
+两边 seed 0..4 的 `randomization` 采样及派生出的 start、pick/place、动态 keepout、
+空间约束和 mesh-truth 目标逐 JSON 哈希一致；比较时只排除了必然不同的 worktree 绝对
+collision PLY 路径。对应输出证据为：
+
+```text
+/mnt/sage_data/outputs/arm_vla_liangzhu/
+alignment_batch5_seed0_composite_20260718
+
+/mnt/sage_data/outputs/pct_scene/
+liangzhu_headless_batch20_seed0_standofffix_20260718_v2
+```
 
 当前默认任务的 pick 导航容差为 `0.10m`，place 交接容差为 `0.08m`；box2
 `pre_place_clearance` 与 `retreat_clearance` 均为 `0.08m`。完成通用导航接口修正后，
@@ -320,8 +343,14 @@ seed 5000 已在宿主机 RTX 4060 上真实跑通：PCT + RL locomotion + CuRob
 nav_structure_seed5000_20260717_v1
 ```
 
-这证明单条真实闭环和数据格式可用，不代表当前 box 随机分布已经获得多 seed 成功率；
-开始正式量产前仍需运行独立 batch。
+这条 seed 5000 结果是早期单条基线；上面的 2026-07-18 双 worktree batch 是当前
+多 seed 成功率和数据格式的权威验收结果。
+
+headless 量产当前保持 `navigation_visual_mode=collision`。2026-07-18 的
+Gaussian/NUREC 实测能够加载资产并启动 PhysX，但首帧三相机渲染会触发
+`cudaErrorIllegalAddress (700)`。这是 Isaac Sim 5.1 headless 渲染路径的运行时限制，
+不是 CUDA 设备不可用。在该路径修复前，不得把 `full` 设为 batch 默认；GUI
+可用 `--navigation-visual-mode full` 做单条视觉调试。
 
 #### 地图无关的导航路径接口
 
@@ -912,6 +941,32 @@ instruction_annotation_schema
 | `observation.images.front` | `video[480, 640, 3]` | `videos/chunk-000/observation.images.front/episode_XXXXXX.mp4` | 前视相机 RGB 视频。 |
 | `observation.images.wrist` | `video[480, 640, 3]` | `videos/chunk-000/observation.images.wrist/episode_XXXXXX.mp4` | 腕部相机 RGB 视频。 |
 
+front 与 wrist 均使用 D436 的 640×480 标定内参：`fx=383.44608095`、
+`fy=383.52724198`、`cx=324.33479864`、`cy=238.90275478`，OpenCV
+pinhole 的 12 个畸变系数均为 0。runtime 会尝试启用
+`OmniLensDistortionOpenCvPinholeAPI`；当前 IsaacLab 5.1 headless 实测未把该 API
+应用到 render camera，因此会显式回退到标准 USD pinhole，实际渲染 K 为
+`fx=fy=383.486661465`、`cx=320`、`cy=240`。该近似与标定 K 最大相差约 4.3 px，
+实际生效值记录在 `camera_runtime_intrinsics_report`。wrist camera 挂载在
+`arm_link6`，prim 为
+`{ENV_REGEX_NS}/Robot/arm_link6/arm_vla_camera`；其
+原始 `arm_link6_T_camera_color_optical` 手眼标定为位置
+`(0.0559054476, 0.0026732239, 0.0767149320)` m、wxyz 四元数
+`(0.3377891849, -0.6214992221, 0.6185057335, -0.3421810063)`。由于标定板弯曲，
+当前另加一层可追溯的视觉对齐修正：在 ROS optical frame 沿相机 `-Y` 平移
+`0.02 m`，不修改旋转；最终仿真安装位置为
+`(0.0666580792, 0.0028071889, 0.0935779972)` m。该平移把夹爪近端移到图像下方，
+同时保持相机到 TCP 的光轴深度约 `0.1270 m`。禁止通过 optical `+Z` 前移和近裁剪
+隐藏夹爪底座：已验证 `+0.04 m` 会使 `0.03 m` near clipping 切入抓持中的可乐
+mesh。box1→box2 任务还启用了逐帧 wrist/目标表面间距门禁，要求可见可乐表面至少
+位于 near clipping 之后 `0.01 m`；违规 episode 会被标记为不可训练。历史 metadata 中若出现
+`hand_eye_calibration_with_visual_alignment_v2`，pipeline 重新处理该 summary 时会直接拒绝，
+对应输出不得用于 VLA 训练。该修正来自实机画面约束，不应表述为新的精密手眼标定。
+front camera 仅更新为同一套内参，
+安装外参仍沿用现有
+`base/head_cam` 配置。front/wrist 请求非 640×480 分辨率时 runtime 会直接报错，
+避免静默套用不匹配的标定参数。
+
 `observation.state` 17 维顺序：
 
 | 维度 | 名称 | 说明 |
@@ -1269,8 +1324,8 @@ smoke/debug 时传模式参数。
 | `--policy-profile`                                   | `pct_multifloor`                | 复用已验证的 RL locomotion profile                   |
 | `--locomotion-checkpoint`                            | Go2-X5 model_26000              | 默认使用仓库 checkpoint                              |
 | `--require-locomotion-checkpoint`                    | 默认开启                        | checkpoint 缺失时立即失败                            |
-| `--record-video`                                     | 默认关闭                        | 启用 episode 展示/observation MP4 录制；展示视频固定 25fps |
-| `--video-mode`                                       | `overview`                      | `composite` 将同步 overview/front/wrist 拼成单个视频；其余支持 `overview`/`front`/`font`/`wrist`/`all` |
+| `--record-video` / `--no-record-video`               | 完整 pipeline 默认开启          | 默认录制 episode 三视角展示 MP4；批量空间敏感时可显式关闭，展示视频固定 25fps |
+| `--video-mode`                                       | `composite`                     | 将同步 overview/front/wrist 拼成单个视频；其余支持 `overview`/`front`/`font`/`wrist`/`all` |
 | `--video-out`                                        | 可选                            | 视频输出目录或单个`.mp4`；多路/多 episode 请传目录  |
 | `--video-width` / `--video-height`                   | `1280` / `720`                  | overview 捕获或 composite 输出分辨率；不改变 observation 原始分辨率 |
 | `--overview-camera-mode`                             | `fixed`                         | 默认固定使用指定 overview；`auto` 才按阶段发现相机  |
@@ -1321,8 +1376,8 @@ smoke/debug 时传模式参数。
 | `--place-plan-json`                                  | 可选          | 非 full-physics smoke 可转发离线 place plan |
 | `--progress-interval-s`                              | `5.0`         | heartbeat 进度打印间隔                      |
 | `--color` / `--no-color`                             | 默认开启      | 是否使用 ANSI 彩色输出；保存 CI 日志时建议关闭       |
-| `--record-video`                                     | 默认关闭      | 转发给单 episode pipeline，启用 MP4 录制；展示视频固定 25fps |
-| `--video-mode`                                       | `overview`    | 支持 `composite` 三视角拼接，以及 `overview`/`front`/`font`/`wrist`/`all` |
+| `--record-video` / `--no-record-video`               | 完整 pipeline 默认开启 | 默认转发 composite MP4 录制；空间敏感时可显式关闭，展示视频固定 25fps |
+| `--video-mode`                                       | `composite`   | 三视角拼接；也支持 `overview`/`front`/`font`/`wrist`/`all` |
 | `--video-out`                                        | 可选          | 视频输出根目录；batch 会写入其下的`episode_XXXXXX/`子目录，不支持单个`.mp4` |
 | `--video-width` / `--video-height`                   | `1280` / `720`| overview 捕获或 composite 输出分辨率；不改变 observation 原始分辨率 |
 | `--overview-camera-mode`                             | `fixed`       | 默认固定使用指定 overview；`auto` 保留动态发现 |

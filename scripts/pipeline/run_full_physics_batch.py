@@ -300,13 +300,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--record-video",
-        action="store_true",
-        help="转发给单 episode pipeline：启用展示/observation 视频录制；默认关闭。",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "转发视频录制开关；完整 pipeline 默认开启 composite，"
+            "可用 --no-record-video 显式关闭。"
+        ),
     )
     parser.add_argument(
         "--video-mode",
         choices=("overview", "front", "font", "wrist", "composite", "all"),
-        default="overview",
+        default="composite",
         help=(
             "转发给单 episode pipeline：overview 为 third_person 展示视角，front/font 为前视 "
             "observation，wrist 为腕部 observation，composite 输出同步三视角拼接视频，"
@@ -826,6 +830,11 @@ def _build_child_command(
     output_root = _project_path(args.output_dir)
     episode_output_dir = output_root / f"episode_{episode_index:06d}"
     episode_seed = int(args.seed) + int(episode_index)
+    record_video = (
+        str(args.mode) == "full_physics"
+        if args.record_video is None
+        else bool(args.record_video)
+    )
     command = [
         sys.executable,
         "-B",
@@ -853,6 +862,7 @@ def _build_child_command(
         str(args.policy_profile),
         "--overview-camera-prim-path",
         str(args.overview_camera_prim_path),
+        _bool_flag(record_video, "--record-video", "--no-record-video"),
     ]
     if args.global_planner == "pct":
         command.extend(["--pct-coord-mode", str(args.pct_coord_mode)])
@@ -897,8 +907,7 @@ def _build_child_command(
         command.extend(["--pick-plan-json", str(_project_path(args.pick_plan_json))])
     if args.place_plan_json and args.mode != "full_physics":
         command.extend(["--place-plan-json", str(_project_path(args.place_plan_json))])
-    if args.record_video:
-        command.append("--record-video")
+    if record_video:
         command.extend(["--video-mode", str(args.video_mode)])
         command.extend(["--video-width", str(int(args.video_width))])
         command.extend(["--video-height", str(int(args.video_height))])

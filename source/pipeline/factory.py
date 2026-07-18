@@ -87,6 +87,15 @@ def _manipulation_settings_for_episode(settings, episode_spec: EpisodeSpec):
                 f"task.manipulation_execution.{field_name} 必须是布尔值"
             )
         updates[field_name] = value
+    for field_name in ("place_release_object_tcp_offset_tolerance_m",):
+        if field_name not in raw_config:
+            continue
+        value = float(raw_config[field_name])
+        if value < 0.0:
+            raise ValueError(
+                f"task.manipulation_execution.{field_name} 必须为非负数"
+            )
+        updates[field_name] = value
     return replace(settings, **updates)
 
 

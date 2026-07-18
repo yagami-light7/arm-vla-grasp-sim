@@ -23,6 +23,7 @@ class FullPhysicsVerifier:
         place_xy_tolerance_m: float = 0.12,
         place_z_tolerance_m: float = 0.10,
         place_linear_velocity_tolerance_mps: float = 0.20,
+        place_angular_velocity_tolerance_rps: float = 0.50,
     ):
         self.navigation = navigation
         self.grasp_tcp_distance_tolerance_m = float(grasp_tcp_distance_tolerance_m)
@@ -32,6 +33,9 @@ class FullPhysicsVerifier:
         self.place_xy_tolerance_m = float(place_xy_tolerance_m)
         self.place_z_tolerance_m = float(place_z_tolerance_m)
         self.place_linear_velocity_tolerance_mps = float(place_linear_velocity_tolerance_mps)
+        self.place_angular_velocity_tolerance_rps = float(
+            place_angular_velocity_tolerance_rps
+        )
 
     def verify_pick_reachable(
         self,
@@ -183,11 +187,18 @@ class FullPhysicsVerifier:
         xy_error = math.hypot(object_xyz[0] - target_xyz[0], object_xyz[1] - target_xyz[1])
         z_error = abs(object_xyz[2] - target_xyz[2])
         linear_speed = _linear_speed(state.object_velocity)
+        angular_speed = _angular_speed(state.object_velocity)
         try:
             validation_config = _place_validation_config(
                 episode_spec,
                 default_xy_tolerance_m=self.place_xy_tolerance_m,
                 default_z_tolerance_m=self.place_z_tolerance_m,
+                default_linear_velocity_tolerance_mps=(
+                    self.place_linear_velocity_tolerance_mps
+                ),
+                default_angular_velocity_tolerance_rps=(
+                    self.place_angular_velocity_tolerance_rps
+                ),
             )
         except (TypeError, ValueError) as exc:
             return VerificationResult(
@@ -200,6 +211,12 @@ class FullPhysicsVerifier:
             )
         xy_tolerance = validation_config["place_xy_tolerance_m"]
         z_tolerance = validation_config["place_z_tolerance_m"]
+        linear_velocity_tolerance = validation_config[
+            "place_linear_velocity_tolerance_mps"
+        ]
+        angular_velocity_tolerance = validation_config[
+            "place_angular_velocity_tolerance_rps"
+        ]
         region = validation_config["placement_region_world"]
         region_contains_object_center = None
         if region is not None:
@@ -210,7 +227,8 @@ class FullPhysicsVerifier:
         success = (
             xy_error <= xy_tolerance
             and z_error <= z_tolerance
-            and linear_speed <= self.place_linear_velocity_tolerance_mps
+            and linear_speed <= linear_velocity_tolerance
+            and angular_speed <= angular_velocity_tolerance
             and region_contains_object_center is not False
         )
         return VerificationResult(
@@ -229,9 +247,11 @@ class FullPhysicsVerifier:
                 "place_xy_error_m": xy_error,
                 "place_z_error_m": z_error,
                 "object_linear_speed_mps": linear_speed,
+                "object_angular_speed_rps": angular_speed,
                 "place_xy_tolerance_m": xy_tolerance,
                 "place_z_tolerance_m": z_tolerance,
-                "place_linear_velocity_tolerance_mps": self.place_linear_velocity_tolerance_mps,
+                "place_linear_velocity_tolerance_mps": linear_velocity_tolerance,
+                "place_angular_velocity_tolerance_rps": angular_velocity_tolerance,
                 "placement_region_world": region,
                 "placement_region_contains_object_center": (
                     region_contains_object_center
@@ -278,11 +298,19 @@ def _linear_speed(velocity: tuple[float, ...] | None) -> float:
     return math.sqrt(sum(float(value) ** 2 for value in velocity[:3]))
 
 
+def _angular_speed(velocity: tuple[float, ...] | None) -> float:
+    if velocity is None or len(velocity) < 6:
+        return 0.0
+    return math.sqrt(sum(float(value) ** 2 for value in velocity[3:6]))
+
+
 def _place_validation_config(
     episode_spec: EpisodeSpec,
     *,
     default_xy_tolerance_m: float,
     default_z_tolerance_m: float,
+    default_linear_velocity_tolerance_mps: float,
+    default_angular_velocity_tolerance_rps: float,
 ) -> dict[str, object]:
     """解析任务级放置容差与可选的世界坐标安全区域。"""
 
@@ -296,6 +324,20 @@ def _place_validation_config(
     z_tolerance = _positive_finite_float(
         raw_place.get("place_z_tolerance", default_z_tolerance_m),
         field_name="task.place.place_z_tolerance",
+    )
+    linear_velocity_tolerance = _positive_finite_float(
+        raw_place.get(
+            "place_linear_velocity_tolerance_mps",
+            default_linear_velocity_tolerance_mps,
+        ),
+        field_name="task.place.place_linear_velocity_tolerance_mps",
+    )
+    angular_velocity_tolerance = _positive_finite_float(
+        raw_place.get(
+            "place_angular_velocity_tolerance_rps",
+            default_angular_velocity_tolerance_rps,
+        ),
+        field_name="task.place.place_angular_velocity_tolerance_rps",
     )
     raw_region = raw_place.get("placement_region")
     region: dict[str, float] | None = None
@@ -323,6 +365,8 @@ def _place_validation_config(
     return {
         "place_xy_tolerance_m": xy_tolerance,
         "place_z_tolerance_m": z_tolerance,
+        "place_linear_velocity_tolerance_mps": linear_velocity_tolerance,
+        "place_angular_velocity_tolerance_rps": angular_velocity_tolerance,
         "placement_region_world": region,
     }
 

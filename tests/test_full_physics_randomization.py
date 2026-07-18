@@ -76,6 +76,13 @@ class FullPhysicsRandomizationTest(unittest.TestCase):
         task = first.raw_task
         sample = task["randomization"]["sample"]
         config = task["randomization"]["box_pair"]
+        self.assertEqual(
+            task["manipulation_execution"],
+            {
+                "reuse_pick_grasp_orientation_for_place": True,
+                "place_release_object_tcp_offset_tolerance_m": 0.03,
+            },
+        )
         self.assertEqual(task["randomization"]["mode"], "liangzhu_box_pair_xy_v1")
         self.assertEqual(config["robot_yaw_range_deg"], [-180.0, 180.0])
         self.assertGreaterEqual(task["start"]["yaw"], -math.pi)
@@ -155,6 +162,23 @@ class FullPhysicsRandomizationTest(unittest.TestCase):
             episode,
         )
         self.assertTrue(manipulation.reuse_pick_grasp_orientation_for_place)
+
+    def test_liangzhu_box_task_uses_cylindrical_place_release_tolerance(
+        self,
+    ) -> None:
+        episode = JsonTaskProvider().load(LIANGZHU_BOX_TASK_PATH)
+        manipulation = _manipulation_settings_for_episode(
+            FullPhysicsConfig(
+                task_json=LIANGZHU_BOX_TASK_PATH,
+                output_dir=Path("/tmp/test-liangzhu-box-manipulation-settings"),
+            ).manipulation,
+            episode,
+        )
+
+        self.assertAlmostEqual(
+            manipulation.place_release_object_tcp_offset_tolerance_m,
+            0.03,
+        )
 
     def test_cli_randomization_and_visualization_defaults(self) -> None:
         args = _build_parser().parse_args(

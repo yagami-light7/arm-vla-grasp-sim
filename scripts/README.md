@@ -25,8 +25,8 @@ op 顺序均保留资产 authored 值。runtime 在 physics 初始化前为缺�
 collision 的 box2 添加静态 mesh collision，不会写回 USD。
 
 seed 5000 已完成真实 headless 全链路验证：最终 `success=true`、状态到达 `done`，
-LeRobot 283 帧、6 个固定 subtask 目录、front/wrist 各 283 张，validator 0 error / 0
-warning。该结果验证单 episode 闭环，不替代多 seed batch 成功率统计。
+LeRobot 、六类 subtask 与 front/wrist 图像通过 validator。2026-07-18 又完成了
+overview/front/wrist composite 实测；具体多 seed 成功率以最新 batch 摘要为准。
 
 ## 维护入口
 
@@ -114,7 +114,14 @@ GUI 调试时将 `--headless` 改为 `--no-headless --keep-window-open`。默认
 task、PCT 单层资产、identity 坐标、仓库 collision PLY、`pct_multifloor`
 checkpoint、禁止 A* fallback 和 collision 视觉模式。
 
+headless 三相机量产保持 collision 视觉。`--navigation-visual-mode full` 在当前
+Isaac Sim 5.1 + NUREC 路径的首帧渲染会触发 CUDA 700，因此只用于 GUI
+视觉调试，不是 batch 稳定默认。
+
 ### 三视角拼接与完整验收
+
+完整 single/batch pipeline 已默认启用 `composite`；以下显式参数用于强调验收配置，
+需要节省磁盘空间时可传 `--no-record-video`。
 
 ```bash
 set -euo pipefail

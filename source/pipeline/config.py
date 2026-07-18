@@ -230,6 +230,9 @@ class ManipulationSettings:
     carry_gripper_preload_m: float = 0.012
     # carry 前后 object-TCP 相对位置变化超过该阈值，视为抓取滑移或掉落。
     carry_object_tcp_slip_tolerance: float = 0.10
+    # place 下放后、松爪之前的任务级相对位姿门。默认保守，
+    # 支撑面接触会引起可预期重定位的任务可通过 task 显式放宽。
+    place_release_object_tcp_offset_tolerance_m: float = 0.02
     insert_place_plan_start_transition: bool = True
     place_plan_start_transition_duration_s: float = 0.5
     # full-physics 在 pick 后回 home 并 carry；place 默认保持当前 TCP 姿态，
@@ -608,6 +611,10 @@ class FullPhysicsConfig:
             raise ValueError("carry_gripper_preload_m must be non-negative")
         if self.manipulation.carry_object_tcp_slip_tolerance < 0.0:
             raise ValueError("carry_object_tcp_slip_tolerance must be non-negative")
+        if self.manipulation.place_release_object_tcp_offset_tolerance_m < 0.0:
+            raise ValueError(
+                "place_release_object_tcp_offset_tolerance_m must be non-negative"
+            )
         if self.manipulation.place_plan_start_transition_duration_s <= 0.0:
             raise ValueError("place_plan_start_transition_duration_s must be positive")
         for name, bounds in (

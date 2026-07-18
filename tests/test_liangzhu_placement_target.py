@@ -53,6 +53,11 @@ def test_box_pair_annotation_is_the_task_specific_single_source() -> None:
     assert alignment["rotation_settle_angular_velocity_rps"] == 0.12
     assert alignment["large_heading_creep_velocity_mps"] == 0.0
     assert task["navigation_execution"]["carry_departure"]["enabled"] is True
+    assert task["place"]["place_linear_velocity_tolerance_mps"] == 0.1
+    assert task["place"]["place_angular_velocity_tolerance_rps"] == 2.0
+    assert task["randomization"]["box_pair"][
+        "place_base_standoff_range_m"
+    ] == [0.48, 0.51]
     assert task["place"]["retreat_clearance"] == task["place"][
         "pre_place_clearance"
     ]

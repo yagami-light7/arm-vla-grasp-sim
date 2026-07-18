@@ -514,6 +514,16 @@ class SimulationViewportTest(unittest.TestCase):
         self.assertEqual(font_args.video_mode, "font")
         self.assertEqual(composite_args.video_mode, "composite")
 
+    def test_full_pipeline_defaults_to_composite_and_can_disable_video(self) -> None:
+        parser = _build_parser()
+
+        defaults = parser.parse_args([])
+        disabled = parser.parse_args(["--no-record-video"])
+
+        self.assertIsNone(defaults.record_video)
+        self.assertEqual(defaults.video_mode, "composite")
+        self.assertFalse(disabled.record_video)
+
 
 if __name__ == "__main__":
     unittest.main()

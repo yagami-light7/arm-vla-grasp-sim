@@ -43,6 +43,7 @@ from .training_action import (
     training_quality_success_verified,
     training_receptacle_support_verified,
     training_visual_source_verified,
+    training_wrist_camera_object_clearance_verified,
 )
 
 
@@ -405,6 +406,10 @@ class JsonlEpisodeRecorder:
             elif not training_mesh_truth_manipulation_targets_verified(summary):
                 ineligibility_reason = (
                     "mesh_truth_manipulation_targets_not_verified"
+                )
+            elif not training_wrist_camera_object_clearance_verified(summary):
+                ineligibility_reason = (
+                    "wrist_camera_object_clearance_not_verified"
                 )
             else:  # pragma: no cover - 未来新增质量门禁的兜底。
                 ineligibility_reason = "training_quality_gate_not_verified"
