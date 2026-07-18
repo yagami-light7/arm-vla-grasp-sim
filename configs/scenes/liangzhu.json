@@ -2,7 +2,7 @@
   "schema_version": 1,
   "name": "liangzhu",
   "aliases": ["liangzhu_single_floor"],
-  "description": "良渚单层可乐搬运与批量数据采集场景。",
+  "description": "良渚单层 box1 可乐搬运到 box2 的随机化批量数据采集场景。",
   "capabilities": [
     "navigation",
     "manipulation",
@@ -12,7 +12,7 @@
   "task_scene_profile": "liangzhu_single_floor",
   "runtime_asset_manifest": "source/scene/liangzhu/runtime_asset_manifest.json",
   "defaults": {
-    "task_json": "tasks/nav_pick_place_cola_liangzhu_pct.json",
+    "task_json": "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json",
     "output_dir": "outputs/liangzhu",
     "global_planner": "pct",
     "pct_server_script": "scripts/navigation/pct_grid_server.py",
@@ -30,11 +30,11 @@
     "locomotion_checkpoint": "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
     "randomize_task": true,
     "randomize_base_goal": true,
-    "navigation_visual_mode": "full",
+    "navigation_visual_mode": "collision",
     "overview_camera_mode": "fixed",
     "overview_camera_prim_path": "/World/overview",
     "overview_camera_schedule": null,
-    "video_mode": "all"
+    "video_mode": "composite"
   },
   "mode_defaults": {
     "pct_plan_preview": {
@@ -47,7 +47,7 @@
       "prim_path": "/World/VisualScene/GaussianScene",
       "arc_type": "reference",
       "environment_variable": "LIANGZHU_VISUAL_USDZ",
-      "fallback_path": "source/scene/liangzhu/usdz/lingzhu.usdz",
+      "fallback_path": "source/scene/liangzhu/usdz/liangzhu.usdz",
       "package_member": "gauss.usda"
     },
     {
@@ -59,13 +59,15 @@
     }
   ],
   "required_assets": [
-    "tasks/nav_pick_place_cola_liangzhu_pct.json",
+    "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json",
+    "tasks/liangzhu_placement_target.json",
     "source/scene/liangzhu/runtime_asset_manifest.json",
     "source/scene/liangzhu/liangzhu.usda",
     "source/scene/liangzhu/pct/liangzhu_single_floor.pickle",
     "source/scene/liangzhu/pct/liangzhu_single_floor_walkable.npy",
     "source/scene/liangzhu/ply/liangzhu_collision.ply",
-    "source/scene/objects/carpet.usd",
+    "source/scene/objects/box/box.usd",
+    "source/scene/objects/box2/box2.usd",
     "source/scene/objects/cola/MesaTask-10K/MesaTask_Assets/can/0364ab96f338493c972248102b462aa4/usd/0364ab96f338493c972248102b462aa4.usd",
     "checkpoints/go2_x5/pct_multifloor/model_26000.pt"
   ]

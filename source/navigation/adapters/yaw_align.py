@@ -57,6 +57,11 @@ class TerminalPoseConfig:
     # 携物终端段优先使用“转向剩余位置误差 -> 前向收敛”，避免 locomotion
     # policy 在最终 yaw 已对齐、但仍有横向位置误差时持续低速踏步。
     prefer_forward_translation: bool = False
+    # 同层操作区内保持最终 yaw，直接使用策略原生支持的 body-frame
+    # ``vx + vy`` 修正剩余 XY。这样位置收敛不会先转离目标朝向、再反向
+    # 转回来；该模式依赖机器人速度接口，而不依赖地图或场景坐标。
+    prefer_goal_yaw_translation: bool = False
+    goal_yaw_hold_deadband: float = 0.03
     forward_heading_deadband: float = 0.20
     # 大航向误差时必须先原地转向；非零 vx 与固定 wz 会形成最小转弯半径，
     # 在短程 place goal 周围产生稳定圆周轨迹。
@@ -132,6 +137,17 @@ def compute_terminal_pose_command(
     recovery: bool = False,
 ) -> tuple[float, float, float]:
     """Return a body-frame command for final XY + yaw convergence."""
+
+    if (
+        config.prefer_goal_yaw_translation
+        and distance_to_goal > config.position_tolerance
+    ):
+        return _compute_goal_yaw_translation_command(
+            body_goal_x=body_goal_x,
+            body_goal_y=body_goal_y,
+            yaw_error=yaw_error,
+            config=config,
+        )
 
     if (
         config.prefer_forward_translation
@@ -257,6 +273,54 @@ def compute_terminal_pose_command(
             min_wz = min(min_wz, max_wz)
         wz_abs = min(max_wz, max(config.yaw_kp * abs_yaw_error, min_wz))
         wz = math.copysign(wz_abs, yaw_error)
+    return vx, vy, wz
+
+
+def _compute_goal_yaw_translation_command(
+    *,
+    body_goal_x: float,
+    body_goal_y: float,
+    yaw_error: float,
+    config: TerminalPoseConfig,
+) -> tuple[float, float, float]:
+    """保持目标 yaw，以全向 body velocity 收敛剩余 XY。"""
+
+    vx = _axis_velocity(
+        error=body_goal_x,
+        kp=config.position_kp,
+        max_abs=config.max_vx,
+        min_abs=0.0,
+        deadband=0.0,
+        allow_negative=config.allow_reverse,
+        scale=1.0,
+    )
+    vy = _axis_velocity(
+        error=body_goal_y,
+        kp=config.lateral_kp,
+        max_abs=config.max_vy,
+        min_abs=0.0,
+        deadband=0.0,
+        allow_negative=True,
+        scale=1.0,
+    )
+
+    # Go2 policy 会把过小的平移命令视为站立。按向量整体放大可保持
+    # 位移方向，不会像逐轴 minimum 那样扭曲目标方向。
+    active_component = max(abs(vx), abs(vy))
+    minimum_component = min(
+        max(config.max_vx, config.max_vy),
+        max(0.0, config.min_vx),
+    )
+    if 1.0e-9 < active_component < minimum_component:
+        scale = minimum_component / active_component
+        vx = max(-config.max_vx, min(config.max_vx, vx * scale))
+        vy = max(-config.max_vy, min(config.max_vy, vy * scale))
+
+    if abs(yaw_error) <= max(0.0, config.goal_yaw_hold_deadband):
+        wz = 0.0
+    else:
+        max_wz = max(0.0, config.yaw_max_wz)
+        wz = max(-max_wz, min(max_wz, config.yaw_kp * yaw_error))
     return vx, vy, wz
 
 

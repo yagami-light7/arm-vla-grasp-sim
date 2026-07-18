@@ -1,0 +1,105 @@
+{
+  "annotation_config": "liangzhu_placement_target.json",
+  "episode_id": 1,
+  "scene_usd": "source/scene/liangzhu/liangzhu.usda",
+  "nav_map": "",
+  "scene_profile": "liangzhu_single_floor",
+  "perception_mode": "sim_ground_truth",
+  "global_planner": "pct",
+  "policy_profile": "pct_multifloor",
+  "navigation_execution": {
+    "final_position_tolerance": 0.1,
+    "place_position_tolerance": 0.08,
+    "final_yaw_tolerance": 0.15,
+    "stable_linear_velocity": 0.06,
+    "stable_angular_velocity": 0.2,
+    "require_yaw_alignment": true,
+    "require_stable_base": true
+  },
+  "manipulation_execution": {
+    "reuse_pick_grasp_orientation_for_place": true,
+    "place_release_object_tcp_offset_tolerance_m": 0.03
+  },
+  "mesh_truth_manipulation_targets": {
+    "required": true,
+    "visual_localization_required": false,
+    "pick_tcp_source": "runtime_live_object_bbox",
+    "place_tcp_source": "runtime_receptacle_bbox_plus_pick_object_bbox_plus_current_tcp_offset"
+  },
+  "scene_runtime": {
+    "collision_prim_path": "/World/PhysicsScene/CollisionScene/LiangzhuCollision",
+    "visual_prim_path": "/World/VisualScene/GaussianScene",
+    "collision_floor_proxy_profile": null
+  },
+  "carry": {
+    "mode": "contact",
+    "arm_posture": "carry_high",
+    "gripper_hold_command": "close",
+    "max_slip_distance": 0.08,
+    "min_lift_height": 0.05,
+    "object_drop_height_threshold": 0.05,
+    "verify_grasp_steps": 60,
+    "verify_carry_every_steps": 10
+  },
+  "loop": {
+    "enabled": false,
+    "num_cycles": 1
+  },
+  "recording": {
+    "dataset_dir": "episodes/liangzhu_box1_cola_to_box2",
+    "front_camera": true,
+    "wrist_camera": true,
+    "save_every_n_steps": 10
+  },
+  "subtask_segmentation": {
+    "enabled": true,
+    "schema": "nav_straight_turn_stop__arm_approach_contact_retreat_v1",
+    "directory_export": true,
+    "output_layout": "episodes_task_episode_subtask_front_wrist_v3",
+    "min_segment_frames": 3,
+    "hysteresis_frames": 2,
+    "navigation": {
+      "stop_command_linear_max_mps": 0.03,
+      "stop_command_angular_max_rps": 0.08,
+      "stop_measured_linear_max_mps": 0.08,
+      "stop_measured_angular_max_rps": 0.2,
+      "turn_command_angular_min_rps": 0.12,
+      "turn_measured_angular_min_rps": 0.25,
+      "turn_yaw_delta_min_rad": 0.03
+    },
+    "contact_label_source": "heuristic_action_and_kinematics"
+  },
+  "training_action": {
+    "enabled": true,
+    "schema": "base_xyyaw_tcp_base_rpy_gripper_v1",
+    "dimension": 10,
+    "base_pose_frame": "world",
+    "tcp_pose_frame": "base_frame",
+    "tcp_euler_order": "roll_pitch_yaw",
+    "angle_unit": "rad",
+    "position_unit": "m",
+    "gripper_range": [
+      0.0,
+      1.0
+    ],
+    "gripper_closed_value": 0.0,
+    "gripper_open_value": 1.0,
+    "source_gripper_joint_range_m": [
+      0.0,
+      0.04
+    ],
+    "action_alignment": "next_sample_executed_pose",
+    "terminal_action": "hold_current_pose"
+  },
+  "notes": {
+    "runtime_asset_manifest": "source/scene/liangzhu/runtime_asset_manifest.json",
+    "annotation_single_source": "tasks/liangzhu_placement_target.json",
+    "scene_runtime_note": "collision/visual prim 由 task.scene_runtime 绑定；良渚使用 identity PCT 坐标。",
+    "recording_visual_gate": "VLA 训练 episode 必须具有完整且同步的 front/wrist 相机流。",
+    "perception_note": "当前抓放目标使用运行时 Mesh/PhysX 真值；RGB 仅用于 VLA 记录。",
+    "planner_note": "运行时使用 PCT、identity 坐标且禁止静默 fallback。",
+    "policy_note": "运行时复用 policy_profile=pct_multifloor 与原 model_26000.pt。",
+    "front_manipulation_note": "pick/place 底盘终态面向对应箱子，机械臂从机器人前方执行 top-down 抓放。",
+    "place_release_offset_note": "可乐罐在接触 box2 桌面时允许最多 30 mm 的物体-TCP 重定位；80 mm carry max_slip_distance 仍负责拦截真实掉落。"
+  }
+}

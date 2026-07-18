@@ -5,10 +5,10 @@ PCT Scene 用一套代码运行良渚单层任务和别墅多楼层任务。使�
 ## 场景与流程
 
 
-| Profile       | 任务与默认行为                                                                                                                              |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `liangzhu`    | 良渚单层任务，将可乐搬到鼠标垫。开启任务随机化，使用`identity` PCT 坐标和 Gaussian 视觉层；overview 相机固定为 `/World/overview`。          |
-| `multi_floor` | 别墅多楼层任务，将苹果从 F1 搬到 F2。使用`sim_to_pct_180deg` PCT 坐标、楼梯锚点和 collision 视觉；关闭任务随机化，overview 相机按阶段切换。 |
+| Profile       | 任务与默认行为                                                                                                                                        |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `liangzhu`    | 良渚单层 box1 → box2 任务：拿起 box1 上的可乐并放到 box2。开启联合随机化，使用`identity` PCT 坐标、collision 量产视觉和固定 `/World/overview` 相机。 |
+| `multi_floor` | 别墅多楼层任务，将苹果从 F1 搬到 F2。使用`sim_to_pct_180deg` PCT 坐标、楼梯锚点和 collision 视觉；关闭任务随机化，overview 相机按阶段切换。           |
 
 兼容别名：`liangzhu_single_floor` 对应 `liangzhu`；`multifloor`、`pct_multifloor` 和`villa` 对应 `multi_floor`。
 
@@ -24,6 +24,18 @@ graph LR
     D --> E["place"]
     E --> F["LeRobot 数据导出"]
 ```
+
+良渚默认随机化模式是 `liangzhu_box_pair_xy_v1`，一次样本使用同一个
+`random.Random(seed)` 同步产生所有位姿：
+
+- box1/box2 只在 authored 位姿基础上分别采样 XY `Uniform(-0.12m, 0.12m)`；Z、姿态、scale 和 xform op 不变，两桌中心距至少 `2.4m`。
+- 机器人位于两桌中心连线的 `0.4..0.6` 段，横向偏移 `±0.18m`，yaw 在 `[-180°, 180°]` 全范围采样，根 Z 由 collision PLY 实时求地面。
+- 可乐在 box1 中心局部 `0.08m × 0.06m` 安全区中采样 XY，yaw 在 `[-180°, 180°]`，Z 由 box1 顶面加可乐 bbox 半高求得。
+- box2 放置区为中心局部 `0.10m × 0.05m`；pick standoff 为 `0.50..0.54m`，place standoff 为 `0.48..0.51m`。后者为 `0.08m` 导航交接容差预留了机械臂可达裕量。
+- 采样同步更新 robot/object/box pose、支撑 bbox、CuRobo proxy、placement/base goal、PCT/DWA keepout 和 rejection metadata；最多尝试 300 次。
+
+当前属于 Phase 1 几何随机化：不随机光照、材质或相机，抓放目标使用
+live Mesh/PhysX 真值，RGB 用于数据记录而非当前控制定位。
 
 ## 文档导航
 
@@ -113,70 +125,66 @@ python -m pip install -r requirements/lerobot_rerun.txt
 
 ### 1.5 准备场景资产
 
-仿真运行使用 `scripts/navigation/pct_grid_server.py`，不依赖 `external/PCT`。
-只有建图、查阅 PCT 原实现或扩展导航功能时才需要克隆外部仓库：
+仿真运行使用 `scripts/navigation/pct_grid_server.py`，不依赖 `external/PCT`。只有建图、查阅 PCT 原实现或扩展导航功能时才需要克隆外部仓库：
 
 ```bash
 git clone https://github.com/BoZhiStudying233/PCT.git external/PCT
 ```
 
-部分大型 USDZ 和 USD 资产不随 Git 仓库发布。最简单的部署方式是保持文件名不变，
-并将它们复制到下表中的仓库相对路径。按此方式放置后，不需要设置资产路径或修改
-USDA 文件。
+场景和物体资产通过网盘提供，不随 Git 仓库发布。下载后，将网盘中的三个目录完整复制到下表所示位置。目录名和内部层级不要改动。
 
-| 场景 | 资产用途 | 文件名 | 放置位置（相对于仓库根目录） | 来源 |
-| --- | --- | --- | --- | --- |
-| 良渚 | Gaussian/NuRec 视觉 | `lingzhu.usdz` | `source/scene/liangzhu/usdz/lingzhu.usdz` | 自行复制 |
-| 良渚 | 物理碰撞 | `liangzhu_collision.usda` | `source/scene/liangzhu/usd/liangzhu_collision.usda` | 自行复制 |
-| 良渚 | 放置目标鼠标垫 | `carpet.usd` | `source/scene/objects/carpet.usd` | 自行复制 |
-| 别墅 | Gaussian/NuRec 视觉 | `multifloor.usdz` | `source/scene/multifloor/usdz/multifloor.usdz` | 自行复制 |
-| 别墅 | 物理碰撞 | `multifloor_collision.usd` | `source/scene/multifloor/usd/multifloor_collision.usd` | 仓库已提供 |
+
+| 网盘目录      | 放置位置（相对于仓库根目录） | 内容                                                 |
+| ------------- | ---------------------------- | ---------------------------------------------------- |
+| `liangzhu/`   | `source/scene/liangzhu/`     | 良渚主场景、视觉与碰撞资产、PCT 地图、PLY 和运行清单 |
+| `multifloor/` | `source/scene/multifloor/`   | 别墅主场景、视觉与碰撞资产、PCT 地图、PLY 和运行清单 |
+| `objects/`    | `source/scene/objects/`      | 任务物体与支撑体                                     |
 
 完成后的关键目录应为：
 
 ```text
 source/scene/
-├── liangzhu/
+├── liangzhu/                            # 整个目录通过网盘提供
 │   ├── liangzhu.usda
 │   ├── usd/
 │   │   └── liangzhu_collision.usda
 │   └── usdz/
-│       └── lingzhu.usdz
-├── multifloor/
+│       └── liangzhu.usdz
+├── multifloor/                          # 整个目录通过网盘提供
 │   ├── usda/
 │   │   └── multifloor.usda
 │   ├── usd/
 │   │   └── multifloor_collision.usd
 │   └── usdz/
 │       └── multifloor.usdz
-└── objects/
-    └── carpet.usd
+└── objects/                              # 整个目录通过网盘提供
+    ├── box/
+    │   └── box.usd
+    ├── box2/
+    │   └── box2.usd
+    ├── cola/
+    ├── apple/
+    └── bottle/
 ```
 
-例如，下载的资产当前位于 `/path/to/assets/` 时，可以在仓库根目录执行：
+假设网盘解压目录为 `/path/to/assets/`，并且该目录下直接包含 `liangzhu/`、
+`multifloor/` 和 `objects/`，请在仓库根目录执行：
 
 ```bash
-mkdir -p source/scene/liangzhu/usd source/scene/liangzhu/usdz
-mkdir -p source/scene/multifloor/usd source/scene/multifloor/usdz
-mkdir -p source/scene/objects
+mkdir -p source/scene/liangzhu source/scene/multifloor source/scene/objects
 
-cp /path/to/assets/lingzhu.usdz \
-  source/scene/liangzhu/usdz/lingzhu.usdz
-cp /path/to/assets/liangzhu_collision.usda \
-  source/scene/liangzhu/usd/liangzhu_collision.usda
-cp /path/to/assets/carpet.usd \
-  source/scene/objects/carpet.usd
-cp /path/to/assets/multifloor.usdz \
-  source/scene/multifloor/usdz/multifloor.usdz
+cp -a /path/to/assets/liangzhu/. source/scene/liangzhu/
+cp -a /path/to/assets/multifloor/. source/scene/multifloor/
+cp -a /path/to/assets/objects/. source/scene/objects/
 ```
 
-仓库已经提供 `source/scene/multifloor/usd/multifloor_collision.usd`。如果本地缺少该
-文件，请确认当前分支和仓库文件完整，不要用其他场景的碰撞文件替代。
+命令中的 `/.` 表示复制目录内容，可以避免生成
+`source/scene/liangzhu/liangzhu/` 这类重复目录。
 
 良渚场景还支持将大型资产放在仓库外。只有采用这种布局时，才需要设置环境变量：
 
 ```bash
-export LIANGZHU_VISUAL_USDZ=/absolute/path/to/lingzhu.usdz
+export LIANGZHU_VISUAL_USDZ=/absolute/path/to/liangzhu.usdz
 export LIANGZHU_COLLISION_USD=/absolute/path/to/liangzhu_collision.usda
 ```
 
@@ -191,16 +199,15 @@ unset LIANGZHU_VISUAL_USDZ LIANGZHU_COLLISION_USD
 
 ```bash
 ls -lh \
-  source/scene/liangzhu/usdz/lingzhu.usdz \
+  source/scene/liangzhu/usdz/liangzhu.usdz \
   source/scene/liangzhu/usd/liangzhu_collision.usda \
-  source/scene/objects/carpet.usd \
+  source/scene/objects/box/box.usd \
+  source/scene/objects/box2/box2.usd \
   source/scene/multifloor/usdz/multifloor.usdz \
   source/scene/multifloor/usd/multifloor_collision.usd
 ```
 
-文件名区分大小写。以上命令应在仓库根目录执行，也就是能看到 `README.md`、
-`configs/` 和 `source/` 的目录。每个场景的完整清单位于
-`source/scene/<scene>/runtime_asset_manifest.json`。
+文件名区分大小写。以上命令应在仓库根目录执行，也就是能看到 `README.md`、`configs/` 和 `source/` 的目录。每个场景的完整清单位于`source/scene/<scene>/runtime_asset_manifest.json`。
 
 ### 1.6 检查部署
 
@@ -261,30 +268,26 @@ $ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
   --scene-profile liangzhu \
   --seed 7000 \
   --output-dir "$PCT_SCENE_OUTPUT/liangzhu_gui_seed7000" \
+  --navigation-visual-mode full \
   --no-record-dataset \
   --no-record-video \
   --no-headless \
   --keep-window-open
 ```
 
-该命令使用 `full` Gaussian/NuRec 视觉，但不创建 RGB render product，
-适合在采集数据前检查场景、随机化和轨迹。在 8 GB RTX 4060 Laptop 与
-Isaac Sim 5.1 的已验证环境中，使用以下命令采集数据：
+该命令使用 `full` Gaussian/NuRec 视觉，但不创建 RGB render product，适合在采集数据前检查场景、随机化和轨迹。在 8 GB RTX 4060 Laptop 与Isaac Sim 5.1 的已验证环境中，使用以下命令采集数据：
 
 ```bash
 $ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
   --scene-profile liangzhu \
   --seed 7000 \
   --output-dir "$PCT_SCENE_OUTPUT/liangzhu_seed7000" \
-  --navigation-visual-mode collision \
-  --no-record-video \
   --headless
 ```
 
-`--no-record-video` 只关闭额外的展示视频。LeRobot 仍会从同步数据帧生成
-front、wrist 和 overview 三路 MP4。显存充足时，可以去掉
-`--navigation-visual-mode collision` 并重新验证 full 视觉采集。训练数据应注明视觉模式，
-不要直接混合 collision 和 full 数据。
+默认会导出 LeRobot 三路相机与同步`overview + front + wrist` composite MP4。当前 8 GB RTX 4060 Laptop 实测中，
+`full` 能够加载 Gaussian/NUREC 并启动 PhysX，但首帧 headless 三相机渲染会触发 `cudaErrorIllegalAddress (700)`，因此 profile 的量产默认保持`collision`。这不是 CUDA 不可用；GUI 可显式使用 `full` 调试，两种视觉来源不应无标记混合。
+
 
 别墅多楼层 GUI：
 
@@ -308,12 +311,9 @@ $ISAAC_PYTHON -B scripts/pipeline/run_full_physics_pipeline.py \
   --keep-window-open
 ```
 
-该 smoke 会关闭 stair-float，只测试低层 policy 的纯物理楼梯执行。
-dog-only policy 可能报告 `stair_locomotion_stalled`。默认多楼层 pipeline 启用
-stair-float，该模式的结果不等同于纯物理跨层 locomotion 成功。
+该 smoke 会关闭 stair-float，只测试低层 policy 的纯物理楼梯执行。dog-only policy 可能报告 `stair_locomotion_stalled`。默认多楼层 pipeline 启用stair-float，该模式的结果不等同于纯物理跨层 locomotion 成功。
 
-full-physics 默认保存 LeRobot 数据，并录制 profile 指定的视频流。如果只做物理诊断，
-可以添加 `--no-record-dataset --no-record-video` 减少磁盘占用。
+full-physics 默认保存 LeRobot 数据，并录制 profile 指定的视频流。如果只做物理诊断，可以添加 `--no-record-dataset --no-record-video` 减少磁盘占用。
 
 ### 2.3 批量采集
 
@@ -324,9 +324,7 @@ $ISAAC_PYTHON -B scripts/pipeline/run_full_physics_batch.py \
   --scene-profile liangzhu \
   --output-dir "$PCT_SCENE_OUTPUT/liangzhu_seed7000_n20" \
   --num-episodes 20 \
-  --seed 7000 \
-  --navigation-visual-mode collision \
-  --no-record-video
+  --seed 7000
 ```
 
 别墅多楼层 batch（profile 默认使用固定任务）：
@@ -342,6 +340,31 @@ $ISAAC_PYTHON -B scripts/pipeline/run_full_physics_batch.py \
 batch 为每个 episode 启动独立的 Isaac 子进程，默认使用 headless 模式。
 episode seed 为 `seed + episode_index`。失败的 episode 会保留诊断文件；通过物理来源和
 训练质量检查的 episode 会合并到 `<output-dir>/lerobot_dataset`。
+
+#### 2026-07-18 双 worktree 小规模验收
+
+
+| worktree / seeds            | 尝试 | 完整成功并进入统一数据集 | 数据集帧数 | validator           | composite     |
+| --------------------------- | ---: | -----------------------: | ---------: | ------------------- | ------------- |
+| `pct_scene` / `0..19`       |   20 |                       18 |       4096 | 0 error / 0 warning | 20/20，零丢帧 |
+| `arm_vla_liangzhu` / `0..4` |    5 |                        5 |       1004 | 0 error / 0 warning | 5/5，零丢帧   |
+
+两边合计实际尝试 25 条，23 条通过训练质量门并进入各自统一 LeRobot 数据集。`pct_scene`
+seed 7 和 seed 19 分别在最终放置验证中以 `place_release_pose_error` 和
+`place_release_ejected` 被拒绝；两条都已完成导航、抓取和放置动作，原始诊断与
+composite 视频保留，但未混入统一训练数据集。验证阈值没有为提高表面成功率而放宽。
+
+两个 worktree 的 seed 0..4 随机化采样，以及派生出的 start、pick/place、动态
+keepout、空间约束和 mesh-truth 目标逐 JSON 哈希一致；比较时只排除了 worktree 自身的
+绝对 collision PLY 路径。数据证据位于：
+
+```text
+/mnt/sage_data/outputs/pct_scene/
+liangzhu_headless_batch20_seed0_standofffix_20260718_v2
+
+/mnt/sage_data/outputs/arm_vla_liangzhu/
+alignment_batch5_seed0_composite_20260718
+```
 
 ### 2.4 校验数据并导出 Rerun
 
@@ -461,6 +484,7 @@ PYTHONDONTWRITEBYTECODE=1 "$ISAAC_PYTHON" -B \
   --scene-profile liangzhu \
   --output-dir "$PCT_SCENE_OUTPUT/liangzhu_gui_seed7000" \
   --seed 7000 \
+  --navigation-visual-mode full \
   --no-record-dataset \
   --no-record-video \
   --no-headless \
@@ -479,8 +503,6 @@ PYTHONDONTWRITEBYTECODE=1 "$ISAAC_PYTHON" -B \
   --scene-profile liangzhu \
   --output-dir "$PCT_SCENE_OUTPUT/liangzhu_single_seed7000" \
   --seed 7000 \
-  --navigation-visual-mode collision \
-  --no-record-video \
   --headless
 ```
 
@@ -492,15 +514,13 @@ PYTHONDONTWRITEBYTECODE=1 "$ISAAC_PYTHON" -B \
   --scene-profile liangzhu \
   --output-dir "$PCT_SCENE_OUTPUT/liangzhu_batch_seed7000_n20" \
   --num-episodes 20 \
-  --seed 7000 \
-  --navigation-visual-mode collision \
-  --no-record-video
+  --seed 7000
 ```
 
 `liangzhu` profile 会加载良渚任务、PCT 单层地图、locomotion checkpoint 和
 随机化配置。机器人 yaw 由 task JSON 在 `[-180°, 180°]` 内采样，不由 CLI 设置。
-上述命令使用 collision 视觉，适合显存较小的机器。运行别墅场景时，将 profile 改为
-`multi_floor`。
+上述命令使用 profile 的 collision 量产视觉和 composite 视频默认。
+运行别墅场景时，将 profile 改为 `multi_floor`。
 
 #### 复现固定任务
 
@@ -518,7 +538,7 @@ PYTHONDONTWRITEBYTECODE=1 "$ISAAC_PYTHON" -B \
 ```
 
 关闭任务和 base goal 随机化后，程序使用 task JSON 中的固定布局。`--seed` 仍会
-写入输出文件，但不会改变机器人、可乐、鼠标垫或 base goal 的位置。
+写入输出文件，但不会改变机器人、box1、box2、可乐或 base goal 的位置。
 
 #### 显示随机化区域
 
@@ -581,7 +601,7 @@ smoke 测试和调试。
 | `--randomize-base-goal` / `--no-randomize-base-goal` | 由 profile 提供        | 良渚默认开启；别墅默认关闭                                                                                              |
 | `--keep-window-open` / `--no-keep-window-open`       | 默认关闭               | 结束后保留 GUI；必须配合`--no-headless`                                                                                 |
 | `--headless` / `--no-headless`                       | 默认`--no-headless`    | 是否无界面运行                                                                                                          |
-| `--navigation-visual-mode`                           | 由 profile 提供        | 良渚为`full`；别墅为 `collision`；可用 CLI 覆盖                                                                         |
+| `--navigation-visual-mode`                           | 由 profile 提供        | 两个 profile 量产默认均为`collision`；良渚 GUI 可显式用 `full` 调试 Gaussian/NUREC                                      |
 | `--scene-light-mode`                                 | `camera`               | `camera` 用于保存图像；`stage` 使用 USD 原场景灯光                                                                      |
 | `--global-planner`                                   | `pct`                  | 良渚默认使用 PCT；可切换为`astar`                                                                                       |
 | `--pct-collision-ply-path`                           | 由 profile 提供        | 每个场景必须声明自己的 collision PLY，禁止静默借用别墅地图                                                              |
@@ -593,7 +613,7 @@ smoke 测试和调试。
 | `--record-video`                                     | full-physics 默认开启  | 可用`--no-record-video` 关闭；展示视频固定为 25 FPS                                                                     |
 | `--record-dataset`                                   | 默认开启               | 保存同步帧与 LeRobot 数据；GUI 检查可用`--no-record-dataset`                                                            |
 | `--dataset-camera-keys`                              | `front wrist overview` | 选择训练数据相机流；主要用于渲染后端诊断，至少包含 front                                                                |
-| `--video-mode`                                       | 由 profile 提供        | 两个 profile 默认均为`all`；也可只选 overview/front/wrist                                                               |
+| `--video-mode`                                       | 由 profile 提供        | 两个 profile 默认均为`composite`；同步拼接 overview/front/wrist，也可只选单路或 `all`                                   |
 | `--video-out`                                        | 可选                   | 视频输出目录或单个`.mp4`；多路或多 episode 需要传目录                                                                   |
 | `--video-width` / `--video-height`                   | `1280` / `720`         | overview 捕获分辨率；不改变 front/wrist observation                                                                     |
 | `--overview-camera-mode`                             | 由 profile 提供        | 良渚为`fixed`；别墅为 `auto`，并按 schedule 切换                                                                        |
@@ -630,7 +650,7 @@ smoke 测试和调试。
 | `--show-randomization-debug`                         | 默认关闭               | 显示矩形/前向扇区；通常只用于 GUI 单 episode                                 |
 | `--randomize-base-goal` / `--no-randomize-base-goal` | 由 profile 提供        | 良渚默认开启；别墅默认关闭                                                   |
 | `--headless` / `--no-headless`                       | 默认 headless          | batch 是否无界面运行；批量采集建议使用 headless                              |
-| `--navigation-visual-mode`                           | 由 profile 提供        | 良渚为`full`；别墅为 `collision`                                             |
+| `--navigation-visual-mode`                           | 由 profile 提供        | 两个 profile 量产默认均为`collision`                                         |
 | `--global-planner`                                   | 由 profile 提供        | 两个 profile 均使用 PCT                                                      |
 | `--pct-server-script`                                | 由 profile 提供        | 两个 profile 均使用仓库内的`pct_grid_server.py`                              |
 | `--pct-tomogram-path` / `--pct-walkable-path`        | 由 profile 提供        | 自动选择良渚单层或别墅多楼层地图                                             |

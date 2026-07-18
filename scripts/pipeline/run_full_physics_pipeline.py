@@ -370,8 +370,8 @@ def _build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=None,
         help=(
-            "启用视频录制；PCT 稳定完整 pipeline 和 stair-locomotion-smoke "
-            "默认开启，可用 --no-record-video 关闭。"
+            "启用展示视频；完整 pipeline 默认录制 overview/front/wrist "
+            "三视角拼接视频，可用 --no-record-video 关闭。"
         ),
     )
     parser.add_argument(
@@ -392,11 +392,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--video-mode",
-        choices=("overview", "front", "font", "wrist", "all"),
+        choices=("overview", "front", "font", "wrist", "composite", "all"),
         default=None,
         help=(
             "录制视频类型：overview 为第三人称展示视角，front/font 为前视 observation "
-            "camera，wrist 为腕部 observation camera，all 同时导出 overview/front/wrist。"
+            "camera，wrist 为腕部 observation camera，composite 将同一仿真 step 的 "
+            "overview/front/wrist 拼成单个视频，all 同时导出三路独立视频。"
         ),
     )
     parser.add_argument(
@@ -889,7 +890,7 @@ def _resolve_runtime_defaults(args: argparse.Namespace) -> argparse.Namespace:
         "navigation_visual_mode": "full",
         "overview_camera_mode": "fixed",
         "overview_camera_prim_path": DEFAULT_OVERVIEW_CAMERA_PRIM_PATH,
-        "video_mode": "overview",
+        "video_mode": "composite",
     }
     for key, value in generic_defaults.items():
         if getattr(args, key) is None:
@@ -1584,7 +1585,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                     config.recording.enabled
                                     and "front" in config.recording.camera_keys
                                 )
-                                or "front" in video_modes
+                                or bool({"front", "composite"} & video_modes)
                             ),
                             front_camera_height=config.recording.image_height,
                             front_camera_width=config.recording.image_width,
@@ -1593,13 +1594,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                                     config.recording.enabled
                                     and "wrist" in config.recording.camera_keys
                                 )
-                                or "wrist" in video_modes
+                                or bool({"wrist", "composite"} & video_modes)
                             ),
                             wrist_camera_height=config.recording.image_height,
                             wrist_camera_width=config.recording.image_width,
                             enable_overview_camera=(
-                                config.recording.enabled
-                                and "overview" in config.recording.camera_keys
+                                (
+                                    config.recording.enabled
+                                    and "overview" in config.recording.camera_keys
+                                )
+                                or "composite" in video_modes
                             ),
                             overview_camera_prim_path=(
                                 config.recording.overview_camera_prim_path

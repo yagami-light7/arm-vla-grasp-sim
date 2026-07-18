@@ -13,8 +13,12 @@ from unittest import mock
 
 import numpy as np
 
-from scripts.pipeline.run_full_physics_pipeline import _build_parser
-from source.recording.overview_video_recorder import OverviewVideoRecorder, _CameraCandidate
+from scripts.pipeline.run_full_physics_pipeline import _build_parser, _parse_args
+from source.recording.overview_video_recorder import (
+    OverviewVideoRecorder,
+    _CameraCandidate,
+    compose_multiview_frame,
+)
 from source.simulation.viewport import candidate_stage_camera_paths
 
 
@@ -339,6 +343,71 @@ class SimulationViewportTest(unittest.TestCase):
                 self.assertTrue(video_path.is_file(), stream)
                 self.assertEqual(summary["videos"][stream]["frame_count"], 1)
 
+    def test_composite_layout_uses_synchronized_three_camera_panels(self) -> None:
+        overview = np.zeros((90, 160, 3), dtype=np.uint8)
+        overview[:, :, 0] = 255
+        front = np.zeros((120, 160, 3), dtype=np.uint8)
+        front[:, :, 1] = 255
+        wrist = np.zeros((120, 160, 3), dtype=np.uint8)
+        wrist[:, :, 2] = 255
+
+        frame = compose_multiview_frame(
+            {"overview": overview, "front": front, "wrist": wrist},
+            width=600,
+            height=360,
+        )
+
+        self.assertEqual(frame.shape, (360, 600, 3))
+        self.assertGreater(int(frame[180, 200, 0]), 200)
+        self.assertGreater(int(frame[90, 500, 1]), 200)
+        self.assertGreater(int(frame[270, 500, 2]), 200)
+
+    def test_composite_video_mode_writes_one_labeled_multiview_mp4(self) -> None:
+        import cv2
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir) / "videos"
+            recorder = OverviewVideoRecorder(
+                settings=_OverviewVideoSettings(
+                    mode="composite",
+                    output_path=output_dir,
+                    width=320,
+                    height=180,
+                ),
+                episode_dir=tmp_dir,
+                episode_id=5,
+            )
+            camera_images = {
+                "overview": np.full((48, 64, 3), (255, 0, 0), dtype=np.uint8),
+                "front": np.full((48, 64, 3), (0, 255, 0), dtype=np.uint8),
+                "wrist": np.full((48, 64, 3), (0, 0, 255), dtype=np.uint8),
+            }
+
+            recorder.add_frame(
+                state="exec_nav_to_pick",
+                timestamp=0.0,
+                step_index=0,
+                camera_images=camera_images,
+            )
+            summary = recorder.close(status="success")
+
+            video_path = output_dir / "episode_000005_composite.mp4"
+            self.assertTrue(video_path.is_file())
+            self.assertEqual(summary["streams"], ["composite"])
+            self.assertEqual(summary["videos"]["composite"]["frame_count"], 1)
+            self.assertEqual(
+                summary["composite_layout"]["synchronization"],
+                "same_simulation_step",
+            )
+            capture = cv2.VideoCapture(str(video_path))
+            try:
+                self.assertTrue(capture.isOpened())
+                self.assertEqual(int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), 320)
+                self.assertEqual(int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)), 180)
+                self.assertEqual(int(capture.get(cv2.CAP_PROP_FRAME_COUNT)), 1)
+            finally:
+                capture.release()
+
     def test_overview_recorder_saves_low_frequency_jpeg_frames(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             recorder = OverviewVideoRecorder(
@@ -629,8 +698,30 @@ class SimulationViewportTest(unittest.TestCase):
                 "font",
             ]
         )
+        composite_args = parser.parse_args(
+            [
+                "--task-json",
+                "tasks/nav_pick_place_apple_contact.json",
+                "--record-video",
+                "--video-mode",
+                "composite",
+            ]
+        )
         self.assertEqual(all_args.video_mode, "all")
         self.assertEqual(font_args.video_mode, "font")
+        self.assertEqual(composite_args.video_mode, "composite")
+
+    def test_scene_profiles_default_to_composite_and_video_can_be_disabled(self) -> None:
+        for profile in ("liangzhu", "multi_floor"):
+            with self.subTest(profile=profile):
+                defaults = _parse_args(["--scene-profile", profile])
+                disabled = _parse_args(
+                    ["--scene-profile", profile, "--no-record-video"]
+                )
+
+                self.assertTrue(defaults.record_video)
+                self.assertEqual(defaults.video_mode, "composite")
+                self.assertFalse(disabled.record_video)
 
 
 if __name__ == "__main__":

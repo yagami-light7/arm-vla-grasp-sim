@@ -36,6 +36,15 @@ class DWAConfig:
     speed_bias: float = 0.35
     obstacle_distance_cap: float = 0.5
     rotate_in_place_angle: float = 1.05
+    # Optional lower release threshold for the rotate-in-place gate.  Keeping
+    # the entry and exit thresholds separate prevents a locomotion policy from
+    # alternating between turn and forward gait when heading error jitters at
+    # one threshold.
+    rotate_in_place_exit_angle: float | None = None
+    # When configured, emit an explicit zero command after heading alignment
+    # until measured angular velocity falls below this threshold.  This resets
+    # command-window momentum before forward gait is allowed.
+    rotate_in_place_settle_angular_velocity: float | None = None
     close_goal_rotate_in_place_angle: float | None = None
     close_goal_rotate_in_place_distance: float | None = None
     large_heading_creep_velocity: float | None = None
@@ -54,6 +63,10 @@ class DWAConfig:
     # an actually executable gait command instead of lingering in that deadband.
     enforce_min_active_linear_velocity: bool = False
     enforce_min_active_angular_velocity: bool = False
+    # Pure rotation may require a minimum command to overcome the locomotion
+    # policy deadband, while forward path tracking benefits from continuous
+    # small yaw corrections.  This switch separates those two regimes.
+    enforce_min_active_angular_velocity_only_during_rotation: bool = False
     enforce_path_deviation_limit: bool = False
     initial_alignment_path_deviation_limit: float | None = None
     path_recovery_deviation_limit: float | None = None
@@ -94,8 +107,15 @@ class DWADebug:
     window_angular_velocity: float
     velocity_window_source: str
     rotate_in_place_angle_used: float = 0.0
+    rotate_in_place_exit_angle_used: float = 0.0
+    rotation_gate_active: bool = False
+    rotation_settle_active: bool = False
     occupied_start_escape_active: bool = False
     occupied_start_escape_candidates: int = 0
+    path_anchor_applied: bool = False
+    path_anchor_index: int = 0
+    path_anchor_distance: float = 0.0
+    path_anchor_progress_m: float = 0.0
 
 
 class DWAController:
@@ -113,6 +133,13 @@ class DWAController:
         self.reference_path_world = np.asarray(path_world, dtype=np.float64)
         sample_spacing = max(grid_map.resolution, min(config.path_sample_spacing, max(config.lookahead_distance * 0.5, grid_map.resolution)))
         self.path_world = _densify_path(self.reference_path_world, sample_spacing=sample_spacing)
+        segment_lengths = np.linalg.norm(
+            np.diff(self.path_world, axis=0),
+            axis=1,
+        )
+        self._path_cumulative_lengths = np.concatenate(
+            [np.array([0.0], dtype=np.float64), np.cumsum(segment_lengths)]
+        )
         self.grid_map = grid_map
         self.raw_grid_map = raw_grid_map
         self.config = config
@@ -130,7 +157,13 @@ class DWAController:
         self._initial_alignment_active = (
             config.initial_alignment_path_deviation_limit is not None
         )
+        self._rotation_gate_active = False
+        self._rotation_settle_active = False
         self._path_recovery_active = False
+        self._path_anchor_applied = False
+        self._path_anchor_index = 0
+        self._path_anchor_distance = 0.0
+        self._path_anchor_progress_m = 0.0
         self.grid_map.obstacle_distance_map()
 
     def compute_command(
@@ -146,6 +179,7 @@ class DWAController:
             current_vx, current_vy, current_wz = current_velocity
         else:
             raise ValueError("DWA 当前速度必须是 (vx, wz) 或 (vx, vy, wz)。")
+        measured_current_wz = float(current_wz)
         if self.config.use_command_velocity_window:
             # RL policy 对微小速度命令存在响应死区；用上一条高层命令推进窗口，
             # 避免实测速度尚未响应时每次都把加速过程重置到零附近。
@@ -203,6 +237,15 @@ class DWAController:
                 ),
                 occupied_start_escape_active=False,
                 occupied_start_escape_candidates=0,
+                rotate_in_place_exit_angle_used=self._rotate_in_place_exit_angle(
+                    self._rotate_in_place_angle(distance_to_goal)
+                ),
+                rotation_gate_active=False,
+                rotation_settle_active=False,
+                path_anchor_applied=self._path_anchor_applied,
+                path_anchor_index=self._path_anchor_index,
+                path_anchor_distance=self._path_anchor_distance,
+                path_anchor_progress_m=self._path_anchor_progress_m,
             )
             self._command_window_velocity = (0.0, 0.0)
             return np.zeros(3, dtype=np.float32), debug
@@ -216,12 +259,22 @@ class DWAController:
         target_heading = math.atan2(delta[1], delta[0])
         heading_error = _wrap_angle(target_heading - yaw)
         rotate_in_place_angle = self._rotate_in_place_angle(distance_to_goal)
+        rotate_in_place_exit_angle = self._rotate_in_place_exit_angle(
+            rotate_in_place_angle
+        )
+        self._update_rotation_gate(
+            heading_error=heading_error,
+            enter_angle=rotate_in_place_angle,
+            exit_angle=rotate_in_place_exit_angle,
+            measured_angular_velocity=measured_current_wz,
+        )
         current_path_distance = float(
             np.min(self._path_distances(position[None, :]))
         )
         if (
             self._initial_alignment_active
-            and abs(heading_error) <= rotate_in_place_angle
+            and not self._rotation_gate_active
+            and not self._rotation_settle_active
             and current_path_distance <= self.config.path_deviation_limit
         ):
             self._initial_alignment_active = False
@@ -229,6 +282,9 @@ class DWAController:
             # that one-shot latch is released, use the normal carry threshold
             # for both candidate sampling and diagnostics in this same tick.
             rotate_in_place_angle = self._rotate_in_place_angle(distance_to_goal)
+            rotate_in_place_exit_angle = self._rotate_in_place_exit_angle(
+                rotate_in_place_angle
+            )
         if (
             not self._initial_alignment_active
             and self.config.path_recovery_deviation_limit is not None
@@ -299,6 +355,8 @@ class DWAController:
             current_wz=current_wz,
             distance_to_goal=distance_to_goal,
             heading_error=heading_error,
+            rotation_gate_active=self._rotation_gate_active,
+            rotation_settle_active=self._rotation_settle_active,
         ):
             sampled_candidates += 1
             trajectory = self._rollout(
@@ -415,6 +473,13 @@ class DWAController:
             rotate_in_place_angle_used=rotate_in_place_angle,
             occupied_start_escape_active=occupied_start_escape_active,
             occupied_start_escape_candidates=occupied_start_escape_candidates,
+            rotate_in_place_exit_angle_used=rotate_in_place_exit_angle,
+            rotation_gate_active=self._rotation_gate_active,
+            rotation_settle_active=self._rotation_settle_active,
+            path_anchor_applied=self._path_anchor_applied,
+            path_anchor_index=self._path_anchor_index,
+            path_anchor_distance=self._path_anchor_distance,
+            path_anchor_progress_m=self._path_anchor_progress_m,
         )
         return best_command, debug
 
@@ -456,7 +521,51 @@ class DWAController:
             angle = min(angle, float(close_angle))
         return angle
 
+    def _rotate_in_place_exit_angle(self, enter_angle: float) -> float:
+        """Return the lower threshold that releases pure rotation."""
+
+        configured = self.config.rotate_in_place_exit_angle
+        if configured is None:
+            return float(enter_angle)
+        return min(float(enter_angle), max(0.0, float(configured)))
+
+    def _update_rotation_gate(
+        self,
+        *,
+        heading_error: float,
+        enter_angle: float,
+        exit_angle: float,
+        measured_angular_velocity: float,
+    ) -> None:
+        """Apply hysteresis to heading alignment before forward tracking."""
+
+        absolute_error = abs(float(heading_error))
+        settle_threshold = self.config.rotate_in_place_settle_angular_velocity
+        if self._rotation_settle_active:
+            if (
+                settle_threshold is None
+                or abs(float(measured_angular_velocity))
+                <= max(0.0, float(settle_threshold))
+            ):
+                self._rotation_settle_active = False
+                if absolute_error > float(enter_angle):
+                    self._rotation_gate_active = True
+            return
+        if self._rotation_gate_active:
+            if absolute_error <= float(exit_angle):
+                self._rotation_gate_active = False
+                if settle_threshold is not None:
+                    # Always spend at least this command tick braking.  Besides
+                    # physical angular momentum, this clears the high previous
+                    # command used by ``use_command_velocity_window``.
+                    self._rotation_settle_active = True
+            return
+        if absolute_error > float(enter_angle):
+            self._rotation_gate_active = True
+
     def _advance_target(self, position: np.ndarray):
+        if not self._path_anchor_applied:
+            self._anchor_target_to_live_position(position)
         next_corner = self._next_unpassed_corner()
         path_slice_start = self.target_index
         search_window = max(
@@ -497,6 +606,75 @@ class DWAController:
                 break
             self.target_index += 1
 
+    def _anchor_target_to_live_position(self, position: np.ndarray) -> None:
+        """Project the first live pose onto the route before choosing lookahead.
+
+        A plan may be generated one or more ticks before execution, and global
+        planner endpoints may be snapped to a different raster.  Starting from
+        hard-coded path index 1 can therefore command the robot back toward an
+        already-passed or behind-start waypoint.  The projection is applied once
+        and all later target progress remains monotonic.
+        """
+
+        starts = self.path_world[:-1]
+        segments = self.path_world[1:] - starts
+        squared_lengths = np.sum(segments * segments, axis=1)
+        relative = position[None, :] - starts
+        alphas = np.zeros(len(segments), dtype=np.float64)
+        valid = squared_lengths > 1.0e-12
+        alphas[valid] = np.clip(
+            np.sum(relative[valid] * segments[valid], axis=1)
+            / squared_lengths[valid],
+            0.0,
+            1.0,
+        )
+        projections = starts + alphas[:, None] * segments
+        distances = np.linalg.norm(projections - position[None, :], axis=1)
+        minimum_distance = float(np.min(distances))
+        # If a route crosses itself, prefer the earliest equal-distance
+        # projection.  This prevents an initial jump to a future loop branch.
+        candidates = np.flatnonzero(distances <= minimum_distance + 1.0e-9)
+        segment_index = int(candidates[0])
+        segment_length = math.sqrt(float(squared_lengths[segment_index]))
+        progress = float(
+            self._path_cumulative_lengths[segment_index]
+            + alphas[segment_index] * segment_length
+        )
+        desired_progress = progress + max(
+            float(self.config.lookahead_distance),
+            float(self.config.waypoint_tolerance),
+        )
+        target_index = int(
+            np.searchsorted(
+                self._path_cumulative_lengths,
+                desired_progress,
+                side="left",
+            )
+        )
+        target_index = min(
+            len(self.path_world) - 1,
+            max(segment_index + 1, target_index, 1),
+        )
+        if self.config.preserve_sharp_corners:
+            next_corner = next(
+                (
+                    index
+                    for index in self._corner_indices
+                    if self._path_cumulative_lengths[index] >= progress - 1.0e-9
+                ),
+                None,
+            )
+            if next_corner is not None:
+                target_index = min(target_index, next_corner)
+        self.target_index = max(self.target_index, target_index)
+        self._passed_corner_indices.update(
+            index for index in self._corner_indices if index < self.target_index
+        )
+        self._path_anchor_applied = True
+        self._path_anchor_index = segment_index
+        self._path_anchor_distance = minimum_distance
+        self._path_anchor_progress_m = progress
+
     def _next_unpassed_corner(self) -> int | None:
         """返回尚未经过的下一个锐角路径点。"""
 
@@ -511,7 +689,11 @@ class DWAController:
         current_wz: float,
         distance_to_goal: float,
         heading_error: float,
+        rotation_gate_active: bool | None = None,
+        rotation_settle_active: bool | None = None,
     ) -> list[tuple[float, float]]:
+        if rotation_settle_active:
+            return [(0.0, 0.0)]
         dt = max(self.config.control_dt, 1.0e-3)
         linear_cap = self.config.max_linear_velocity
         min_active_linear_velocity = self.config.min_active_linear_velocity
@@ -549,7 +731,16 @@ class DWAController:
             dt=dt,
         )
 
-        if abs(heading_error) > self._rotate_in_place_angle(distance_to_goal):
+        if rotation_gate_active is None:
+            # Preserve the helper's historical standalone behaviour for tests
+            # and diagnostics that sample a window without calling
+            # ``compute_command`` first.  Normal control passes the hysteretic
+            # latch explicitly.
+            rotation_gate_active = (
+                abs(heading_error)
+                > self._rotate_in_place_angle(distance_to_goal)
+            )
+        if rotation_gate_active:
             configured_creep_velocity = self.config.large_heading_creep_velocity
             if (
                 self._initial_alignment_active
@@ -668,7 +859,13 @@ class DWAController:
             angular_upper,
         )
         angular_values = np.unique(np.round(angular_values, decimals=4))
-        if self.config.enforce_min_active_angular_velocity:
+        if (
+            self.config.enforce_min_active_angular_velocity
+            and (
+                not self.config.enforce_min_active_angular_velocity_only_during_rotation
+                or bool(rotation_gate_active)
+            )
+        ):
             angular_floor = min(
                 max(0.0, self.config.min_active_angular_velocity),
                 self.config.max_angular_velocity,

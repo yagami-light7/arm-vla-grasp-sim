@@ -1412,6 +1412,88 @@ def build_lift_segment_from_reverse_approach(
     )
 
 
+def build_place_retreat_from_reverse_approach(
+    planner: MotionPlanner,
+    approach_segment: dict,
+    T_world_base: np.ndarray,
+    requested_position: np.ndarray,
+    requested_quaternion: np.ndarray,
+    planning_error: Exception,
+) -> tuple[dict, np.ndarray]:
+    """Fallback to the already feasible place approach path in reverse.
+
+    After opening the gripper, returning from ``place`` to the reached
+    ``pre_place`` pose is safer and more deterministic than failing the whole
+    episode because a fresh pose query cannot rediscover that same route.
+    The fallback preserves the actual endpoint from the approach trajectory
+    and records the rejected retreat request for diagnostics.
+    """
+
+    trajectory = approach_segment.get("trajectory") or {}
+    q_rows = np.asarray(trajectory.get("q", []), dtype=np.float32)
+    tcp_positions = np.asarray(
+        trajectory.get("tcp_position_base", []),
+        dtype=np.float32,
+    )
+    tcp_quaternions = np.asarray(
+        trajectory.get("tcp_quaternion_base", []),
+        dtype=np.float32,
+    )
+    if q_rows.ndim != 2 or q_rows.shape[0] < 2:
+        raise RuntimeError(
+            "retreat_place reverse fallback requires at least two approach waypoints"
+        ) from planning_error
+    if tcp_positions.shape[0] != q_rows.shape[0]:
+        raise RuntimeError(
+            "retreat_place reverse fallback is missing the approach TCP positions"
+        ) from planning_error
+    if tcp_quaternions.shape[0] != q_rows.shape[0]:
+        raise RuntimeError(
+            "retreat_place reverse fallback is missing the approach TCP orientations"
+        ) from planning_error
+
+    target_position = tcp_positions[0]
+    target_quaternion = normalize_quat_wxyz(tcp_quaternions[0])
+    q_path_raw = q_rows[::-1].copy()
+    plan_info = {
+        "planner_success": True,
+        "planner_position_error_m": 0.0,
+        "planner_rotation_error_rad": 0.0,
+        "pose_converged": True,
+        "raw_num_waypoints": int(q_path_raw.shape[0]),
+        "generated_from": "approach_to_place_reverse",
+        "fresh_retreat_plan_error": str(planning_error),
+        "note": (
+            "No additional pose solution is required; this reuses the "
+            "collision-checked approach_to_place path in reverse after release."
+        ),
+    }
+    segment, q_final = build_motion_segment_from_raw_path(
+        planner=planner,
+        q_path_raw=q_path_raw,
+        plan_info=plan_info,
+        target_name="retreat",
+        target_position=target_position,
+        target_quaternion=target_quaternion,
+        segment_name="retreat_place",
+        T_world_base=T_world_base,
+        extra_fields={
+            "retreat_strategy": "reverse_approach_to_place_fallback",
+            "source_motion": approach_segment.get("name"),
+            "requested_retreat_pose_base": {
+                "position_xyz": np.asarray(
+                    requested_position,
+                    dtype=float,
+                ).tolist(),
+                "quaternion_wxyz": normalize_quat_wxyz(
+                    requested_quaternion
+                ).tolist(),
+            },
+        },
+    )
+    return segment, q_final
+
+
 def make_gripper_segment(name: str, q_target: float, gripper_joint_names: list[str]) -> dict:
     """创建一个夹爪动作 segment。轨迹执行脚本会真正发送该动作。"""
     return {
@@ -1750,7 +1832,7 @@ def plan_place_segments(
         )
         segments.append(segment)
 
-        segment, q_current = build_motion_segment_with_orientation_fallback(
+        approach_segment, q_current = build_motion_segment_with_orientation_fallback(
             planner=planner,
             q_start=q_current,
             target_name="place",
@@ -1759,19 +1841,33 @@ def plan_place_segments(
             segment_name="approach_to_place",
             T_world_base=T_world_base,
         )
-        segments.append(segment)
+        segments.append(approach_segment)
 
         segments.append(make_gripper_segment("open_gripper", gripper_open, gripper_joint_names))
 
-        segment, q_current = build_motion_segment_with_orientation_fallback(
-            planner=planner,
-            q_start=q_current,
-            target_name="retreat",
-            target_position=retreat_pos,
-            target_quaternion=retreat_quat,
-            segment_name="retreat_place",
-            T_world_base=T_world_base,
-        )
+        try:
+            segment, q_current = build_motion_segment_with_orientation_fallback(
+                planner=planner,
+                q_start=q_current,
+                target_name="retreat",
+                target_position=retreat_pos,
+                target_quaternion=retreat_quat,
+                segment_name="retreat_place",
+                T_world_base=T_world_base,
+            )
+        except RuntimeError as exc:
+            print(
+                "[place retreat] fresh plan failed; falling back to the "
+                f"approach path in reverse: {exc}"
+            )
+            segment, q_current = build_place_retreat_from_reverse_approach(
+                planner=planner,
+                approach_segment=approach_segment,
+                T_world_base=T_world_base,
+                requested_position=retreat_pos,
+                requested_quaternion=retreat_quat,
+                planning_error=exc,
+            )
         segments.append(segment)
 
     finally:

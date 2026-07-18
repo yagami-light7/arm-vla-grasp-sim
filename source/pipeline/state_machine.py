@@ -80,6 +80,90 @@ _NAV_HANDOFF_SETTLE_LINEAR_SPEED_MARGIN_MPS = 0.060
 _NAV_HANDOFF_SETTLE_ANGULAR_SPEED_MARGIN_RADPS = 0.200
 
 
+def _navigation_plan_execution_metadata(
+    raw_task: dict[str, Any],
+    *,
+    include_carry_departure: bool,
+) -> dict[str, Any]:
+    """Resolve task-level navigation manoeuvres into planner metadata.
+
+    PCT and DWA should not know task-schema paths such as
+    ``pick.support_geometry``.  The task layer converts that geometry into a
+    small, explicit execution contract.  The executor can then apply the same
+    departure policy to any source receptacle without hard-coding box names or
+    scene coordinates.
+    """
+
+    raw_execution = raw_task.get("navigation_execution")
+    if raw_execution is None:
+        return {}
+    if not isinstance(raw_execution, dict):
+        raise ValueError("task.navigation_execution 必须是对象")
+
+    metadata: dict[str, Any] = {
+        "navigation_execution": dict(raw_execution),
+    }
+    if not include_carry_departure:
+        return metadata
+
+    raw_departure = raw_execution.get("carry_departure")
+    if raw_departure is None:
+        return metadata
+    if not isinstance(raw_departure, dict):
+        raise ValueError("task.navigation_execution.carry_departure 必须是对象")
+    departure = dict(raw_departure)
+    if not bool(departure.get("enabled", False)):
+        metadata["carry_departure"] = departure
+        return metadata
+
+    pick = raw_task.get("pick")
+    support_geometry = pick.get("support_geometry") if isinstance(pick, dict) else None
+    if not isinstance(support_geometry, dict):
+        raise ValueError(
+            "启用 carry_departure 时 task.pick.support_geometry 必须存在"
+        )
+    bbox_min = support_geometry.get("world_bbox_min_xyz")
+    bbox_max = support_geometry.get("world_bbox_max_xyz")
+    if not (
+        isinstance(bbox_min, (list, tuple))
+        and isinstance(bbox_max, (list, tuple))
+        and len(bbox_min) >= 2
+        and len(bbox_max) >= 2
+    ):
+        raise ValueError(
+            "启用 carry_departure 时 support_geometry 必须提供 world bbox"
+        )
+    min_x, min_y = float(bbox_min[0]), float(bbox_min[1])
+    max_x, max_y = float(bbox_max[0]), float(bbox_max[1])
+    values = (min_x, min_y, max_x, max_y)
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("carry_departure source support bbox 包含非有限数值")
+    support_center = (0.5 * (min_x + max_x), 0.5 * (min_y + max_y))
+    support_half_diagonal = 0.5 * math.hypot(max_x - min_x, max_y - min_y)
+    turn_swept_radius = float(departure.get("robot_turn_swept_radius_m", 0.0))
+    safety_margin = float(departure.get("safety_margin_m", 0.0))
+    if turn_swept_radius <= 0.0 or safety_margin < 0.0:
+        raise ValueError(
+            "carry_departure robot_turn_swept_radius_m 必须为正且 safety_margin_m 不能为负"
+        )
+    departure.update(
+        {
+            "source_support_id": raw_task.get("source_receptacle_id"),
+            "source_support_prim_path": pick.get("target_support_prim_path"),
+            "source_support_center_xy": support_center,
+            "source_support_half_diagonal_m": support_half_diagonal,
+            "required_center_clearance_m": (
+                support_half_diagonal + turn_swept_radius + safety_margin
+            ),
+            "clearance_formula": (
+                "support_half_diagonal + robot_turn_swept_radius + safety_margin"
+            ),
+        }
+    )
+    metadata["carry_departure"] = departure
+    return metadata
+
+
 def _accept_successful_navigation_handoff_drift(
     result: VerificationResult,
     executor_status: dict[str, Any] | None,
@@ -1277,9 +1361,17 @@ class FullPhysicsStateMachine:
     def _plan_nav_to_pick(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
         events = [self._event("nav_to_pick_start", observation.step_index)]
         plan = self.nav_planner.plan(observation, self.episode_spec.pick_goal)
+        execution_metadata = _navigation_plan_execution_metadata(
+            self.episode_spec.raw_task,
+            include_carry_departure=False,
+        )
         plan = replace(
             plan,
-            metadata={**plan.metadata, "execution_phase": "nav_to_pick"},
+            metadata={
+                **plan.metadata,
+                **execution_metadata,
+                "execution_phase": "nav_to_pick",
+            },
         )
         self.nav_executor.reset(plan)
         self.latest_planner_result = {
@@ -1568,10 +1660,15 @@ class FullPhysicsStateMachine:
             )
         events = [self._event("nav_to_place_start", observation.step_index)]
         plan = self.nav_planner.plan(observation, self.episode_spec.place_goal)
+        execution_metadata = _navigation_plan_execution_metadata(
+            self.episode_spec.raw_task,
+            include_carry_departure=True,
+        )
         plan = replace(
             plan,
             metadata={
                 **plan.metadata,
+                **execution_metadata,
                 "execution_phase": "carry_nav_to_place",
                 "require_yaw_alignment": True,
                 "yaw_tolerance": self.config.navigation.final_yaw_tolerance,

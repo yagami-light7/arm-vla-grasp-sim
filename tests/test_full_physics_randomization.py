@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from scripts.pipeline.run_full_physics_pipeline import _keep_gui_open, _parse_args
+from scripts.pipeline.run_full_physics_pipeline import _build_parser, _keep_gui_open
 from source.diagnostics import randomization_debug_spec
 from source.pipeline import (
     BaseGoalRandomizationSettings,
@@ -26,9 +26,115 @@ from source.tasks import JsonTaskProvider, episode_spec_from_dict, prepare_episo
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TASK_PATH = PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json"
 LIANGZHU_TASK_PATH = PROJECT_ROOT / "tasks/nav_pick_place_cola_liangzhu_pct.json"
+LIANGZHU_BOX_TASK_PATH = (
+    PROJECT_ROOT
+    / "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json"
+)
 
 
 class FullPhysicsRandomizationTest(unittest.TestCase):
+    def test_liangzhu_box_pair_randomization_is_seeded_and_synchronized(
+        self,
+    ) -> None:
+        """双箱仅平移 XY，桌间机器人、可乐与抓放目标必须使用同一布局。"""
+
+        base = JsonTaskProvider().load(LIANGZHU_BOX_TASK_PATH)
+        settings = RandomizationSettings(
+            enabled=True,
+            collision_ply_path=(
+                PROJECT_ROOT
+                / "source/scene/liangzhu/ply/liangzhu_collision.ply"
+            ),
+            base_goal=BaseGoalRandomizationSettings(enabled=True),
+        )
+        probe = {"xy": [0.0, 0.0], "z": -0.13, "face_index": 1}
+        with mock.patch(
+            "source.tasks.box_pair_randomization._surface_probe",
+            return_value=probe,
+        ):
+            first = prepare_episode_spec(
+                base,
+                episode_id=1,
+                seed=17,
+                settings=settings,
+            )
+            repeated = prepare_episode_spec(
+                base,
+                episode_id=1,
+                seed=17,
+                settings=settings,
+            )
+            different = prepare_episode_spec(
+                base,
+                episode_id=2,
+                seed=18,
+                settings=settings,
+            )
+
+        self.assertEqual(first.raw_task, repeated.raw_task)
+        self.assertNotEqual(first.raw_task, different.raw_task)
+        task = first.raw_task
+        sample = task["randomization"]["sample"]
+        config = task["randomization"]["box_pair"]
+        self.assertEqual(
+            task["manipulation_execution"],
+            {
+                "reuse_pick_grasp_orientation_for_place": True,
+                "place_release_object_tcp_offset_tolerance_m": 0.03,
+            },
+        )
+        self.assertEqual(task["randomization"]["mode"], "liangzhu_box_pair_xy_v1")
+        self.assertEqual(config["robot_yaw_range_deg"], [-180.0, 180.0])
+        self.assertGreaterEqual(task["start"]["yaw"], -math.pi)
+        self.assertLessEqual(task["start"]["yaw"], math.pi)
+        self.assertGreaterEqual(
+            sample["robot"]["segment_fraction_box2_to_box1"],
+            config["robot_segment_fraction_range"][0],
+        )
+        self.assertLessEqual(
+            sample["robot"]["segment_fraction_box2_to_box1"],
+            config["robot_segment_fraction_range"][1],
+        )
+        for name, phase, pose_key in (
+            ("box1", "pick", "support_pose_world"),
+            ("box2", "place", "receptacle_pose_world"),
+        ):
+            sampled = sample[name]
+            pose = task[phase][pose_key]
+            nominal_root = config[name]["root_translate_xyz"]
+            self.assertEqual(pose["z"], nominal_root[2])
+            self.assertEqual(pose["translation_only"], True)
+            self.assertEqual(
+                [pose["x"], pose["y"]],
+                sampled["root_translate_xyz_sampled"][:2],
+            )
+            self.assertEqual(
+                sampled["root_translate_xyz_sampled"][2],
+                nominal_root[2],
+            )
+        cola = sample["cola"]
+        half = config["cola_center_region_half_extent_xy_m"]
+        self.assertLessEqual(abs(cola["local_xy_from_box1_center_m"][0]), half[0])
+        self.assertLessEqual(abs(cola["local_xy_from_box1_center_m"][1]), half[1])
+        self.assertEqual(
+            task["pick"]["object_pose_world"]["z"],
+            config["box1"]["support_top_z"]
+            + config["cola_bbox_center_to_min_z_m"],
+        )
+        self.assertEqual(
+            task["place"]["placement_region"]["center_xyz"][:2],
+            sample["box2"]["support_center_xy_sampled"],
+        )
+        self.assertEqual(
+            task["pick"]["base_goal"]["z"],
+            sample["pick_base_goal"]["z"],
+        )
+        self.assertEqual(
+            task["place"]["base_goal"]["z"],
+            sample["place_base_goal"]["z"],
+        )
+        self.assertTrue(all(task["randomization"]["synchronization"].values()))
+
     def test_liangzhu_task_requires_precise_stable_navigation_handoff(self) -> None:
         episode = JsonTaskProvider().load(LIANGZHU_TASK_PATH)
         settings = _navigation_settings_for_episode(
@@ -57,14 +163,33 @@ class FullPhysicsRandomizationTest(unittest.TestCase):
         )
         self.assertTrue(manipulation.reuse_pick_grasp_orientation_for_place)
 
+    def test_liangzhu_box_task_uses_cylindrical_place_release_tolerance(
+        self,
+    ) -> None:
+        episode = JsonTaskProvider().load(LIANGZHU_BOX_TASK_PATH)
+        manipulation = _manipulation_settings_for_episode(
+            FullPhysicsConfig(
+                task_json=LIANGZHU_BOX_TASK_PATH,
+                output_dir=Path("/tmp/test-liangzhu-box-manipulation-settings"),
+            ).manipulation,
+            episode,
+        )
+
+        self.assertAlmostEqual(
+            manipulation.place_release_object_tcp_offset_tolerance_m,
+            0.03,
+        )
+
     def test_cli_randomization_and_visualization_defaults(self) -> None:
-        args = _parse_args(["--task-json", str(TASK_PATH), "--dry-run"])
+        args = _build_parser().parse_args(
+            ["--task-json", str(TASK_PATH), "--dry-run"]
+        )
 
         self.assertTrue(args.randomize_task)
         self.assertTrue(args.randomize_base_goal)
         self.assertFalse(args.show_randomization_debug)
         self.assertFalse(args.keep_window_open)
-        self.assertEqual(args.navigation_visual_mode, "full")
+        self.assertEqual(args.navigation_visual_mode, "collision")
         self.assertEqual(args.overview_camera_mode, "fixed")
         self.assertEqual(args.overview_camera_prim_path, "/World/overview")
 

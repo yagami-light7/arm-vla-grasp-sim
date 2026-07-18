@@ -11,7 +11,10 @@ import pytest
 
 from source.simulation.isaac_runtime import IsaacSimulationRuntime
 from source.simulation.scene_runtime import resolve_scene_runtime_settings
-from source.simulation.task_scene_pose import resolve_task_receptacle_pose
+from source.simulation.task_scene_pose import (
+    resolve_task_pick_support_pose,
+    resolve_task_receptacle_pose,
+)
 from source.simulation.receptacle_support import (
     _validate_task_support_proxy,
     inspect_task_receptacle_support_stage,
@@ -24,6 +27,7 @@ from source.recording.training_action import (
     training_quality_success_verified,
     training_receptacle_support_verified,
 )
+from source.tasks import JsonTaskProvider
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -148,6 +152,28 @@ def test_liangzhu_task_receptacle_pose_is_resolved_before_physics() -> None:
     assert build_source.index("apply_task_receptacle_pose") < build_source.index(
         "world.initialize_physics()"
     )
+
+
+def test_box_pair_support_poses_preserve_authored_orientation_and_scale() -> None:
+    """双箱 episode 只能覆盖 translate，且 box2 在物理启动前补齐静态碰撞。"""
+
+    task = JsonTaskProvider().load(
+        PROJECT_ROOT
+        / "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json"
+    ).raw_task
+    pick = resolve_task_pick_support_pose(task)
+    place = resolve_task_receptacle_pose(task)
+
+    assert pick["prim_path"] == "/World/box1"
+    assert place["prim_path"] == "/World/box2"
+    for settings, collision_path in (
+        (pick, "/World/box1/node_0"),
+        (place, "/World/box2/node_0"),
+    ):
+        assert settings["translation_only"] is True
+        assert settings["ensure_static_mesh_collision"] is True
+        assert settings["collision_prim_path"] == collision_path
+        assert settings["expected_support_bbox_dims_xyz"] is not None
 
 
 def test_task_receptacle_pose_rejects_relative_prim_path() -> None:

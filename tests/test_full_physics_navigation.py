@@ -204,7 +204,7 @@ class FullPhysicsNavigationTest(unittest.TestCase):
         self.assertTrue(executor.status()["success"])
         self.assertEqual(executor.status()["phase"], "completed")
 
-    def test_carry_terminal_latches_forward_translation_after_final_yaw(self) -> None:
+    def test_same_floor_carry_terminal_holds_goal_yaw_during_xy_translation(self) -> None:
         grid = OccupancyGridMap(
             np.zeros((40, 40), dtype=bool),
             0.05,
@@ -216,6 +216,7 @@ class FullPhysicsNavigationTest(unittest.TestCase):
             waypoints=((0.0, 0.0), (0.031, 0.099)),
             metadata={
                 "execution_phase": "carry_nav_to_place",
+                "planner": "pct",
                 "require_yaw_alignment": True,
                 "yaw_tolerance": 0.15,
             },
@@ -234,29 +235,31 @@ class FullPhysicsNavigationTest(unittest.TestCase):
         action = executor.compute_action(state)
 
         self.assertEqual(action.source, "navigation_terminal_pose")
-        self.assertEqual(action.base_velocity, (0.0, 0.0, 0.30))
+        self.assertGreater(action.base_velocity[0], 0.0)
+        self.assertGreater(action.base_velocity[1], 0.0)
+        self.assertAlmostEqual(action.base_velocity[2], 0.296)
         self.assertEqual(
             action.metadata["terminal_control_mode"],
-            "carry_forward_translation",
+            "carry_goal_yaw_translation",
         )
         self.assertAlmostEqual(
             action.metadata["terminal_translation_heading_error"],
             math.atan2(0.099, 0.031),
         )
         self.assertTrue(action.metadata["carry_forward_translation_active"])
+        self.assertTrue(action.metadata["carry_goal_yaw_translation_active"])
         self.assertEqual(
             action.metadata["carry_forward_translation_activation_reason"],
-            "final_yaw_aligned_with_xy_residual",
+            "final_yaw_aligned_with_xy_residual_goal_yaw_hold",
         )
 
-        # Turning toward the XY residual intentionally moves away from final yaw
-        # and can briefly increase distance.  Stay in terminal control instead
-        # of falling back to DWA and its occupied-cell rejection loop.
+        # 即使姿态被扰动，也保持该终端模式并同时修正 XY 与最终 yaw，
+        # 不再切回 DWA 或先追位置朝向再反向恢复最终朝向。
         action = executor.compute_action(_state(x=0.0, y=-0.10, yaw=0.40))
         self.assertEqual(action.source, "navigation_terminal_pose")
         self.assertEqual(
             action.metadata["terminal_control_mode"],
-            "carry_forward_translation",
+            "carry_goal_yaw_translation",
         )
         self.assertTrue(action.metadata["carry_forward_translation_active"])
 

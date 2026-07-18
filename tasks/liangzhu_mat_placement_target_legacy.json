@@ -1,0 +1,33 @@
+{
+  "schema_version": "liangzhu_mat_placement_target_legacy_v1",
+  "description": "仅用于保留旧地面可乐到鼠标垫任务的几何回归；新的默认任务配置位于 liangzhu_placement_target.json。",
+  "target_receptacle_id": "mat_carpet_01",
+  "task_schema_fragment": {
+    "place": {
+      "place_pose_world": {
+        "x": -0.4375161874288581,
+        "y": 5.111811405946711,
+        "z": -0.09712594670872055,
+        "roll": 0.0,
+        "pitch": 0.0,
+        "yaw": 0.0
+      }
+    }
+  },
+  "placement_region": {
+    "center_xyz": [
+      -0.4375161874288581,
+      5.111811405946711,
+      -0.1507709268939391
+    ]
+  },
+  "target_object_mesh_geometry": {
+    "bbox_center_to_min_z_m": 0.05364498018521855
+  },
+  "support_geometry": {
+    "object_bbox_center_to_min_z_m": 0.05364498018521855,
+    "scene_floor_collision_ply_sha256": "85c2a2e745905eb9e83cc46c8f68e1706431658598d783c94f022f8131ad78de",
+    "mat_top_above_scene_floor_m": 0.0005988749772561862,
+    "receptacle_asset_sha256": "817ff5412fedeb712ad23e8f137d698d3247f2416831bbfebfe376ab7b8cfd04"
+  }
+}

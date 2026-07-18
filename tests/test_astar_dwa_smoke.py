@@ -2587,7 +2587,11 @@ class AStarDwaSmokeTest(unittest.TestCase):
             goal=NavGoal(x=1.0, y=0.0, yaw=0.0),
             waypoints=((0.0, 0.0), (1.0, 0.0)),
             metadata={
-                "planner": "pct",
+                # This fixture intentionally makes every cell occupied to
+                # exercise DWA's collision-window failure path.  It is not a
+                # valid PCT/local-refinement plan, whose reset gate now rejects
+                # an occupied exact goal before control starts.
+                "planner": "synthetic_collision_fixture",
                 "execution_phase": "carry_nav_to_place",
             },
         )
@@ -2626,7 +2630,7 @@ class AStarDwaSmokeTest(unittest.TestCase):
             goal=NavGoal(x=1.0, y=0.0, yaw=0.0),
             waypoints=((0.0, 0.0), (1.0, 0.0)),
             metadata={
-                "planner": "pct",
+                "planner": "synthetic_collision_fixture",
                 "execution_phase": "carry_nav_to_place",
             },
         )
@@ -2710,6 +2714,8 @@ class AStarDwaSmokeTest(unittest.TestCase):
             metadata={
                 "planner": "pct",
                 "execution_phase": "carry_nav_to_place",
+                "slice_start": 0,
+                "slice_end": 4,
             },
         )
         executor = DwaNavExecutor(
@@ -2774,6 +2780,8 @@ class AStarDwaSmokeTest(unittest.TestCase):
             metadata={
                 "planner": "pct",
                 "execution_phase": "carry_nav_to_place",
+                "slice_start": 0,
+                "slice_end": 4,
             },
         )
         executor = DwaNavExecutor(
@@ -2837,6 +2845,8 @@ class AStarDwaSmokeTest(unittest.TestCase):
             metadata={
                 "planner": "pct",
                 "execution_phase": "carry_nav_to_place",
+                "slice_start": 0,
+                "slice_end": 4,
             },
         )
         executor = DwaNavExecutor(

@@ -19,6 +19,11 @@ from .adapters.yaw_align import (
     compute_terminal_pose_command,
 )
 from .navlib import AStarPlanner, DWAConfig, DWAController, DWADebug, OccupancyGridMap
+from .navlib.path_refinement import (
+    LocalPathRefinementError,
+    refine_same_floor_path,
+    world_segment_clearance as _segment_clearance,
+)
 
 
 PCT_STAIR_FLOAT_DOG_JOINT_NAMES = (
@@ -64,6 +69,8 @@ PCT_CARRY_STALL_RECOVERY_PROGRESS_RATIO = 0.90
 PCT_CARRY_STALL_RECOVERY_LINEAR_SPEED_MPS = 0.01
 PCT_CARRY_INITIAL_TURN_MIN_HEADING_ERROR_RAD = 0.45
 PCT_CARRY_INITIAL_TURN_MIN_ANGULAR_SPEED_RAD_S = 0.10
+PCT_SAME_FLOOR_ROTATE_IN_PLACE_ENTER_ANGLE = 0.45
+PCT_SAME_FLOOR_ROTATE_IN_PLACE_EXIT_ANGLE = 0.20
 
 
 class DwaNavExecutor:
@@ -312,6 +319,7 @@ class DwaNavExecutor:
         self._terminal_control_mode: str | None = None
         self._carry_forward_translation_active = False
         self._carry_forward_translation_activation_reason: str | None = None
+        self._same_floor_pct = False
         self._last_dwa_debug: DWADebug | None = None
         self._dwa_compute_count = 0
         self._dwa_hold_count = 0
@@ -347,6 +355,20 @@ class DwaNavExecutor:
         self._post_stair_release_bridge_replan_count = 0
         self._near_goal_stall_handoff = False
         self._near_goal_stall_handoff_tolerance: float | None = None
+        self._controller_path_world: tuple[tuple[float, float], ...] = ()
+        self._carry_departure_config: dict[str, Any] | None = None
+        self._carry_departure_report: dict[str, Any] = {"enabled": False}
+        self._carry_departure_pending = False
+        self._carry_departure_active = False
+        self._carry_departure_settling = False
+        self._carry_departure_completed = False
+        self._carry_departure_start_pose: tuple[float, float, float] | None = None
+        self._carry_departure_backward_unit: tuple[float, float] | None = None
+        self._carry_departure_target_distance_m = 0.0
+        self._carry_departure_max_progress_m = 0.0
+        self._carry_departure_tick_count = 0
+        self._carry_departure_settle_count = 0
+        self._carry_departure_stable_count = 0
 
     def reset(self, plan: NavPlan) -> None:
         """载入新路径并清空执行、终点和停滞状态。"""
@@ -381,10 +403,15 @@ class DwaNavExecutor:
             path_world,
             self._stair_float_path,
         )
+        self._controller_path_world = tuple(path_world)
         self._stair_float_report["controller_path_splice"] = stair_float_splice
         self._active_dwa_config = self._dwa_config_for_plan(plan)
         self._carry_mode = (
             plan.metadata.get("execution_phase") == "carry_nav_to_place"
+        )
+        self._same_floor_pct = (
+            plan.metadata.get("planner") == "pct"
+            and not _pct_plan_is_multifloor(plan)
         )
         self._active_position_tolerance = (
             float(self.carry_position_tolerance)
@@ -401,6 +428,7 @@ class DwaNavExecutor:
             self.terminal_pose_config,
             yaw_tolerance=self._active_yaw_tolerance,
             prefer_forward_translation=False,
+            prefer_goal_yaw_translation=False,
             # Carry navigation may use a wider, task-validated place
             # acceptance radius than the generic terminal controller.  Keep
             # both layers synchronized so XY recovery yields to yaw polish as
@@ -496,6 +524,9 @@ class DwaNavExecutor:
         self._consecutive_infeasible_recomputes = 0
         self._near_goal_stall_handoff = False
         self._near_goal_stall_handoff_tolerance = None
+        self._reset_carry_departure_state(plan)
+        if self._carry_departure_pending:
+            self._phase = "carry_departure_pending"
 
     def compute_action(self, state: SimulationState) -> RobotAction:
         """根据当前观测计算一个 tick 的 RobotAction，不推进仿真。"""
@@ -516,6 +547,12 @@ class DwaNavExecutor:
         pose = self._pose_xyyaw(state)
         body_velocity = self._body_velocity(state, pose[2])
         distance, yaw_error = self._goal_errors(pose)
+        carry_departure_action = self._compute_carry_departure_action(
+            pose,
+            body_velocity,
+        )
+        if carry_departure_action is not None:
+            return carry_departure_action
         stair_float_action = self._compute_stair_float_action(state, pose)
         if stair_float_action is not None:
             return stair_float_action
@@ -535,11 +572,14 @@ class DwaNavExecutor:
             <= self.terminal_start_distance
             and abs(yaw_error) <= self._active_yaw_tolerance
         ):
-            # 保留已验证的大角度 holonomic 对准；只在最终 yaw 已合格、但
-            # XY 仍卡在验收半径外时，切换到“朝位置误差转向并前进”。
+            # 最终 yaw 已合格、但 XY 仍在验收半径外时进入终端平移。
+            # 同层 PCT 使用保持目标 yaw 的全向速度；跨楼层兼容路径继续
+            # 使用旧的“朝位置误差转向并前进”模式。
             self._carry_forward_translation_active = True
             self._carry_forward_translation_activation_reason = (
-                "final_yaw_aligned_with_xy_residual"
+                "final_yaw_aligned_with_xy_residual_goal_yaw_hold"
+                if self._same_floor_pct
+                else "final_yaw_aligned_with_xy_residual"
             )
         elif (
             self._carry_forward_translation_active
@@ -573,7 +613,11 @@ class DwaNavExecutor:
                 body_goal_x,
             )
             self._terminal_control_mode = (
-                "carry_forward_translation"
+                (
+                    "carry_goal_yaw_translation"
+                    if self._same_floor_pct
+                    else "carry_forward_translation"
+                )
                 if self._carry_forward_translation_active
                 else "final_pose"
             )
@@ -581,6 +625,11 @@ class DwaNavExecutor:
                 self._active_terminal_pose_config,
                 prefer_forward_translation=(
                     self._carry_forward_translation_active
+                    and not self._same_floor_pct
+                ),
+                prefer_goal_yaw_translation=(
+                    self._carry_forward_translation_active
+                    and self._same_floor_pct
                 ),
             )
             command = compute_terminal_pose_command(
@@ -685,6 +734,12 @@ class DwaNavExecutor:
         if self._stall_detected:
             self._done = True
             return True
+        if (
+            self._carry_departure_pending
+            or self._carry_departure_active
+            or self._carry_departure_settling
+        ):
+            return False
 
         pose = self._pose_xyyaw(state)
         body_velocity = self._body_velocity(state, pose[2])
@@ -747,9 +802,14 @@ class DwaNavExecutor:
             "carry_forward_translation_active": (
                 self._carry_forward_translation_active
             ),
+            "carry_goal_yaw_translation_active": (
+                self._carry_forward_translation_active
+                and self._same_floor_pct
+            ),
             "carry_forward_translation_activation_reason": (
                 self._carry_forward_translation_activation_reason
             ),
+            "carry_departure": dict(self._carry_departure_report),
             "position_tolerance": self._active_position_tolerance,
             "configured_position_tolerance": self.position_tolerance,
             "carry_position_tolerance": self.carry_position_tolerance,
@@ -812,8 +872,17 @@ class DwaNavExecutor:
             return path_world
         if len(path_world) < 2:
             return path_world
+        sim_start = plan.metadata.get("sim_start")
+        live_start = (
+            (float(sim_start[0]), float(sim_start[1]))
+            if isinstance(sim_start, (list, tuple)) and len(sim_start) >= 2
+            else path_world[0]
+        )
         if _pct_plan_is_multifloor(plan):
             refined = _remove_consecutive_duplicate_waypoints(path_world)
+            original_start = refined[0]
+            refined[0] = live_start
+            refined = _remove_consecutive_duplicate_waypoints(refined)
             refined, flat_approach_report = self._refine_pct_flat_approach(
                 plan,
                 refined,
@@ -828,8 +897,12 @@ class DwaNavExecutor:
                 "enabled": True,
                 "success": True,
                 "mode": "pct_multifloor_path_preserved",
+                "strategy": "exact_live_start_then_pct_multifloor_path_v1",
                 "input_waypoints": len(path_world),
                 "output_waypoints": len(refined),
+                "live_start_xy": list(live_start),
+                "global_path_start_xy": list(original_start),
+                "global_start_offset_m": math.dist(live_start, original_start),
                 "multifloor": True,
                 "slice_start": plan.metadata.get("slice_start"),
                 "slice_end": plan.metadata.get("slice_end"),
@@ -837,79 +910,21 @@ class DwaNavExecutor:
             }
             return refined
         exact_goal = (float(plan.goal.x), float(plan.goal.y))
-        sim_start = plan.metadata.get("sim_start")
-        direct_start = (
-            (float(sim_start[0]), float(sim_start[1]))
-            if isinstance(sim_start, (list, tuple)) and len(sim_start) >= 2
-            else path_world[0]
-        )
-        direct_free, direct_clearance = _world_segment_clearance(
-            direct_start,
-            exact_goal,
-            self.local_map,
-        )
-        direct_clearance_required = max(
-            0.40,
-            2.0 * float(self.local_map.resolution),
-        )
-        if (
-            direct_free
-            and direct_clearance is not None
-            and direct_clearance >= direct_clearance_required
-        ):
-            self._local_refinement_report = {
-                "enabled": True,
-                "success": True,
-                "mode": "pct_same_floor_direct",
-                "input_waypoints": len(path_world),
-                "output_waypoints": 2,
-                "direct_clearance_m": direct_clearance,
-                "direct_clearance_required_m": direct_clearance_required,
-            }
-            return [direct_start, exact_goal]
         try:
-            result = AStarPlanner().plan(
-                self.local_map,
-                path_world[0],
-                (float(plan.goal.x), float(plan.goal.y)),
-                snap_to_free=True,
-                max_snap_distance_m=max(0.5, self.local_clearance_radius + 0.5),
+            result = refine_same_floor_path(
+                grid_map=self.local_map,
+                global_path_world=path_world,
+                live_start_xy=live_start,
+                exact_goal_xy=exact_goal,
             )
-        except Exception as exc:
-            self._local_refinement_report = {
-                "enabled": True,
-                "success": False,
-                "reason": str(exc),
-                "input_waypoints": len(path_world),
-            }
-            return path_world
-
-        refined = [
-            (float(point[0]), float(point[1]))
-            for point in result.path_world
-        ]
-        exact_goal = (float(plan.goal.x), float(plan.goal.y))
-        if math.hypot(refined[-1][0] - exact_goal[0], refined[-1][1] - exact_goal[1]) > 1.0e-3:
-            refined.append(exact_goal)
-        if len(refined) < 2:
-            self._local_refinement_report = {
-                "enabled": True,
-                "success": False,
-                "reason": "refined_path_too_short",
-                "input_waypoints": len(path_world),
-            }
-            return path_world
-        self._local_refinement_report = {
-            "enabled": True,
-            "success": True,
-            "input_waypoints": len(path_world),
-            "output_waypoints": len(refined),
-            "raw_grid_waypoints": len(result.raw_path_grid),
-            "collinear_waypoints": len(result.path_world),
-            "expanded_nodes": int(result.expanded_nodes),
-            "cost": float(result.cost),
-        }
-        return refined
+        except LocalPathRefinementError as exc:
+            self._local_refinement_report = dict(exc.report)
+            raise RuntimeError(
+                f"PCT local path refinement failed: {exc}"
+            ) from exc
+        self.local_map = result.grid_map
+        self._local_refinement_report = dict(result.report)
+        return list(result.path_world)
 
     def _uses_physical_pre_stair_navigation(self) -> bool:
         """仅在楼梯起点才启用 float 时，F1 必须继续使用真实物理导航。"""
@@ -1242,21 +1257,43 @@ class DwaNavExecutor:
     def _dwa_config_for_plan(self, plan: NavPlan) -> DWAConfig:
         """携物导航使用更保守的速度和路径偏离上限。"""
 
-        if plan.metadata.get("execution_phase") != "carry_nav_to_place":
-            return self.dwa_config
-        updates: dict[str, Any] = {
+        carry_mode = plan.metadata.get("execution_phase") == "carry_nav_to_place"
+        multifloor = _pct_plan_is_multifloor(plan)
+        same_floor_pct = plan.metadata.get("planner") == "pct" and not multifloor
+        updates: dict[str, Any] = {}
+        if same_floor_pct:
+            enter_angle, exit_angle, creep_velocity, settle_angular_velocity = (
+                self._same_floor_alignment_values(plan)
+            )
+            updates.update(
+                {
+                    "rotate_in_place_angle": enter_angle,
+                    "rotate_in_place_exit_angle": exit_angle,
+                    "rotate_in_place_settle_angular_velocity": (
+                        settle_angular_velocity
+                    ),
+                    "large_heading_creep_velocity": creep_velocity,
+                    "enforce_min_active_angular_velocity_only_during_rotation": True,
+                }
+            )
+        if not carry_mode:
+            return replace(self.dwa_config, **updates) if updates else self.dwa_config
+
+        updates.update({
             # 携物通过窄门时必须停在锐角点并先完成朝向切换，禁止切内角。
             "preserve_sharp_corners": True,
             "corner_angle_threshold": 0.35,
             "corner_waypoint_tolerance": 0.18,
-            # 携物导航仍允许大角度原地对齐，但普通门口/房间转角应优先走平滑弧线。
-            "rotate_in_place_angle": max(
+            "enforce_path_deviation_limit": True,
+        })
+        if multifloor or not same_floor_pct:
+            # 多楼层长路线与非 PCT 兼容路径保留原有平滑转弯策略；楼梯和
+            # 门口由锐角路径点约束。PCT 单层任务则先纯转向，禁止在操作区画弧。
+            updates["rotate_in_place_angle"] = max(
                 1.60,
                 float(self.dwa_config.rotate_in_place_angle),
-            ),
-            "enforce_path_deviation_limit": True,
-        }
-        if not _pct_plan_is_multifloor(plan):
+            )
+        else:
             # Long/cross-floor routes retain smooth creeping turns, but a
             # same-floor final carry approach must align before enabling the
             # policy's 0.25 m/s minimum gait.  This prevents short place paths
@@ -1362,6 +1399,519 @@ class DwaNavExecutor:
                 ),
             )
         return replace(self.dwa_config, **updates)
+
+    @staticmethod
+    def _same_floor_alignment_values(
+        plan: NavPlan,
+    ) -> tuple[float, float, float, float]:
+        """Read map-independent turn-gate thresholds from task metadata."""
+
+        enter_angle = PCT_SAME_FLOOR_ROTATE_IN_PLACE_ENTER_ANGLE
+        exit_angle = PCT_SAME_FLOOR_ROTATE_IN_PLACE_EXIT_ANGLE
+        creep_velocity = 0.0
+        settle_angular_velocity = 0.12
+        execution = plan.metadata.get("navigation_execution")
+        alignment = (
+            execution.get("same_floor_alignment")
+            if isinstance(execution, dict)
+            else None
+        )
+        if alignment is not None:
+            if not isinstance(alignment, dict):
+                raise ValueError(
+                    "navigation_execution.same_floor_alignment 必须是对象"
+                )
+            enter_angle = float(
+                alignment.get("rotate_in_place_enter_angle_rad", enter_angle)
+            )
+            exit_angle = float(
+                alignment.get("rotate_in_place_exit_angle_rad", exit_angle)
+            )
+            creep_velocity = float(
+                alignment.get(
+                    "large_heading_creep_velocity_mps",
+                    creep_velocity,
+                )
+            )
+            settle_angular_velocity = float(
+                alignment.get(
+                    "rotation_settle_angular_velocity_rps",
+                    settle_angular_velocity,
+                )
+            )
+        if not 0.0 < exit_angle <= enter_angle <= math.pi:
+            raise ValueError(
+                "same-floor turn gate 需要 0 < exit_angle <= enter_angle <= pi"
+            )
+        if creep_velocity < 0.0 or not math.isfinite(creep_velocity):
+            raise ValueError("same-floor large-heading creep 不能为负或非有限值")
+        if (
+            settle_angular_velocity < 0.0
+            or not math.isfinite(settle_angular_velocity)
+        ):
+            raise ValueError("same-floor rotation settle 不能为负或非有限值")
+        return (
+            enter_angle,
+            exit_angle,
+            creep_velocity,
+            settle_angular_velocity,
+        )
+
+    def _reset_carry_departure_state(self, plan: NavPlan) -> None:
+        """Prepare an optional straight retreat before a large carry turn."""
+
+        self._carry_departure_config = None
+        self._carry_departure_report = {"enabled": False}
+        self._carry_departure_pending = False
+        self._carry_departure_active = False
+        self._carry_departure_settling = False
+        self._carry_departure_completed = False
+        self._carry_departure_start_pose = None
+        self._carry_departure_backward_unit = None
+        self._carry_departure_target_distance_m = 0.0
+        self._carry_departure_max_progress_m = 0.0
+        self._carry_departure_tick_count = 0
+        self._carry_departure_settle_count = 0
+        self._carry_departure_stable_count = 0
+
+        if plan.metadata.get("execution_phase") != "carry_nav_to_place":
+            self._carry_departure_report["reason"] = "not_carry_navigation"
+            return
+        if _pct_plan_is_multifloor(plan):
+            self._carry_departure_report["reason"] = "multifloor_route"
+            return
+        raw_config = plan.metadata.get("carry_departure")
+        if raw_config is None:
+            self._carry_departure_report["reason"] = "not_configured"
+            return
+        if not isinstance(raw_config, dict):
+            raise ValueError("plan.metadata.carry_departure 必须是对象")
+        if not bool(raw_config.get("enabled", False)):
+            self._carry_departure_report = {
+                "enabled": False,
+                "reason": "disabled_by_task",
+            }
+            return
+
+        center = raw_config.get("source_support_center_xy")
+        if not (
+            isinstance(center, (list, tuple))
+            and len(center) == 2
+        ):
+            raise ValueError("carry_departure.source_support_center_xy 必须包含 XY")
+        config = dict(raw_config)
+        config["source_support_center_xy"] = (
+            float(center[0]),
+            float(center[1]),
+        )
+        float_fields = {
+            "required_center_clearance_m": 0.0,
+            "activation_heading_error_rad": 0.0,
+            "minimum_reverse_distance_m": 0.0,
+            "maximum_reverse_distance_m": 0.0,
+            "reverse_speed_mps": 0.0,
+            "yaw_hold_kp": 0.0,
+            "max_yaw_rate_rps": 0.0,
+            "minimum_backward_alignment_cosine": -1.0,
+            "completion_distance_tolerance_m": 0.0,
+            "settle_linear_velocity_mps": 0.0,
+            "settle_angular_velocity_rps": 0.0,
+        }
+        for field_name, minimum in float_fields.items():
+            if field_name not in config:
+                raise ValueError(f"carry_departure 缺少 {field_name}")
+            value = float(config[field_name])
+            if not math.isfinite(value) or value < minimum:
+                raise ValueError(f"carry_departure.{field_name} 数值无效")
+            config[field_name] = value
+        if config["required_center_clearance_m"] <= 0.0:
+            raise ValueError("carry_departure.required_center_clearance_m 必须为正")
+        if config["activation_heading_error_rad"] > math.pi:
+            raise ValueError("carry_departure activation heading 不能大于 pi")
+        if config["minimum_reverse_distance_m"] <= 0.0:
+            raise ValueError("carry_departure minimum reverse distance 必须为正")
+        if (
+            config["maximum_reverse_distance_m"]
+            < config["minimum_reverse_distance_m"]
+        ):
+            raise ValueError("carry_departure maximum reverse distance 太小")
+        if config["reverse_speed_mps"] <= 0.0:
+            raise ValueError("carry_departure reverse speed 必须为正")
+        if config["minimum_backward_alignment_cosine"] > 1.0:
+            raise ValueError("carry_departure backward alignment cosine 不能大于 1")
+        for field_name in (
+            "max_steps",
+            "settle_max_steps",
+            "settle_required_stable_steps",
+        ):
+            value = int(config.get(field_name, 0))
+            if value < 1:
+                raise ValueError(f"carry_departure.{field_name} 必须至少为 1")
+            config[field_name] = value
+
+        self._carry_departure_config = config
+        self._carry_departure_pending = True
+        self._carry_departure_report = {
+            "enabled": True,
+            "configured": True,
+            "active": False,
+            "completed": False,
+            "source_support_id": config.get("source_support_id"),
+            "source_support_prim_path": config.get("source_support_prim_path"),
+            "source_support_center_xy": list(config["source_support_center_xy"]),
+            "source_support_half_diagonal_m": config.get(
+                "source_support_half_diagonal_m"
+            ),
+            "required_center_clearance_m": config[
+                "required_center_clearance_m"
+            ],
+            "clearance_formula": config.get("clearance_formula"),
+        }
+
+    def _compute_carry_departure_action(
+        self,
+        pose: tuple[float, float, float],
+        body_velocity: tuple[float, float, float],
+    ) -> RobotAction | None:
+        """Retreat without turning, settle, then re-anchor the local route."""
+
+        if self._carry_departure_pending:
+            self._initialize_carry_departure(pose)
+        if self._stall_detected:
+            return self._emit_carry_departure_action(
+                (0.0, 0.0, 0.0),
+                source="navigation_carry_departure_failed",
+            )
+        if self._carry_departure_active:
+            return self._advance_carry_departure(pose)
+        if self._carry_departure_settling:
+            return self._settle_after_carry_departure(pose, body_velocity)
+        return None
+
+    def _initialize_carry_departure(
+        self,
+        pose: tuple[float, float, float],
+    ) -> None:
+        config = self._carry_departure_config
+        if config is None or self.plan is None or self.local_map is None:
+            self._fail_carry_departure("carry_departure_not_initialized")
+            return
+        self._carry_departure_pending = False
+        center_x, center_y = config["source_support_center_xy"]
+        dx = pose[0] - center_x
+        dy = pose[1] - center_y
+        center_distance = math.hypot(dx, dy)
+        required_clearance = float(config["required_center_clearance_m"])
+        route_target = (
+            self._controller_path_world[1]
+            if len(self._controller_path_world) >= 2
+            else (float(self.plan.goal.x), float(self.plan.goal.y))
+        )
+        route_heading = math.atan2(
+            route_target[1] - pose[1],
+            route_target[0] - pose[0],
+        )
+        route_heading_error = wrap_yaw(route_heading - pose[2])
+        self._carry_departure_report.update(
+            {
+                "initial_pose_xyyaw": list(pose),
+                "initial_center_distance_m": center_distance,
+                "initial_route_heading_error_rad": route_heading_error,
+            }
+        )
+        if center_distance >= required_clearance:
+            self._skip_carry_departure("already_outside_turn_swept_clearance")
+            return
+        if abs(route_heading_error) < float(
+            config["activation_heading_error_rad"]
+        ):
+            self._skip_carry_departure("route_does_not_require_large_turn")
+            return
+        if center_distance <= 1.0e-9:
+            self._fail_carry_departure("carry_departure_support_center_overlap")
+            return
+
+        backward = (-math.cos(pose[2]), -math.sin(pose[2]))
+        away = (dx / center_distance, dy / center_distance)
+        backward_alignment = backward[0] * away[0] + backward[1] * away[1]
+        self._carry_departure_report["backward_alignment_cosine"] = (
+            backward_alignment
+        )
+        if backward_alignment < float(
+            config["minimum_backward_alignment_cosine"]
+        ):
+            self._fail_carry_departure("carry_departure_heading_unsafe")
+            return
+
+        minimum_distance = float(config["minimum_reverse_distance_m"])
+        maximum_distance = float(config["maximum_reverse_distance_m"])
+        target_distance: float | None = None
+        sample_count = max(1, int(math.ceil((maximum_distance - minimum_distance) / 0.01)))
+        for index in range(sample_count + 1):
+            distance = min(
+                maximum_distance,
+                minimum_distance + 0.01 * index,
+            )
+            endpoint = (
+                pose[0] + backward[0] * distance,
+                pose[1] + backward[1] * distance,
+            )
+            if math.hypot(endpoint[0] - center_x, endpoint[1] - center_y) >= required_clearance:
+                target_distance = distance
+                break
+        if target_distance is None:
+            self._fail_carry_departure("carry_departure_max_distance_insufficient")
+            return
+        endpoint = (
+            pose[0] + backward[0] * target_distance,
+            pose[1] + backward[1] * target_distance,
+        )
+        segment_free, segment_clearance = _segment_clearance(
+            (pose[0], pose[1]),
+            endpoint,
+            self.local_map,
+        )
+        self._carry_departure_report.update(
+            {
+                "planned_reverse_distance_m": target_distance,
+                "planned_endpoint_xy": list(endpoint),
+                "reverse_segment_free": segment_free,
+                "reverse_segment_clearance_m": segment_clearance,
+            }
+        )
+        if not segment_free:
+            self._fail_carry_departure("carry_departure_reverse_segment_blocked")
+            return
+
+        self._carry_departure_start_pose = pose
+        self._carry_departure_backward_unit = backward
+        self._carry_departure_target_distance_m = target_distance
+        self._carry_departure_active = True
+        self._phase = "carry_departure"
+        self._carry_departure_report.update(
+            {
+                "active": True,
+                "reason": "large_turn_inside_support_swept_clearance",
+            }
+        )
+
+    def _advance_carry_departure(
+        self,
+        pose: tuple[float, float, float],
+    ) -> RobotAction:
+        config = self._carry_departure_config
+        start_pose = self._carry_departure_start_pose
+        backward = self._carry_departure_backward_unit
+        if config is None or start_pose is None or backward is None:
+            self._fail_carry_departure("carry_departure_state_lost")
+            return self._emit_carry_departure_action(
+                (0.0, 0.0, 0.0),
+                source="navigation_carry_departure_failed",
+            )
+        self._carry_departure_tick_count += 1
+        displacement = (pose[0] - start_pose[0], pose[1] - start_pose[1])
+        progress = displacement[0] * backward[0] + displacement[1] * backward[1]
+        self._carry_departure_max_progress_m = max(
+            self._carry_departure_max_progress_m,
+            progress,
+        )
+        center_x, center_y = config["source_support_center_xy"]
+        center_distance = math.hypot(pose[0] - center_x, pose[1] - center_y)
+        tolerance = float(config["completion_distance_tolerance_m"])
+        self._carry_departure_report.update(
+            {
+                "tick_count": self._carry_departure_tick_count,
+                "progress_m": progress,
+                "max_progress_m": self._carry_departure_max_progress_m,
+                "current_center_distance_m": center_distance,
+            }
+        )
+        initial_center_distance = float(
+            self._carry_departure_report["initial_center_distance_m"]
+        )
+        if center_distance < initial_center_distance - max(tolerance, 0.03):
+            self._fail_carry_departure("carry_departure_moved_toward_support")
+        elif (
+            progress >= self._carry_departure_target_distance_m - tolerance
+            and center_distance
+            >= float(config["required_center_clearance_m"]) - tolerance
+        ):
+            self._carry_departure_active = False
+            self._carry_departure_settling = True
+            self._phase = "carry_departure_settling"
+            self._carry_departure_report.update(
+                {
+                    "active": False,
+                    "settling": True,
+                    "departure_pose_xyyaw": list(pose),
+                }
+            )
+        elif self._carry_departure_tick_count >= int(config["max_steps"]):
+            self._fail_carry_departure("carry_departure_timeout")
+
+        if not self._carry_departure_active:
+            return self._emit_carry_departure_action(
+                (0.0, 0.0, 0.0),
+                source=(
+                    "navigation_carry_departure_settling"
+                    if self._carry_departure_settling
+                    else "navigation_carry_departure_failed"
+                ),
+            )
+        yaw_error = wrap_yaw(start_pose[2] - pose[2])
+        yaw_rate = max(
+            -float(config["max_yaw_rate_rps"]),
+            min(
+                float(config["max_yaw_rate_rps"]),
+                float(config["yaw_hold_kp"]) * yaw_error,
+            ),
+        )
+        command = (-float(config["reverse_speed_mps"]), 0.0, yaw_rate)
+        return self._emit_carry_departure_action(
+            command,
+            source="navigation_carry_departure",
+        )
+
+    def _settle_after_carry_departure(
+        self,
+        pose: tuple[float, float, float],
+        body_velocity: tuple[float, float, float],
+    ) -> RobotAction:
+        config = self._carry_departure_config
+        if config is None:
+            self._fail_carry_departure("carry_departure_state_lost")
+            return self._emit_carry_departure_action(
+                (0.0, 0.0, 0.0),
+                source="navigation_carry_departure_failed",
+            )
+        self._carry_departure_settle_count += 1
+        stable = (
+            math.hypot(body_velocity[0], body_velocity[1])
+            <= float(config["settle_linear_velocity_mps"])
+            and abs(body_velocity[2])
+            <= float(config["settle_angular_velocity_rps"])
+        )
+        self._carry_departure_stable_count = (
+            self._carry_departure_stable_count + 1 if stable else 0
+        )
+        self._carry_departure_report.update(
+            {
+                "settle_count": self._carry_departure_settle_count,
+                "settle_stable_count": self._carry_departure_stable_count,
+                "settle_body_velocity": list(body_velocity),
+            }
+        )
+        if self._carry_departure_stable_count >= int(
+            config["settle_required_stable_steps"]
+        ):
+            try:
+                self._reanchor_after_carry_departure(pose)
+            except LocalPathRefinementError as exc:
+                self._carry_departure_report["reanchor_error"] = dict(exc.report)
+                self._fail_carry_departure("carry_departure_reanchor_failed")
+            else:
+                self._carry_departure_settling = False
+                self._carry_departure_completed = True
+                self._phase = "dwa"
+                self._carry_departure_report.update(
+                    {
+                        "settling": False,
+                        "completed": True,
+                        "reanchor_pose_xyyaw": list(pose),
+                    }
+                )
+                return self._emit_carry_departure_action(
+                    (0.0, 0.0, 0.0),
+                    source="navigation_carry_departure_complete",
+                )
+        elif self._carry_departure_settle_count >= int(config["settle_max_steps"]):
+            self._fail_carry_departure("carry_departure_settle_timeout")
+
+        return self._emit_carry_departure_action(
+            (0.0, 0.0, 0.0),
+            source=(
+                "navigation_carry_departure_settling"
+                if self._carry_departure_settling
+                else "navigation_carry_departure_failed"
+            ),
+        )
+
+    def _reanchor_after_carry_departure(
+        self,
+        pose: tuple[float, float, float],
+    ) -> None:
+        if self.local_map is None or self.plan is None:
+            raise RuntimeError("carry departure reanchor 缺少地图或 plan")
+        previous_refinement = self._local_refinement_report
+        result = refine_same_floor_path(
+            grid_map=self.local_map,
+            global_path_world=self._controller_path_world,
+            live_start_xy=(pose[0], pose[1]),
+            exact_goal_xy=(float(self.plan.goal.x), float(self.plan.goal.y)),
+        )
+        self.local_map = result.grid_map
+        self._controller_path_world = tuple(result.path_world)
+        self._controller = DWAController(
+            path_world=list(result.path_world),
+            grid_map=self.local_map,
+            config=self._active_dwa_config,
+        )
+        self._local_refinement_report = {
+            **result.report,
+            "reanchored_after_carry_departure": True,
+            "pre_departure_refinement": previous_refinement,
+        }
+        self.stall_detector.reset()
+        self._stall_diagnostics = self.stall_detector.diagnostics()
+        self._last_dwa_debug = None
+        self._consecutive_infeasible_recomputes = 0
+
+    def _skip_carry_departure(self, reason: str) -> None:
+        self._carry_departure_pending = False
+        self._carry_departure_active = False
+        self._carry_departure_settling = False
+        self._carry_departure_report.update(
+            {
+                "active": False,
+                "completed": False,
+                "skipped": True,
+                "reason": reason,
+            }
+        )
+        self._phase = "dwa"
+
+    def _fail_carry_departure(self, reason: str) -> None:
+        self._carry_departure_pending = False
+        self._carry_departure_active = False
+        self._carry_departure_settling = False
+        self._carry_departure_report.update(
+            {
+                "active": False,
+                "completed": False,
+                "failed": True,
+                "failure_reason": reason,
+            }
+        )
+        self._stall_detected = True
+        self._done = True
+        self._success = False
+        self._failure_reason = reason
+        self._phase = "stalled"
+
+    def _emit_carry_departure_action(
+        self,
+        command: tuple[float, float, float],
+        *,
+        source: str,
+    ) -> RobotAction:
+        self._tick_index += 1
+        self._last_command = tuple(float(value) for value in command)
+        self._command_recomputed_this_tick = True
+        return RobotAction(
+            base_velocity=self._last_command,
+            source=source,
+            metadata=self._action_metadata(),
+        )
 
     def _update_infeasible_recomputes(self) -> None:
         """连续无可行轨迹时及时停止，避免接触后被墙体持续推出。"""
@@ -1702,9 +2252,14 @@ class DwaNavExecutor:
             "carry_forward_translation_active": (
                 self._carry_forward_translation_active
             ),
+            "carry_goal_yaw_translation_active": (
+                self._carry_forward_translation_active
+                and self._same_floor_pct
+            ),
             "carry_forward_translation_activation_reason": (
                 self._carry_forward_translation_activation_reason
             ),
+            "carry_departure": dict(self._carry_departure_report),
             "measured_body_velocity": self._last_body_velocity,
             "yaw_alignment_required": self._active_require_yaw_alignment,
             "stall_detected": self._stall_detected,
@@ -1805,6 +2360,12 @@ class DwaNavExecutor:
             "rotate_in_place_angle": float(
                 self._active_dwa_config.rotate_in_place_angle
             ),
+            "rotate_in_place_exit_angle": (
+                self._active_dwa_config.rotate_in_place_exit_angle
+            ),
+            "rotate_in_place_settle_angular_velocity": (
+                self._active_dwa_config.rotate_in_place_settle_angular_velocity
+            ),
             "close_goal_rotate_in_place_angle": (
                 self._active_dwa_config.close_goal_rotate_in_place_angle
             ),
@@ -1824,6 +2385,9 @@ class DwaNavExecutor:
                 )
                 if self._carry_mode and not self.stair_float_enabled
                 else None
+            ),
+            "angular_deadband_only_during_rotation": bool(
+                self._active_dwa_config.enforce_min_active_angular_velocity_only_during_rotation
             ),
             "consecutive_infeasible_recomputes": int(
                 self._consecutive_infeasible_recomputes
@@ -3870,24 +4434,9 @@ def _world_segment_clearance(
     end: tuple[float, float],
     grid_map: OccupancyGridMap,
 ) -> tuple[bool, float | None]:
-    """检查同层直线路径，并返回沿线最小障碍净空。"""
+    """兼容旧调用名，实际使用 supercover 栅格线段检查。"""
 
-    segment_length = math.hypot(end[0] - start[0], end[1] - start[1])
-    sample_spacing = max(0.01, 0.5 * float(grid_map.resolution))
-    sample_count = max(1, int(math.ceil(segment_length / sample_spacing)))
-    minimum_clearance = float("inf")
-    for sample_index in range(sample_count + 1):
-        alpha = sample_index / sample_count
-        x = start[0] + alpha * (end[0] - start[0])
-        y = start[1] + alpha * (end[1] - start[1])
-        row, col = grid_map.world_to_grid(x, y)
-        if grid_map.is_occupied(row, col):
-            return False, 0.0
-        clearance = grid_map.distance_to_obstacle(row, col)
-        if clearance is None:
-            return False, None
-        minimum_clearance = min(minimum_clearance, float(clearance))
-    return True, minimum_clearance
+    return _segment_clearance(start, end, grid_map)
 
 
 def _shortcut_path_with_clearance(

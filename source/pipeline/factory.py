@@ -89,7 +89,7 @@ def _navigation_settings_for_episode(settings, episode_spec: EpisodeSpec):
 
 
 def _manipulation_settings_for_episode(settings, episode_spec: EpisodeSpec):
-    """把任务声明的抓放姿态约束映射到现有 ManipulationSettings。"""
+    """把任务声明的抓放执行约束映射到现有 ManipulationSettings。"""
 
     raw_config = episode_spec.raw_task.get("manipulation_execution")
     if raw_config is None:
@@ -104,6 +104,15 @@ def _manipulation_settings_for_episode(settings, episode_spec: EpisodeSpec):
         if not isinstance(value, bool):
             raise ValueError(
                 f"task.manipulation_execution.{field_name} 必须是布尔值"
+            )
+        updates[field_name] = value
+    for field_name in ("place_release_object_tcp_offset_tolerance_m",):
+        if field_name not in raw_config:
+            continue
+        value = float(raw_config[field_name])
+        if value < 0.0:
+            raise ValueError(
+                f"task.manipulation_execution.{field_name} 必须为非负数"
             )
         updates[field_name] = value
     return replace(settings, **updates)

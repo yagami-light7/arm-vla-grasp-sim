@@ -9,7 +9,6 @@
   "global_planner": "pct",
   "policy_profile": "pct_multifloor",
   "navigation_execution": {
-    "extended_state_limits": false,
     "final_position_tolerance": 0.1,
     "place_position_tolerance": 0.15,
     "final_yaw_tolerance": 0.15,
@@ -240,7 +239,7 @@
           "padding_mode": "preserve_top",
           "source": {
             "type": "usd_collision_world_bbox_proxy",
-            "asset_path": "source/scene/objects/carpet.usd",
+            "asset_path": "source/scene/objects/carpet/carpet.usd",
             "asset_sha256": "817ff5412fedeb712ad23e8f137d698d3247f2416831bbfebfe376ab7b8cfd04",
             "world_bbox_min_xyz": [
               -0.5256912909766562,
@@ -281,7 +280,7 @@
   "recording": {
     "dataset_dir": "episodes/liangzhu_cola_to_mat_phase0",
     "front_camera": true,
-    "wrist_camera": true,
+    "wrist_camera": false,
     "save_every_n_steps": 10
   },
   "training_action": {
@@ -370,14 +369,14 @@
       "collision_ply_path": "source/scene/liangzhu/ply/liangzhu_collision.ply",
       "collision_ply_sha256": "85c2a2e745905eb9e83cc46c8f68e1706431658598d783c94f022f8131ad78de",
       "ground_query_ceiling_z": 2.0,
-      "mat_asset_path": "source/scene/objects/carpet.usd",
+      "mat_asset_path": "source/scene/objects/carpet/carpet.usd",
       "mat_asset_sha256": "817ff5412fedeb712ad23e8f137d698d3247f2416831bbfebfe376ab7b8cfd04",
       "max_attempts": 300,
       "max_support_resamples": 20
     }
   },
   "notes": {
-    "placement_annotation": "tasks/liangzhu_placement_target.json",
+    "placement_annotation": "tasks/liangzhu_mat_placement_target_legacy.json",
     "runtime_asset_manifest": "source/scene/liangzhu/runtime_asset_manifest.json",
     "fixed_place_target": false,
     "runtime_mesh_truth_place_target": true,

@@ -30,6 +30,8 @@ SUBTASK_TASK_COLUMNS = (
     "episode_id",
     "source_task_episode_id",
     "instruction",
+    "instruction_annotation_schema",
+    "instruction_annotation_language",
     "target_object_id",
     "target_object_class",
     "target_receptacle_id",
@@ -108,6 +110,12 @@ SUBTASK_DATA_COLUMNS = (
     "next_segment_index",
     "retained_short_reason",
     "instruction",
+    "instruction_id",
+    "instruction_target_id",
+    "instruction_direction",
+    "instruction_relative_bearing_rad",
+    "instruction_pose_source",
+    "instruction_annotation_schema",
     "image_front_path",
     "image_wrist_path",
     "pipeline_state",
@@ -273,11 +281,18 @@ def materialize_subtask_episode(
                 for frame_index in frame_indices
             )
         )
+        instructions = list(
+            dict.fromkeys(
+                str(frames[frame_index].get("instruction") or "")
+                for frame_index in frame_indices
+            )
+        )
         subtask_reports.append(
             {
                 "subtask_index": subtask_index,
                 "subtask": subtask,
                 "task_stages": task_stages,
+                "instructions": instructions,
                 "frame_count": len(frame_indices),
                 "source_segment_count": len(source_segment_indices),
                 "source_segment_indices": source_segment_indices,
@@ -507,6 +522,7 @@ def _write_task_csv(
     goal = place if place and bool(place_config.get("enabled", True)) else pick
     pick_config = _mapping(task.get("pick"))
     training = _mapping(task.get("training_action"))
+    instruction_annotation = _mapping(task.get("instruction_annotation"))
     summary = _read_summary(source_episode_dir)
     if summary and summary.get("success") is True:
         training_eligible = bool(
@@ -538,6 +554,12 @@ def _write_task_csv(
             "_source_task_episode_id", task.get("episode_id", episode_index + 1)
         ),
         "instruction": str(task.get("instruction") or ""),
+        "instruction_annotation_schema": instruction_annotation.get(
+            "schema", "episode_instruction_fallback"
+        ),
+        "instruction_annotation_language": instruction_annotation.get(
+            "language", ""
+        ),
         "target_object_id": task.get("target_object_id")
         or pick_config.get("target_object_id")
         or "",
@@ -621,6 +643,17 @@ def _subtask_data_row(
         math.isfinite(value) for value in observation_values
     ):
         raise ValueError("subtask observation pose must be a finite 10D vector")
+    annotation_instruction = str(annotation.get("instruction") or instruction)
+    annotation_id = str(
+        annotation.get("instruction_id") or "episode_instruction"
+    )
+    annotation_pose_source = str(
+        annotation.get("instruction_pose_source") or "episode_level"
+    )
+    annotation_schema = str(
+        annotation.get("instruction_annotation_schema")
+        or "episode_instruction_fallback"
+    )
     payload: dict[str, Any] = {
         "global_frame_index": frame_index,
         "dataset_global_index": dataset_global_index,
@@ -636,7 +669,21 @@ def _subtask_data_row(
         "previous_segment_index": segment.get("previous_segment_index") or "",
         "next_segment_index": segment.get("next_segment_index") or "",
         "retained_short_reason": segment.get("retained_short_reason") or "",
-        "instruction": instruction,
+        "instruction": annotation_instruction,
+        "instruction_id": annotation_id,
+        "instruction_target_id": str(
+            annotation.get("instruction_target_id") or ""
+        ),
+        "instruction_direction": str(
+            annotation.get("instruction_direction") or ""
+        ),
+        "instruction_relative_bearing_rad": (
+            ""
+            if annotation.get("instruction_relative_bearing_rad") is None
+            else _float_text(annotation["instruction_relative_bearing_rad"])
+        ),
+        "instruction_pose_source": annotation_pose_source,
+        "instruction_annotation_schema": annotation_schema,
         "image_front_path": f"images/front/{image_name}",
         "image_wrist_path": f"images/wrist/{image_name}",
         "pipeline_state": sample.get("pipeline_state") or row.get("pipeline_state") or "",
@@ -847,6 +894,20 @@ def _validate_subtask_episode(
             episode_indices.append(episode_index)
             stage = data_row.get("task_stage", "")
             label = data_row.get("subtask", "")
+            if not str(data_row.get("instruction") or "").strip():
+                _validation_error(
+                    errors,
+                    "missing_segment_instruction",
+                    "每个 subtask 数据帧必须具有非空分段 instruction。",
+                    data_csv,
+                )
+            if not str(data_row.get("instruction_id") or "").strip():
+                _validation_error(
+                    errors,
+                    "missing_segment_instruction_id",
+                    "每个 subtask 数据帧必须具有 instruction_id。",
+                    data_csv,
+                )
             row_labels.add(label)
             row_stages.append(stage)
             row_segment_indices.append(row_segment_index)

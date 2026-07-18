@@ -681,7 +681,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertEqual(args.runtime_preset, "scene_profile:liangzhu")
         self.assertEqual(
             args.task_json,
-            "tasks/nav_pick_place_cola_liangzhu_pct.json",
+            "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json",
         )
         self.assertEqual(args.global_planner, "pct")
         self.assertEqual(args.pct_coord_mode, "identity")
@@ -708,7 +708,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertEqual(args.policy_profile, "pct_multifloor")
         self.assertTrue(args.randomize_task)
         self.assertTrue(args.randomize_base_goal)
-        self.assertEqual(args.navigation_visual_mode, "full")
+        self.assertEqual(args.navigation_visual_mode, "collision")
         self.assertEqual(args.overview_camera_mode, "fixed")
         self.assertEqual(args.overview_camera_prim_path, "/World/overview")
         self.assertFalse(args.pct_stair_float)
@@ -754,7 +754,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertEqual(args.output_dir, "outputs/multi_floor")
         self.assertEqual(args.navigation_visual_mode, "collision")
         self.assertTrue(args.record_video)
-        self.assertEqual(args.video_mode, "all")
+        self.assertEqual(args.video_mode, "composite")
         self.assertEqual(
             args.overview_camera_schedule,
             "configs/recording/multifloor_overview_camera_schedule.json",
@@ -813,7 +813,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             args.dataset_camera_keys,
             ["front", "wrist", "overview"],
         )
-        self.assertEqual(args.video_mode, "overview")
+        self.assertEqual(args.video_mode, "composite")
         self.assertEqual(
             args.output_dir,
             "outputs/multi_floor_stair_locomotion_smoke",
@@ -1874,6 +1874,67 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertEqual(non_finite_pose.failure_reason, "object_out_of_place")
         self.assertFalse(non_finite_velocity.success)
         self.assertEqual(non_finite_velocity.failure_reason, "place_dynamics_unavailable")
+
+    def test_liangzhu_can_accepts_supported_release_and_contact_jitter(self) -> None:
+        spec = JsonTaskProvider().load(
+            PROJECT_ROOT
+            / "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json"
+        )
+        verifier = FullPhysicsVerifier(NavigationEpisodeVerifier())
+        target_xyz = tuple(float(value) for value in spec.place_target_pose[:3])
+        release_xyz = (
+            target_xyz[0] + 0.001,
+            target_xyz[1] - 0.009,
+            target_xyz[2] - 0.007,
+        )
+        state = SimulationState(
+            step_index=2136,
+            timestamp=42.72,
+            robot_root_pose=(0.0, 0.0, 0.35, 1.0, 0.0, 0.0, 0.0),
+            robot_root_velocity=(0.0,) * 6,
+            object_pose=(*release_xyz, 1.0, 0.0, 0.0, 0.0),
+            object_velocity=(0.054, 0.0, 0.0, 0.994, 0.0, 0.0),
+            metadata={
+                "gripper_open_apply_count": 220,
+                "place_open_apply_count_delta": 170,
+                "place_release_observed": True,
+                "place_release_object_pose": (
+                    *release_xyz,
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ),
+                "place_expected_release_object_center": (
+                    target_xyz[0],
+                    target_xyz[1],
+                    target_xyz[2] + 0.01,
+                ),
+                "place_release_velocity_sample_count": 299,
+                "place_peak_object_linear_speed_mps": 0.0844,
+                "place_peak_object_horizontal_speed_mps": 0.0839,
+                "place_peak_object_upward_speed_mps": 0.0201,
+                "place_peak_object_downward_speed_mps": 0.0296,
+                "place_peak_object_angular_speed_rps": 1.676,
+                "place_max_horizontal_displacement_m": 0.0027,
+            },
+        )
+
+        result = verifier.verify_place_success(state, spec)
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            result.metadata["place_release_z_reference"],
+            "final_supported_target",
+        )
+        self.assertAlmostEqual(
+            result.metadata["place_linear_velocity_tolerance_mps"],
+            0.1,
+        )
+        self.assertAlmostEqual(
+            result.metadata["place_angular_velocity_tolerance_rps"],
+            2.0,
+        )
 
     def test_full_physics_mode_reports_stable_success_with_lock_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -12,6 +12,10 @@ from typing import TYPE_CHECKING, Any
 from source.data.random_task import SpawnRegion, sample_object_pose
 from source.interfaces import EpisodeSpec
 
+from .box_pair_randomization import (
+    apply_box_pair_randomization,
+    uses_box_pair_randomization,
+)
 from .forward_sector_randomization import (
     apply_forward_sector_randomization,
     uses_forward_sector_randomization,
@@ -875,7 +879,16 @@ def prepare_episode_spec(
     task = copy.deepcopy(base_spec.raw_task)
     task["episode_id"] = int(episode_id)
     forward_sector_mode = uses_forward_sector_randomization(task)
-    if settings.enabled and forward_sector_mode:
+    box_pair_mode = uses_box_pair_randomization(task)
+    specialized_mode = forward_sector_mode or box_pair_mode
+    if settings.enabled and box_pair_mode:
+        apply_box_pair_randomization(
+            task,
+            seed=seed,
+            randomize_base_goal=settings.base_goal.enabled,
+            collision_ply_path=settings.collision_ply_path,
+        )
+    elif settings.enabled and forward_sector_mode:
         apply_forward_sector_randomization(
             task,
             seed=seed,
@@ -893,11 +906,11 @@ def prepare_episode_spec(
             _randomize_place_xy_and_base_goals(task, seed=seed, settings=settings)
         else:
             _randomize_place_xy(task, seed=seed, settings=settings)
-    if not forward_sector_mode and not (
+    if not specialized_mode and not (
         settings.enabled and settings.base_goal.enabled
     ):
         _randomize_base_goals(task, seed=seed, settings=settings)
-    if settings.show_debug_region and not forward_sector_mode:
+    if settings.show_debug_region and not specialized_mode:
         _attach_region_metadata(task, seed=seed, settings=settings)
 
     if (

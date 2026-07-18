@@ -297,7 +297,7 @@ class SceneLightingSettings:
 
 @dataclass(frozen=True)
 class VideoRecordingSettings:
-    """展示用 overview 视频录制参数；不参与训练 observation 数据。"""
+    """展示用单视角/多视角视频参数；不改变训练 observation 数据。"""
 
     enabled: bool = False
     mode: str = "overview"
@@ -726,9 +726,13 @@ class FullPhysicsConfig:
             "front",
             "font",
             "wrist",
+            "composite",
             "all",
         }:
-            raise ValueError("video mode must be one of: overview, front, font, wrist, all")
+            raise ValueError(
+                "video mode must be one of: overview, front, font, wrist, "
+                "composite, all"
+            )
         if self.video.fps <= 0:
             raise ValueError("video fps must be positive")
         if self.video.width <= 0 or self.video.height <= 0:

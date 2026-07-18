@@ -40,7 +40,7 @@
     "overview_camera_mode": "auto",
     "overview_camera_prim_path": "/World/Camera0",
     "overview_camera_schedule": "configs/recording/multifloor_overview_camera_schedule.json",
-    "video_mode": "all"
+    "video_mode": "composite"
   },
   "mode_defaults": {
     "stair_locomotion_smoke": {
@@ -49,7 +49,7 @@
       "show_planned_trajectories": true,
       "overview_camera_prim_path": "/World/Camera3",
       "overview_camera_schedule": "configs/recording/stair_locomotion_camera_schedule.json",
-      "video_mode": "overview"
+      "video_mode": "composite"
     },
     "pct_plan_preview": {
       "show_planned_trajectories": true

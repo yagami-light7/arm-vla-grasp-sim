@@ -16,6 +16,8 @@ from PIL import Image
 from source.interfaces import StepRecord
 
 from .subtask_segmentation import (
+    INSTRUCTION_ANNOTATION_SCHEMA,
+    RELATIVE_DIRECTION_LABELS,
     SUBTASK_DIRECTORY_LAYOUT,
     SUBTASK_LABELS,
     SUBTASK_SCHEMA_VERSION,
@@ -162,7 +164,7 @@ TCP_POSE_NAMES = (
     "tcp_quat_z",
 )
 
-SCHEMA_VERSION = "full_physics_lerobot_v2.1.5"
+SCHEMA_VERSION = "full_physics_lerobot_v2.2.0"
 CONTROL_ACTION_SCHEMA = "base_velocity_arm_joint_gripper_targets_v1"
 
 
@@ -975,6 +977,41 @@ def _feature_metadata(
                     "shape": [1],
                     "names": None,
                 },
+                "instruction": {
+                    "dtype": "string",
+                    "shape": [1],
+                    "names": None,
+                },
+                "instruction_id": {
+                    "dtype": "string",
+                    "shape": [1],
+                    "names": None,
+                },
+                "instruction_target_id": {
+                    "dtype": "string",
+                    "shape": [1],
+                    "names": None,
+                },
+                "instruction_direction": {
+                    "dtype": "string",
+                    "shape": [1],
+                    "names": None,
+                },
+                "instruction_relative_bearing_rad": {
+                    "dtype": "float32",
+                    "shape": [1],
+                    "names": None,
+                },
+                "instruction_pose_source": {
+                    "dtype": "string",
+                    "shape": [1],
+                    "names": None,
+                },
+                "instruction_annotation_schema": {
+                    "dtype": "string",
+                    "shape": [1],
+                    "names": None,
+                },
             }
         )
     for camera_key, shape in sorted(camera_shapes.items()):
@@ -1065,6 +1102,16 @@ def materialize_lerobot_dataset(
         in valid_episodes
     }
     subtask_segmentation_enabled = requested_subtask_modes == {True}
+    instruction_annotation_languages = sorted(
+        {
+            str(annotation.get("language") or "").strip()
+            for *_prefix, task, _config, _subtask in valid_episodes
+            for annotation in [task.get("instruction_annotation")]
+            if isinstance(annotation, dict)
+            and bool(annotation.get("enabled", True))
+            and str(annotation.get("language") or "").strip()
+        }
+    )
     action_names = (
         VLA_TRAINING_ACTION_NAMES if vla_training_action_enabled else ACTION_NAMES
     )
@@ -1117,6 +1164,10 @@ def materialize_lerobot_dataset(
         "subtask_directory_layout": SUBTASK_DIRECTORY_LAYOUT,
         "task_stages": list(TASK_STAGES),
         "subtask_labels": list(SUBTASK_LABELS),
+        "instruction_annotation_available": False,
+        "instruction_annotation_schema": INSTRUCTION_ANNOTATION_SCHEMA,
+        "instruction_direction_labels": list(RELATIVE_DIRECTION_LABELS),
+        "instruction_annotation_languages": instruction_annotation_languages,
     }
     if not valid_episodes:
         return {**report, "failure_reason": "no_recorded_episode_frames"}
@@ -1264,6 +1315,13 @@ def materialize_lerobot_dataset(
             pa.field("task_stage", pa.string()),
             pa.field("subtask", pa.string()),
             pa.field("subtask_segment_index", pa.int64()),
+            pa.field("instruction", pa.string()),
+            pa.field("instruction_id", pa.string()),
+            pa.field("instruction_target_id", pa.string()),
+            pa.field("instruction_direction", pa.string()),
+            pa.field("instruction_relative_bearing_rad", pa.float32()),
+            pa.field("instruction_pose_source", pa.string()),
+            pa.field("instruction_annotation_schema", pa.string()),
         ]
     schema = pa.schema(schema_fields)
     all_feature_arrays: dict[str, list[np.ndarray]] = {
@@ -1421,6 +1479,49 @@ def materialize_lerobot_dataset(
                         ],
                         type=pa.int64(),
                     ),
+                    "instruction": pa.array(
+                        [frame["instruction"] for frame in segmentation["frames"]],
+                        type=pa.string(),
+                    ),
+                    "instruction_id": pa.array(
+                        [frame["instruction_id"] for frame in segmentation["frames"]],
+                        type=pa.string(),
+                    ),
+                    "instruction_target_id": pa.array(
+                        [
+                            frame["instruction_target_id"]
+                            for frame in segmentation["frames"]
+                        ],
+                        type=pa.string(),
+                    ),
+                    "instruction_direction": pa.array(
+                        [
+                            frame["instruction_direction"] or ""
+                            for frame in segmentation["frames"]
+                        ],
+                        type=pa.string(),
+                    ),
+                    "instruction_relative_bearing_rad": pa.array(
+                        [
+                            frame["instruction_relative_bearing_rad"]
+                            for frame in segmentation["frames"]
+                        ],
+                        type=pa.float32(),
+                    ),
+                    "instruction_pose_source": pa.array(
+                        [
+                            frame["instruction_pose_source"]
+                            for frame in segmentation["frames"]
+                        ],
+                        type=pa.string(),
+                    ),
+                    "instruction_annotation_schema": pa.array(
+                        [
+                            frame["instruction_annotation_schema"]
+                            for frame in segmentation["frames"]
+                        ],
+                        type=pa.string(),
+                    ),
                 }
             )
         table = pa.table(
@@ -1527,6 +1628,9 @@ def materialize_lerobot_dataset(
                         "subtask_segment_count": segmentation["segment_count"],
                         "subtask_frame_counts": segmentation["frame_counts"],
                         "subtask_segments": segmentation["segments"],
+                        "instruction_annotation": segmentation[
+                            "instruction_annotation"
+                        ],
                     }
                     if segmentation is not None
                     else {}
@@ -1703,6 +1807,14 @@ def materialize_lerobot_dataset(
         ),
         "task_stages": list(TASK_STAGES),
         "subtask_labels": list(SUBTASK_LABELS),
+        "instruction_annotation_available": subtask_segmentation_enabled,
+        "instruction_annotation_schema": INSTRUCTION_ANNOTATION_SCHEMA,
+        "instruction_annotation_feature": "instruction",
+        "instruction_direction_labels": list(RELATIVE_DIRECTION_LABELS),
+        "instruction_direction_frame": "robot_base_at_segment_first_frame",
+        "instruction_relative_bearing_unit": "rad",
+        "instruction_annotation_languages": instruction_annotation_languages,
+        "task_index_semantics": "episode_level_instruction",
         "subtask_min_segment_frames": (
             subtask_configs[0].min_segment_frames
             if subtask_segmentation_enabled
@@ -1750,6 +1862,10 @@ def materialize_lerobot_dataset(
         "subtask_schema_version": SUBTASK_SCHEMA_VERSION,
         "subtask_directory_layout": SUBTASK_DIRECTORY_LAYOUT,
         "subtask_exports": subtask_exports,
+        "instruction_annotation_available": subtask_segmentation_enabled,
+        "instruction_annotation_schema": INSTRUCTION_ANNOTATION_SCHEMA,
+        "instruction_direction_labels": list(RELATIVE_DIRECTION_LABELS),
+        "instruction_annotation_languages": instruction_annotation_languages,
     }
     if len(episode_exports) == 1:
         result.update(episode_exports[0])

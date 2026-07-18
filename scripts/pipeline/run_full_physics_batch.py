@@ -294,7 +294,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--record-video",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="转发视频录制开关；不传时沿用 scene profile 默认。",
+        help=(
+            "转发视频录制开关；完整 pipeline 默认录制 composite，"
+            "可用 --no-record-video 显式关闭。"
+        ),
     )
     parser.add_argument(
         "--dataset-camera-keys",
@@ -305,11 +308,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--video-mode",
-        choices=("overview", "front", "font", "wrist", "all"),
+        choices=("overview", "front", "font", "wrist", "composite", "all"),
         default=None,
         help=(
             "转发给单 episode pipeline：overview 为 third_person 展示视角，front/font 为前视 "
-            "observation，wrist 为腕部 observation，all 同时导出 overview/front/wrist。"
+            "observation，wrist 为腕部 observation，composite 输出同步三视角拼接视频，"
+            "all 同时导出 overview/front/wrist 三路独立视频。"
         ),
     )
     parser.add_argument(

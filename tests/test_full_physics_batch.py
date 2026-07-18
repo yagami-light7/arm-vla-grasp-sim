@@ -66,14 +66,16 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertNotIn("--pct-tomogram-path", command)
         self.assertEqual(
             child_args.task_json,
-            "tasks/nav_pick_place_cola_liangzhu_pct.json",
+            "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json",
         )
         self.assertEqual(child_args.global_planner, "pct")
         self.assertEqual(child_args.pct_coord_mode, "identity")
         self.assertTrue(child_args.pct_no_fallback)
         self.assertEqual(child_args.policy_profile, "pct_multifloor")
         self.assertTrue(args.require_locomotion_checkpoint)
-        self.assertEqual(child_args.navigation_visual_mode, "full")
+        self.assertEqual(child_args.navigation_visual_mode, "collision")
+        self.assertTrue(child_args.record_video)
+        self.assertEqual(child_args.video_mode, "composite")
         self.assertNotIn("--pct-no-fallback", command)
         self.assertIn("--require-locomotion-checkpoint", command)
         self.assertEqual(
@@ -112,6 +114,8 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertFalse(child_args.randomize_task)
         self.assertTrue(child_args.pct_stair_float)
         self.assertEqual(child_args.overview_camera_mode, "auto")
+        self.assertTrue(child_args.record_video)
+        self.assertEqual(child_args.video_mode, "composite")
 
     def test_full_physics_batch_builds_one_episode_command_without_plan_json(self) -> None:
         args = _build_parser().parse_args(
@@ -151,7 +155,7 @@ class FullPhysicsBatchTest(unittest.TestCase):
         self.assertTrue(child_args.randomize_base_goal)
         self.assertIn("--headless", command)
         self.assertNotIn("--navigation-visual-mode", command)
-        self.assertEqual(child_args.navigation_visual_mode, "full")
+        self.assertEqual(child_args.navigation_visual_mode, "collision")
         self.assertNotIn("--overview-camera-prim-path", command)
         self.assertEqual(child_args.overview_camera_prim_path, "/World/overview")
         self.assertNotIn("--auto-start-curobo-server", command)
@@ -311,6 +315,35 @@ class FullPhysicsBatchTest(unittest.TestCase):
         child_args = _parse_pipeline_args(command[3:])
 
         self.assertEqual(child_args.dataset_camera_keys, ["front", "wrist"])
+
+    def test_batch_defaults_to_composite_and_can_disable_video(self) -> None:
+        default_args = _build_parser().parse_args(
+            ["--output-dir", "/tmp/full_physics_batch_test"]
+        )
+        default_command = _build_child_command(
+            default_args,
+            episode_index=0,
+        ).command
+        default_child = _parse_pipeline_args(default_command[3:])
+
+        self.assertTrue(default_child.record_video)
+        self.assertEqual(default_child.video_mode, "composite")
+
+        disabled_args = _build_parser().parse_args(
+            [
+                "--output-dir",
+                "/tmp/full_physics_batch_test",
+                "--no-record-video",
+            ]
+        )
+        disabled_command = _build_child_command(
+            disabled_args,
+            episode_index=0,
+        ).command
+        disabled_child = _parse_pipeline_args(disabled_command[3:])
+
+        self.assertIn("--no-record-video", disabled_command)
+        self.assertFalse(disabled_child.record_video)
 
     def test_progress_format_helpers(self) -> None:
         args = _build_parser().parse_args(

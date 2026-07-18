@@ -12,6 +12,8 @@ from typing import Any
 
 from .subtask_export import validate_subtask_directory_export
 from .subtask_segmentation import (
+    INSTRUCTION_ANNOTATION_SCHEMA,
+    RELATIVE_DIRECTION_LABELS,
     SUBTASK_DIRECTORY_LAYOUT,
     SUBTASK_LABELS,
     SUBTASK_SCHEMA_VERSION,
@@ -337,6 +339,13 @@ def _validate_info(
             ),
             "task_stages": list(TASK_STAGES),
             "subtask_labels": list(SUBTASK_LABELS),
+            "instruction_annotation_available": True,
+            "instruction_annotation_schema": INSTRUCTION_ANNOTATION_SCHEMA,
+            "instruction_annotation_feature": "instruction",
+            "instruction_direction_labels": list(RELATIVE_DIRECTION_LABELS),
+            "instruction_direction_frame": "robot_base_at_segment_first_frame",
+            "instruction_relative_bearing_unit": "rad",
+            "task_index_semantics": "episode_level_instruction",
         }
         for key, expected in expected_subtask_metadata.items():
             if info.get(key) != expected:
@@ -344,6 +353,15 @@ def _validate_info(
                     "invalid_subtask_metadata",
                     f"info.json 的 {key} 必须是 {expected!r}。",
                 )
+        instruction_languages = info.get("instruction_annotation_languages")
+        if not isinstance(instruction_languages, list) or any(
+            not isinstance(value, str) or not value.strip()
+            for value in instruction_languages
+        ):
+            context.error(
+                "invalid_instruction_annotation_languages",
+                "info.json 的 instruction_annotation_languages 必须是字符串数组。",
+            )
         if info.get("subtask_directory_export_available") is not True:
             context.error(
                 "subtask_directory_export_unavailable",
@@ -353,6 +371,13 @@ def _validate_info(
             "task_stage",
             "subtask",
             "subtask_segment_index",
+            "instruction",
+            "instruction_id",
+            "instruction_target_id",
+            "instruction_direction",
+            "instruction_relative_bearing_rad",
+            "instruction_pose_source",
+            "instruction_annotation_schema",
         ):
             if feature_name not in features:
                 context.error(
@@ -779,7 +804,18 @@ def _validate_episode_table(
     if subtask_segmentation_available:
         missing_subtask_columns = [
             name
-            for name in ("task_stage", "subtask", "subtask_segment_index")
+            for name in (
+                "task_stage",
+                "subtask",
+                "subtask_segment_index",
+                "instruction",
+                "instruction_id",
+                "instruction_target_id",
+                "instruction_direction",
+                "instruction_relative_bearing_rad",
+                "instruction_pose_source",
+                "instruction_annotation_schema",
+            )
             if name not in column_names
         ]
         for name in missing_subtask_columns:
@@ -794,6 +830,23 @@ def _validate_episode_table(
             task_stages = _column_values(table, "task_stage")
             subtasks = _column_values(table, "subtask")
             segment_indices = _column_values(table, "subtask_segment_index")
+            instructions = _column_values(table, "instruction")
+            instruction_ids = _column_values(table, "instruction_id")
+            instruction_target_ids = _column_values(
+                table, "instruction_target_id"
+            )
+            instruction_directions = _column_values(
+                table, "instruction_direction"
+            )
+            instruction_bearings = _column_values(
+                table, "instruction_relative_bearing_rad"
+            )
+            instruction_pose_sources = _column_values(
+                table, "instruction_pose_source"
+            )
+            instruction_schemas = _column_values(
+                table, "instruction_annotation_schema"
+            )
             if any(value not in TASK_STAGES for value in task_stages):
                 context.error(
                     "invalid_task_stage",
@@ -823,9 +876,104 @@ def _validate_episode_table(
                     episode_index=episode_index,
                     feature="subtask_segment_index",
                 )
+            if any(
+                not isinstance(value, str) or not value.strip()
+                for value in instructions
+            ):
+                context.error(
+                    "invalid_segment_instruction",
+                    "instruction 必须是逐帧非空字符串。",
+                    path=parquet_path,
+                    episode_index=episode_index,
+                    feature="instruction",
+                )
+            if any(
+                not isinstance(value, str) or not value.strip()
+                for value in instruction_ids
+            ):
+                context.error(
+                    "invalid_segment_instruction_id",
+                    "instruction_id 必须是逐帧非空字符串。",
+                    path=parquet_path,
+                    episode_index=episode_index,
+                    feature="instruction_id",
+                )
+            if any(
+                not isinstance(value, str) for value in instruction_target_ids
+            ):
+                context.error(
+                    "invalid_segment_instruction_target",
+                    "instruction_target_id 必须是字符串。",
+                    path=parquet_path,
+                    episode_index=episode_index,
+                    feature="instruction_target_id",
+                )
+            if any(
+                value not in {*RELATIVE_DIRECTION_LABELS, ""}
+                for value in instruction_directions
+            ):
+                context.error(
+                    "invalid_segment_instruction_direction",
+                    "instruction_direction 必须为空或八方向标签之一。",
+                    path=parquet_path,
+                    episode_index=episode_index,
+                    feature="instruction_direction",
+                )
+            invalid_bearing = any(
+                (
+                    direction != ""
+                    and (
+                        isinstance(bearing, bool)
+                        or not isinstance(bearing, (int, float))
+                        or not math.isfinite(float(bearing))
+                    )
+                )
+                or (direction == "" and bearing is not None)
+                for direction, bearing in zip(
+                    instruction_directions,
+                    instruction_bearings,
+                )
+            )
+            if invalid_bearing:
+                context.error(
+                    "invalid_segment_instruction_bearing",
+                    "八方向 instruction 必须具有有限相对方位，其余片段必须为 null。",
+                    path=parquet_path,
+                    episode_index=episode_index,
+                    feature="instruction_relative_bearing_rad",
+                )
+            if any(
+                not isinstance(value, str) or not value.strip()
+                for value in instruction_pose_sources
+            ):
+                context.error(
+                    "invalid_segment_instruction_pose_source",
+                    "instruction_pose_source 必须是非空字符串。",
+                    path=parquet_path,
+                    episode_index=episode_index,
+                    feature="instruction_pose_source",
+                )
+            valid_instruction_schemas = {
+                INSTRUCTION_ANNOTATION_SCHEMA,
+                "episode_instruction_fallback",
+            }
+            if any(
+                value not in valid_instruction_schemas
+                for value in instruction_schemas
+            ):
+                context.error(
+                    "invalid_segment_instruction_schema",
+                    "instruction_annotation_schema 不受支持。",
+                    path=parquet_path,
+                    episode_index=episode_index,
+                    feature="instruction_annotation_schema",
+                )
             episode_report["task_stages"] = task_stages
             episode_report["subtasks"] = subtasks
             episode_report["subtask_segment_indices"] = segment_indices
+            episode_report["instructions"] = instructions
+            episode_report["instruction_ids"] = instruction_ids
+            episode_report["instruction_directions"] = instruction_directions
 
     for feature_name in (
         "observation.state",

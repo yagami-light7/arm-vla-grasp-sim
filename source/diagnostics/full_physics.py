@@ -239,6 +239,12 @@ class FullPhysicsVerifier:
                 episode_spec,
                 default_xy_tolerance_m=self.place_xy_tolerance_m,
                 default_z_tolerance_m=self.place_z_tolerance_m,
+                default_linear_velocity_tolerance_mps=(
+                    self.place_linear_velocity_tolerance_mps
+                ),
+                default_angular_velocity_tolerance_rps=(
+                    self.place_angular_velocity_tolerance_rps
+                ),
                 default_release_peak_linear_speed_tolerance_mps=(
                     self.place_release_peak_linear_speed_tolerance_mps
                 ),
@@ -254,6 +260,12 @@ class FullPhysicsVerifier:
             )
         xy_tolerance = validation_config["place_xy_tolerance_m"]
         z_tolerance = validation_config["place_z_tolerance_m"]
+        linear_velocity_tolerance = float(
+            validation_config["place_linear_velocity_tolerance_mps"]
+        )
+        angular_velocity_tolerance = float(
+            validation_config["place_angular_velocity_tolerance_rps"]
+        )
         region = validation_config["placement_region_world"]
         peak_linear_tolerance = float(
             validation_config[
@@ -306,7 +318,16 @@ class FullPhysicsVerifier:
             release_xyz[0] - expected_release_xyz[0],
             release_xyz[1] - expected_release_xyz[1],
         )
-        release_z_error = abs(release_xyz[2] - expected_release_xyz[2])
+        release_z_error_to_planned_center = abs(
+            release_xyz[2] - expected_release_xyz[2]
+        )
+        release_z_error_to_final_target = abs(release_xyz[2] - target_xyz[2])
+        if release_z_error_to_final_target < release_z_error_to_planned_center:
+            release_z_error = release_z_error_to_final_target
+            release_z_reference = "final_supported_target"
+        else:
+            release_z_error = release_z_error_to_planned_center
+            release_z_reference = "planned_release_center"
         peak_linear_speed = _optional_finite_float(
             state.metadata.get("place_peak_object_linear_speed_mps")
         )
@@ -368,8 +389,8 @@ class FullPhysicsVerifier:
         ):
             failure_reason = "object_out_of_place"
         elif (
-            linear_speed > self.place_linear_velocity_tolerance_mps
-            or angular_speed > self.place_angular_velocity_tolerance_rps
+            linear_speed > linear_velocity_tolerance
+            or angular_speed > angular_velocity_tolerance
         ):
             failure_reason = "object_unstable_after_place"
         else:
@@ -394,9 +415,9 @@ class FullPhysicsVerifier:
                 "object_angular_speed_rps": angular_speed,
                 "place_xy_tolerance_m": xy_tolerance,
                 "place_z_tolerance_m": z_tolerance,
-                "place_linear_velocity_tolerance_mps": self.place_linear_velocity_tolerance_mps,
+                "place_linear_velocity_tolerance_mps": linear_velocity_tolerance,
                 "place_angular_velocity_tolerance_rps": (
-                    self.place_angular_velocity_tolerance_rps
+                    angular_velocity_tolerance
                 ),
                 "placement_region_world": region,
                 "placement_region_contains_object_center": (
@@ -406,6 +427,13 @@ class FullPhysicsVerifier:
                 "place_expected_release_object_center": expected_release_center,
                 "place_release_xy_error_m": release_xy_error,
                 "place_release_z_error_m": release_z_error,
+                "place_release_z_error_to_planned_center_m": (
+                    release_z_error_to_planned_center
+                ),
+                "place_release_z_error_to_final_target_m": (
+                    release_z_error_to_final_target
+                ),
+                "place_release_z_reference": release_z_reference,
                 "place_peak_object_linear_speed_mps": peak_linear_speed,
                 "place_peak_object_horizontal_speed_mps": peak_horizontal_speed,
                 "place_peak_object_upward_speed_mps": peak_upward_speed,
@@ -489,6 +517,8 @@ def _place_validation_config(
     *,
     default_xy_tolerance_m: float,
     default_z_tolerance_m: float,
+    default_linear_velocity_tolerance_mps: float,
+    default_angular_velocity_tolerance_rps: float,
     default_release_peak_linear_speed_tolerance_mps: float,
 ) -> dict[str, object]:
     """解析任务级放置容差与可选的世界坐标安全区域。"""
@@ -503,6 +533,20 @@ def _place_validation_config(
     z_tolerance = _positive_finite_float(
         raw_place.get("place_z_tolerance", default_z_tolerance_m),
         field_name="task.place.place_z_tolerance",
+    )
+    linear_velocity_tolerance = _positive_finite_float(
+        raw_place.get(
+            "place_linear_velocity_tolerance_mps",
+            default_linear_velocity_tolerance_mps,
+        ),
+        field_name="task.place.place_linear_velocity_tolerance_mps",
+    )
+    angular_velocity_tolerance = _positive_finite_float(
+        raw_place.get(
+            "place_angular_velocity_tolerance_rps",
+            default_angular_velocity_tolerance_rps,
+        ),
+        field_name="task.place.place_angular_velocity_tolerance_rps",
     )
     linear_peak_tolerance = _positive_finite_float(
         raw_place.get(
@@ -557,6 +601,8 @@ def _place_validation_config(
     return {
         "place_xy_tolerance_m": xy_tolerance,
         "place_z_tolerance_m": z_tolerance,
+        "place_linear_velocity_tolerance_mps": linear_velocity_tolerance,
+        "place_angular_velocity_tolerance_rps": angular_velocity_tolerance,
         "place_release_peak_linear_speed_tolerance_mps": (
             linear_peak_tolerance
         ),

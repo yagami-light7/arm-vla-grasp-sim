@@ -53,7 +53,7 @@ def test_liangzhu_preflight_parses_required_curobo_support_proxies() -> None:
     ]
     assert report["phases"]["place"]["source_assets"] == [
         {
-            "path": "source/scene/objects/carpet.usd",
+            "path": "source/scene/objects/carpet/carpet.usd",
             "sha256": (
                 "817ff5412fedeb712ad23e8f137d698d3247f2416831bbfebfe376ab7b8cfd04"
             ),
@@ -105,7 +105,9 @@ def test_liangzhu_preflight_uses_task_scene_runtime_and_rejects_cli_mismatch() -
         "required": True,
         "support_expected_static": True,
     }
-    mat_asset = str((PROJECT_ROOT / "source/scene/objects/carpet.usd").resolve())
+    mat_asset = str(
+        (PROJECT_ROOT / "source/scene/objects/carpet/carpet.usd").resolve()
+    )
     assert report["checks"]["task_collision_source_assets"][mat_asset][
         "sha256_matches"
     ] is True
