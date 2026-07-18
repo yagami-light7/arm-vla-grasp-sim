@@ -488,6 +488,86 @@ class SimulationViewportTest(unittest.TestCase):
             "scheduled_overview_plus_synchronized_observations",
         )
 
+    def test_fixed_composite_uses_observation_overview_without_viewport_capture(self) -> None:
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(
+                mode="composite",
+                overview_camera_mode="fixed",
+                width=600,
+                height=360,
+            ),
+            episode_dir=".",
+            episode_id=5,
+            auto_switch_camera=True,
+        )
+        fixed_overview = np.zeros((90, 160, 3), dtype=np.uint8)
+        fixed_overview[:, :, 0] = 255
+        camera_images = {
+            "overview": fixed_overview,
+            "front": np.zeros((90, 160, 3), dtype=np.uint8),
+            "wrist": np.zeros((90, 160, 3), dtype=np.uint8),
+        }
+
+        with (
+            mock.patch.object(recorder, "_add_overview_frame") as add_overview,
+            mock.patch.object(
+                recorder,
+                "_write_video_frame",
+                return_value=0,
+            ) as write_frame,
+        ):
+            recorder.add_frame(
+                state="exec_nav_to_pick",
+                timestamp=0.0,
+                step_index=10,
+                camera_images=camera_images,
+            )
+
+        add_overview.assert_not_called()
+        composite_frame = write_frame.call_args.args[0]
+        self.assertGreater(int(composite_frame[180, 200, 0]), 200)
+        self.assertEqual(
+            recorder._capture_backend,  # noqa: SLF001
+            "synchronized_camera_images_overview_fallback",
+        )
+
+    def test_composite_rejects_black_scheduled_overview_frame(self) -> None:
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(
+                mode="composite",
+                width=600,
+                height=360,
+            ),
+            episode_dir=".",
+            episode_id=5,
+        )
+        observation_overview = np.zeros((90, 160, 3), dtype=np.uint8)
+        observation_overview[:, :, 1] = 255
+        camera_images = {
+            "overview": observation_overview,
+            "front": np.zeros((90, 160, 3), dtype=np.uint8),
+            "wrist": np.zeros((90, 160, 3), dtype=np.uint8),
+        }
+
+        with mock.patch.object(
+            recorder,
+            "_write_video_frame",
+            return_value=0,
+        ) as write_frame:
+            recorder._add_composite_frame(  # noqa: SLF001
+                camera_images=camera_images,
+                timestamp=0.0,
+                scheduled_overview_frame=np.zeros((90, 160, 3), dtype=np.uint8),
+            )
+
+        composite_frame = write_frame.call_args.args[0]
+        self.assertGreater(int(composite_frame[180, 200, 1]), 200)
+        self.assertEqual(
+            recorder._capture_backend,  # noqa: SLF001
+            "synchronized_camera_images_overview_fallback",
+        )
+        self.assertEqual(recorder._capture_error, "scheduled_overview_near_black")  # noqa: SLF001
+
     def test_overview_recorder_saves_low_frequency_jpeg_frames(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             recorder = OverviewVideoRecorder(

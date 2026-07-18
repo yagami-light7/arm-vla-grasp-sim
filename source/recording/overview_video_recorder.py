@@ -562,7 +562,12 @@ class OverviewVideoRecorder:
 
     @property
     def _uses_scheduled_overview(self) -> bool:
-        return "overview" in self.modes or _COMPOSITE_STREAM in self.modes
+        if "overview" in self.modes:
+            return True
+        return bool(
+            _COMPOSITE_STREAM in self.modes
+            and self._overview_camera_mode == "auto"
+        )
 
     def start_episode(self) -> None:
         if not self.enabled:
@@ -740,7 +745,10 @@ class OverviewVideoRecorder:
             return
         try:
             composite_images = dict(camera_images or {})
-            if scheduled_overview_frame is not None:
+            scheduled_overview_usable = self._scheduled_overview_frame_usable(
+                scheduled_overview_frame
+            )
+            if scheduled_overview_usable:
                 composite_images["overview"] = scheduled_overview_frame
             frame = compose_multiview_frame(
                 composite_images,
@@ -757,10 +765,30 @@ class OverviewVideoRecorder:
             return
         self._capture_backend = (
             "scheduled_overview_plus_synchronized_observations"
-            if scheduled_overview_frame is not None
+            if scheduled_overview_usable
             else "synchronized_camera_images_overview_fallback"
         )
         self._last_capture_timestamps[_COMPOSITE_STREAM] = float(timestamp)
+
+    def _scheduled_overview_frame_usable(self, frame: Any | None) -> bool:
+        """拒绝 viewport 尚未完成渲染时返回的空白黑帧。"""
+
+        if frame is None:
+            return False
+        try:
+            rgb = _image_to_rgb_uint8(frame)
+        except Exception:
+            return False
+        if rgb.size == 0:
+            return False
+        near_black = float(np.percentile(rgb, 99.0)) <= 4.0
+        if near_black:
+            self._capture_error = "scheduled_overview_near_black"
+            self._warn_once(
+                "scheduled overview frame is near-black; using observation overview fallback"
+            )
+            return False
+        return True
 
     def discover_cameras(self, stage: Any) -> dict[str, Any]:
         """Discover UsdGeom.Camera prims and rank non-observation overview candidates."""
