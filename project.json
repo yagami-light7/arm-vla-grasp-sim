@@ -2,8 +2,8 @@
   "project": "arm_vla_liangzhu",
   "branch": "liangzhu-deploy",
   "goal": "在良渚单层场景中复用原 pct_multifloor locomotion policy，跑通移动操作 pipeline，并导出可验证的数据。",
-  "current_phase": "phase_163_wrist_camera_safe_reframe_and_clearance_gate",
-  "last_updated": "2026-07-18 23:21:51 CST",
+  "current_phase": "phase_164_supported_upright_object_initialization",
+  "last_updated": "2026-07-19 00:34:27 CST",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -183,6 +183,11 @@
     "liangzhu_box_pair_instruction_annotation_real_export_verified": true,
     "liangzhu_box_pair_six_subtask_directories_real_verified": true,
     "liangzhu_box_pair_full_pipeline_annotation_audit_verified": true,
+    "liangzhu_supported_upright_object_initialization_added": true,
+    "liangzhu_object_initialization_pose_gate_added": true,
+    "liangzhu_historical_seed7_topple_reproduced": true,
+    "liangzhu_historical_seed7_topple_rejected_by_regression": true,
+    "liangzhu_seed7_supported_upright_real_full_pipeline_verified": true,
     "liangzhu_navigation_exact_continuous_endpoints_added": true,
     "liangzhu_navigation_supercover_visibility_refinement_added": true,
     "liangzhu_navigation_live_path_reanchor_added": true,
@@ -7828,6 +7833,75 @@
         "禁止将 v2 输出用于 VLA 训练；后续批量数据必须保留 wrist_camera_object_clearance_report 并通过训练质量门。",
         "pct_scene 已同步代码与单元测试，但仍需在需要时由 pct_scene 自身运行一条真实 episode，不能把源 worktree 的运行冒充为目标 worktree 独立验证。"
       ]
+    },
+    {
+      "time": "2026-07-19 00:34:27 CST",
+      "summary": "修复 box1 上可乐在 episode 初始化时摔倒但仍被旧 settle 门误接收的问题。历史 pct_scene batch seed 7 的请求姿态与落稳姿态相差 96.03°、XY 漂移 84.07mm，旧逻辑只检查速度和 0.25m 总位移，因此错误进入导航。新增 task 级 supported_upright_v1 策略：reset 后通过 live PhysX tensor 恢复请求位姿，前 8 个控制步仅允许 Z 沉降并稳定 XY/直立姿态，随后 sleep；抓取接触仍由 PhysX 自动唤醒。状态机增加 XY/Z/四元数角误差强制门，并在 finalize 后二次校验。第一次真实修复尝试复现了持续姿态写入导致 angular speed 0.706rad/s 和 object_settle_timeout，随后改为两阶段动态沉降+sleep；第二次同 seed 完整通过。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "source/pipeline/state_machine.py",
+        "source/simulation/isaaclab_runtime.py",
+        "source/simulation/object_initialization.py",
+        "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "tests/test_scene_runtime.py",
+        "/mnt/sage_data/workspace/pct_scene/README.md",
+        "/mnt/sage_data/workspace/pct_scene/project.json",
+        "/mnt/sage_data/workspace/pct_scene/source/pipeline/state_machine.py",
+        "/mnt/sage_data/workspace/pct_scene/source/simulation/isaaclab_runtime.py",
+        "/mnt/sage_data/workspace/pct_scene/source/simulation/object_initialization.py",
+        "/mnt/sage_data/workspace/pct_scene/tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json",
+        "/mnt/sage_data/workspace/pct_scene/tests/test_full_physics_pipeline.py",
+        "/mnt/sage_data/workspace/pct_scene/tests/test_isaaclab_navigation_runtime.py",
+        "/mnt/sage_data/workspace/pct_scene/tests/test_scene_runtime.py"
+      ],
+      "tests": [
+        {
+          "command": "arm_vla_liangzhu focused initialization/runtime/state-machine regression",
+          "result": "passed",
+          "note": "124 passed、1 skipped；扩展 navigation/randomization/viewport 回归另有 138 passed。"
+        },
+        {
+          "command": "pct_scene focused initialization/runtime/state-machine regression",
+          "result": "passed",
+          "note": "136 passed、2 skipped。"
+        },
+        {
+          "command": "pct_scene real full-physics --scene-profile liangzhu --seed 7",
+          "result": "passed",
+          "note": "final_state=done；pick/place 均成功；LeRobot 251 rows；composite 1252 frames、0 dropped。"
+        },
+        {
+          "command": "validate_full_pipeline_acceptance.py",
+          "result": "passed",
+          "note": "状态机、stable physics、训练资格、LeRobot 与三视角 composite 全部有效；0 error / 0 warning。"
+        }
+      ],
+      "data_results": {
+        "historical_output_root": "/mnt/sage_data/outputs/pct_scene/liangzhu_headless_batch20_seed0_standofffix_20260718_v2/episode_000007",
+        "historical_orientation_error_deg": 96.02923481327791,
+        "historical_horizontal_displacement_m": 0.0840743736995116,
+        "first_fix_timeout_output_root": "/mnt/sage_data/outputs/pct_scene/seed7_object_init_upright_fix_20260719",
+        "verified_output_root": "/mnt/sage_data/outputs/pct_scene/seed7_object_init_upright_fix_v2_20260719/episode_000000",
+        "settled_step_index": 47,
+        "settled_orientation_error_deg": 0.000004829673078902933,
+        "settled_horizontal_displacement_m": 1.8578078824285667e-7,
+        "settled_vertical_displacement_m": 0.004952002851564163,
+        "lerobot_rows": 251,
+        "validator_errors": 0,
+        "validator_warnings": 0,
+        "composite_frames": 1252,
+        "composite_dropped_frames": 0,
+        "stable_physics_success": true,
+        "pure_physics_success": false
+      },
+      "next_steps": [
+        "批量量产前用多个随机 seed 做小规模回归，统计 supported_upright 初始化门的通过率和落稳 Z 分布。",
+        "保持 0.02m XY/Z 与 0.10rad 姿态门，不用放宽阈值掩盖错误资产碰撞或支撑面配置。",
+        "由用户验收后手动 git add/commit/push；Codex 不主动提交。"
+      ]
     }
   ],
   "open_questions": [
@@ -7835,7 +7909,7 @@
     "现有几何随机化在 20-seed 回归中达到 100% 接受率后，是先扩大几何范围，还是保持当前范围并优先加入光照、相机噪声与遮挡随机化？"
   ],
   "known_limitations": [
-    "2026-07-18 当前 box1->box2 连续 seeds 0..19 在 pct_scene 的真实接受率为 90%（18/20）。seed 7 的最终姿态 Z 误差比 0.025m 阈值高约 0.000055m 且释放峰值较大；seed 19 出现水平释放速度超限。两条均完成导航、抓取和 place 动作，但被质量门正确排除，说明剩余瓶颈是释放动力学鲁棒性，不是 PCT/DWA 或数据导出。",
+    "2026-07-18 当前 box1->box2 连续 seeds 0..19 在 pct_scene 的历史真实接受率为 90%（18/20）。seed 7 还存在初始化倾倒被旧 settle 门误接收的问题，已由 phase164 修复并定向完整复跑通过；seed 19 仍是水平释放速度超限。定向复跑不回写原连续 batch 统计，扩大 batch 前仍需做多 seed 初始化回归。",
     "当前活动任务已切换为 box1 上抓取可乐并放到 box2。seed 5002 在最新导航结构下完整成功；seed 5003 的导航回归成功，但 CuRobo place 规划因实际 pre-place 目标约 0.4746m arm-base radial 而失败。base-goal 生成/导航验收尚未显式包含机械臂可达裕量，不能把该问题归因于 PCT/DWA，也不能通过逐地图调参宣称已解决。",
     "当前全向 yaw 的最新 v3 数据集是 validation_full_yaw_seed7000_n20_final_v2_20260715/lerobot_dataset，共 19 条 accepted episode；旧 validation_seed4013_n20_final_carry_map_v2 的 20 条数据只覆盖±30° yaw。phase146/147 历史数据仍是旧 front-only/连续 segment 目录，不能与 v3 直接混用。",
     "全向 yaw 的连续 20-seed batch 接受率为 95%（19/20）；唯一失败 seed 7018 在 0.040m placement center 修正后定向复跑通过，但这不能表述为同一次连续 batch 20/20。",

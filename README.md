@@ -304,6 +304,29 @@ placement region、pick/place base goal、两个 CuRobo 支撑 proxy 和 PCT 局
 keepout。box2 原资产没有 authored collision，runtime 会在 physics 初始化前为
 `/World/box2/node_0` 添加静态 mesh collision；不会保存或修改 USD 资产。
 
+#### 可乐初始化落稳
+
+box1 任务启用 `supported_upright_v1` 初始化策略。episode reset 后，runtime 通过
+PhysX tensor API 恢复随机化请求的可乐世界位姿，不改写 USD 的 `xformOp` 或
+`unitsResolve`。前 8 个控制步只允许 Z 向沉降，并保持 XY 与直立姿态；接触箱面后
+将可乐置于 sleep，抓取接触仍会由 PhysX 自动唤醒。状态机在进入导航前独立检查：
+
+- XY 漂移不超过 `0.02m`；
+- Z 沉降不超过 `0.02m`；
+- 与请求姿态的四元数角误差不超过 `0.10rad`。
+
+任何一项超限都会以 `object_initialization_pose_invalid` 拒绝 episode，不能再把
+已经摔倒的可乐当作有效初始状态。历史 batch 的 seed 7 曾把倾倒
+`96.03°`、XY 漂移 `84.07mm` 的可乐误判为落稳；修复后同一 seed 的真实
+`pct_scene` 复跑在 47 步完成落稳，倾角约 `0.000005°`、XY 漂移约
+`0.00019mm`、Z 沉降 `4.95mm`，随后完整完成 pick、携物导航、place 和数据导出。
+验收输出位于：
+
+```text
+/mnt/sage_data/outputs/pct_scene/
+seed7_object_init_upright_fix_v2_20260719/episode_000000
+```
+
 布局最多尝试 300 次，并拒绝桌间距不足、机器人/导航交接点离桌过近、可乐越出
 box1 安全区或 collision PLY 地面支撑不满足约束的样本。同一个 task/config/seed 会
 复现相同布局。除 20 seed 静态随机化和 40 次 PCT 请求检查外，2026-07-18 已完成两份
@@ -314,10 +337,11 @@ worktree 的真实 headless full-physics batch：
 | `arm_vla_liangzhu` / `0..4` | 5 | 5 | 1004 | 0 error / 0 warning | 5/5，零丢帧 |
 | `pct_scene` / `0..19` | 20 | 18 | 4096 | 0 error / 0 warning | 20/20，零丢帧 |
 
-两边合计尝试 25 条、通过训练质量门并导出 23 条。`pct_scene` 的 seed 7 和 seed 19
-分别在最终放置验证中以 `place_release_pose_error` 和 `place_release_ejected` 被拒绝；
-两条都已完成导航、抓取和放置动作，失败原始数据保留但没有混入统一训练数据集。没有
-通过放宽 validator 隐藏这两个释放动力学问题。
+两边合计尝试 25 条、通过训练质量门并导出 23 条。历史 `pct_scene` batch 的 seed 7
+在初始化时已经摔倒但被旧门禁误接收，最终又以 `place_release_pose_error` 被拒绝；
+seed 19 以 `place_release_ejected` 被拒绝。两条历史失败原始数据保留但没有混入统一
+训练数据集。seed 7 的初始化 bug 已按上文修复并定向复跑通过，但这不会回写或改称原
+batch 为 19/20。
 
 两边 seed 0..4 的 `randomization` 采样及派生出的 start、pick/place、动态 keepout、
 空间约束和 mesh-truth 目标逐 JSON 哈希一致；比较时只排除了必然不同的 worktree 绝对

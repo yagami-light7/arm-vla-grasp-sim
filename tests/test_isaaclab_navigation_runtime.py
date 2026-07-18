@@ -2013,6 +2013,112 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
 
         self.assertEqual(tcp_pose, (1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0))
 
+    def test_object_settle_action_stabilizes_supported_upright_pose_in_physics(self) -> None:
+        runtime, _adapter, _fake_runtime_obj = _fake_runtime()
+
+        class FakeRigidView:
+            def __init__(self, owner):
+                self.owner = owner
+                self.velocities = []
+
+            def set_world_poses(self, *, positions, orientations) -> None:
+                self.owner.position = np.asarray(
+                    positions.detach().cpu().tolist()[0],
+                    dtype=np.float64,
+                )
+                self.owner.orientation = np.asarray(
+                    orientations.detach().cpu().tolist()[0],
+                    dtype=np.float64,
+                )
+
+            def set_velocities(self, velocities) -> None:
+                values = velocities.detach().cpu().tolist()[0]
+                self.velocities.append(values)
+                self.owner.linear_velocity = np.asarray(values[:3], dtype=np.float64)
+
+        class FakeObject:
+            def __init__(self):
+                self.position = np.asarray((1.1, 2.1, 0.45), dtype=np.float64)
+                self.orientation = np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float64)
+                self.linear_velocity = np.asarray((0.2, -0.1, -0.3), dtype=np.float64)
+                self._rigid_prim_view = FakeRigidView(self)
+
+            def get_world_pose(self):
+                return self.position.copy(), self.orientation.copy()
+
+            def get_linear_velocity(self):
+                return self.linear_velocity.copy()
+
+        expected_world_quaternion = (0.70710678, 0.70710678, 0.0, 0.0)
+        spec = EpisodeSpec(
+            task_id=1,
+            episode_id=1,
+            instruction="test",
+            scene_usd="scene.usd",
+            nav_map="",
+            start=NavGoal(0.0, 0.0, 0.0),
+            pick_goal=NavGoal(0.0, 0.0, 0.0),
+            place_goal=None,
+            object_prim_path="/World/cola",
+            object_initial_pose=(1.0, 2.0, 0.5, 0.0, 0.0, 0.0),
+            place_target_pose=None,
+            raw_task={
+                "object_initialization": {
+                    "enabled": True,
+                    "mode": "supported_upright_v1",
+                    "dynamic_settle_steps_before_sleep": 1,
+                }
+            },
+        )
+        fake_object = FakeObject()
+        runtime._object = fake_object  # type: ignore[attr-defined]
+        runtime._episode_spec = spec  # type: ignore[attr-defined]
+        runtime._metadata["object_pose_setup_report"] = {  # type: ignore[attr-defined]
+            "authored_world_quaternion_wxyz": list(expected_world_quaternion)
+        }
+        sleep_reports = []
+        runtime._set_object_sleeping = (  # type: ignore[method-assign]
+            lambda *, enabled: sleep_reports.append(enabled)
+            or {"applied": True, "sleeping": enabled}
+        )
+
+        runtime.apply(
+            RobotAction(
+                source="object_settle",
+                metadata={"object_settle_active": True},
+            )
+        )
+
+        self.assertTrue(
+            np.allclose(fake_object.position, np.asarray((1.0, 2.0, 0.45)))
+        )
+        self.assertTrue(
+            np.allclose(fake_object.orientation, expected_world_quaternion)
+        )
+        self.assertTrue(
+            np.allclose(
+                fake_object._rigid_prim_view.velocities[-1],
+                [0.0, 0.0, -0.3, 0.0, 0.0, 0.0],
+            )
+        )
+        self.assertTrue(
+            runtime._metadata[  # type: ignore[attr-defined]
+                "used_object_initialization_pose_stabilization"
+            ]
+        )
+        self.assertEqual(
+            runtime._metadata[  # type: ignore[attr-defined]
+                "object_initialization_pose_stabilization_apply_count"
+            ],
+            1,
+        )
+        self.assertEqual(sleep_reports, [True])
+        self.assertTrue(
+            runtime._metadata[  # type: ignore[attr-defined]
+                "last_object_initialization_pose_stabilization_report"
+            ]["supported_pose_frozen_until_contact"]
+        )
+
 
 class FakeJointPositionMatrix:
     def __init__(self, values: tuple[float, ...]):

@@ -22,6 +22,10 @@ from source.interfaces import (
     SimulationState,
     VerificationResult,
 )
+from source.simulation.object_initialization import (
+    evaluate_object_initialization_pose,
+    resolve_object_initialization_policy,
+)
 
 from .config import FullPhysicsConfig
 from .events import PipelineEvent
@@ -78,6 +82,22 @@ _NAV_HANDOFF_ANGULAR_SPEED_MARGIN_RADPS = 0.040
 _NAV_HANDOFF_SETTLE_MAX_STEPS = 12
 _NAV_HANDOFF_SETTLE_LINEAR_SPEED_MARGIN_MPS = 0.060
 _NAV_HANDOFF_SETTLE_ANGULAR_SPEED_MARGIN_RADPS = 0.200
+
+
+def _quat_wxyz_from_rpy(
+    roll: float,
+    pitch: float,
+    yaw: float,
+) -> tuple[float, float, float, float]:
+    cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
+    cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
+    cy, sy = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
+    return (
+        cr * cp * cy + sr * sp * sy,
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+    )
 
 
 def _navigation_plan_execution_metadata(
@@ -1222,6 +1242,52 @@ class FullPhysicsStateMachine:
             if expected_position is not None
             else 0.0
         )
+        initialization_policy = resolve_object_initialization_policy(
+            self.episode_spec.raw_task
+        )
+        initialization_pose_validation: dict[str, Any] | None = None
+        requested_position: tuple[float, float, float] | None = None
+        requested_quaternion: tuple[float, float, float, float] | None = None
+        if initialization_policy.get("enabled"):
+            if expected_position is None or len(pose) < 7:
+                events = self._fail(
+                    "object_initialization_pose_unavailable",
+                    observation,
+                    {
+                        "expected_position_available": expected_position is not None,
+                        "actual_pose_length": len(pose),
+                        "initialization_policy": initialization_policy,
+                    },
+                )
+                return RobotAction.idle(source="object_settle"), events, False
+            requested_position = tuple(
+                float(expected_position[index]) for index in range(3)
+            )
+            pose_setup_report = observation.metadata.get("object_pose_setup_report")
+            pose_setup_report = (
+                pose_setup_report if isinstance(pose_setup_report, dict) else {}
+            )
+            authored_quaternion = pose_setup_report.get(
+                "authored_world_quaternion_wxyz"
+            )
+            if isinstance(authored_quaternion, (list, tuple)) and len(
+                authored_quaternion
+            ) >= 4:
+                requested_quaternion = tuple(
+                    float(authored_quaternion[index]) for index in range(4)
+                )
+            else:
+                requested_quaternion = _quat_wxyz_from_rpy(
+                    float(expected_position[3]),
+                    float(expected_position[4]),
+                    float(expected_position[5]),
+                )
+            initialization_pose_validation = evaluate_object_initialization_pose(
+                policy=initialization_policy,
+                requested_position_xyz=requested_position,
+                requested_quaternion_wxyz=requested_quaternion,
+                actual_pose_xyz_wxyz=pose,
+            )
         stable = bool(
             linear_speed <= settings.object_settle_linear_velocity_mps
             and angular_speed <= settings.object_settle_angular_velocity_rps
@@ -1257,7 +1323,19 @@ class FullPhysicsStateMachine:
             "base_angular_speed_rps": base_angular_speed,
             "base_roll_rad": base_roll,
             "base_pitch_rad": base_pitch,
+            "initialization_pose_validation": initialization_pose_validation,
         }
+        if (
+            initialization_pose_validation is not None
+            and initialization_policy.get("required_for_episode")
+            and initialization_pose_validation.get("verified") is not True
+        ):
+            events = self._fail(
+                "object_initialization_pose_invalid",
+                observation,
+                report,
+            )
+            return RobotAction.idle(source="object_settle"), events, False
         if displacement > settings.object_settle_max_displacement_m:
             events = self._fail(
                 "object_settle_out_of_bounds",
@@ -1299,6 +1377,30 @@ class FullPhysicsStateMachine:
             return RobotAction.idle(source="object_settle"), events, False
         final_report = dict(finalize_settle(self.episode_spec))
         final_report["stability"] = report
+        if initialization_policy.get("enabled"):
+            final_pose = final_report.get("settled_pose")
+            final_pose = (
+                final_pose
+                if isinstance(final_pose, (list, tuple)) and len(final_pose) >= 7
+                else pose
+            )
+            final_validation = evaluate_object_initialization_pose(
+                policy=initialization_policy,
+                requested_position_xyz=requested_position or (),
+                requested_quaternion_wxyz=requested_quaternion or (),
+                actual_pose_xyz_wxyz=final_pose,
+            )
+            final_report["initialization_pose_validation"] = final_validation
+            if (
+                initialization_policy.get("required_for_episode")
+                and final_validation.get("verified") is not True
+            ):
+                events = self._fail(
+                    "object_initialization_pose_invalid",
+                    observation,
+                    final_report,
+                )
+                return RobotAction.idle(source="object_settle"), events, False
         if final_report.get("applied") is not True:
             events = self._fail(
                 "object_settle_finalize_failed",

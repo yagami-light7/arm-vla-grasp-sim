@@ -10,6 +10,7 @@ from typing import Any
 
 from source.interfaces import EpisodeSpec, RobotAction, SimulationState
 
+from .object_initialization import resolve_object_initialization_policy
 from .receptacle_support import (
     inspect_task_receptacle_support_stage,
     inspect_task_receptacle_support_usd,
@@ -1563,6 +1564,9 @@ class IsaacLabNavigationRuntime:
             "used_base_teleport": False,
             "used_direct_joint_state": False,
             "used_object_teleport": False,
+            "used_object_initialization_pose_stabilization": False,
+            "object_initialization_pose_stabilization_apply_count": 0,
+            "last_object_initialization_pose_stabilization_report": None,
             "used_kinematic_object_follow": False,
             "used_visual_replay": False,
             "used_manipulation_base_lock": False,
@@ -1701,6 +1705,9 @@ class IsaacLabNavigationRuntime:
                 "used_navigation_support_joint_lock": False,
                 "used_navigation_joint_pose_lock": False,
                 "used_object_teleport": False,
+                "used_object_initialization_pose_stabilization": False,
+                "object_initialization_pose_stabilization_apply_count": 0,
+                "last_object_initialization_pose_stabilization_report": None,
                 "used_kinematic_object_follow": False,
                 "navigation_object_follow_active": False,
                 "navigation_object_follow_apply_count": 0,
@@ -1718,6 +1725,9 @@ class IsaacLabNavigationRuntime:
                 "last_navigation_joint_pose_lock_report": None,
                 # reset 事件写入初始位姿，不属于导航执行中的 teleport。
                 "reset_pose_source": "isaaclab_reset_event",
+                "object_initialization_policy": resolve_object_initialization_policy(
+                    episode_spec.raw_task
+                ),
             }
         )
         self._metadata["object_reset_for_navigation_report"] = (
@@ -1792,6 +1802,7 @@ class IsaacLabNavigationRuntime:
 
     def apply(self, action: RobotAction) -> None:
         self._require_ready()
+        self._apply_object_initialization_pose_stabilization(action)
         self._configure_manipulation_base_lock(action)
         arm_report = self._stage_arm_target(action)
         gripper_report = self._stage_gripper_target(action)
@@ -3307,6 +3318,176 @@ class IsaacLabNavigationRuntime:
             "rigid_body_prim_path": rigid_body_prim_path,
         }
 
+    def _object_initialization_target_world_pose(
+        self,
+        episode_spec: EpisodeSpec,
+        *,
+        pose_report: dict[str, Any] | None = None,
+    ) -> tuple[
+        tuple[float, float, float],
+        tuple[float, float, float, float],
+    ]:
+        if episode_spec.object_initial_pose is None:
+            raise RuntimeError("object initialization target pose is unavailable")
+        x, y, z, roll, pitch, yaw = episode_spec.object_initial_pose
+        report = pose_report or self._metadata.get("object_pose_setup_report") or {}
+        authored_quaternion = report.get("authored_world_quaternion_wxyz")
+        if isinstance(authored_quaternion, (list, tuple)) and len(
+            authored_quaternion
+        ) >= 4:
+            world_quaternion = tuple(
+                float(authored_quaternion[index]) for index in range(4)
+            )
+        else:
+            world_quaternion = _quat_wxyz_from_rpy(roll, pitch, yaw)
+        return (
+            (float(x), float(y), float(z)),
+            world_quaternion,
+        )
+
+    def _write_object_physics_state(
+        self,
+        *,
+        position_xyz: tuple[float, float, float],
+        quaternion_wxyz: tuple[float, float, float, float],
+        velocity_xyz_rpy: tuple[float, float, float, float, float, float],
+    ) -> dict[str, Any]:
+        """Write the live PhysX state without rewriting authored USD xform ops."""
+
+        if self._object is None:
+            return {"applied": False, "reason": "object_reader_unavailable"}
+        rigid_view = getattr(self._object, "_rigid_prim_view", None)
+        if rigid_view is None or not hasattr(rigid_view, "set_world_poses"):
+            raise RuntimeError("SingleRigidPrim 缺少 GPU world pose 写入接口。")
+        if not hasattr(rigid_view, "set_velocities"):
+            raise RuntimeError("SingleRigidPrim 缺少 GPU 合并速度写入接口。")
+        import torch
+
+        device = getattr(self._runtime, "device", "cpu")
+        rigid_view.set_world_poses(
+            positions=torch.tensor(
+                [position_xyz],
+                dtype=torch.float32,
+                device=device,
+            ),
+            orientations=torch.tensor(
+                [quaternion_wxyz],
+                dtype=torch.float32,
+                device=device,
+            ),
+        )
+        rigid_view.set_velocities(
+            torch.tensor(
+                [velocity_xyz_rpy],
+                dtype=torch.float32,
+                device=device,
+            )
+        )
+        return {
+            "applied": True,
+            "position_xyz": list(position_xyz),
+            "quaternion_wxyz": list(quaternion_wxyz),
+            "velocity_xyz_rpy": list(velocity_xyz_rpy),
+            "pose_write_api": "RigidPrim.set_world_poses_physics_tensor",
+            "usd_xform_ops_modified": False,
+        }
+
+    def _stabilize_object_initialization_pose(
+        self,
+        episode_spec: EpisodeSpec,
+        *,
+        timing: str,
+        preserve_vertical_velocity: bool,
+    ) -> dict[str, Any]:
+        if self._object is None:
+            return {"applied": False, "reason": "object_reader_unavailable"}
+        requested_position, requested_quaternion = (
+            self._object_initialization_target_world_pose(episode_spec)
+        )
+        current_position_raw, current_quaternion_raw = self._object.get_world_pose()
+        current_position = tuple(float(value) for value in _as_tuple(current_position_raw))
+        current_quaternion = tuple(
+            float(value) for value in _as_tuple(current_quaternion_raw)
+        )
+        current_linear_velocity = tuple(
+            float(value) for value in _as_tuple(self._object.get_linear_velocity())
+        )
+        target_position = (
+            requested_position[0],
+            requested_position[1],
+            current_position[2],
+        )
+        target_velocity = (
+            0.0,
+            0.0,
+            current_linear_velocity[2] if preserve_vertical_velocity else 0.0,
+            0.0,
+            0.0,
+            0.0,
+        )
+        write_report = self._write_object_physics_state(
+            position_xyz=target_position,
+            quaternion_wxyz=requested_quaternion,
+            velocity_xyz_rpy=target_velocity,
+        )
+        apply_count = int(
+            self._metadata.get(
+                "object_initialization_pose_stabilization_apply_count",
+                0,
+            )
+        ) + 1
+        report = {
+            **write_report,
+            "timing": timing,
+            "apply_count": apply_count,
+            "requested_position_xyz": list(requested_position),
+            "pose_before": [*current_position, *current_quaternion],
+            "preserved_current_z": True,
+            "preserved_vertical_velocity": bool(preserve_vertical_velocity),
+            "initialization_only": True,
+        }
+        self._metadata.update(
+            {
+                "used_object_initialization_pose_stabilization": True,
+                "object_initialization_pose_stabilization_apply_count": apply_count,
+                "last_object_initialization_pose_stabilization_report": report,
+            }
+        )
+        return report
+
+    def _apply_object_initialization_pose_stabilization(
+        self,
+        action: RobotAction,
+    ) -> None:
+        if action.metadata.get("object_settle_active") is not True:
+            return
+        if self._episode_spec is None:
+            return
+        policy = resolve_object_initialization_policy(self._episode_spec.raw_task)
+        if not policy.get("enabled") or not policy.get(
+            "stabilize_xy_and_orientation_during_settle"
+        ):
+            return
+        stabilization_report = self._stabilize_object_initialization_pose(
+            self._episode_spec,
+            timing="before_object_settle_physics_step",
+            preserve_vertical_velocity=True,
+        )
+        dynamic_steps = int(policy["dynamic_settle_steps_before_sleep"])
+        if int(stabilization_report.get("apply_count", 0)) < dynamic_steps:
+            return
+        sleep_report = self._set_object_sleeping(enabled=True)
+        stabilization_report.update(
+            {
+                "dynamic_settle_steps_before_sleep": dynamic_steps,
+                "sleep_after_dynamic_settle": sleep_report,
+                "supported_pose_frozen_until_contact": True,
+            }
+        )
+        self._metadata[
+            "last_object_initialization_pose_stabilization_report"
+        ] = stabilization_report
+
     def prepare_object_for_pick(self, episode_spec: EpisodeSpec) -> dict[str, Any]:
         """对齐 baseline：规划前恢复 task 姿态并清零速度。
 
@@ -3346,6 +3527,18 @@ class IsaacLabNavigationRuntime:
 
         if self._object is None:
             return {"applied": False, "reason": "object_reader_unavailable"}
+        initialization_policy = resolve_object_initialization_policy(
+            episode_spec.raw_task
+        )
+        stabilization_report: dict[str, Any] | None = None
+        if initialization_policy.get("enabled") and initialization_policy.get(
+            "stabilize_xy_and_orientation_during_settle"
+        ):
+            stabilization_report = self._stabilize_object_initialization_pose(
+                episode_spec,
+                timing="finalize_object_settle",
+                preserve_vertical_velocity=False,
+            )
         import torch
 
         position, orientation = self._object.get_world_pose()
@@ -3391,6 +3584,8 @@ class IsaacLabNavigationRuntime:
             "requested_quaternion_wxyz": requested_quaternion,
             "requested_position_error_m": requested_position_error,
             "requested_orientation_error_rad": requested_orientation_error,
+            "object_initialization_policy": initialization_policy,
+            "initialization_pose_stabilization_report": stabilization_report,
             "sleep_report": sleep_report,
             "baseline_source": "settled_physx_pose",
         }
@@ -3416,8 +3611,6 @@ class IsaacLabNavigationRuntime:
                 "reason": "object_reader_or_initial_pose_missing",
             }
 
-        import torch
-
         x, y, z, roll, pitch, yaw = episode_spec.object_initial_pose
         if self._settled_object_pose is None:
             pose_report = self._apply_object_pose(episode_spec)
@@ -3439,18 +3632,28 @@ class IsaacLabNavigationRuntime:
                 "reason": "reuse_settled_physx_pose",
                 "settled_pose": self._settled_object_pose,
             }
-        device = getattr(self._runtime, "device", "cpu")
-        # 不能调用 SingleRigidPrim.set_world_pose：该 API 会把传入的世界四元数
-        # 直接写回根 Orient，破坏任务 RPY 与 unitsResolve 的局部组合语义。
-        # 物体位姿已在 stage/PhysX 初始化前写入；这里仅清速度并让其休眠。
-        # SingleRigidPrim 没有公开 set_velocities，但内部 RigidPrim view 提供
-        # GPU tensor pipeline 所需的合并速度 API。
-        rigid_view = getattr(self._object, "_rigid_prim_view", None)
-        if rigid_view is None or not hasattr(rigid_view, "set_velocities"):
-            raise RuntimeError("SingleRigidPrim 缺少 GPU 合并速度写入接口。")
-        rigid_view.set_velocities(
-            torch.zeros((1, 6), dtype=torch.float32, device=device)
+        initialization_policy = resolve_object_initialization_policy(
+            episode_spec.raw_task
         )
+        live_pose_write_report: dict[str, Any] | None = None
+        if initialization_policy.get("enabled") and initialization_policy.get(
+            "restore_pose_after_runtime_reset"
+        ):
+            live_pose_write_report = self._write_object_physics_state(
+                position_xyz=target_position,
+                quaternion_wxyz=world_quaternion,
+                velocity_xyz_rpy=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            )
+        else:
+            import torch
+
+            device = getattr(self._runtime, "device", "cpu")
+            rigid_view = getattr(self._object, "_rigid_prim_view", None)
+            if rigid_view is None or not hasattr(rigid_view, "set_velocities"):
+                raise RuntimeError("SingleRigidPrim 缺少 GPU 合并速度写入接口。")
+            rigid_view.set_velocities(
+                torch.zeros((1, 6), dtype=torch.float32, device=device)
+            )
         sleep_report = self._set_object_sleeping(enabled=sleep_until_contact)
         actual_position, actual_orientation = self._object.get_world_pose()
         report = {
@@ -3465,8 +3668,18 @@ class IsaacLabNavigationRuntime:
             "actual_position_xyz": list(_as_tuple(actual_position)),
             "actual_quaternion_wxyz": list(_as_tuple(actual_orientation)),
             "object_pose_apply_report": pose_report,
-            "live_pose_write_skipped": True,
-            "live_pose_write_skip_reason": "preserve_root_orient_and_units_resolve",
+            "object_initialization_policy": initialization_policy,
+            "live_pose_write_applied": bool(
+                live_pose_write_report
+                and live_pose_write_report.get("applied") is True
+            ),
+            "live_pose_write_report": live_pose_write_report,
+            "live_pose_write_skipped": live_pose_write_report is None,
+            "live_pose_write_skip_reason": (
+                None
+                if live_pose_write_report is not None
+                else "task_object_initialization_policy_disabled"
+            ),
             "linear_velocity_zeroed": True,
             "angular_velocity_zeroed": True,
             "velocity_write_api": "set_velocities",

@@ -1276,6 +1276,82 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 simulation.read().metadata["object_settle_final_report"]["applied"]
             )
 
+    def test_full_physics_rejects_historical_seed7_toppled_cola_during_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            task_path = (
+                PROJECT_ROOT
+                / "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json"
+            )
+            config = FullPhysicsConfig(
+                task_json=task_path,
+                output_dir=root,
+                full_physics=True,
+                navigation=_liangzhu_pct_navigation_settings(),
+                manipulation=ManipulationSettings(
+                    settle_object_before_navigation=True,
+                    object_settle_max_steps=5,
+                    object_settle_required_stable_steps=2,
+                ),
+            )
+            spec = JsonTaskProvider().load(task_path)
+            simulation = InMemorySimulationRuntime()
+            pipeline = create_full_physics_pipeline(
+                config=config,
+                episode_spec=spec,
+                episode_seed=7,
+                episode_dir=root / "episode",
+                simulation=simulation,  # type: ignore[arg-type]
+            )
+
+            build = pipeline.machine.tick(simulation.read())
+            simulation.apply(build.action)
+            reset = pipeline.machine.tick(simulation.read())
+            simulation.apply(reset.action)
+            simulation.step(render=False)
+
+            state = simulation.read()
+            toppled = replace(
+                state,
+                object_pose=(
+                    -0.513323962688446,
+                    6.43435525894165,
+                    0.167711079120636,
+                    0.43538790941238403,
+                    0.4164320230484009,
+                    0.22225421667099,
+                    -0.7665668725967407,
+                ),
+                object_velocity=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                metadata={
+                    **state.metadata,
+                    "object_pose_setup_report": {
+                        "authored_world_quaternion_wxyz": [
+                            0.6917987507794513,
+                            0.6917987507794512,
+                            -0.14633690040448005,
+                            -0.1463369004044801,
+                        ]
+                    },
+                },
+            )
+            rejected = pipeline.machine.tick(toppled)
+
+            self.assertEqual(pipeline.machine.state, PipelineState.FAILED)
+            self.assertEqual(
+                pipeline.machine.failure_reason,
+                "object_initialization_pose_invalid",
+            )
+            report = next(
+                event.metadata
+                for event in rejected.events
+                if event.name == "episode_failed"
+            )
+            self.assertEqual(
+                report["failure_reason"],
+                "object_initialization_pose_invalid",
+            )
+
     def test_full_physics_waits_for_base_stability_before_pct_navigation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

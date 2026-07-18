@@ -10,6 +10,10 @@ from pathlib import Path
 import pytest
 
 from source.simulation.isaac_runtime import IsaacSimulationRuntime
+from source.simulation.object_initialization import (
+    evaluate_object_initialization_pose,
+    resolve_object_initialization_policy,
+)
 from source.simulation.scene_runtime import resolve_scene_runtime_settings
 from source.simulation.task_scene_pose import (
     resolve_task_pick_support_pose,
@@ -33,6 +37,110 @@ from source.tasks import JsonTaskProvider
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_box_task_requires_supported_upright_object_initialization() -> None:
+    task = JsonTaskProvider().load(
+        PROJECT_ROOT / "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json"
+    ).raw_task
+
+    policy = resolve_object_initialization_policy(task)
+
+    assert policy == {
+        "enabled": True,
+        "mode": "supported_upright_v1",
+        "restore_pose_after_runtime_reset": True,
+        "stabilize_xy_and_orientation_during_settle": True,
+        "required_for_episode": True,
+        "max_horizontal_displacement_m": 0.02,
+        "max_vertical_displacement_m": 0.02,
+        "max_orientation_error_rad": 0.1,
+        "dynamic_settle_steps_before_sleep": 8,
+        "source": "task.object_initialization",
+    }
+
+
+def test_seed7_historical_toppled_cola_is_rejected_by_initialization_gate() -> None:
+    policy = resolve_object_initialization_policy(
+        {
+            "object_initialization": {
+                "enabled": True,
+                "mode": "supported_upright_v1",
+                "max_horizontal_displacement_m": 0.02,
+                "max_vertical_displacement_m": 0.02,
+                "max_orientation_error_rad": 0.1,
+            }
+        }
+    )
+
+    report = evaluate_object_initialization_pose(
+        policy=policy,
+        requested_position_xyz=(
+            -0.5937452709771781,
+            6.458868795734489,
+            0.1978932363673036,
+        ),
+        requested_quaternion_wxyz=(
+            0.6917987507794513,
+            0.6917987507794512,
+            -0.14633690040448005,
+            -0.1463369004044801,
+        ),
+        actual_pose_xyz_wxyz=(
+            -0.513323962688446,
+            6.43435525894165,
+            0.167711079120636,
+            0.43538790941238403,
+            0.4164320230484009,
+            0.22225421667099,
+            -0.7665668725967407,
+        ),
+    )
+
+    assert report["verified"] is False
+    assert report["orientation_error_deg"] == pytest.approx(96.02923481327791)
+    assert report["horizontal_displacement_m"] == pytest.approx(
+        0.0840743736995116
+    )
+    assert set(report["violations"]) == {
+        "horizontal_displacement",
+        "vertical_displacement",
+        "orientation_error",
+    }
+
+
+def test_normal_box_cola_settle_pose_passes_initialization_gate() -> None:
+    task = JsonTaskProvider().load(
+        PROJECT_ROOT / "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json"
+    ).raw_task
+    policy = resolve_object_initialization_policy(task)
+
+    report = evaluate_object_initialization_pose(
+        policy=policy,
+        requested_position_xyz=(
+            -0.5014635713088045,
+            6.657266206183525,
+            0.1978932363673036,
+        ),
+        requested_quaternion_wxyz=(
+            0.6829847067909134,
+            0.6829847067909136,
+            0.18311714908694363,
+            0.18311714908694363,
+        ),
+        actual_pose_xyz_wxyz=(
+            -0.50146484375,
+            6.6566901206970215,
+            0.19323338568210602,
+            0.6798391938209534,
+            0.6864492297172546,
+            0.18179567158222198,
+            0.18318438529968262,
+        ),
+    )
+
+    assert report["verified"] is True
+    assert report["violations"] == []
 
 
 def test_scene_runtime_uses_legacy_defaults_when_task_has_no_override() -> None:
