@@ -16,6 +16,8 @@ from source.simulation.object_initialization import (
 )
 from source.simulation.scene_runtime import resolve_scene_runtime_settings
 from source.simulation.task_scene_pose import (
+    configure_task_supports_for_stage_reuse,
+    inspect_episode_static_support_body_mode,
     resolve_task_pick_support_pose,
     resolve_task_receptacle_pose,
 )
@@ -37,6 +39,64 @@ from source.tasks import JsonTaskProvider
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _make_collision_support_stage():
+    pytest.importorskip("pxr")
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    stage = Usd.Stage.CreateInMemory()
+    root = UsdGeom.Xform.Define(stage, "/World/box1").GetPrim()
+    mesh = UsdGeom.Mesh.Define(stage, "/World/box1/node_0").GetPrim()
+    UsdPhysics.CollisionAPI.Apply(mesh).CreateCollisionEnabledAttr(True).Set(True)
+    return stage, root
+
+
+def _stage_reuse_pick_support_task() -> dict:
+    return {
+        "pick": {
+            "support_pose_world": {
+                "prim_path": "/World/box1",
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0,
+                "translation_only": True,
+            }
+        }
+    }
+
+
+def test_stage_reuse_support_is_kinematic_and_episode_static() -> None:
+    stage, root = _make_collision_support_stage()
+
+    report = configure_task_supports_for_stage_reuse(
+        stage,
+        _stage_reuse_pick_support_task(),
+    )
+    mode = inspect_episode_static_support_body_mode(root)
+
+    assert report["configured_count"] == 1
+    assert report["supports"]["pick"]["pose_mutation_scope"] == "between_episodes_only"
+    assert mode["support_body_mode"] == "kinematic_episode_static"
+    assert mode["usd_static_support_verified"] is False
+    assert mode["episode_static_support_verified"] is True
+    assert mode["static_support_verified"] is True
+
+
+def test_stage_reuse_support_rejects_preexisting_dynamic_body() -> None:
+    pytest.importorskip("pxr")
+    from pxr import UsdPhysics
+
+    stage, root = _make_collision_support_stage()
+    rigid_api = UsdPhysics.RigidBodyAPI.Apply(root)
+    rigid_api.CreateRigidBodyEnabledAttr(True).Set(True)
+    rigid_api.CreateKinematicEnabledAttr(False).Set(False)
+
+    with pytest.raises(RuntimeError, match="non-kinematic or nested"):
+        configure_task_supports_for_stage_reuse(
+            stage,
+            _stage_reuse_pick_support_task(),
+        )
 
 
 def test_box_task_requires_supported_upright_object_initialization() -> None:

@@ -337,7 +337,8 @@ $ISAAC_PYTHON -B scripts/pipeline/run_full_physics_batch.py \
   --scene-profile liangzhu \
   --output-dir "$PCT_SCENE_OUTPUT/liangzhu_seed7000_n20" \
   --num-episodes 20 \
-  --seed 7000
+  --seed 7000 \
+  --no-record-video
 ```
 
 别墅多楼层 batch（profile 默认使用固定任务）：
@@ -347,12 +348,81 @@ $ISAAC_PYTHON -B scripts/pipeline/run_full_physics_batch.py \
   --scene-profile multi_floor \
   --output-dir "$PCT_SCENE_OUTPUT/multi_floor_seed0_n5" \
   --num-episodes 5 \
-  --seed 0
+  --seed 0 \
+  --no-record-video
 ```
 
-batch 为每个 episode 启动独立的 Isaac 子进程，默认使用 headless 模式。
-episode seed 为 `seed + episode_index`。失败的 episode 会保留诊断文件；通过物理来源和
-训练质量检查的 episode 会合并到 `<output-dir>/lerobot_dataset`。
+batch 默认只启动一个 Isaac 子进程，并在同一个 IsaacLab env / stage 中连续执行所有
+episode。每条 episode 仍会重置机器人、任务物体、记录器和状态机；良渚 box1/box2
+会在 stage 初建时转成“episode 内不可移动、episode 间可重定位”的 kinematic support，
+避免运行中热改 USD 静态 collider 后 PhysX/Fabric 仍使用上一条位姿。
+
+复用 stage 不等于复用上一条 episode 的 PhysX 求解器状态。每个后续 episode
+会先写入本次 box/可乐 USD 位姿，再执行 `SimulationContext.reset(soft=False)`：
+USD stage 不重开、不重建，但 articulation/contact solver、PhysX tensor view 会重新创建；
+随后重新绑定可乐/支撑物 reader，并重新应用 front/wrist D436 内参。硬重置本身不推进
+physics/control step。episode reset 的第一条审计 action 也严格使用
+`skip_physics_step`，不会提前消耗 RL warmup 或推进 action history。
+
+机器人初始化采用两阶段交接：前 20 个 control tick 同时固定 reset root，并用
+actuator target 保持支撑腿；这段人为静止不计入稳定步数。随后同时解除 root/支撑腿锁，
+由 `pct_multifloor` RL policy 在真实接触下平衡，并重新满足速度、roll/pitch 和位姿门后
+才进入导航。这样既避免 reset 首步冲击，又不会让固定站姿在不同地面/yaw 下缓慢侧翻。
+需要排查跨 episode 状态污染时，可用 `--no-reuse-isaac-process` 回退到每条独立子进程。
+
+默认使用 headless 模式，episode seed 为 `seed + episode_index`。失败的 episode 会保留
+诊断文件；通过物理来源和训练质量检查的 episode 会合并到
+`<output-dir>/lerobot_dataset`。
+
+#### Headless batch 性能与图像/状态同步契约
+
+量产建议使用 `--no-record-video`。该模式只降低训练相机渲染和诊断 I/O 频率，不改变
+物理或控制时序：PhysX 仍为 400Hz（`physics_dt=0.0025s`），control/locomotion 仍为
+50Hz（`control_dt=0.02s`），decimation 仍为 8。headless 数据相机与 LeRobot 数据格点
+为 5Hz，`frames.jsonl` 记录 5Hz 格点及所有状态切换；GUI 和展示视频仍逐 control step
+渲染，本优化不降低 composite 视频频率。
+
+图像编码和写盘默认异步，但取样是同一 control tick 内的同步事务：一次性读取
+`front/wrist/overview`、state 和 action，把 GPU image 立即冻结为独立 CPU buffer，
+再生成一个 `SynchronizedSamplePacket`。后台单 worker 只按 FIFO 顺序编码和写盘，
+不再访问仿真状态。每个样本必须满足：
+
+```text
+simulation_step == camera_capture_step == state_step
+simulation_timestamp == camera_capture_timestamp == state_timestamp
+```
+
+step 必须严格相等，timestamp 只保留 `1e-9s` 浮点容差；任一不一致都会拒绝数据。
+队列满时主线程 backpressure，episode 结束前必须 drain
+全部 packet，并审计连续 frame index 和 `sampling_coverage`。
+
+2026-07-19 在同一台 RTX 4060 Laptop、相同良渚任务、相同 seed 7/8/9、
+`--no-record-video` 下做了严格逐 seed 对照。当前列使用包含上述 PhysX 隔离修复的
+20-seed 运行结果，不使用更早但存在 `base_settle_timeout` 的复用结果：
+
+| Seed | 未优化 pipeline wall | 当前 pipeline wall | 每条节省 | 降幅 |
+| ---: | ---: | ---: | ---: | ---: |
+| 7 | 303.06s | 205.85s | 97.21s | 32.1% |
+| 8 | 275.29s | 182.33s | 92.96s | 33.8% |
+| 9 | 282.20s | 177.89s | 104.31s | 37.0% |
+| 平均 | 286.85s | 188.69s | 98.16s | 34.2% |
+
+同三条 aggregate real-time factor 从 `0.1526` 提升到 `0.2136`，吞吐约为旧版
+`1.52x`。先前独立 I/O benchmark 中，RTX render 从 48.11s/条降到 5.51s/条，
+`frames.jsonl` 写入从 20.71s/条降到 0.37s/条，3 条完整输出从 1.173GB 降到
+0.162GB；安全修复没有撤销这些 5Hz/异步导出优化。
+
+`arm_vla_liangzhu` 最终唯一 seeds 7..26 的 20 条真实 full-physics 结果为
+`20/20` 成功、`20/20` 训练质量门通过、`base_settle_timeout=0`。其中最长连续
+单进程 stage 复用为 15 条；外部工具中断后补齐剩余 seed，并让 seed 26 再次作为
+复用后的第二条验证。20 条 pipeline 内部 wall time 平均 191.94s（约 3m12s）、
+中位数 189.10s。按旧版 3-seed 均值作吞吐估算，每条约省 94.91s（33.1%），
+20 条约省 31m38s；该 20 条估算不是逐 seed 旧版配对，严格配对结论只使用上表。
+
+同步完成后，`pct_scene --scene-profile liangzhu` 又独立运行 seeds 27/28：两条均在
+同一 Isaac 进程/stage 内完成完整 pipeline、通过训练质量门，第二条明确经过 PhysX
+hard reset 和 stage reuse，`base_settle_timeout=0`。这证明修复在统一 scene-profile
+代码中真实生效；`multi_floor` 仍需单独做 stage-reuse GPU gate，不能用良渚结果代替。
 
 #### 2026-07-18 双 worktree 小规模验收
 
@@ -549,12 +619,14 @@ PYTHONDONTWRITEBYTECODE=1 "$ISAAC_PYTHON" -B \
   --scene-profile liangzhu \
   --output-dir "$PCT_SCENE_OUTPUT/liangzhu_batch_seed7000_n20" \
   --num-episodes 20 \
-  --seed 7000
+  --seed 7000 \
+  --no-record-video
 ```
 
 `liangzhu` profile 会加载良渚任务、PCT 单层地图、locomotion checkpoint 和
 随机化配置。机器人 yaw 由 task JSON 在 `[-180°, 180°]` 内采样，不由 CLI 设置。
-上述命令使用 profile 的 collision 量产视觉和 composite 视频默认。
+上述命令使用 profile 的 collision 量产视觉；`--no-record-video` 只关闭展示视频，
+LeRobot 的 front/wrist/overview 三路 5Hz 数据仍会完整导出。
 运行别墅场景时，将 profile 改为 `multi_floor`。
 
 #### 复现固定任务
@@ -628,7 +700,8 @@ smoke 测试和调试。
 | `--list-scene-profiles` / `--check-scene-assets`     | 只读检查               | 列出动态发现的 profile，或检查所选场景资产后退出                                                                        |
 | `--task-json`                                        | 由 profile 提供        | 良渚可乐任务或别墅苹果任务；使用 CLI 覆盖时会校验 scene_profile                                                         |
 | `--output-dir`                                       | `outputs/<profile>`    | 输出目录；数据采集建议使用空间充足的独立磁盘                                                                            |
-| `--num-episodes`                                     | `1`                    | episode 数量；真实 Isaac 模式只支持 1                                                                                   |
+| `--num-episodes`                                     | `1`                    | episode 数量；headless full-physics 可在同一 stage 连续执行                                                             |
+| `--reuse-isaac-stage` / `--no-reuse-isaac-stage`     | 默认开启               | 多 episode 复用 IsaacLab env/stage；排查隔离问题时可关闭                                                               |
 | `--seed`                                             | `0`                    | episode seed；相同 task/config/seed 复现同一布局                                                                        |
 | `--randomize-task` / `--no-randomize-task`           | 由 profile 提供        | 良渚默认开启；别墅默认关闭；CLI 开关会覆盖 profile 设置                                                                 |
 | `--show-randomization-debug`                         | 默认关闭               | 显示矩形/前向扇区和采样点 USD guide                                                                                     |
@@ -671,7 +744,7 @@ smoke 测试和调试。
 #### `scripts/pipeline/run_full_physics_batch.py`
 
 默认模式是 full-physics，默认 headless，默认继续执行失败后的 episode。batch
-会为每个 episode 启动独立的 Isaac Sim 子进程，并在结束时只合并通过质量检查的数据。
+默认只启动一个 Isaac Sim 子进程并复用 stage，在结束时只合并通过质量检查的数据。
 
 
 | 参数                                                 | 类型 / 默认            | 说明                                                                         |
@@ -680,6 +753,7 @@ smoke 测试和调试。
 | `--task-json`                                        | 由 profile 提供        | 使用 CLI 覆盖时，单 episode 入口会校验 task 与场景兼容性                     |
 | `--output-dir`                                       | 必填                   | batch 输出目录；必须使用新目录，避免混入旧摘要                               |
 | `--num-episodes`                                     | `1`                    | episode 数量                                                                 |
+| `--reuse-isaac-process` / `--no-reuse-isaac-process` | 默认开启               | 复用单个 Isaac 进程/stage；关闭后每条独立进程                                |
 | `--seed`                                             | `0`                    | 首个 seed，后续使用`seed + episode_index`                                    |
 | `--randomize-task` / `--no-randomize-task`           | 由 profile 提供        | 良渚默认开启；别墅默认关闭                                                   |
 | `--show-randomization-debug`                         | 默认关闭               | 显示矩形/前向扇区；通常只用于 GUI 单 episode                                 |

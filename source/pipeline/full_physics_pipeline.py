@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import time
 import traceback
+from pathlib import Path
 from typing import Any
 
+from source.diagnostics.performance import WallTimeProfiler
 from source.interfaces import (
     ArmExecutor,
     EpisodeRecorder,
@@ -48,6 +50,7 @@ class FullPhysicsPipeline:
         gripper: GripperController,
         verifier: EpisodeVerifier,
         recorder: EpisodeRecorder,
+        close_simulation_on_exit: bool = True,
     ):
         self.config = config
         self.episode_spec = episode_spec
@@ -55,6 +58,8 @@ class FullPhysicsPipeline:
         self.simulation = simulation
         self.nav_planner = nav_planner
         self.recorder = recorder
+        self._close_simulation_on_exit = bool(close_simulation_on_exit)
+        self._profiler: WallTimeProfiler | None = None
         self.machine = FullPhysicsStateMachine(
             config=config,
             episode_spec=episode_spec,
@@ -71,6 +76,11 @@ class FullPhysicsPipeline:
 
     def run_episode(self) -> dict[str, Any]:
         started_at = time.time()
+        self._profiler = WallTimeProfiler()
+        for component in (self.simulation, self.recorder):
+            set_profiler = getattr(component, "set_performance_profiler", None)
+            if callable(set_profiler):
+                set_profiler(self._profiler)
         duration_steps = 0
         last_action: dict[str, Any] = {}
         video_recorder = (
@@ -97,52 +107,68 @@ class FullPhysicsPipeline:
             if video_recorder is None or video_closed:
                 return None
             video_closed = True
-            return video_recorder.close(status=status)
+            assert self._profiler is not None
+            with self._profiler.measure("pipeline.video_close"):
+                return video_recorder.close(status=status)
 
-        self.recorder.save_task(self.episode_spec)
+        with self._profiler.measure("pipeline.recorder_save_task"):
+            self.recorder.save_task(self.episode_spec)
         self.recorder.mark_training_eligible(False, reason="episode_not_verified_yet")
         try:
             if video_recorder is not None:
                 current_operation = "video_start_episode"
-                video_recorder.start_episode()
+                with self._profiler.measure("pipeline.video_start"):
+                    video_recorder.start_episode()
             while True:
                 current_operation = "simulation_read_before_tick"
-                observation = self.simulation.read()
+                with self._profiler.measure("pipeline.simulation_read_before_tick"):
+                    observation = self.simulation.read()
                 current_operation = "state_machine_tick"
-                decision = self.machine.tick(observation)
+                state_before_tick = self.machine.state.value
+                with self._profiler.measure("pipeline.state_machine_tick"):
+                    with self._profiler.measure(
+                        f"pipeline.state.{state_before_tick}.tick"
+                    ):
+                        decision = self.machine.tick(observation)
                 current_operation = "simulation_apply"
-                self.simulation.apply(decision.action)
+                with self._profiler.measure("pipeline.simulation_apply"):
+                    self.simulation.apply(decision.action)
                 current_operation = "record_pipeline_events"
-                for event in decision.events:
-                    self.recorder.record_event(event.to_dict())
+                with self._profiler.measure("pipeline.record_events"):
+                    for event in decision.events:
+                        self.recorder.record_event(event.to_dict())
 
                 skip_physics_step = bool(decision.action.metadata.get("skip_physics_step"))
                 if not skip_physics_step:
                     current_operation = "simulation_step"
-                    self.simulation.step(render=self.config.render)
+                    with self._profiler.measure("pipeline.simulation_step"):
+                        self.simulation.step(render=self.config.render)
                 current_operation = "simulation_read_after_step"
-                post_step = self.simulation.read()
+                with self._profiler.measure("pipeline.simulation_read_after_step"):
+                    post_step = self.simulation.read()
                 if video_recorder is not None and not skip_physics_step:
                     current_operation = "video_add_frame"
-                    video_recorder.add_frame(
-                        state=decision.state.value,
-                        timestamp=post_step.timestamp,
-                        step_index=duration_steps,
-                        camera_images=post_step.camera_images,
-                        robot_root_pose=post_step.robot_root_pose,
-                    )
+                    with self._profiler.measure("pipeline.video_add_frame"):
+                        video_recorder.add_frame(
+                            state=decision.state.value,
+                            timestamp=post_step.timestamp,
+                            step_index=duration_steps,
+                            camera_images=post_step.camera_images,
+                            robot_root_pose=post_step.robot_root_pose,
+                        )
                 current_operation = "record_step"
-                self.recorder.record_step(
-                    StepRecord(
-                        step_index=duration_steps,
-                        timestamp=observation.timestamp,
-                        pipeline_state=decision.state.value,
-                        observation=observation,
-                        action=decision.action,
-                        post_step_observation=post_step,
-                        metadata=decision.metadata,
+                with self._profiler.measure("pipeline.recorder_record_step"):
+                    self.recorder.record_step(
+                        StepRecord(
+                            step_index=duration_steps,
+                            timestamp=observation.timestamp,
+                            pipeline_state=decision.state.value,
+                            observation=observation,
+                            action=decision.action,
+                            post_step_observation=post_step,
+                            metadata=decision.metadata,
+                        )
                     )
-                )
                 duration_steps += 1
                 last_action = {
                     "source": decision.action.source,
@@ -157,12 +183,15 @@ class FullPhysicsPipeline:
 
             if self.config.keep_window_open:
                 current_operation = "simulation_pause"
-                self.simulation.pause()
+                with self._profiler.measure("pipeline.simulation_pause"):
+                    self.simulation.pause()
                 if hasattr(self.simulation, "refresh_viewport"):
                     current_operation = "simulation_refresh_viewport"
-                    self.simulation.refresh_viewport(reason="keep_window_open")
+                    with self._profiler.measure("pipeline.simulation_refresh_viewport"):
+                        self.simulation.refresh_viewport(reason="keep_window_open")
             current_operation = "simulation_read_final"
-            final_state = self.simulation.read()
+            with self._profiler.measure("pipeline.simulation_read_final"):
+                final_state = self.simulation.read()
             summary = self._build_summary(
                 started_at=started_at,
                 duration_steps=duration_steps,
@@ -172,8 +201,17 @@ class FullPhysicsPipeline:
             video_summary = _close_video("success" if summary["success"] else "failed")
             if video_summary is not None:
                 summary["overview_video"] = video_summary
-            summary_path = self.recorder.close(summary)
-            return json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["performance_report"] = self._performance_report(
+                duration_steps=duration_steps,
+                final_state=final_state,
+            )
+            with self._profiler.measure("pipeline.recorder_close"):
+                summary_path = self.recorder.close(summary)
+            return self._finalize_performance_report(
+                summary_path,
+                duration_steps=duration_steps,
+                final_state=final_state,
+            )
         except BaseException as exc:
             interrupted = isinstance(exc, KeyboardInterrupt)
             video_summary = _close_video("interrupted" if interrupted else "failed")
@@ -204,7 +242,17 @@ class FullPhysicsPipeline:
                     exception_report=exception_report,
                     video_summary=video_summary,
                 )
-                self.recorder.close(failure_summary)
+                failure_summary["performance_report"] = self._performance_report(
+                    duration_steps=duration_steps,
+                    final_state=None,
+                )
+                with self._profiler.measure("pipeline.recorder_close_failure"):
+                    failure_path = self.recorder.close(failure_summary)
+                self._finalize_performance_report(
+                    failure_path,
+                    duration_steps=duration_steps,
+                    final_state=None,
+                )
             except Exception as recorder_exc:
                 print(
                     "[full-physics] 写入运行时失败报告时再次失败："
@@ -222,9 +270,81 @@ class FullPhysicsPipeline:
             _close_video("closed_without_summary")
             close_nav_planner = getattr(self.nav_planner, "close", None)
             if callable(close_nav_planner):
-                close_nav_planner()
-            if not self.config.keep_window_open:
-                self.simulation.close()
+                if self._profiler is None:
+                    close_nav_planner()
+                else:
+                    with self._profiler.measure("pipeline.nav_planner_close"):
+                        close_nav_planner()
+            if not self.config.keep_window_open and self._close_simulation_on_exit:
+                if self._profiler is None:
+                    self.simulation.close()
+                else:
+                    with self._profiler.measure("pipeline.simulation_close"):
+                        self.simulation.close()
+
+    def _performance_report(
+        self,
+        *,
+        duration_steps: int,
+        final_state: Any | None,
+    ) -> dict[str, Any]:
+        assert self._profiler is not None
+        metadata = getattr(final_state, "metadata", {}) if final_state is not None else {}
+        control_dt = metadata.get("control_dt") if isinstance(metadata, dict) else None
+        physics_dt = metadata.get("physics_dt") if isinstance(metadata, dict) else None
+        decimation = metadata.get("decimation") if isinstance(metadata, dict) else None
+        simulation_steps = (
+            int(getattr(final_state, "step_index", 0)) if final_state is not None else None
+        )
+        simulation_seconds = (
+            float(getattr(final_state, "timestamp", 0.0)) if final_state is not None else None
+        )
+        wall_seconds = self._profiler.elapsed_seconds()
+        return self._profiler.report(
+            episode_id=self.episode_spec.episode_id,
+            seed=self.episode_seed,
+            pipeline_ticks=int(duration_steps),
+            simulation_control_steps=simulation_steps,
+            simulation_seconds=simulation_seconds,
+            real_time_factor=(
+                simulation_seconds / wall_seconds
+                if isinstance(simulation_seconds, (int, float)) and wall_seconds > 0.0
+                else None
+            ),
+            timing_invariants={
+                "physics_dt": physics_dt,
+                "control_dt": control_dt,
+                "decimation": decimation,
+            },
+        )
+
+    def _finalize_performance_report(
+        self,
+        summary_path: Path,
+        *,
+        duration_steps: int,
+        final_state: Any | None,
+    ) -> dict[str, Any]:
+        """Persist timings that become known only after recorder finalization."""
+
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        report = self._performance_report(
+            duration_steps=duration_steps,
+            final_state=final_state,
+        )
+        report["artifact_sizes_bytes"] = {
+            name: path.stat().st_size
+            for name in ("events.jsonl", "frames.jsonl", "samples.jsonl", "data.csv")
+            if (path := self.recorder.output_dir / name).is_file()
+        }
+        summary["performance_report"] = report
+        temporary_path = summary_path.with_suffix(summary_path.suffix + ".tmp")
+        temporary_path.write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary_path.replace(summary_path)
+        return summary
 
     def _build_runtime_failure_summary(
         self,
@@ -389,6 +509,9 @@ class FullPhysicsPipeline:
                 "simulation_ready",
                 "world_count",
                 "opened_stage_count",
+                "stage_build_count",
+                "stage_reuse_count",
+                "stage_reuse_report",
                 "articulation_prim_path",
                 "object_root_prim_path",
                 "object_state_prim_path",
@@ -401,6 +524,9 @@ class FullPhysicsPipeline:
                 "d436_lens_distortion_schema_report",
                 "overview_camera_report",
                 "camera_capture_report",
+                "camera_render_schedule",
+                "camera_render_interval_control_steps",
+                "camera_render_hz",
                 "gripper_collision_patch_report",
                 "apple_collision_patch_report",
                 "stage_report",

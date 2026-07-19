@@ -2,9 +2,36 @@
   "project": "pct_scene",
   "branch": "pct_scene",
   "goal": "在同一代码库中通过 scene profile 选择良渚单层或别墅多楼层 PCT 场景，并支持后续场景扩展、移动操作与可验证数据导出。",
-  "current_phase": "phase_165_unified_full_visual_authored_stage_lighting_auto",
-  "last_updated": "2026-07-19 00:59:19 CST",
+  "current_phase": "phase_167_stage_reuse_physx_isolation_synced",
+  "last_updated": "2026-07-19 20:22:14 CST",
   "status": {
+    "unified_wall_time_profiler_added": true,
+    "headless_dataset_camera_render_5hz_added": true,
+    "physics_timing_unchanged_400hz_50hz_decimation8": true,
+    "async_synchronized_sample_packet_added": true,
+    "async_image_state_step_timestamp_gate_added": true,
+    "async_queue_backpressure_and_drain_audit_added": true,
+    "sampling_coverage_training_gate_added": true,
+    "unified_reuse_isaac_process_stage_default_added": true,
+    "liangzhu_relocatable_kinematic_supports_added": true,
+    "performance_sync_focused_tests_passed": true,
+    "performance_sync_focused_test_passed_count": 180,
+    "performance_sync_focused_test_skipped_count": 4,
+    "performance_sync_focused_subtests_passed_count": 4,
+    "performance_source_worktree_same_seed_batch_verified": true,
+    "pct_scene_real_performance_batch_independently_verified": true,
+    "stage_reuse_physx_hard_reset_added": true,
+    "stage_reuse_tensor_readers_rebound": true,
+    "skip_physics_action_strict_noop_added": true,
+    "initialization_base_lock_steps": 20,
+    "initialization_lock_releases_to_rl_policy": true,
+    "stage_reuse_fix_focused_test_passed_count": 160,
+    "stage_reuse_fix_full_test_passed_count": 575,
+    "liangzhu_stage_reuse_real_gate_episode_count": 2,
+    "liangzhu_stage_reuse_real_gate_success_count": 2,
+    "liangzhu_stage_reuse_real_gate_training_quality_count": 2,
+    "liangzhu_stage_reuse_real_gate_base_settle_timeout_count": 0,
+    "liangzhu_stage_reuse_real_gate_lerobot_rows": 475,
     "unified_scene_profile_loader_added": true,
     "unified_scene_profile_dynamic_discovery_verified": true,
     "unified_scene_profile_third_json_without_python_enum_verified": true,
@@ -7885,6 +7912,131 @@
         "真实运行后检查 scene_lighting_report：requested_mode=auto、resolved_mode=stage，并核对 light_visibility_updates 中自定义 Light prim 为 inherited。",
         "本阶段未主动启动 full Gaussian/NuRec GPU episode；8GB GPU 的 full+RGB render product CUDA 700 风险保持不变。"
       ]
+    },
+    {
+      "time": "2026-07-19 15:17:50 CST",
+      "summary": "同步良渚 worktree 已完成真实验证的 headless batch 性能改造，同时保留 pct_scene 的 scene profile 架构：统一 wall-time profiler；在不改变 400Hz physics、50Hz control 和 decimation=8 的前提下，把无展示视频的训练相机与稠密诊断降至 5Hz；使用同步 packet 冻结同一 control tick 的图像/state/action 后异步编码写盘；默认复用单 Isaac 进程与 stage，并把良渚随机 box support 建模为 episode 内固定、episode 间可重定位的 kinematic rigid support。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "scripts/pipeline/run_full_physics_batch.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "source/diagnostics/performance.py",
+        "source/pipeline/config.py",
+        "source/pipeline/factory.py",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/pipeline/state_machine.py",
+        "source/recording/jsonl_recorder.py",
+        "source/recording/lerobot_dataset.py",
+        "source/simulation/isaaclab_runtime.py",
+        "source/simulation/receptacle_support.py",
+        "source/simulation/task_scene_pose.py",
+        "tests/test_full_physics_batch.py",
+        "tests/test_full_physics_lerobot.py",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "tests/test_performance_profiler.py",
+        "tests/test_scene_runtime.py"
+      ],
+      "tests": [
+        {
+          "command": "PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B -m pytest -q -p no:cacheprovider tests/test_full_physics_lerobot.py tests/test_scene_runtime.py tests/test_isaaclab_navigation_runtime.py tests/test_full_physics_pipeline.py tests/test_full_physics_batch.py tests/test_performance_profiler.py tests/test_scene_profiles.py",
+          "result": "passed",
+          "note": "180 passed、4 skipped、4 subtests passed；覆盖两个 scene profile 的 CLI/配置保留、stage reuse、同步 packet、1ns timestamp 容差、异步队列 drain 和采样覆盖门。"
+        },
+        {
+          "command": "arm_vla_liangzhu seeds 7/8/9 real headless batch --no-record-video",
+          "result": "source_worktree_passed",
+          "note": "3/3 完整成功且通过质量门；端到端 15m25s 降至 10m36s，输出 1.173GB 降至 0.162GB。该证据来自同步源实现，不标记为 pct_scene 独立真实运行。"
+        }
+      ],
+      "data_results": {
+        "source_baseline_output_root": "/mnt/sage_data/outputs/arm_vla_liangzhu/perf_baseline_no_video_seed7_n3_20260719",
+        "source_optimized_output_root": "/mnt/sage_data/outputs/arm_vla_liangzhu/perf_final_batch_seed7_n3_20260719",
+        "source_success_count": 3,
+        "source_training_quality_count": 3,
+        "baseline_batch_wall_seconds": 925,
+        "optimized_batch_wall_seconds": 636,
+        "optimized_mean_pipeline_wall_seconds": 204.408,
+        "optimized_mean_simulation_seconds": 42.74,
+        "disk_reduction_ratio": 0.862,
+        "estimated_1000_episode_wall_hours": 58.9,
+        "estimated_1000_episode_disk_gb": 54,
+        "pct_scene_real_pipeline_verified": false
+      },
+      "next_steps": [
+        "在 pct_scene 中分别对 liangzhu 和 multi_floor 运行 2 至 3 条小 batch，确认两个 profile 的 stage reuse 都无跨 episode 状态污染。",
+        "正式量产默认使用 --no-record-video；如果启用 composite，展示视频仍保持逐 control step 渲染，不能套用本次 wall-time 估算。",
+        "1000 条前先用目标硬件的 20 条样本重估 wall time、成功率与磁盘线性系数。",
+        "由用户验收后手动提交；Codex 不 commit、不 push。"
+      ]
+    },
+    {
+      "time": "2026-07-19 20:22:14 CST",
+      "summary": "增量同步并独立验证良渚 worktree 的 stage-reuse 物理隔离修复，同时完整保留统一 scene-profile、异步 recorder 和性能 profiler 改造。每个复用 episode 在不重开/重建 USD stage 的前提下执行 SimulationContext.reset(soft=False)，清除上一条 articulation/contact solver warm-start，重建 PhysX view、重绑物体/支撑 reader 并重应用 D436 内参；skip_physics_step 不再推进 policy/action history。机器人前 20 control tick 固定 root 与支撑腿，之后释放给 RL policy 并重新通过真实动力学稳定门。源 worktree 唯一 seeds 7..26 为 20/20；本 worktree liangzhu seeds 27/28 同进程 gate 为 2/2，第二条明确 stage_reused=true 且 hard reset 生效。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "source/pipeline/config.py",
+        "source/pipeline/state_machine.py",
+        "source/simulation/isaaclab_runtime.py",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_isaaclab_navigation_runtime.py"
+      ],
+      "tests": [
+        {
+          "command": "focused full-physics/state-machine/IsaacLab/batch/scene regression",
+          "result": "passed",
+          "note": "160 passed、4 skipped、4 subtests；覆盖 hard reset、严格无物理 action 和初始化锁释放后重新验稳。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q -p no:cacheprovider tests",
+          "result": "passed",
+          "note": "575 passed、4 skipped、15 subtests；multi_floor、scene profiles、recording 和旧 pipeline 回归未破坏。"
+        },
+        {
+          "command": "run_full_physics_batch.py --scene-profile liangzhu --num-episodes 2 --seed 27 --no-record-video",
+          "result": "passed",
+          "note": "seed 27/28 均 final_state=done、training_quality_gate_passed=true；第二条 stage_reused=true、stage_reuse_count=1，hard reset 3.195s，USD 未重开/未重建且未推进 physics time。"
+        },
+        {
+          "command": "validate_lerobot_episode.py --dataset-root <gate>/lerobot_dataset",
+          "result": "passed",
+          "note": "2 episodes、475 rows、三相机 1425 frames、5Hz、0 error；12 个固定 subtask 目录。"
+        }
+      ],
+      "data_results": {
+        "source_unique_seed_range": [7, 26],
+        "source_unique_episode_count": 20,
+        "source_success_count": 20,
+        "source_training_quality_count": 20,
+        "source_base_settle_timeout_count": 0,
+        "source_pipeline_wall_seconds_mean": 191.937,
+        "source_pipeline_wall_seconds_median": 189.102,
+        "strict_paired_seed_range": [7, 9],
+        "strict_paired_wall_reduction_ratio": 0.342,
+        "strict_paired_throughput_multiplier": 1.52,
+        "output_root": "/mnt/sage_data/outputs/pct_scene/stage_reuse_base_settle_fix_gate2_seed27_20260719",
+        "seed_range": [27, 28],
+        "success_count": 2,
+        "training_quality_count": 2,
+        "base_settle_timeout_count": 0,
+        "pipeline_wall_seconds": [240.42803288099822, 223.2867488209995],
+        "lerobot_rows": 475,
+        "camera_video_frames_total": 1425,
+        "validator_errors": 0,
+        "reused_episode_stage_reuse_count": 1,
+        "reused_episode_hard_reset_wall_seconds": 3.1947530360012024,
+        "reused_episode_usd_stage_reopened": false,
+        "reused_episode_usd_stage_rebuilt": false,
+        "reused_episode_physics_time_advanced_by_reset": false
+      },
+      "next_steps": [
+        "由用户验收后手动提交；Codex 不 commit、不 push。",
+        "liangzhu profile 已有独立 2 条 stage-reuse GPU gate；multi_floor 如需同等级声明，仍应另跑至少两条同进程真实 episode。",
+        "正式量产继续保留 hard reset、20-tick 初始化交接与真实稳定门，并监控 base_settle_timeout、sampling_coverage 和 validator。"
+      ]
     }
   ],
   "open_questions": [
@@ -7893,7 +8045,9 @@
     "良渚 full/NuRec 训练相机录制应优先在更大显存 GPU 上复验，还是升级到提供更新 NuRec/Replicator 支持的 Isaac Sim 版本？两种环境都必须先做单 episode validator 验收。"
   ],
   "known_limitations": [
-    "supported_upright_v1 已用历史 seed 7 定向真实验证，但尚未完成新的连续多 seed batch；大规模采集前仍需统计初始化通过率和箱面沉降分布。",
+    "pct_scene 的 liangzhu profile 已用 seeds 27/28 完成独立同进程 stage-reuse GPU gate，2/2 成功且质量门通过；multi_floor 仅由全仓测试证明接口兼容，尚未运行本次 hard-reset 版本的两条同进程真实 gate，因此不能用良渚结果宣称多楼层 stage reuse 已独立实测。",
+    "严格优化前后配对只覆盖 arm_vla_liangzhu seed 7/8/9 三条，平均提速 34.2%；当前安全版本另有 seeds 7..26 的 20 条耗时分布，但 seed 10..26 没有旧版同 seed 对照。1000 条 wall time/磁盘估算只用于容量规划，实际值会随轨迹长度、失败率、GPU、scene profile 和压缩率变化。",
+    "supported_upright_v1 与初始化交接已由源 worktree 唯一 seeds 7..26 的 20/20 和本 worktree seeds 27/28 的 2/2 覆盖；源 20 条因外部工具中断拆为 15+4+复用后的 seed26，不能表述为一次未中断进程连续 20/20。",
     "当前全向 yaw 的最新 v3 数据集是 validation_full_yaw_seed7000_n20_final_v2_20260715/lerobot_dataset，共 19 条 accepted episode；旧 validation_seed4013_n20_final_carry_map_v2 的 20 条数据只覆盖±30° yaw。phase146/147 历史数据仍是旧 front-only/连续 segment 目录，不能与 v3 直接混用。",
     "全向 yaw 的连续 20-seed batch 接受率为 95%（19/20）；唯一失败 seed 7018 在 0.040m placement center 修正后定向复跑通过，但这不能表述为同一次连续 batch 20/20。",
     "phase146 的 27 条扩展集混合 21 条当前参数与 6 条早期 placement/tolerance 参数；phase147 虽参数一致但仍是旧 front-only 目录，使用历史数据时必须显式区分配置和目录版本。",
@@ -7909,7 +8063,7 @@
     "当前 arm_contact 标签来自执行器动作语义、夹爪命令和目标/TCP 运动学启发式，metadata 已明确标记 heuristic_action_and_kinematics；接入可靠接触传感器前不能描述为真实力/触觉接触标签。",
     "attempt14 的真实轨迹只出现 nav_stop 与 nav_turn，没有满足阈值的 nav_straight；这是该条轨迹的运动事实，不是 schema 缺失，六类标签全集由 contract 测试覆盖。",
     "系统盘空间较紧，批量输出必须继续写入 /mnt/sage_data；attempt14 约 192MB，批量前仍应监控剩余容量。",
-    "统一 worktree 已移除测试对旧 source/scene/839920/nav_map/map.json 的隐式依赖，当前最终全量回归为 563 passed、2 skipped、15 subtests passed；垫子 scale 配置与测试统一为 (0.3,0.2,0.005)。",
+    "统一 worktree 已移除测试对旧 source/scene/839920/nav_map/map.json 的隐式依赖，当前最终全量回归为 575 passed、4 skipped、15 subtests passed；垫子 scale 配置与测试统一为 (0.3,0.2,0.005)。",
     "别墅 stair-locomotion-smoke 会关闭 stair-float 并隔离测试纯低层 policy；当前真实运行在第一段约 (1.72,5.88) 复现 stair_locomotion_stalled，与原 arm_vla_pct phase167/168 结果一致。PCT 跨层规划本身成功，默认完整 multi_floor pipeline 仍使用并记录 stair-float workaround。",
     "别墅默认完整 pipeline 已用方向分解的释放门禁真实通过并导出 849 行数据；向下落座阈值为任务级 0.55m/s，而向上、水平速度和水平位移继续使用严格默认值。该结果依赖 stair-float 与 manipulation lock，因此 stable_physics_success=true、pure_physics_success=false。",
     "共享 CuRobo server 属于其他 worktree 的外部服务；兼容性握手和本轮复用已验证，pipeline 不拥有其生命周期，批量运行前仍需 ping。"

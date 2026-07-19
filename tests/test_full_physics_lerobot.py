@@ -53,6 +53,226 @@ def _state(step_index: int, image: np.ndarray | None) -> SimulationState:
 
 
 class FullPhysicsLeRobotTest(unittest.TestCase):
+    def test_stage_reuse_build_state_is_not_sampled_into_next_episode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            recorder = JsonlEpisodeRecorder(
+                Path(tmp_dir) / "episode_000001",
+                lerobot_config=LeRobotRecordingConfig(
+                    enabled=True,
+                    control_dt=0.02,
+                    dataset_fps=5,
+                    image_height=48,
+                    image_width=64,
+                    camera_keys=("front",),
+                    async_encoding_and_write=False,
+                ),
+            )
+            image = np.full((48, 64, 3), 127, dtype=np.uint8)
+            stale_state = _state(2170, image)
+            recorder.record_step(
+                StepRecord(
+                    step_index=0,
+                    timestamp=stale_state.timestamp,
+                    pipeline_state="build_stage",
+                    observation=stale_state,
+                    action=RobotAction(source="stage_build"),
+                    post_step_observation=stale_state,
+                )
+            )
+            reset_state = _state(0, image)
+            recorder.record_step(
+                StepRecord(
+                    step_index=1,
+                    timestamp=reset_state.timestamp,
+                    pipeline_state="reset_episode",
+                    observation=reset_state,
+                    action=RobotAction(source="object_settle"),
+                    post_step_observation=reset_state,
+                )
+            )
+
+            report = recorder._dataset_writer.finalize()
+            self.assertEqual(report["sampled_frame_count"], 1)
+            samples = [
+                json.loads(line)
+                for line in recorder._dataset_writer.samples_path.read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+            self.assertEqual(samples[0]["simulation_step"], 0)
+            self.assertEqual(samples[0]["pipeline_state"], "reset_episode")
+
+    def test_training_export_rejects_incomplete_episode_sampling_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            recorder = JsonlEpisodeRecorder(
+                Path(tmp_dir) / "episode_000000",
+                lerobot_config=LeRobotRecordingConfig(
+                    enabled=True,
+                    control_dt=0.02,
+                    dataset_fps=5,
+                    image_height=48,
+                    image_width=64,
+                    camera_keys=("front",),
+                    async_encoding_and_write=False,
+                ),
+            )
+            image = np.zeros((48, 64, 3), dtype=np.uint8)
+            for step_index, frame in ((0, image), (100, None)):
+                state = _state(step_index, frame)
+                recorder.record_step(
+                    StepRecord(
+                        step_index=step_index,
+                        timestamp=state.timestamp,
+                        pipeline_state="exec_nav_to_pick",
+                        observation=state,
+                        action=RobotAction(source="nav"),
+                        post_step_observation=state,
+                    )
+                )
+
+            export = recorder.prepare_lerobot_export(training_eligible=True)
+            self.assertFalse(export["lerobot_exported"])
+            self.assertEqual(
+                export["failure_reason"],
+                "episode_sampling_coverage_incomplete",
+            )
+            self.assertFalse(export["sampling_coverage"]["verified"])
+
+    def test_async_packets_commit_in_order_with_exact_camera_state_timestamps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            episode_dir = Path(tmp_dir) / "episode_000000"
+            recorder = JsonlEpisodeRecorder(
+                episode_dir,
+                lerobot_config=LeRobotRecordingConfig(
+                    enabled=True,
+                    control_dt=0.02,
+                    dataset_fps=5,
+                    image_height=48,
+                    image_width=64,
+                    camera_keys=("front", "wrist"),
+                    save_raw_images=True,
+                    async_encoding_and_write=True,
+                    async_queue_size=2,
+                ),
+            )
+            image = np.full((48, 64, 3), 127, dtype=np.uint8)
+            for step_index in (1, 11):
+                state = replace(
+                    _state(step_index, image),
+                    camera_images={"front": image, "wrist": image},
+                    metadata={
+                        **_state(step_index, image).metadata,
+                        "camera_capture_report": {
+                            "capture_step_index": step_index,
+                            "capture_timestamp": step_index * 0.02,
+                            "synchronization_source": "test_render_grid",
+                        },
+                    },
+                )
+                recorder.record_step(
+                    StepRecord(
+                        step_index=step_index,
+                        timestamp=state.timestamp,
+                        pipeline_state="exec_pick",
+                        observation=state,
+                        action=RobotAction(source="arm"),
+                        post_step_observation=state,
+                    )
+                )
+
+            report = recorder._dataset_writer.finalize()
+            self.assertTrue(report["camera_state_synchronization"]["verified"])
+            self.assertTrue(report["committed_frame_indices_contiguous"])
+            self.assertEqual(report["committed_frame_count"], 2)
+            samples = [
+                json.loads(line)
+                for line in recorder._dataset_writer.samples_path.read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+            self.assertEqual([sample["simulation_step"] for sample in samples], [1, 11])
+            self.assertTrue(all(sample["camera_state_synchronized"] for sample in samples))
+            self.assertTrue(
+                all(
+                    sample["camera_capture_step"] == sample["simulation_step"]
+                    for sample in samples
+                )
+            )
+
+    def test_async_packet_rejects_camera_state_step_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            recorder = JsonlEpisodeRecorder(
+                Path(tmp_dir) / "episode_000000",
+                lerobot_config=LeRobotRecordingConfig(
+                    enabled=True,
+                    image_height=48,
+                    image_width=64,
+                    camera_keys=("front",),
+                    async_encoding_and_write=True,
+                ),
+            )
+            image = np.zeros((48, 64, 3), dtype=np.uint8)
+            state = replace(
+                _state(10, image),
+                metadata={
+                    **_state(10, image).metadata,
+                    "camera_capture_report": {
+                        "capture_step_index": 9,
+                        "capture_timestamp": 0.18,
+                    },
+                },
+            )
+            with self.assertRaisesRegex(RuntimeError, "camera_state_step_mismatch"):
+                recorder.record_step(
+                    StepRecord(
+                        step_index=10,
+                        timestamp=state.timestamp,
+                        pipeline_state="exec_pick",
+                        observation=state,
+                        action=RobotAction(source="arm"),
+                        post_step_observation=state,
+                    )
+                )
+            with self.assertRaisesRegex(RuntimeError, "synchronization errors"):
+                recorder._dataset_writer.finalize()
+
+    def test_async_packet_rejects_same_step_with_different_timestamp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            recorder = JsonlEpisodeRecorder(
+                Path(tmp_dir) / "episode_000000",
+                lerobot_config=LeRobotRecordingConfig(
+                    enabled=True,
+                    image_height=48,
+                    image_width=64,
+                    camera_keys=("front",),
+                    async_encoding_and_write=True,
+                ),
+            )
+            image = np.zeros((48, 64, 3), dtype=np.uint8)
+            state = replace(
+                _state(10, image),
+                metadata={
+                    **_state(10, image).metadata,
+                    "camera_capture_report": {
+                        "capture_step_index": 10,
+                        "capture_timestamp": 0.19,
+                    },
+                },
+            )
+            with self.assertRaisesRegex(RuntimeError, "camera_state_timestamp_mismatch"):
+                recorder.record_step(
+                    StepRecord(
+                        step_index=10,
+                        timestamp=state.timestamp,
+                        pipeline_state="exec_pick",
+                        observation=state,
+                        action=RobotAction(source="arm"),
+                        post_step_observation=state,
+                    )
+                )
+            with self.assertRaisesRegex(RuntimeError, "synchronization errors"):
+                recorder._dataset_writer.finalize()
+
     def test_records_dwa_csv_and_jpeg_every_ten_control_steps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             episode_dir = Path(tmp_dir) / "episode_000000"

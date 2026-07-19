@@ -5,7 +5,11 @@ from __future__ import annotations
 import csv
 import json
 import math
+import queue
 import shutil
+import threading
+import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -165,6 +169,7 @@ TCP_POSE_NAMES = (
 )
 
 SCHEMA_VERSION = "full_physics_lerobot_v2.2.0"
+CAMERA_STATE_TIMESTAMP_TOLERANCE_SECONDS = 1.0e-9
 CONTROL_ACTION_SCHEMA = "base_velocity_arm_joint_gripper_targets_v1"
 
 
@@ -185,12 +190,32 @@ class LeRobotRecordingConfig:
     debug_per_episode_lerobot: bool = True
     unified_dataset: bool = True
     validate_export: bool = True
+    # Low-level tests and library callers remain synchronous unless requested;
+    # the real pipeline enables this through RecordingSettings.
+    async_encoding_and_write: bool = False
+    async_queue_size: int = 16
 
     @property
     def capture_every_n_steps(self) -> float:
         """返回平均控制步间隔；15 FPS 等非整数比率由时间栅格调度。"""
 
         return (1.0 / float(self.dataset_fps)) / float(self.control_dt)
+
+
+@dataclass(frozen=True)
+class SynchronizedSamplePacket:
+    """Immutable transaction handed from the simulation thread to the I/O worker."""
+
+    episode_id: str
+    frame_index: int
+    simulation_step: int
+    simulation_timestamp: float
+    pipeline_state: str
+    state_snapshot: dict[str, Any]
+    action_snapshot: tuple[float, ...]
+    images: tuple[tuple[str, np.ndarray], ...]
+    csv_row: dict[str, Any]
+    sample_payload: dict[str, Any]
 
 
 def _quat_wxyz_to_rpy(quat: tuple[float, ...]) -> tuple[float, float, float]:
@@ -270,12 +295,24 @@ class DwaEpisodeWriter:
         self.frame_count = 0
         self._last_sampled_sim_step = -1
         self._next_sample_timestamp: float | None = None
+        self._max_observed_sim_step = -1
+        self._max_observed_sim_timestamp = 0.0
         self._last_arm_target: tuple[float, ...] | None = None
         self._last_gripper_target: tuple[float, float] | None = None
         self._video_writers: dict[str, Any] = {}
         self._camera_frame_counts: dict[str, int] = {}
         self._camera_shapes: dict[str, tuple[int, int, int]] = {}
         self._missing_camera_keys: set[str] = set()
+        self._performance_profiler: Any | None = None
+        self._packet_queue: queue.Queue[SynchronizedSamplePacket | None] | None = None
+        self._packet_worker: threading.Thread | None = None
+        self._packet_worker_stopped = False
+        self._worker_error: BaseException | None = None
+        self._worker_error_lock = threading.Lock()
+        self._committed_frame_indices: list[int] = []
+        self._max_queue_depth = 0
+        self._queue_block_seconds = 0.0
+        self._synchronization_errors: list[dict[str, Any]] = []
         self._finalized = False
         self.frequency_report: dict[str, Any] = {
             "physics_dt": None,
@@ -301,6 +338,14 @@ class DwaEpisodeWriter:
         self.samples_path.write_text("", encoding="utf-8")
         with self.csv_path.open("w", encoding="utf-8", newline="") as stream:
             csv.DictWriter(stream, fieldnames=DWA_CSV_COLUMNS).writeheader()
+        if self.config.async_encoding_and_write:
+            self._packet_queue = queue.Queue(maxsize=self.config.async_queue_size)
+            self._packet_worker = threading.Thread(
+                target=self._packet_worker_main,
+                name=f"lerobot-writer-{self.episode_dir.name}",
+                daemon=True,
+            )
+            self._packet_worker.start()
 
     @property
     def actual_camera_keys(self) -> tuple[str, ...]:
@@ -318,17 +363,41 @@ class DwaEpisodeWriter:
     def raw_images_saved(self) -> bool:
         return bool(self.config.save_raw_images)
 
+    def set_performance_profiler(self, profiler: Any | None) -> None:
+        self._performance_profiler = profiler
+
+    def _measure(self, operation: str):
+        if self._performance_profiler is None:
+            return nullcontext()
+        return self._performance_profiler.measure(operation)
+
     def record(self, record: StepRecord) -> dict[str, Any] | None:
         if not self.config.enabled or self._finalized:
+            return None
+        self._raise_worker_error()
+        # During live stage reuse, the pre-tick observation of BUILD_STAGE still
+        # belongs to the previous episode.  It is useful in frames.jsonl for
+        # diagnostics but must never establish the new dataset sampling grid.
+        if record.pipeline_state == "build_stage":
             return None
         full_action = self._update_full_action(record)
         state = record.observation
         sim_step = int(state.step_index)
-        if sim_step <= self._last_sampled_sim_step:
+        sim_timestamp = float(state.timestamp)
+        self._max_observed_sim_step = max(self._max_observed_sim_step, sim_step)
+        self._max_observed_sim_timestamp = max(
+            self._max_observed_sim_timestamp,
+            sim_timestamp,
+        )
+        if sim_step < self._last_sampled_sim_step:
+            raise RuntimeError(
+                "simulation step regressed within one recorded episode: "
+                f"last_sampled={self._last_sampled_sim_step} current={sim_step}"
+            )
+        if sim_step == self._last_sampled_sim_step:
             return None
 
         # 第一个有效相机帧立即采样；后续按 dataset timestamp 选择最近控制帧。
-        sim_timestamp = float(state.timestamp)
         if self._next_sample_timestamp is not None:
             half_control_dt = 0.5 * float(self.config.control_dt)
             if sim_timestamp + half_control_dt < self._next_sample_timestamp:
@@ -339,19 +408,76 @@ class DwaEpisodeWriter:
             return None
 
         self._update_frequency_report(state.metadata)
+        capture_report = state.metadata.get("camera_capture_report")
+        if isinstance(capture_report, dict):
+            capture_step = int(capture_report.get("capture_step_index", sim_step))
+            capture_timestamp = float(
+                capture_report.get("capture_timestamp", sim_timestamp)
+            )
+            synchronization_source = str(
+                capture_report.get("synchronization_source", "runtime_capture_report")
+            )
+        else:
+            if self.config.async_encoding_and_write:
+                raise RuntimeError(
+                    "asynchronous camera export requires camera_capture_report timestamps"
+                )
+            capture_step = sim_step
+            capture_timestamp = sim_timestamp
+            synchronization_source = "state_snapshot_fallback"
+        timestamp_error = abs(capture_timestamp - sim_timestamp)
+        synchronization_error = None
+        if capture_step != sim_step:
+            synchronization_error = {
+                "reason": "camera_state_step_mismatch",
+                "frame_index": self.frame_count,
+                "camera_capture_step": capture_step,
+                "state_step": sim_step,
+            }
+        elif timestamp_error > CAMERA_STATE_TIMESTAMP_TOLERANCE_SECONDS:
+            synchronization_error = {
+                "reason": "camera_state_timestamp_mismatch",
+                "frame_index": self.frame_count,
+                "camera_capture_timestamp": capture_timestamp,
+                "state_timestamp": sim_timestamp,
+                "absolute_error_seconds": timestamp_error,
+            }
+        if synchronization_error is not None:
+            self._synchronization_errors.append(synchronization_error)
+            raise RuntimeError(
+                "camera/state synchronization failed: "
+                f"{synchronization_error['reason']}"
+            )
+
+        frame_index = self.frame_count
         camera_frames: dict[str, dict[str, Any]] = {}
+        prepared_images: list[tuple[str, np.ndarray]] = []
         for camera_key in self.config.camera_keys:
             camera_image = state.camera_images.get(camera_key)
             if camera_image is None:
                 self._missing_camera_keys.add(camera_key)
+                if self.config.async_encoding_and_write:
+                    raise RuntimeError(
+                        f"asynchronous sample packet is missing camera: {camera_key}"
+                    )
                 continue
-            image = self._prepare_image(camera_image, camera_key=camera_key)
-            raw_path = self._write_raw_image(camera_key, image)
-            self._write_video_frame(camera_key, image)
+            with self._measure("recorder.image_freeze_and_prepare"):
+                image = self._prepare_image(camera_image, camera_key=camera_key).copy()
+                image.setflags(write=False)
+            prepared_images.append((camera_key, image))
+            raw_path = self._raw_image_relative_path(camera_key, frame_index)
             camera_frames[camera_key] = {
                 "feature_key": f"observation.images.{camera_key}",
-                "frame_index": self.frame_count,
-                "timestamp": float(self.frame_count) / float(self.config.dataset_fps),
+                "frame_index": frame_index,
+                "timestamp": float(frame_index) / float(self.config.dataset_fps),
+                "simulation_step": sim_step,
+                "simulation_timestamp": sim_timestamp,
+                "camera_capture_step": capture_step,
+                "camera_capture_timestamp": capture_timestamp,
+                "state_step": sim_step,
+                "state_timestamp": sim_timestamp,
+                "timestamp_alignment_error_seconds": timestamp_error,
+                "synchronization_source": synchronization_source,
                 "raw_image_path": raw_path,
             }
 
@@ -359,16 +485,19 @@ class DwaEpisodeWriter:
         wrist_raw_path = camera_frames.get("wrist", {}).get("raw_image_path")
         row = self._build_row(
             record,
+            frame_index=frame_index,
             image_name=Path(primary_raw_path).name if primary_raw_path else "",
             wrist_image_name=Path(wrist_raw_path).name if wrist_raw_path else "",
         )
-        with self.csv_path.open("a", encoding="utf-8", newline="") as stream:
-            csv.DictWriter(stream, fieldnames=DWA_CSV_COLUMNS).writerow(row)
         sample = {
-            "frame_index": self.frame_count,
-            "timestamp": float(self.frame_count) / float(self.config.dataset_fps),
+            "frame_index": frame_index,
+            "timestamp": float(frame_index) / float(self.config.dataset_fps),
             "simulation_step": sim_step,
             "simulation_timestamp": sim_timestamp,
+            "camera_capture_step": capture_step,
+            "camera_capture_timestamp": capture_timestamp,
+            "camera_state_timestamp_error_seconds": timestamp_error,
+            "camera_state_synchronized": True,
             "pipeline_state": record.pipeline_state,
             "base_velocity": list(_measured_base_velocity(record)),
             "action": list(full_action),
@@ -388,16 +517,43 @@ class DwaEpisodeWriter:
                 }
             ),
         }
-        with self.samples_path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(sample, ensure_ascii=False, separators=(",", ":")))
-            stream.write("\n")
+        packet = SynchronizedSamplePacket(
+            episode_id=self.episode_dir.name,
+            frame_index=frame_index,
+            simulation_step=sim_step,
+            simulation_timestamp=sim_timestamp,
+            pipeline_state=record.pipeline_state,
+            state_snapshot={
+                "step_index": sim_step,
+                "timestamp": sim_timestamp,
+                "robot_root_pose": tuple(state.robot_root_pose),
+                "robot_root_velocity": tuple(state.robot_root_velocity),
+                "joint_positions": tuple(state.joint_positions),
+                "joint_velocities": tuple(state.joint_velocities),
+                "tcp_pose": state.tcp_pose,
+                "object_pose": state.object_pose,
+                "object_velocity": state.object_velocity,
+            },
+            action_snapshot=tuple(full_action),
+            images=tuple(prepared_images),
+            csv_row=row,
+            sample_payload=sample,
+        )
+        if self._packet_queue is None:
+            self._commit_packet(packet)
+        else:
+            self._enqueue_packet(packet)
 
         report = {
-            "frame_index": self.frame_count,
+            "frame_index": frame_index,
             "timestamp": sample["timestamp"],
             "simulation_step": sim_step,
             "simulation_timestamp": sim_timestamp,
+            "camera_capture_step": capture_step,
+            "camera_capture_timestamp": capture_timestamp,
+            "camera_state_synchronized": True,
             "pipeline_state": record.pipeline_state,
+            "async_queued": self._packet_queue is not None,
             "video_features": {
                 key: value["feature_key"] for key, value in camera_frames.items()
             },
@@ -412,18 +568,131 @@ class DwaEpisodeWriter:
         self._next_sample_timestamp += 1.0 / float(self.config.dataset_fps)
         return report
 
+    def _enqueue_packet(self, packet: SynchronizedSamplePacket) -> None:
+        assert self._packet_queue is not None
+        started_at = time.perf_counter()
+        self._packet_queue.put(packet)
+        blocked = time.perf_counter() - started_at
+        self._queue_block_seconds += blocked
+        self._max_queue_depth = max(self._max_queue_depth, self._packet_queue.qsize())
+        if self._performance_profiler is not None:
+            self._performance_profiler.record("recorder.async_queue_put", blocked)
+        self._raise_worker_error()
+
+    def _packet_worker_main(self) -> None:
+        assert self._packet_queue is not None
+        while True:
+            packet = self._packet_queue.get()
+            try:
+                if packet is None:
+                    return
+                if self._worker_error is None:
+                    self._commit_packet(packet)
+            except BaseException as exc:  # pragma: no cover - exercised via injected failure test.
+                with self._worker_error_lock:
+                    if self._worker_error is None:
+                        self._worker_error = exc
+            finally:
+                self._packet_queue.task_done()
+
+    def _commit_packet(self, packet: SynchronizedSamplePacket) -> None:
+        if packet.frame_index != len(self._committed_frame_indices):
+            raise RuntimeError(
+                "sample packet commit order mismatch: "
+                f"expected={len(self._committed_frame_indices)} "
+                f"actual={packet.frame_index}"
+            )
+        for camera_key, image in packet.images:
+            with self._measure("recorder.raw_jpeg_write"):
+                self._write_raw_image(camera_key, image, packet.frame_index)
+            with self._measure("recorder.staged_video_write"):
+                self._write_video_frame(camera_key, image)
+        with self._measure("recorder.csv_write"):
+            with self.csv_path.open("a", encoding="utf-8", newline="") as stream:
+                csv.DictWriter(stream, fieldnames=DWA_CSV_COLUMNS).writerow(
+                    packet.csv_row
+                )
+        with self._measure("recorder.samples_jsonl_write"):
+            with self.samples_path.open("a", encoding="utf-8") as stream:
+                stream.write(
+                    json.dumps(
+                        packet.sample_payload,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )
+                stream.write("\n")
+        self._committed_frame_indices.append(packet.frame_index)
+
+    def _raise_worker_error(self) -> None:
+        with self._worker_error_lock:
+            error = self._worker_error
+        if error is not None:
+            raise RuntimeError(
+                "asynchronous LeRobot writer failed: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
+    def _stop_packet_worker(self) -> None:
+        if self._packet_queue is None or self._packet_worker_stopped:
+            return
+        self._packet_queue.put(None)
+        assert self._packet_worker is not None
+        self._packet_worker.join()
+        self._packet_worker_stopped = True
+        self._raise_worker_error()
+
     def finalize(self) -> dict[str, Any]:
         """结束 MP4 编码，保证转换器读取到完整 moov/frame metadata。"""
 
         if self._finalized:
             return self.report()
-        for writer in self._video_writers.values():
-            writer.release()
+        self._stop_packet_worker()
+        with self._measure("recorder.staged_video_finalize"):
+            for writer in self._video_writers.values():
+                writer.release()
         self._video_writers.clear()
+        expected_indices = list(range(self.frame_count))
+        if self._committed_frame_indices != expected_indices:
+            raise RuntimeError(
+                "sample packet commit sequence is incomplete: "
+                f"expected={len(expected_indices)} "
+                f"committed={len(self._committed_frame_indices)}"
+            )
+        if self._synchronization_errors:
+            raise RuntimeError(
+                "camera/state synchronization errors were recorded: "
+                f"{len(self._synchronization_errors)}"
+            )
         self._finalized = True
         return self.report()
 
     def report(self) -> dict[str, Any]:
+        expected_sample_count = (
+            int(
+                math.floor(
+                    self._max_observed_sim_timestamp
+                    * float(self.config.dataset_fps)
+                    + 1.0e-9
+                )
+            )
+            + 1
+            if self._max_observed_sim_step >= 0
+            else 0
+        )
+        allowed_missing_count = (
+            max(2, int(math.ceil(expected_sample_count * 0.02)))
+            if expected_sample_count > 0
+            else 0
+        )
+        minimum_sample_count = max(
+            0,
+            expected_sample_count - allowed_missing_count,
+        )
+        coverage_verified = bool(
+            expected_sample_count == 0
+            or self.frame_count >= minimum_sample_count
+        )
         return {
             "sampled_frame_count": self.frame_count,
             "camera_keys": list(self.actual_camera_keys),
@@ -434,6 +703,37 @@ class DwaEpisodeWriter:
             },
             "raw_images_saved": self.raw_images_saved,
             "video_staging_root": str(self.video_staging_root),
+            "async_encoding_and_write": self.config.async_encoding_and_write,
+            "async_queue_size": self.config.async_queue_size,
+            "async_max_queue_depth": self._max_queue_depth,
+            "async_queue_block_seconds": self._queue_block_seconds,
+            "committed_frame_count": len(self._committed_frame_indices),
+            "committed_frame_indices_contiguous": (
+                self._committed_frame_indices == list(range(self.frame_count))
+            ),
+            "sampling_coverage": {
+                "verified": coverage_verified,
+                "sampled_frame_count": self.frame_count,
+                "expected_sample_count": expected_sample_count,
+                "minimum_sample_count": minimum_sample_count,
+                "allowed_missing_count": allowed_missing_count,
+                "max_observed_sim_step": self._max_observed_sim_step,
+                "max_observed_sim_timestamp": self._max_observed_sim_timestamp,
+                "dataset_fps": float(self.config.dataset_fps),
+                "rule": "sampled_frames_cover_observed_episode_time_grid",
+            },
+            "camera_state_synchronization": {
+                "verified": bool(
+                    not self._synchronization_errors
+                    and self._committed_frame_indices == list(range(self.frame_count))
+                ),
+                "error_count": len(self._synchronization_errors),
+                "errors": list(self._synchronization_errors),
+                "timestamp_tolerance_seconds": (
+                    CAMERA_STATE_TIMESTAMP_TOLERANCE_SECONDS
+                ),
+                "rule": "camera_capture_step_equals_state_step",
+            },
         }
 
     def _prepare_image(self, image: Any, *, camera_key: str) -> np.ndarray:
@@ -445,18 +745,36 @@ class DwaEpisodeWriter:
             )
         return np.ascontiguousarray(image)
 
-    def _write_raw_image(self, camera_key: str, image: np.ndarray) -> str | None:
+    def _raw_image_relative_path(
+        self,
+        camera_key: str,
+        frame_index: int,
+    ) -> str | None:
         if not self.config.save_raw_images:
             return None
         prefix = "camera0" if camera_key == "front" else camera_key
-        image_name = f"{prefix}_{self.frame_count:05d}.jpg"
+        image_name = f"{prefix}_{frame_index:05d}.jpg"
         image_path = self.image_root / camera_key / image_name
+        return str(image_path.relative_to(self.episode_dir))
+
+    def _write_raw_image(
+        self,
+        camera_key: str,
+        image: np.ndarray,
+        frame_index: int,
+    ) -> str | None:
+        relative_path = self._raw_image_relative_path(camera_key, frame_index)
+        if relative_path is None:
+            return None
+        image_path = self.episode_dir / relative_path
+        temporary_path = image_path.with_suffix(image_path.suffix + ".tmp")
         Image.fromarray(image).save(
-            image_path,
+            temporary_path,
             format="JPEG",
             quality=self.config.jpeg_quality,
         )
-        return str(image_path.relative_to(self.episode_dir))
+        temporary_path.replace(image_path)
+        return relative_path
 
     def _write_video_frame(self, camera_key: str, image: np.ndarray) -> None:
         import cv2
@@ -533,6 +851,7 @@ class DwaEpisodeWriter:
         self,
         record: StepRecord,
         *,
+        frame_index: int,
         image_name: str,
         wrist_image_name: str = "",
     ) -> dict[str, Any]:
@@ -551,7 +870,7 @@ class DwaEpisodeWriter:
         arm, gripper_positions = _joint_values(record)
         gripper = sum(gripper_positions) / len(gripper_positions)
         row = {
-            "时间戳(秒)": f"{float(self.frame_count) / float(self.config.dataset_fps):.6f}",
+            "时间戳(秒)": f"{float(frame_index) / float(self.config.dataset_fps):.6f}",
             "位置X": f"{float(root_pose[0]):.6f}",
             "位置Y": f"{float(root_pose[1]):.6f}",
             "位置Z": f"{float(root_pose[2]):.6f}",

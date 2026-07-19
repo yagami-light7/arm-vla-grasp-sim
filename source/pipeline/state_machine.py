@@ -1035,6 +1035,7 @@ class FullPhysicsStateMachine:
         self._object_settle_elapsed_steps = 0
         self._object_settle_stable_steps = 0
         self._object_settle_completed = False
+        self._initialization_base_lock_released = False
         self._pending_events = [
             self._event("state_entered", 0),
             self._event("episode_start", 0, {"seed": episode_seed}),
@@ -1161,8 +1162,20 @@ class FullPhysicsStateMachine:
         return handlers[self.state](observation)
 
     def _build_stage(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
-        self.simulation.build(self.episode_spec)
-        events = [self._event("stage_built", observation.step_index)]
+        prepare_episode = getattr(self.simulation, "prepare_episode", None)
+        if callable(prepare_episode):
+            prepare_report = dict(prepare_episode(self.episode_spec))
+            event_name = (
+                "stage_reused"
+                if prepare_report.get("stage_reused") is True
+                else "stage_built"
+            )
+            events = [
+                self._event(event_name, observation.step_index, prepare_report)
+            ]
+        else:
+            self.simulation.build(self.episode_spec)
+            events = [self._event("stage_built", observation.step_index)]
         events.extend(self._transition(PipelineState.RESET_EPISODE, observation.step_index))
         metadata = {}
         if self._physical_pick_enabled():
@@ -1203,7 +1216,36 @@ class FullPhysicsStateMachine:
                 )
                 return RobotAction(
                     source="object_settle",
-                    metadata={"object_settle_active": True},
+                    metadata={
+                        "object_settle_active": True,
+                        "manipulation_base_lock": bool(
+                            self.config.manipulation.settle_base_before_navigation
+                            and self.config.manipulation.initialization_base_lock_steps > 0
+                        ),
+                        "manipulation_base_lock_phase": (
+                            "episode_initialization_settle"
+                            if (
+                                self.config.manipulation.settle_base_before_navigation
+                                and self.config.manipulation.initialization_base_lock_steps
+                                > 0
+                            )
+                            else None
+                        ),
+                        # reset 后先用 actuator target 保持四足支撑姿态，避免脚尚未
+                        # 建立接触时 policy/碰撞冲击把腿折叠并触发 base_settle_timeout。
+                        # 该锁只写 position/velocity target，不直接改写关节状态；
+                        # initialization_base_lock_steps 结束后会与 root lock 一起解除，
+                        # 将支撑腿交还 RL policy，并在真实动力学下重新累计稳定步数。
+                        "manipulation_support_joint_lock": True,
+                        "manipulation_support_joint_lock_phase": (
+                            "episode_initialization_settle"
+                        ),
+                        # Observe and record the exact post-reset state before the
+                        # first task physics step.  This makes reset regressions
+                        # distinguishable from failures caused by the first action.
+                        "skip_physics_step": True,
+                        "skip_reason": "audit_post_reset_state_before_first_physics_step",
+                    },
                 ), events
         if self._object_settle_enabled() and not self._object_settle_completed:
             settle_action, settle_events, settled = self._advance_object_settle(observation)
@@ -1255,6 +1297,28 @@ class FullPhysicsStateMachine:
     ) -> tuple[RobotAction, list[PipelineEvent], bool]:
         settings = self.config.manipulation
         self._object_settle_elapsed_steps += 1
+        initialization_base_lock_active = bool(
+            settings.settle_base_before_navigation
+            and settings.initialization_base_lock_steps > 0
+            and self._object_settle_elapsed_steps
+            <= settings.initialization_base_lock_steps
+        )
+        # 支撑腿只在 root 被显式固定时保持默认关节目标。root 释放后必须把
+        # 12 个腿关节交还 rough-terrain RL policy；否则固定站姿无法补偿局部
+        # 地面坡度，某些 yaw 会缓慢侧翻。配置为 0 时保留旧的全程支撑锁语义。
+        initialization_support_joint_lock_active = bool(
+            initialization_base_lock_active
+            or settings.initialization_base_lock_steps <= 0
+        )
+        if (
+            not initialization_base_lock_active
+            and settings.initialization_base_lock_steps > 0
+            and not self._initialization_base_lock_released
+        ):
+            # 锁定期间的零速度是人为约束结果，不能作为进入导航的依据。
+            # 从本 tick 开始释放 root，并重新累计 RL/真实接触下的稳定步数。
+            self._initialization_base_lock_released = True
+            self._object_settle_stable_steps = 0
         pose = observation.object_pose
         velocity = observation.object_velocity
         if pose is None or velocity is None or len(velocity) < 6:
@@ -1345,6 +1409,8 @@ class FullPhysicsStateMachine:
         )
         if settings.settle_base_before_navigation:
             stable = stable and base_stable
+        if initialization_base_lock_active:
+            stable = False
         self._object_settle_stable_steps = (
             self._object_settle_stable_steps + 1 if stable else 0
         )
@@ -1362,6 +1428,16 @@ class FullPhysicsStateMachine:
             "base_angular_speed_rps": base_angular_speed,
             "base_roll_rad": base_roll,
             "base_pitch_rad": base_pitch,
+            "initialization_base_lock_steps": (
+                settings.initialization_base_lock_steps
+            ),
+            "initialization_base_lock_active": initialization_base_lock_active,
+            "initialization_base_lock_released": (
+                self._initialization_base_lock_released
+            ),
+            "initialization_support_joint_lock_active": (
+                initialization_support_joint_lock_active
+            ),
             "initialization_pose_validation": initialization_pose_validation,
         }
         if (
@@ -1403,6 +1479,20 @@ class FullPhysicsStateMachine:
                 metadata={
                     "object_settle_active": True,
                     "object_settle_report": report,
+                    "manipulation_base_lock": initialization_base_lock_active,
+                    "manipulation_base_lock_phase": (
+                        "episode_initialization_settle"
+                        if initialization_base_lock_active
+                        else None
+                    ),
+                    "manipulation_support_joint_lock": (
+                        initialization_support_joint_lock_active
+                    ),
+                    "manipulation_support_joint_lock_phase": (
+                        "episode_initialization_settle"
+                        if initialization_support_joint_lock_active
+                        else None
+                    ),
                 },
             ), [], False
 
@@ -2976,6 +3066,22 @@ class FullPhysicsStateMachine:
     ) -> RobotAction:
         """覆盖完整 manipulation 交接阶段，导航状态必须立即释放 root lock。"""
 
+        action_metadata = dict(action.metadata)
+        explicit_base_requested = bool(
+            action_metadata.get("manipulation_base_lock") is True
+            and self.state != PipelineState.FAILED
+        )
+        explicit_base_phase = action_metadata.get(
+            "manipulation_base_lock_phase"
+        )
+        explicit_support_requested = bool(
+            action_metadata.get("manipulation_support_joint_lock") is True
+            and self.state != PipelineState.FAILED
+        )
+        explicit_support_phase = action_metadata.get(
+            "manipulation_support_joint_lock_phase"
+        )
+
         lock_phase = (
             state_before
             if state_before in _MANIPULATION_BASE_LOCK_STATES
@@ -2992,24 +3098,38 @@ class FullPhysicsStateMachine:
         ):
             lock_phase = PipelineState.CLEANUP_EPISODE
         requested = bool(
-            self.config.manipulation.lock_base_during_manipulation
-            and lock_phase is not None
-            and self.state != PipelineState.FAILED
+            explicit_base_requested
+            or (
+                self.config.manipulation.lock_base_during_manipulation
+                and lock_phase is not None
+                and self.state != PipelineState.FAILED
+            )
         )
         support_requested = bool(
-            self.config.manipulation.lock_support_joints_during_manipulation
-            and lock_phase is not None
-            and self.state != PipelineState.FAILED
+            explicit_support_requested
+            or (
+                self.config.manipulation.lock_support_joints_during_manipulation
+                and lock_phase is not None
+                and self.state != PipelineState.FAILED
+            )
         )
-        metadata = dict(action.metadata)
+        support_phase = (
+            explicit_support_phase
+            if explicit_support_requested
+            else (lock_phase.value if support_requested and lock_phase is not None else None)
+        )
+        base_phase = (
+            explicit_base_phase
+            if explicit_base_requested
+            else (lock_phase.value if requested and lock_phase is not None else None)
+        )
+        metadata = action_metadata
         metadata.update(
             {
                 "manipulation_base_lock": requested,
-                "manipulation_base_lock_phase": lock_phase.value if requested else None,
+                "manipulation_base_lock_phase": base_phase,
                 "manipulation_support_joint_lock": support_requested,
-                "manipulation_support_joint_lock_phase": (
-                    lock_phase.value if support_requested else None
-                ),
+                "manipulation_support_joint_lock_phase": support_phase,
             }
         )
         hold_base = requested or support_requested

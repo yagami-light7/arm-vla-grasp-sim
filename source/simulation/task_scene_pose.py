@@ -165,6 +165,137 @@ def _quaternion_wxyz_from_rpy(
     )
 
 
+def inspect_episode_static_support_body_mode(root_prim: Any) -> dict[str, Any]:
+    """Classify a support as USD-static or episode-static kinematic.
+
+    A support randomized between episodes cannot remain a USD-static collider when
+    one live PhysX stage is reused: PhysX does not guarantee hot propagation of a
+    static actor's authored transform.  A kinematic rigid body at the support root
+    is equivalent to a static obstacle *within* an episode, while still exposing a
+    tensor pose that can be changed transactionally during reset.
+    """
+
+    from pxr import Usd, UsdPhysics
+
+    root_path = str(root_prim.GetPath())
+    rigid_body_prims = [
+        prim
+        for prim in Usd.PrimRange(root_prim)
+        if prim.HasAPI(UsdPhysics.RigidBodyAPI)
+    ]
+    rigid_body_paths = [str(prim.GetPath()) for prim in rigid_body_prims]
+    root_kinematic = False
+    root_rigid_enabled = False
+    if len(rigid_body_prims) == 1 and rigid_body_paths == [root_path]:
+        rigid_api = UsdPhysics.RigidBodyAPI(rigid_body_prims[0])
+        kinematic_value = rigid_api.GetKinematicEnabledAttr().Get()
+        enabled_value = rigid_api.GetRigidBodyEnabledAttr().Get()
+        root_kinematic = bool(kinematic_value)
+        root_rigid_enabled = True if enabled_value is None else bool(enabled_value)
+
+    usd_static = not rigid_body_prims
+    kinematic_episode_static = bool(root_kinematic and root_rigid_enabled)
+    episode_static = bool(usd_static or kinematic_episode_static)
+    return {
+        "support_body_mode": (
+            "usd_static"
+            if usd_static
+            else (
+                "kinematic_episode_static"
+                if kinematic_episode_static
+                else "unsupported_rigid_body_layout"
+            )
+        ),
+        "rigid_body_api_count": len(rigid_body_paths),
+        "rigid_body_prim_paths": rigid_body_paths,
+        "root_kinematic_enabled": root_kinematic,
+        "root_rigid_body_enabled": root_rigid_enabled,
+        "usd_static_support_verified": usd_static,
+        "episode_static_support_verified": episode_static,
+        # Existing quality gates use this field to mean that contacts cannot move
+        # the receptacle during an episode.  Kinematic supports satisfy that
+        # contract even though their reset pose is mutable between episodes.
+        "static_support_verified": episode_static,
+    }
+
+
+def configure_task_supports_for_stage_reuse(
+    stage: Any,
+    raw_task: dict[str, Any],
+) -> dict[str, Any]:
+    """Make randomized support roots kinematic before PhysX parses the stage."""
+
+    from pxr import Usd, UsdPhysics
+
+    settings_by_role = {
+        "pick": resolve_task_pick_support_pose(raw_task),
+        "place": resolve_task_receptacle_pose(raw_task),
+    }
+    reports: dict[str, Any] = {}
+    configured_count = 0
+    for role, settings in settings_by_role.items():
+        if settings.get("configured") is not True:
+            reports[role] = {
+                "configured": False,
+                "reason": settings.get("reason"),
+            }
+            continue
+        root_path = str(settings["prim_path"])
+        root_prim = stage.GetPrimAtPath(root_path)
+        if not root_prim.IsValid() or not root_prim.IsActive():
+            raise RuntimeError(
+                f"stage-reuse support root is unavailable: {root_path}"
+            )
+        collision_paths = [
+            str(prim.GetPath())
+            for prim in Usd.PrimRange(root_prim)
+            if prim.HasAPI(UsdPhysics.CollisionAPI)
+        ]
+        if not collision_paths:
+            reports[role] = {
+                "configured": False,
+                "reason": "support_root_has_no_collision_api",
+                "prim_path": root_path,
+            }
+            continue
+
+        body_report_before = inspect_episode_static_support_body_mode(root_prim)
+        if body_report_before["rigid_body_api_count"]:
+            if body_report_before["episode_static_support_verified"] is not True:
+                raise RuntimeError(
+                    "stage-reuse support already has a non-kinematic or nested "
+                    f"RigidBodyAPI: {body_report_before}"
+                )
+            rigid_api = UsdPhysics.RigidBodyAPI(root_prim)
+            api_existed = True
+        else:
+            rigid_api = UsdPhysics.RigidBodyAPI.Apply(root_prim)
+            api_existed = False
+        rigid_api.CreateRigidBodyEnabledAttr(True).Set(True)
+        rigid_api.CreateKinematicEnabledAttr(True).Set(True)
+        body_report_after = inspect_episode_static_support_body_mode(root_prim)
+        if body_report_after["support_body_mode"] != "kinematic_episode_static":
+            raise RuntimeError(
+                "failed to configure episode-static kinematic support: "
+                f"{body_report_after}"
+            )
+        configured_count += 1
+        reports[role] = {
+            "configured": True,
+            "prim_path": root_path,
+            "collision_prim_paths": collision_paths,
+            "rigid_body_api_existed": api_existed,
+            "pose_mutation_scope": "between_episodes_only",
+            **body_report_after,
+        }
+    return {
+        "enabled": True,
+        "configured_count": configured_count,
+        "supports": reports,
+        "contact_semantics": "immovable_kinematic_support_within_episode",
+    }
+
+
 def _support_collision_report(stage: Any, settings: dict[str, Any]) -> dict[str, Any]:
     """按任务要求补齐静态 Mesh 碰撞并核对组合后支撑包围盒。"""
 
@@ -184,15 +315,11 @@ def _support_collision_report(stage: Any, settings: dict[str, Any]) -> dict[str,
             f"task scene support collision prim 不是有效 Mesh: {collision_prim_path}"
         )
     root_prim = stage.GetPrimAtPath(str(settings["prim_path"]))
-    rigid_paths = [
-        str(prim.GetPath())
-        for prim in Usd.PrimRange(root_prim)
-        if prim.HasAPI(UsdPhysics.RigidBodyAPI)
-    ]
-    if rigid_paths:
+    body_mode_report = inspect_episode_static_support_body_mode(root_prim)
+    if body_mode_report["episode_static_support_verified"] is not True:
         raise RuntimeError(
-            "task scene support 要求静态碰撞，但子树存在 RigidBodyAPI: "
-            f"{rigid_paths}"
+            "task scene support requires an episode-static collision body, but "
+            f"found: {body_mode_report}"
         )
 
     collision_existed = collision_prim.HasAPI(UsdPhysics.CollisionAPI)
@@ -264,7 +391,7 @@ def _support_collision_report(stage: Any, settings: dict[str, Any]) -> dict[str,
             UsdPhysics.MeshCollisionAPI
         ),
         "collision_enabled": collision_enabled,
-        "static_support_verified": True,
+        **body_mode_report,
         "world_bbox_min_xyz": list(bbox_min),
         "world_bbox_max_xyz": list(bbox_max),
         "world_bbox_center_xyz": [

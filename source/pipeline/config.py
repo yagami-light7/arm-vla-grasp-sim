@@ -193,6 +193,9 @@ class ManipulationSettings:
     base_settle_linear_velocity_mps: float = 0.08
     base_settle_angular_velocity_rps: float = 0.30
     base_settle_max_tilt_rad: float = 0.20
+    # Stage build/reuse 后先固定 reset root，并通过 actuator target 保持支撑腿；
+    # 解除 root lock 后仍需满足上面的真实稳定门，锁定期间不计入 stable_steps。
+    initialization_base_lock_steps: int = 0
     # 相对上一版统一缩短一半执行时长，实现约 2 倍 tracking 速度；
     # 只改变物理控制目标的时间采样，不修改 cuRobo 路径几何。
     arm_motion_time_scale: float = 0.50
@@ -284,6 +287,8 @@ class RecordingSettings:
     debug_per_episode_lerobot: bool = True
     unified_dataset: bool = True
     validate_export: bool = True
+    async_encoding_and_write: bool = True
+    async_queue_size: int = 16
 
 
 @dataclass(frozen=True)
@@ -334,6 +339,9 @@ class FullPhysicsConfig:
     output_dir: Path
     num_episodes: int = 1
     seed: int = 0
+    # Multi-episode real runs keep one Isaac application/environment alive and
+    # re-apply episode-level poses before reset. A single episode is unchanged.
+    reuse_isaac_stage: bool = True
     headless: bool = True
     keep_window_open: bool = False
     show_planned_trajectories: bool = False
@@ -709,6 +717,8 @@ class FullPhysicsConfig:
             raise ValueError("recording jpeg_quality must be within [1, 100]")
         if self.recording.chunks_size <= 0:
             raise ValueError("recording chunks_size must be positive")
+        if self.recording.async_queue_size < 1:
+            raise ValueError("recording async_queue_size must be positive")
         if not self.recording.camera_keys:
             raise ValueError("recording camera_keys must not be empty")
         if self.recording.primary_camera_key not in self.recording.camera_keys:

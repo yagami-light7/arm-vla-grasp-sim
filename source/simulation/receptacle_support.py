@@ -145,12 +145,9 @@ def inspect_task_receptacle_support_stage(
             collision_enabled_count += int(
                 True if enabled_value is None else bool(enabled_value)
             )
-    rigid_body_prim_paths = [
-        str(prim.GetPath())
-        for prim in Usd.PrimRange(receptacle_prim)
-        if prim.HasAPI(UsdPhysics.RigidBodyAPI)
-    ]
-    rigid_body_api_count = len(rigid_body_prim_paths)
+    from .task_scene_pose import inspect_episode_static_support_body_mode
+
+    body_mode_report = inspect_episode_static_support_body_mode(receptacle_prim)
 
     if mesh_count == 0:
         raise RuntimeError(f"task receptacle support has no Mesh: {support_path}")
@@ -158,10 +155,13 @@ def inspect_task_receptacle_support_stage(
         raise RuntimeError(
             f"task receptacle support has no enabled CollisionAPI: {support_path}"
         )
-    if settings["support_expected_static"] and rigid_body_api_count:
+    if (
+        settings["support_expected_static"]
+        and body_mode_report["episode_static_support_verified"] is not True
+    ):
         raise RuntimeError(
-            "task receptacle support was expected to be static but has RigidBodyAPI: "
-            f"{support_path}"
+            "task receptacle support was expected to be episode-static, but has "
+            f"an unsupported rigid-body layout: {body_mode_report}"
         )
 
     bbox_cache = UsdGeom.BBoxCache(
@@ -211,9 +211,7 @@ def inspect_task_receptacle_support_stage(
         "collision_api_count": collision_api_count,
         "collision_enabled_count": collision_enabled_count,
         "collision_prim_paths": collision_prim_paths,
-        "rigid_body_api_count": rigid_body_api_count,
-        "rigid_body_prim_paths": rigid_body_prim_paths,
-        "static_support_verified": rigid_body_api_count == 0,
+        **body_mode_report,
         "world_bbox_min_xyz": list(bbox_min),
         "world_bbox_max_xyz": list(bbox_max),
         "world_bbox_center_xyz": list(bbox_center),

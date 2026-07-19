@@ -83,12 +83,19 @@ class JsonlEpisodeRecorder:
         self._task_payload: dict[str, Any] = {}
         self._training_eligible = True
         self._training_eligibility_reason: str | None = None
+        self._performance_profiler: Any | None = None
         self.event_count = 0
         self.frame_count = 0
+        self.control_step_count = 0
+        self._last_logged_pipeline_state: str | None = None
 
     @property
     def output_dir(self) -> Path:
         return self._output_dir
+
+    def set_performance_profiler(self, profiler: Any | None) -> None:
+        self._performance_profiler = profiler
+        self._dataset_writer.set_performance_profiler(profiler)
 
     def save_task(self, episode_spec: EpisodeSpec) -> Path:
         payload = episode_spec.raw_task or asdict(episode_spec)
@@ -107,17 +114,40 @@ class JsonlEpisodeRecorder:
         self.event_count += 1
 
     def record_step(self, record: StepRecord) -> None:
-        sample_report = self._dataset_writer.record(record)
+        profiler = self._performance_profiler
+        if profiler is None:
+            sample_report = self._dataset_writer.record(record)
+        else:
+            with profiler.measure("recorder.dataset_record"):
+                sample_report = self._dataset_writer.record(record)
         metadata = dict(record.metadata)
         if sample_report is not None:
             metadata["dataset_sample"] = sample_report
+        state_changed = record.pipeline_state != self._last_logged_pipeline_state
+        self.control_step_count += 1
+        # Full-physics diagnostics follow the 5 Hz dataset grid and always keep
+        # state transitions.  Non-recording smoke/dry-run modes retain every tick.
+        should_log_frame = bool(
+            not self._lerobot_config.enabled
+            or sample_report is not None
+            or state_changed
+        )
+        self._last_logged_pipeline_state = record.pipeline_state
+        if not should_log_frame:
+            return
         payload = {
             "step_index": record.step_index,
             "timestamp": record.timestamp,
             "pipeline_state": record.pipeline_state,
-            "observation": _simulation_state_payload(record.observation),
+            "observation": _simulation_state_payload(
+                record.observation,
+                include_full_metadata=state_changed,
+            ),
             "action": _json_safe(record.action),
-            "post_step_observation": _simulation_state_payload(record.post_step_observation),
+            "post_step_observation": _simulation_state_payload(
+                record.post_step_observation,
+                include_full_metadata=state_changed,
+            ),
             "dataset_frame_index": (
                 sample_report.get("frame_index") if sample_report is not None else None
             ),
@@ -128,8 +158,15 @@ class JsonlEpisodeRecorder:
                 sample_report.get("video_features", {}) if sample_report is not None else {}
             ),
             "metadata": _json_safe(metadata),
+            "diagnostic_log_reason": (
+                "state_transition" if state_changed else "dataset_sample"
+            ),
         }
-        self._append_jsonl(self.frames_path, payload)
+        if profiler is None:
+            self._append_jsonl(self.frames_path, payload)
+        else:
+            with profiler.measure("recorder.frames_jsonl_write"):
+                self._append_jsonl(self.frames_path, payload)
         self.frame_count += 1
 
     def mark_training_eligible(self, eligible: bool, *, reason: str | None = None) -> None:
@@ -213,6 +250,19 @@ class JsonlEpisodeRecorder:
             "camera_capture_transient_missing_keys": writer_report[
                 "missing_camera_keys"
             ],
+            "camera_state_synchronization": writer_report[
+                "camera_state_synchronization"
+            ],
+            "sampling_coverage": writer_report["sampling_coverage"],
+            "async_encoding_and_write": writer_report[
+                "async_encoding_and_write"
+            ],
+            "async_queue_size": writer_report["async_queue_size"],
+            "async_max_queue_depth": writer_report["async_max_queue_depth"],
+            "async_queue_block_seconds": writer_report[
+                "async_queue_block_seconds"
+            ],
+            "committed_frame_count": writer_report["committed_frame_count"],
             "video_paths": {
                 key: str(
                     self._dataset_writer.video_staging_root
@@ -273,12 +323,14 @@ class JsonlEpisodeRecorder:
             "frequency_report": dict(self._dataset_writer.frequency_report),
             "source_frames": str(self.frames_path),
             "frame_count": self.frame_count,
+            "control_step_count": self.control_step_count,
             "num_frames": self._dataset_writer.frame_count,
             "episode_success_verified": bool(self._training_eligible),
             "training_eligible": bool(
                 self._training_eligible
                 and self._lerobot_config.enabled
                 and self._dataset_writer.frame_count > 0
+                and writer_report["sampling_coverage"]["verified"] is True
             ),
         }
         if not self._training_eligible:
@@ -303,6 +355,14 @@ class JsonlEpisodeRecorder:
                 **raw_payload,
                 "lerobot_exported": False,
                 "reason": "no_synchronized_front_camera_frames",
+            }
+        elif writer_report["sampling_coverage"]["verified"] is not True:
+            payload = {
+                **raw_payload,
+                "lerobot_exported": False,
+                "success": False,
+                "failure_reason": "episode_sampling_coverage_incomplete",
+                "reason": "episode_sampling_coverage_incomplete",
             }
         elif not self._lerobot_config.debug_per_episode_lerobot:
             # batch 模式可只保留原始 episode，结束后统一生成 dataset root。
@@ -435,6 +495,7 @@ class JsonlEpisodeRecorder:
             "lerobot_export": existing_export,
             "event_count": self.event_count,
             "frame_count": self.frame_count,
+            "control_step_count": self.control_step_count,
             "data_output_path": str(self.output_dir),
             "lerobot_training_eligible": bool(
                 training_quality_verified
@@ -626,7 +687,11 @@ class JsonlEpisodeRecorder:
             stream.write("\n")
 
 
-def _simulation_state_payload(state: SimulationState) -> dict[str, Any]:
+def _simulation_state_payload(
+    state: SimulationState,
+    *,
+    include_full_metadata: bool = True,
+) -> dict[str, Any]:
     """序列化数值状态，但只记录相机名称，避免把像素写入 frames.jsonl。"""
 
     return {
@@ -640,5 +705,36 @@ def _simulation_state_payload(state: SimulationState) -> dict[str, Any]:
         "object_pose": state.object_pose,
         "object_velocity": state.object_velocity,
         "camera_images": sorted(str(name) for name in state.camera_images),
-        "metadata": state.metadata,
+        "metadata": (
+            state.metadata
+            if include_full_metadata
+            else _compact_simulation_metadata(state.metadata)
+        ),
     }
+
+
+def _compact_simulation_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Keep per-tick values without repeating static stage/planner reports."""
+
+    keys = (
+        "physics_dt",
+        "control_dt",
+        "decimation",
+        "camera_render_interval_control_steps",
+        "camera_render_hz",
+        "camera_capture_report",
+        "environment_terminated",
+        "joint_names",
+        "base_pose_xyyaw",
+        "body_velocity",
+        "body_linear_velocity",
+        "last_action_source",
+        "used_base_teleport",
+        "used_direct_joint_state",
+        "used_object_teleport",
+        "used_kinematic_object_follow",
+        "used_visual_replay",
+        "used_manipulation_base_lock",
+        "used_manipulation_support_joint_lock",
+    )
+    return {key: metadata[key] for key in keys if key in metadata}

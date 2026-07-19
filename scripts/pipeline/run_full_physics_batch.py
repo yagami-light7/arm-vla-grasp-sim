@@ -84,6 +84,7 @@ class BatchEpisodeCommand:
     output_dir: Path
     summary_path: Path
     command: list[str]
+    num_episodes: int = 1
 
 
 @dataclass(frozen=True)
@@ -93,6 +94,8 @@ class EpisodeProgress:
     state: str | None = None
     step_index: int | None = None
     source: str = "unavailable"
+    episode_index: int | None = None
+    seed: int | None = None
 
 
 @dataclass(frozen=True)
@@ -120,7 +123,10 @@ def _project_path(raw_path: str | Path) -> Path:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="逐个子进程运行 full-physics episode，适用于真实 Isaac 自动化批量验证。",
+        description=(
+            "批量运行 full-physics episode；默认复用一个 Isaac 进程和 stage，"
+            "也可回退到逐 episode 子进程。"
+        ),
     )
     parser.add_argument(
         "--scene-profile",
@@ -145,6 +151,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="批量运行输出目录；每个 episode 会写入独立子目录。",
     )
     parser.add_argument("--num-episodes", type=int, default=1, help="运行的 episode 数量。")
+    parser.add_argument(
+        "--reuse-isaac-process",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "多 episode 时复用同一 Isaac/IsaacLab 进程和 stage；默认开启。"
+            "使用 --no-reuse-isaac-process 恢复逐 episode 子进程。"
+        ),
+    )
     parser.add_argument(
         "--seed",
         type=int,
@@ -488,13 +503,24 @@ def _read_episode_progress(
     *,
     min_mtime: float | None = None,
 ) -> EpisodeProgress:
+    active_episode_index = episode.episode_index
+    active_episode_dir = episode.output_dir
+    active_summary_path = episode.summary_path
+    if episode.num_episodes > 1:
+        for candidate_index in range(episode.num_episodes - 1, -1, -1):
+            candidate_dir = episode.output_dir / f"episode_{candidate_index:06d}"
+            if candidate_dir.is_dir():
+                active_episode_index = candidate_index
+                active_episode_dir = candidate_dir
+                active_summary_path = candidate_dir / "summary.json"
+                break
     frames_candidates = [
-        episode.summary_path.parent / "frames.jsonl",
-        episode.output_dir / "episode_000000" / "frames.jsonl",
+        active_summary_path.parent / "frames.jsonl",
+        active_episode_dir / "episode_000000" / "frames.jsonl",
     ]
     summary_candidates = [
-        episode.summary_path,
-        episode.summary_path.parent / "episode_000000" / episode.summary_path.name,
+        active_summary_path,
+        active_summary_path.parent / "episode_000000" / active_summary_path.name,
     ]
     any_progress_file_exists = any(path.is_file() for path in frames_candidates + summary_candidates)
     frames_path = next((path for path in frames_candidates if path.is_file()), frames_candidates[0])
@@ -506,13 +532,26 @@ def _read_episode_progress(
             state=state if isinstance(state, str) else None,
             step_index=int(step_index) if isinstance(step_index, int) else None,
             source="frames",
+            episode_index=active_episode_index,
+            seed=episode.seed + active_episode_index - episode.episode_index,
         )
-    summary_progress = _progress_from_summary(episode.summary_path, min_mtime=min_mtime)
+    summary_progress = _progress_from_summary(active_summary_path, min_mtime=min_mtime)
     if summary_progress is not None:
-        return summary_progress
+        return EpisodeProgress(
+            state=summary_progress.state,
+            step_index=summary_progress.step_index,
+            source=summary_progress.source,
+            episode_index=active_episode_index,
+            seed=episode.seed + active_episode_index - episode.episode_index,
+        )
     if any_progress_file_exists:
         return EpisodeProgress()
-    return EpisodeProgress(state="isaac_startup", source="batch")
+    return EpisodeProgress(
+        state="isaac_startup",
+        source="batch",
+        episode_index=active_episode_index,
+        seed=episode.seed + active_episode_index - episode.episode_index,
+    )
 
 
 def _print_progress_line(
@@ -525,10 +564,16 @@ def _print_progress_line(
     """用独立块打印 batch heartbeat，避免被 Isaac 多行日志夹断。"""
 
     prefix = _color("[progress] ", "yellow", enabled=color_enabled)
+    displayed_episode_index = (
+        episode.episode_index
+        if progress.episode_index is None
+        else progress.episode_index
+    )
+    displayed_seed = episode.seed if progress.seed is None else progress.seed
     progress_line = (
         prefix
         + (
-            f"episode={episode.episode_index} seed={episode.seed} "
+            f"episode={displayed_episode_index} seed={displayed_seed} "
             f"running elapsed={_format_duration(elapsed_seconds)}"
         )
         + _format_progress_suffix(progress, color_enabled=color_enabled)
@@ -963,6 +1008,40 @@ def _build_child_command(
     )
 
 
+def _replace_command_option(command: list[str], option: str, value: str) -> None:
+    try:
+        index = command.index(option)
+    except ValueError as exc:
+        raise RuntimeError(f"child command is missing required option: {option}") from exc
+    if index + 1 >= len(command):
+        raise RuntimeError(f"child command option has no value: {option}")
+    command[index + 1] = value
+
+
+def _build_reused_process_command(args: argparse.Namespace) -> BatchEpisodeCommand:
+    """Build one child command that runs every episode in one live Isaac stage."""
+
+    base = _build_child_command(args, episode_index=0)
+    output_root = _project_path(args.output_dir)
+    command = list(base.command)
+    _replace_command_option(command, "--output-dir", str(output_root))
+    _replace_command_option(command, "--num-episodes", str(int(args.num_episodes)))
+    if "--no-reuse-isaac-stage" in command:
+        command.remove("--no-reuse-isaac-stage")
+    if "--reuse-isaac-stage" not in command:
+        command.append("--reuse-isaac-stage")
+    if args.video_out and "--video-out" in command:
+        _replace_command_option(command, "--video-out", str(_project_path(args.video_out)))
+    return BatchEpisodeCommand(
+        episode_index=0,
+        seed=int(args.seed),
+        output_dir=output_root,
+        summary_path=output_root / "episode_000000" / "summary.json",
+        command=command,
+        num_episodes=int(args.num_episodes),
+    )
+
+
 def _read_summary(
     path: Path,
     *,
@@ -1159,6 +1238,18 @@ def _materialize_batch_lerobot(
     return {**report, "manifest_path": str(manifest_path)}
 
 
+def _summary_elapsed_seconds(summary: dict[str, object] | None) -> float:
+    if summary is None:
+        return 0.0
+    performance = summary.get("performance_report")
+    if isinstance(performance, dict):
+        wall_seconds = performance.get("wall_seconds")
+        if isinstance(wall_seconds, (int, float)):
+            return max(0.0, float(wall_seconds))
+    duration = summary.get("duration_seconds")
+    return max(0.0, float(duration)) if isinstance(duration, (int, float)) else 0.0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.num_episodes < 1:
@@ -1188,8 +1279,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     env["PYTHONUNBUFFERED"] = "1"
     # batch 只在全部子进程结束后生成统一 dataset，避免每个 episode 重复编码一份。
     env["FULL_PHYSICS_DEFER_LEROBOT_EXPORT"] = "1"
-    # 子进程已经位于 batch episode 目录，不再额外创建 episode_000000。
-    env["FULL_PHYSICS_FLAT_EPISODE_OUTPUT"] = "1"
+    reuse_isaac_process = bool(
+        args.reuse_isaac_process
+        and args.mode == "full_physics"
+        and args.num_episodes > 1
+        and args.headless
+        and args.continue_on_failure
+    )
+    if reuse_isaac_process:
+        # One child owns output_root/episode_N and one live Isaac stage.
+        env.pop("FULL_PHYSICS_FLAT_EPISODE_OUTPUT", None)
+        env["FULL_PHYSICS_BATCH_SUMMARY_NAME"] = "pipeline_batch_summary.jsonl"
+    else:
+        # Isolated children already run inside their final episode directory.
+        env["FULL_PHYSICS_FLAT_EPISODE_OUTPUT"] = "1"
+        env.pop("FULL_PHYSICS_BATCH_SUMMARY_NAME", None)
     all_success = True
     completed = 0
     batch_started_at = time.monotonic()
@@ -1200,80 +1304,126 @@ def main(argv: Sequence[str] | None = None) -> int:
         (
             f"[full-physics-batch] mode={args.mode} episodes={args.num_episodes} "
             f"seed_range={args.seed}..{args.seed + args.num_episodes - 1} "
-            f"output={output_root}"
+            f"reuse_isaac_process={reuse_isaac_process} output={output_root}"
         ),
         color_enabled=color_enabled,
     )
+
+    def _consume_completed_episode(
+        summary_stream,
+        *,
+        episode: BatchEpisodeCommand,
+        returncode: int,
+        elapsed_seconds: float,
+        min_mtime: float,
+        require_zero_returncode: bool,
+    ) -> bool:
+        nonlocal all_success, completed
+        summary = _read_summary(episode.summary_path, min_mtime=min_mtime)
+        success = bool(
+            summary
+            and summary.get("success")
+            and (returncode == 0 or not require_zero_returncode)
+        )
+        result = _build_episode_result(
+            episode=episode,
+            summary=summary,
+            success=success,
+            elapsed_seconds=elapsed_seconds,
+        )
+        episode_results.append(result)
+        training_quality_passed = _training_quality_gate_passed(summary)
+        if args.mode == "full_physics" and success and training_quality_passed:
+            training_accepted_episode_dirs.append(episode.output_dir)
+        episode_accepted = bool(
+            success and (args.mode != "full_physics" or training_quality_passed)
+        )
+        all_success = all_success and episode_accepted
+        completed += 1
+        _write_batch_record(
+            summary_stream,
+            episode=episode,
+            returncode=returncode,
+            summary=summary,
+            result=result,
+        )
+        status_text = (
+            "success"
+            if episode_accepted
+            else ("quality-rejected" if success else "failed")
+        )
+        status_color = "green" if episode_accepted else "red"
+        final_progress = _progress_from_summary(
+            episode.summary_path,
+            min_mtime=min_mtime,
+        ) or _read_episode_progress(episode, min_mtime=min_mtime)
+        print(
+            _color(f"[{status_text}] ", status_color, enabled=color_enabled)
+            + (
+                f"episode={episode.episode_index} seed={episode.seed} "
+                f"returncode={returncode} "
+                f"elapsed={_format_duration(elapsed_seconds)} "
+                f"summary={episode.summary_path}"
+            ),
+            _format_progress_suffix(final_progress, color_enabled=color_enabled),
+            flush=True,
+        )
+        return episode_accepted
+
     with batch_summary_path.open("a", encoding="utf-8") as summary_stream:
-        for episode_index in range(args.num_episodes):
-            episode = _build_child_command(args, episode_index=episode_index)
-            episode.output_dir.mkdir(parents=True, exist_ok=True)
-            episode_started_at = time.monotonic()
-            episode_started_at_epoch = time.time()
+        if reuse_isaac_process:
+            shared_command = _build_reused_process_command(args)
+            shared_started_at_epoch = time.time()
             returncode = _run_child_process(
-                episode,
+                shared_command,
                 env=env,
                 progress_interval_s=args.progress_interval_s,
                 color_enabled=color_enabled,
             )
-            episode_elapsed_seconds = time.monotonic() - episode_started_at
-            summary = _read_summary(
-                episode.summary_path,
-                min_mtime=episode_started_at_epoch,
-            )
-            success = returncode == 0 and bool(summary and summary.get("success"))
-            result = _build_episode_result(
-                episode=episode,
-                summary=summary,
-                success=success,
-                elapsed_seconds=episode_elapsed_seconds,
-            )
-            episode_results.append(result)
-            training_quality_passed = _training_quality_gate_passed(summary)
-            if args.mode == "full_physics" and success and training_quality_passed:
-                training_accepted_episode_dirs.append(episode.output_dir)
-            episode_accepted = bool(
-                success
-                and (
-                    args.mode != "full_physics"
-                    or training_quality_passed
+            for episode_index in range(args.num_episodes):
+                episode_output_dir = output_root / f"episode_{episode_index:06d}"
+                episode = BatchEpisodeCommand(
+                    episode_index=episode_index,
+                    seed=int(args.seed) + episode_index,
+                    output_dir=episode_output_dir,
+                    summary_path=episode_output_dir / "summary.json",
+                    command=shared_command.command,
                 )
-            )
-            all_success = all_success and episode_accepted
-            completed += 1
-            _write_batch_record(
-                summary_stream,
-                episode=episode,
-                returncode=returncode,
-                summary=summary,
-                result=result,
-            )
-            status_text = (
-                "success"
-                if episode_accepted
-                else ("quality-rejected" if success else "failed")
-            )
-            status_color = "green" if episode_accepted else "red"
-            final_progress = _progress_from_summary(
-                episode.summary_path,
-                min_mtime=episode_started_at_epoch,
-            ) or _read_episode_progress(
-                episode,
-                min_mtime=episode_started_at_epoch,
-            )
-            print(
-                _color(f"[{status_text}] ", status_color, enabled=color_enabled)
-                + (
-                    f"episode={episode_index} seed={episode.seed} "
-                    f"returncode={returncode} "
-                    f"elapsed={_format_duration(episode_elapsed_seconds)} "
-                    f"summary={episode.summary_path}"
-                ),
-                _format_progress_suffix(final_progress, color_enabled=color_enabled),
-                flush=True,
-            )
-            if not episode_accepted and not args.continue_on_failure:
-                break
+                summary = _read_summary(
+                    episode.summary_path,
+                    min_mtime=shared_started_at_epoch,
+                )
+                _consume_completed_episode(
+                    summary_stream,
+                    episode=episode,
+                    returncode=returncode,
+                    elapsed_seconds=_summary_elapsed_seconds(summary),
+                    min_mtime=shared_started_at_epoch,
+                    require_zero_returncode=False,
+                )
+        else:
+            for episode_index in range(args.num_episodes):
+                episode = _build_child_command(args, episode_index=episode_index)
+                episode.output_dir.mkdir(parents=True, exist_ok=True)
+                episode_started_at = time.monotonic()
+                episode_started_at_epoch = time.time()
+                returncode = _run_child_process(
+                    episode,
+                    env=env,
+                    progress_interval_s=args.progress_interval_s,
+                    color_enabled=color_enabled,
+                )
+                episode_elapsed_seconds = time.monotonic() - episode_started_at
+                episode_accepted = _consume_completed_episode(
+                    summary_stream,
+                    episode=episode,
+                    returncode=returncode,
+                    elapsed_seconds=episode_elapsed_seconds,
+                    min_mtime=episode_started_at_epoch,
+                    require_zero_returncode=True,
+                )
+                if not episode_accepted and not args.continue_on_failure:
+                    break
     lerobot_report: dict[str, object] | None = None
     if args.mode == "full_physics":
         lerobot_report = _materialize_batch_lerobot(

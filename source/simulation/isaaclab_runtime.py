@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import math
 import os
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -491,6 +493,12 @@ class IsaacLabNavigationRuntimeConfig:
     overview_camera_prim_path: str = "/World/overview"
     overview_camera_height: int = 480
     overview_camera_width: int = 640
+    # Headless dataset collection can render on the dataset sampling grid.
+    # GUI and composite video keep this at one control step.
+    camera_render_interval_control_steps: int = 1
+    # Multi-episode stage reuse requires randomized support colliders to expose a
+    # live PhysX pose.  They remain immovable kinematic bodies during an episode.
+    enable_relocatable_episode_supports: bool = False
     patch_gripper_collision: bool = True
     gripper_collision_robot_root: str = "/World/go2_x5"
     gripper_collision_links: tuple[str, str] = ("arm_link7", "arm_link8")
@@ -1478,6 +1486,51 @@ def _retarget_height_scanners(scene_cfg: Any, terrain_mesh_prim_path: str) -> tu
     return tuple(updated)
 
 
+def _episode_reset_pose_configuration(
+    episode_spec: EpisodeSpec,
+    *,
+    default_root_pos: tuple[float, float, float],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build the exact IsaacLab reset event parameters for one episode."""
+
+    start_z = (
+        default_root_pos[2]
+        if episode_spec.start.z is None
+        else float(episode_spec.start.z)
+    )
+    start_offset = (
+        float(episode_spec.start.x) - default_root_pos[0],
+        float(episode_spec.start.y) - default_root_pos[1],
+        start_z - default_root_pos[2],
+    )
+    params = {
+        "pose_range": {
+            "x": (start_offset[0], start_offset[0]),
+            "y": (start_offset[1], start_offset[1]),
+            "z": (start_offset[2], start_offset[2]),
+            "roll": (0.0, 0.0),
+            "pitch": (0.0, 0.0),
+            "yaw": (episode_spec.start.yaw, episode_spec.start.yaw),
+        },
+        "velocity_range": {
+            key: (0.0, 0.0)
+            for key in ("x", "y", "z", "roll", "pitch", "yaw")
+        },
+    }
+    report = {
+        "target_world_xyz_yaw": (
+            float(episode_spec.start.x),
+            float(episode_spec.start.y),
+            start_z,
+            float(episode_spec.start.yaw),
+        ),
+        "default_root_pos": default_root_pos,
+        "pose_range_offset_xyz": start_offset,
+        "event_semantics": "default_root_state_plus_offset",
+    }
+    return params, report
+
+
 def _resolve_rigid_body_prim_path(stage: Any, object_root_path: str) -> str:
     """解析物体子树中的真实动态刚体，避免把外层定位 Xform 变成父刚体。"""
 
@@ -1545,10 +1598,21 @@ class IsaacLabNavigationRuntime:
         self._runtime = None
         self._adapter = None
         self._object = None
+        self._episode_support_bodies: dict[str, dict[str, Any]] = {}
         self._settled_object_pose: tuple[float, ...] | None = None
         self._episode_spec: EpisodeSpec | None = None
+        self._default_robot_root_pos: tuple[float, float, float] | None = None
+        self._stage_reuse_fingerprint: dict[str, Any] | None = None
+        self._stage_build_count = 0
+        self._stage_reuse_count = 0
         self._step_calls = 0
         self._closed = False
+        self._performance_profiler: Any | None = None
+        self._cached_camera_step: int | None = None
+        self._cached_camera_images: dict[str, Any] = {}
+        self._camera_render_generation = 0
+        self._last_camera_render_step: int | None = None
+        self._last_camera_render_reason: str | None = None
         self._action_prepared = False
         self._environment_terminated = False
         self._last_action = RobotAction.idle()
@@ -1615,15 +1679,280 @@ class IsaacLabNavigationRuntime:
             "gripper_open_apply_count": 0,
             "world_count": 1,
             "opened_stage_count": 1,
+            "stage_build_count": 0,
+            "stage_reuse_count": 0,
         }
+
+    def set_performance_profiler(self, profiler: Any | None) -> None:
+        """Attach the episode profiler without coupling runtime interfaces to diagnostics."""
+
+        self._performance_profiler = profiler
+
+    @property
+    def is_built(self) -> bool:
+        """Whether the IsaacLab environment and stage are ready for reset."""
+
+        return self._env is not None and self._runtime is not None
+
+    def _hard_reset_stage_reuse_physics(
+        self,
+        episode_spec: EpisodeSpec,
+    ) -> dict[str, Any]:
+        """Recreate PhysX views while preserving the already-open USD stage.
+
+        ``ManagerBasedEnv.reset`` only rewrites tensor state for one environment.
+        It does not clear the articulation/contact solver warm-start accumulated by
+        the previous episode.  In a reused stage that stale state can fold the Go2
+        legs on the first physics step even though the visible reset tensors are
+        correct.  A hard ``SimulationContext.reset`` stops and restarts the
+        timeline, which recreates the PhysX simulation view without reopening or
+        rebuilding the USD stage.
+
+        Timeline STOP invalidates both IsaacLab asset handles and the standalone
+        ``SingleRigidPrim`` readers used here.  IsaacLab assets reinitialize from
+        their PLAY callbacks; the standalone object/support readers and calibrated
+        camera matrices must be rebound explicitly before the episode reset.
+        """
+
+        started_at = time.perf_counter()
+        control_step_before = int(self._step_calls)
+        manager_sim_step_before = int(self._runtime._sim_step_counter)
+
+        self._runtime.sim.reset(soft=False)
+        # Match ManagerBasedEnv's initial construction sequence so freshly
+        # reinitialized assets and sensors have populated data buffers.
+        self._runtime.scene.update(dt=float(self._runtime.physics_dt))
+
+        self._initialize_object_reader(episode_spec)
+        self._initialize_episode_support_readers(episode_spec)
+        camera_intrinsics_report = self._apply_d436_runtime_intrinsics(
+            self._runtime
+        )
+        self._metadata["camera_runtime_intrinsics_report"] = (
+            camera_intrinsics_report
+        )
+        self._runtime.sim.forward()
+
+        return {
+            "applied": True,
+            "mode": "simulation_context_hard_reset",
+            "soft": False,
+            "usd_stage_reopened": False,
+            "usd_stage_rebuilt": False,
+            "physx_views_recreated": True,
+            "standalone_tensor_readers_reinitialized": True,
+            "camera_intrinsics_reapplied": camera_intrinsics_report,
+            "control_step_before_after": [
+                control_step_before,
+                int(self._step_calls),
+            ],
+            "manager_sim_step_before_after": [
+                manager_sim_step_before,
+                int(self._runtime._sim_step_counter),
+            ],
+            "physics_time_advanced": False,
+            "wall_seconds": time.perf_counter() - started_at,
+        }
+
+    def prepare_episode(self, episode_spec: EpisodeSpec) -> dict[str, Any]:
+        """Build once, then reconfigure episode-level poses on the live stage."""
+
+        if self._closed:
+            raise RuntimeError("simulation runtime is closed")
+        if not self.is_built:
+            self.build(episode_spec)
+            report = {
+                "stage_reused": False,
+                "stage_build_count": self._stage_build_count,
+                "stage_reuse_count": self._stage_reuse_count,
+                "episode_id": int(episode_spec.episode_id),
+                "reason": "initial_stage_build",
+            }
+            self._metadata["stage_reuse_report"] = report
+            return report
+
+        started_at = time.perf_counter()
+        fingerprint = self._episode_stage_fingerprint(episode_spec)
+        if fingerprint != self._stage_reuse_fingerprint:
+            raise RuntimeError(
+                "episode is incompatible with the existing Isaac stage: "
+                f"built={self._stage_reuse_fingerprint} requested={fingerprint}"
+            )
+        if self._default_robot_root_pos is None:
+            raise RuntimeError("default robot root pose is unavailable for stage reuse")
+
+        import omni.usd
+
+        from source.simulation.task_scene_pose import apply_task_receptacle_pose
+
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            raise RuntimeError("Isaac stage is unavailable during episode reuse")
+
+        previous_episode_id = (
+            None if self._episode_spec is None else int(self._episode_spec.episode_id)
+        )
+        self._episode_spec = episode_spec
+        receptacle_pose_report = apply_task_receptacle_pose(
+            stage,
+            episode_spec.raw_task,
+        )
+        self._metadata["task_receptacle_pose_report"] = receptacle_pose_report
+        # Author every episode-local USD pose before restarting PhysX so the new
+        # simulation view is born from the requested scene configuration rather
+        # than from the previous episode's terminal contact state.
+        self._metadata["object_pose_setup_report"] = self._apply_object_pose(
+            episode_spec
+        )
+        physics_context_reset_report = self._hard_reset_stage_reuse_physics(
+            episode_spec
+        )
+        self._metadata["stage_reuse_physics_context_reset_report"] = (
+            physics_context_reset_report
+        )
+        support_pose_write_report = self._write_episode_support_physics_poses(
+            episode_spec,
+            reason="stage_reuse_prepare_episode",
+        )
+        # Push the kinematic support tensor transforms into Fabric.  Unlike a
+        # rewritten USD-static collider, this does not require a Kit update or a
+        # physics-scene rebuild.
+        self._runtime.sim.forward()
+        support_pose_diagnostic = self._episode_support_pose_diagnostic(
+            label="after_stage_reuse_prepare_forward",
+        )
+        if support_pose_diagnostic.get("verified") is not True:
+            raise RuntimeError(
+                "episode support pose changed during stage-reuse forward sync: "
+                f"{support_pose_diagnostic}"
+            )
+        self._metadata["task_receptacle_support_runtime_stage_report"] = (
+            inspect_task_receptacle_support_stage(
+                stage,
+                episode_spec.raw_task,
+                source="isaaclab_reused_runtime_stage",
+            )
+        )
+        self._metadata["object_visibility_report"] = self._show_only_task_object(
+            stage,
+            episode_spec,
+        )
+        self._metadata["object_collision_visual_hide_report"] = (
+            self._hide_object_collision_visual(stage)
+        )
+
+        reset_params, reset_report = _episode_reset_pose_configuration(
+            episode_spec,
+            default_root_pos=self._default_robot_root_pos,
+        )
+        reset_term_cfg = copy.deepcopy(
+            self._runtime.event_manager.get_term_cfg("randomize_reset_base")
+        )
+        reset_term_cfg.params = reset_params
+        self._runtime.event_manager.set_term_cfg(
+            "randomize_reset_base",
+            reset_term_cfg,
+        )
+        self._metadata["episode_reset_pose_request"] = reset_report
+
+        static_sync_report = {
+            "applied": True,
+            "reason": "kinematic_episode_support_tensor_sync",
+            "support_pose_write_report": support_pose_write_report,
+            "support_pose_diagnostic": support_pose_diagnostic,
+            "render_required": False,
+            "physics_time_advanced": False,
+        }
+        self._step_calls = 0
+        self._runtime._sim_step_counter = 0
+        self._cached_camera_step = None
+        self._cached_camera_images = {}
+        self._clear_previous_episode_metadata()
+        self._stage_reuse_count += 1
+        report = {
+            "stage_reused": True,
+            "stage_build_count": self._stage_build_count,
+            "stage_reuse_count": self._stage_reuse_count,
+            "previous_episode_id": previous_episode_id,
+            "episode_id": int(episode_spec.episode_id),
+            "scene_pose_reapplied": bool(
+                receptacle_pose_report.get("any_scene_pose_configured")
+            ),
+            "robot_reset_event_updated": True,
+            "physics_static_scene_sync": static_sync_report,
+            "physics_context_reset": physics_context_reset_report,
+            "physics_time_advanced": False,
+            "prepare_wall_seconds": time.perf_counter() - started_at,
+        }
+        self._metadata.update(
+            {
+                "stage_build_count": self._stage_build_count,
+                "stage_reuse_count": self._stage_reuse_count,
+                "stage_reuse_report": report,
+            }
+        )
+        return report
+
+    def _episode_stage_fingerprint(self, episode_spec: EpisodeSpec) -> dict[str, Any]:
+        scene_runtime = resolve_scene_runtime_settings(
+            episode_spec.raw_task,
+            default_collision_prim_path=self._config.terrain_prim_path,
+            default_visual_prim_path=self._config.visual_prim_path,
+            default_collision_floor_proxy_profile=(
+                self._config.collision_floor_proxy_profile
+            ),
+        )
+        support_settings = self._episode_support_pose_settings(episode_spec)
+        return {
+            "scene_usd": str(self._resolve_path(episode_spec.scene_usd)),
+            "nav_map": str(self._resolve_path(episode_spec.nav_map)),
+            "object_prim_path": episode_spec.object_prim_path,
+            "collision_prim_path": str(scene_runtime["collision_prim_path"]),
+            "visual_prim_path": str(scene_runtime["visual_prim_path"]),
+            "relocatable_episode_supports": bool(
+                self._config.enable_relocatable_episode_supports
+            ),
+            "episode_support_prim_paths": {
+                role: (
+                    str(settings["prim_path"])
+                    if settings.get("configured") is True
+                    else None
+                )
+                for role, settings in support_settings.items()
+            },
+        }
+
+    def _clear_previous_episode_metadata(self) -> None:
+        """Drop dynamic reports that must never leak into the next summary."""
+
+        for key in (
+            "last_current_state_curobo_pick_export",
+            "last_current_state_curobo_place_export",
+            "last_mesh_truth_pick_target_report",
+            "last_mesh_truth_place_target_report",
+            "object_settle_final_report",
+            "object_settle_begin_report",
+            "object_pose_debug_after_reset",
+            "object_pose_debug_after_reset_render",
+            "episode_support_reset_pose_write_report",
+            "episode_support_pose_after_reset_forward",
+            "episode_support_pose_after_reset_render",
+            "camera_capture_report",
+            "wrist_camera_object_clearance_report",
+        ):
+            self._metadata.pop(key, None)
 
     def build(self, episode_spec: EpisodeSpec) -> None:
         if self._closed:
             raise RuntimeError("simulation runtime is closed")
         if self._env is not None:
             raise RuntimeError("Isaac Lab environment has already been built")
+        if self._config.camera_render_interval_control_steps < 1:
+            raise ValueError("camera_render_interval_control_steps must be positive")
         self._episode_spec = episode_spec
         self._build_environment(episode_spec)
+        self._stage_build_count += 1
+        self._stage_reuse_fingerprint = self._episode_stage_fingerprint(episode_spec)
         if self._config.show_randomization_debug:
             import omni.usd
 
@@ -1647,22 +1976,39 @@ class IsaacLabNavigationRuntime:
                 "control_dt": float(self._runtime.step_dt),
                 "physics_dt": float(self._runtime.physics_dt),
                 "decimation": int(self._runtime.cfg.decimation),
+                "camera_render_interval_control_steps": int(
+                    self._config.camera_render_interval_control_steps
+                ),
+                "camera_render_hz": 1.0
+                / (
+                    float(self._runtime.step_dt)
+                    * float(self._config.camera_render_interval_control_steps)
+                ),
                 "checkpoint": str(self._resolve_checkpoint()),
+                "stage_build_count": self._stage_build_count,
+                "stage_reuse_count": self._stage_reuse_count,
             }
         )
 
     def reset(self, episode_spec: EpisodeSpec, *, seed: int) -> None:
         self._require_ready()
         self._episode_spec = episode_spec
+        # Episode-local time and the internal render grid both restart at zero.
+        # This preserves camera_capture_step == state.step_index after stage reuse.
+        self._step_calls = 0
+        self._runtime._sim_step_counter = 0
         self._settled_object_pose = None
+        self._cached_camera_step = None
+        self._cached_camera_images = {}
+        self._last_camera_render_step = None
+        self._last_camera_render_reason = None
         reset_policy_warmup = getattr(self._adapter, "reset_policy_warmup", None)
         if callable(reset_policy_warmup):
             reset_policy_warmup()
-        observations, _extras = self._runtime.reset(seed=seed)
-        self._adapter.update_observations(self._to_tensor_dict(observations))
-        self._environment_terminated = False
-        self._action_prepared = False
-        self._last_action = RobotAction.idle(source="episode_reset")
+        # Clear every episode-local adapter override before ManagerBasedEnv writes
+        # reset state back to PhysX.  This prevents a previous terminal carry/place
+        # lock from being observed during the new episode's reset transaction.
+        self._adapter.apply_base_command(0.0, 0.0, 0.0)
         self._adapter.set_arm_joint_target(None)
         self._adapter.set_direct_arm_action_override(False)
         self._adapter.set_gripper_joint_target(None)
@@ -1671,6 +2017,11 @@ class IsaacLabNavigationRuntime:
             self._adapter.set_support_joint_lock(False)
         if hasattr(self._adapter, "set_navigation_joint_pose_lock"):
             self._adapter.set_navigation_joint_pose_lock(False)
+        observations, _extras = self._runtime.reset(seed=seed)
+        self._adapter.update_observations(self._to_tensor_dict(observations))
+        self._environment_terminated = False
+        self._action_prepared = False
+        self._last_action = RobotAction.idle(source="episode_reset")
         self._pending_arm_tracking_target = None
         self._manipulation_base_lock_active = False
         self._manipulation_support_joint_lock_active = False
@@ -1734,6 +2085,12 @@ class IsaacLabNavigationRuntime:
                 ),
             }
         )
+        self._metadata["episode_support_reset_pose_write_report"] = (
+            self._write_episode_support_physics_poses(
+                episode_spec,
+                reason="episode_reset_after_manager_reset",
+            )
+        )
         self._metadata["object_reset_for_navigation_report"] = (
             self._reset_object_pose_and_motion(
                 episode_spec,
@@ -1745,6 +2102,57 @@ class IsaacLabNavigationRuntime:
             episode_spec,
             label="after_runtime_reset",
         )
+        # SingleRigidPrim writes the reset pose through a PhysX tensor view.  Push
+        # that fresh state into Fabric before RTX reads it; otherwise a render can
+        # re-expose the previous episode's cached transform even though PhysX was
+        # already reset correctly.
+        self._runtime.sim.forward()
+        support_before_render = self._episode_support_pose_diagnostic(
+            label="after_episode_reset_forward",
+        )
+        self._metadata["episode_support_pose_after_reset_forward"] = (
+            support_before_render
+        )
+        if support_before_render.get("verified") is not True:
+            raise RuntimeError(
+                "episode support pose changed during reset forward sync: "
+                f"{support_before_render}"
+            )
+        # ManagerBasedEnv reset deliberately does not rerender by default.  Without
+        # this explicit no-physics render, the first image after reset belongs to
+        # the previous robot/object state even if its logical timestamp says zero.
+        self._metadata["episode_reset_camera_render_sync_report"] = (
+            self._render_without_physics(
+                valid_state_step=0,
+                reason="episode_reset_state_sync",
+            )
+        )
+        post_render_pose_report = self._object_initial_pose_diagnostic(
+            episode_spec,
+            label="after_runtime_reset_fabric_render_sync",
+        )
+        self._metadata["object_pose_debug_after_reset_render"] = (
+            post_render_pose_report
+        )
+        support_after_render = self._episode_support_pose_diagnostic(
+            label="after_episode_reset_render",
+        )
+        self._metadata["episode_support_pose_after_reset_render"] = (
+            support_after_render
+        )
+        if support_after_render.get("verified") is not True:
+            raise RuntimeError(
+                "episode support pose changed during reset render sync: "
+                f"{support_after_render}"
+            )
+        if (
+            post_render_pose_report.get("available") is not True
+            or post_render_pose_report.get("within_tolerance") is not True
+        ):
+            raise RuntimeError(
+                "object pose changed during reset Fabric/render synchronization: "
+                f"{post_render_pose_report}"
+            )
         self.refresh_viewport(reason="reset_episode")
 
     def read(self) -> SimulationState:
@@ -1770,6 +2178,7 @@ class IsaacLabNavigationRuntime:
             tcp_pose_world=tcp_pose,
             object_pose_world=object_pose,
         )
+        camera_images = self._read_camera_images()
         metadata = {
             **self._metadata,
             "environment_terminated": self._environment_terminated,
@@ -1800,12 +2209,29 @@ class IsaacLabNavigationRuntime:
             tcp_pose=tcp_pose,
             object_pose=object_pose,
             object_velocity=object_velocity,
-            camera_images=self._read_camera_images(),
+            camera_images=camera_images,
             metadata=metadata,
         )
 
     def apply(self, action: RobotAction) -> None:
         self._require_ready()
+        if action.metadata.get("skip_physics_step") is True:
+            # ``skip_physics_step`` 是严格的无物理事务：既不能推进 PhysX，也不能
+            # 提前推进 RL policy warmup、ActionManager history 或 actuator target。
+            # 否则 reset 审计帧会吞掉第一条 warmup action，真正的首个物理步从
+            # 第二条 action 开始，在不规则碰撞地面上会产生明显冲击甚至把机器狗
+            # 直接打翻。状态机动作仍保留在 recorder/last_action 中用于审计。
+            self._last_action = action
+            self._action_prepared = False
+            self._metadata["last_no_physics_action_report"] = {
+                "skipped": True,
+                "source": action.source,
+                "skip_reason": action.metadata.get("skip_reason"),
+                "policy_action_processed": False,
+                "action_history_advanced": False,
+                "physics_step_required": False,
+            }
+            return
         self._apply_object_initialization_pose_stabilization(action)
         self._configure_manipulation_base_lock(action)
         arm_report = self._stage_arm_target(action)
@@ -2450,8 +2876,17 @@ class IsaacLabNavigationRuntime:
             raise RuntimeError("apply must be called before step")
 
         is_rendering = bool(render or self._runtime.sim.has_rtx_sensors())
+        profiler = self._performance_profiler
+        control_started_at = time.perf_counter()
+        started_at = time.perf_counter()
         self._runtime.recorder_manager.record_pre_step()
+        if profiler is not None:
+            profiler.record(
+                "runtime.recorder_pre_step",
+                time.perf_counter() - started_at,
+            )
         for _ in range(self._runtime.cfg.decimation):
+            prepare_started_at = time.perf_counter()
             self._runtime._sim_step_counter += 1
             self._apply_active_manipulation_base_lock(timing="before_physics_step")
             self._runtime.action_manager.apply_action()
@@ -2460,18 +2895,61 @@ class IsaacLabNavigationRuntime:
             self._apply_active_manipulation_base_lock(timing="after_action_manager")
             self._apply_staged_joint_position_targets(timing="after_action_manager")
             self._runtime.scene.write_data_to_sim()
+            if profiler is not None:
+                profiler.record(
+                    "runtime.physics_prepare",
+                    time.perf_counter() - prepare_started_at,
+                )
             # 这里只有 runtime 执行底层 physics step，调用权来自 pipeline 唯一主循环。
+            physics_started_at = time.perf_counter()
             self._runtime.sim.step(render=False)
+            if profiler is not None:
+                profiler.record(
+                    "runtime.physics_step",
+                    time.perf_counter() - physics_started_at,
+                )
+            post_started_at = time.perf_counter()
             self._apply_active_manipulation_base_lock(timing="after_physics_step")
             self._runtime.recorder_manager.record_post_physics_decimation_step()
+            if profiler is not None:
+                profiler.record(
+                    "runtime.physics_post_step",
+                    time.perf_counter() - post_started_at,
+                )
             if (
                 is_rendering
                 and self._runtime._sim_step_counter % self._runtime.cfg.sim.render_interval == 0
             ):
+                render_started_at = time.perf_counter()
                 self._runtime.sim.render()
+                self._mark_camera_render(
+                    valid_state_step=self._step_calls + 1,
+                    reason="control_render_grid",
+                )
+                if profiler is not None:
+                    profiler.record(
+                        "runtime.rtx_render",
+                        time.perf_counter() - render_started_at,
+                    )
+            scene_update_started_at = time.perf_counter()
             self._runtime.scene.update(dt=self._runtime.physics_dt)
+            if profiler is not None:
+                profiler.record(
+                    "runtime.scene_update",
+                    time.perf_counter() - scene_update_started_at,
+                )
 
+        finish_started_at = time.perf_counter()
         self._finish_control_step()
+        if profiler is not None:
+            profiler.record(
+                "runtime.finish_control_step",
+                time.perf_counter() - finish_started_at,
+            )
+            profiler.record(
+                "runtime.control_step_total",
+                time.perf_counter() - control_started_at,
+            )
         self._step_calls += 1
         self._action_prepared = False
 
@@ -2631,6 +3109,7 @@ class IsaacLabNavigationRuntime:
         self._runtime = build_result["runtime"]
         self._adapter = build_result["adapter"]
         self._initialize_object_reader(episode_spec)
+        self._initialize_episode_support_readers(episode_spec)
         self._metadata["object_pose_debug_after_physics_reader"] = (
             self._object_initial_pose_diagnostic(
                 episode_spec,
@@ -2783,6 +3262,20 @@ class IsaacLabNavigationRuntime:
         env_cfg.scene.num_envs = 1
         env_cfg.scene.env_spacing = 0.0
         env_cfg.sim.device = self._config.device
+        env_cfg.sim.render_interval = int(env_cfg.decimation) * int(
+            self._config.camera_render_interval_control_steps
+        )
+        self._metadata["camera_render_schedule"] = {
+            "control_interval_steps": int(
+                self._config.camera_render_interval_control_steps
+            ),
+            "physics_interval_steps": int(env_cfg.sim.render_interval),
+            "control_dt": float(env_cfg.sim.dt) * int(env_cfg.decimation),
+            "render_hz": 1.0
+            / (float(env_cfg.sim.dt) * float(env_cfg.sim.render_interval)),
+            "physics_dt_unchanged": float(env_cfg.sim.dt),
+            "decimation_unchanged": int(env_cfg.decimation),
+        }
         env_cfg.scene.terrain = TerrainImporterCfg(
             prim_path="/World/nav_collision",
             terrain_type="usd",
@@ -2802,37 +3295,13 @@ class IsaacLabNavigationRuntime:
             "updated_sensors": updated_height_scanners,
         }
         default_root_pos = tuple(float(value) for value in env_cfg.scene.robot.init_state.pos)
-        start_z = default_root_pos[2] if episode_spec.start.z is None else float(episode_spec.start.z)
-        start_offset = (
-            float(episode_spec.start.x) - default_root_pos[0],
-            float(episode_spec.start.y) - default_root_pos[1],
-            start_z - default_root_pos[2],
+        self._default_robot_root_pos = default_root_pos
+        reset_params, reset_report = _episode_reset_pose_configuration(
+            episode_spec,
+            default_root_pos=default_root_pos,
         )
-        env_cfg.events.randomize_reset_base.params = {
-            "pose_range": {
-                "x": (start_offset[0], start_offset[0]),
-                "y": (start_offset[1], start_offset[1]),
-                "z": (start_offset[2], start_offset[2]),
-                "roll": (0.0, 0.0),
-                "pitch": (0.0, 0.0),
-                "yaw": (episode_spec.start.yaw, episode_spec.start.yaw),
-            },
-            "velocity_range": {
-                key: (0.0, 0.0)
-                for key in ("x", "y", "z", "roll", "pitch", "yaw")
-            },
-        }
-        self._metadata["episode_reset_pose_request"] = {
-            "target_world_xyz_yaw": (
-                float(episode_spec.start.x),
-                float(episode_spec.start.y),
-                start_z,
-                float(episode_spec.start.yaw),
-            ),
-            "default_root_pos": default_root_pos,
-            "pose_range_offset_xyz": start_offset,
-            "event_semantics": "default_root_state_plus_offset",
-        }
+        env_cfg.events.randomize_reset_base.params = reset_params
+        self._metadata["episode_reset_pose_request"] = reset_report
         env_cfg.observations.policy.enable_corruption = False
         for event_name in (
             "randomize_rigid_body_material",
@@ -3045,6 +3514,24 @@ class IsaacLabNavigationRuntime:
             episode_spec.raw_task,
         )
         self._metadata["task_receptacle_pose_report"] = receptacle_pose_report
+        if self._config.enable_relocatable_episode_supports:
+            from source.simulation.task_scene_pose import (
+                configure_task_supports_for_stage_reuse,
+            )
+
+            relocatable_support_report = configure_task_supports_for_stage_reuse(
+                stage,
+                episode_spec.raw_task,
+            )
+        else:
+            relocatable_support_report = {
+                "enabled": False,
+                "configured_count": 0,
+                "reason": "single_episode_or_stage_reuse_disabled",
+            }
+        self._metadata["relocatable_episode_support_report"] = (
+            relocatable_support_report
+        )
         receptacle_support_report = inspect_task_receptacle_support_stage(
             stage,
             episode_spec.raw_task,
@@ -3072,6 +3559,7 @@ class IsaacLabNavigationRuntime:
             "scene_runtime_settings": scene_runtime,
             "task_receptacle_support_report": receptacle_support_report,
             "task_receptacle_pose_report": receptacle_pose_report,
+            "relocatable_episode_support_report": relocatable_support_report,
             "scene_visual_enabled": self._config.enable_scene_visual,
             "excluded_prim_paths": (
                 collision_prim_path,
@@ -3195,6 +3683,78 @@ class IsaacLabNavigationRuntime:
         """重试配置 GUI viewpoint；只影响显示，不推进物理。"""
 
         return self._configure_viewport(reason=reason)
+
+    def _camera_sensors_enabled(self) -> bool:
+        return bool(
+            self._config.enable_front_camera
+            or self._config.enable_wrist_camera
+            or self._config.enable_overview_camera
+        )
+
+    def _mark_camera_render(
+        self,
+        *,
+        valid_state_step: int | None,
+        reason: str,
+    ) -> None:
+        """Bind the latest RTX render to the exact state step it represents."""
+
+        self._camera_render_generation += 1
+        self._last_camera_render_step = (
+            None if valid_state_step is None else int(valid_state_step)
+        )
+        self._last_camera_render_reason = str(reason)
+
+    def _render_without_physics(
+        self,
+        *,
+        valid_state_step: int | None,
+        reason: str,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Run one Kit/RTX update while physics stepping is disabled.
+
+        IsaacLab's ``SimulationContext.render`` temporarily sets
+        ``/app/player/playSimulations`` to false around ``app.update()``.  The
+        before/after counters below make that no-task-physics contract auditable.
+        """
+
+        if self._runtime is None:
+            return {"applied": False, "reason": "runtime_unavailable"}
+        if not force and not self._camera_sensors_enabled():
+            self._last_camera_render_step = None
+            self._last_camera_render_reason = None
+            return {"applied": False, "reason": "camera_sensors_disabled"}
+        step_calls_before = int(self._step_calls)
+        sim_step_before = int(self._runtime._sim_step_counter)
+        started_at = time.perf_counter()
+        self._runtime.sim.render()
+        wall_seconds = time.perf_counter() - started_at
+        step_calls_after = int(self._step_calls)
+        sim_step_after = int(self._runtime._sim_step_counter)
+        if step_calls_after != step_calls_before or sim_step_after != sim_step_before:
+            raise RuntimeError(
+                "no-physics render advanced simulation counters: "
+                f"control={step_calls_before}->{step_calls_after}, "
+                f"physics={sim_step_before}->{sim_step_after}"
+            )
+        self._mark_camera_render(
+            valid_state_step=valid_state_step,
+            reason=reason,
+        )
+        profiler = self._performance_profiler
+        if profiler is not None:
+            profiler.record("runtime.rtx_render_nonphysics_sync", wall_seconds)
+        return {
+            "applied": True,
+            "reason": str(reason),
+            "render_generation": int(self._camera_render_generation),
+            "valid_state_step": valid_state_step,
+            "control_step_before_after": [step_calls_before, step_calls_after],
+            "physics_step_before_after": [sim_step_before, sim_step_after],
+            "physics_time_advanced": False,
+            "wall_seconds": wall_seconds,
+        }
 
     def _retry_viewport_after_stage_updates(self) -> None:
         """IsaacLab 创建窗口和 sublayer 解析可能滞后，前几帧允许轻量重试。"""
@@ -3374,6 +3934,278 @@ class IsaacLabNavigationRuntime:
             "within_tolerance": position_error <= 0.02 and orientation_error <= 0.10,
             "read_only": True,
             "baseline_source": baseline_source,
+        }
+
+    def _episode_support_pose_settings(
+        self,
+        episode_spec: EpisodeSpec,
+    ) -> dict[str, dict[str, Any]]:
+        from source.simulation.task_scene_pose import (
+            resolve_task_pick_support_pose,
+            resolve_task_receptacle_pose,
+        )
+
+        return {
+            "pick": resolve_task_pick_support_pose(episode_spec.raw_task),
+            "place": resolve_task_receptacle_pose(episode_spec.raw_task),
+        }
+
+    def _initialize_episode_support_readers(
+        self,
+        episode_spec: EpisodeSpec,
+    ) -> None:
+        """Bind tensor views for support roots made kinematic before PhysX start."""
+
+        self._episode_support_bodies = {}
+        if not self._config.enable_relocatable_episode_supports:
+            self._metadata["episode_support_reader_report"] = {
+                "enabled": False,
+                "reader_count": 0,
+                "reason": "relocatable_episode_supports_disabled",
+            }
+            return
+
+        import omni.usd
+        from isaacsim.core.prims import SingleRigidPrim
+        from source.simulation.task_scene_pose import (
+            inspect_episode_static_support_body_mode,
+        )
+
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            raise RuntimeError(
+                "Isaac stage is unavailable while initializing support readers"
+            )
+        reports: dict[str, Any] = {}
+        for role, settings in self._episode_support_pose_settings(
+            episode_spec
+        ).items():
+            if settings.get("configured") is not True:
+                reports[role] = {
+                    "configured": False,
+                    "reason": settings.get("reason"),
+                }
+                continue
+            prim_path = str(settings["prim_path"])
+            prim = stage.GetPrimAtPath(prim_path)
+            if not prim.IsValid() or not prim.IsActive():
+                raise RuntimeError(
+                    f"episode support prim is unavailable: {prim_path}"
+                )
+            body_mode_report = inspect_episode_static_support_body_mode(prim)
+            if body_mode_report["support_body_mode"] != "kinematic_episode_static":
+                raise RuntimeError(
+                    "relocatable episode support is not kinematic before PhysX "
+                    f"initialization: role={role} report={body_mode_report}"
+                )
+            reader = SingleRigidPrim(
+                prim_path=prim_path,
+                name=f"full_physics_{role}_episode_support",
+                reset_xform_properties=False,
+            )
+            reader.initialize()
+            initial_position_raw, initial_quaternion_raw = reader.get_world_pose()
+            initial_position = tuple(
+                float(value) for value in _as_tuple(initial_position_raw)
+            )
+            initial_quaternion = tuple(
+                float(value) for value in _as_tuple(initial_quaternion_raw)
+            )
+            self._episode_support_bodies[role] = {
+                "reader": reader,
+                "prim_path": prim_path,
+                "target_position_xyz": initial_position,
+                "target_quaternion_wxyz": initial_quaternion,
+            }
+            reports[role] = {
+                "configured": True,
+                "prim_path": prim_path,
+                "initial_pose_xyz_wxyz": [
+                    *initial_position,
+                    *initial_quaternion,
+                ],
+                **body_mode_report,
+            }
+        self._metadata["episode_support_reader_report"] = {
+            "enabled": True,
+            "reader_count": len(self._episode_support_bodies),
+            "supports": reports,
+        }
+
+    def _write_episode_support_physics_poses(
+        self,
+        episode_spec: EpisodeSpec,
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Move kinematic supports through PhysX tensors without advancing time."""
+
+        if not self._config.enable_relocatable_episode_supports:
+            return {
+                "applied": False,
+                "verified": True,
+                "reason": "relocatable_episode_supports_disabled",
+            }
+        if not self._episode_support_bodies:
+            raise RuntimeError(
+                "relocatable episode supports are enabled but no tensor readers exist"
+            )
+
+        import torch
+
+        device = getattr(self._runtime, "device", "cpu")
+        reports: dict[str, Any] = {}
+        for role, settings in self._episode_support_pose_settings(
+            episode_spec
+        ).items():
+            if settings.get("configured") is not True:
+                continue
+            body = self._episode_support_bodies.get(role)
+            if body is None:
+                raise RuntimeError(
+                    f"missing live support tensor reader for role={role}"
+                )
+            reader = body["reader"]
+            current_position_raw, current_quaternion_raw = reader.get_world_pose()
+            current_position = tuple(
+                float(value) for value in _as_tuple(current_position_raw)
+            )
+            current_quaternion = tuple(
+                float(value) for value in _as_tuple(current_quaternion_raw)
+            )
+            pose = settings["pose_world"]
+            target_position = (
+                float(pose["x"]),
+                float(pose["y"]),
+                float(pose["z"]),
+            )
+            target_quaternion = (
+                current_quaternion
+                if settings.get("translation_only")
+                else _quat_wxyz_from_rpy(
+                    float(pose["roll"]),
+                    float(pose["pitch"]),
+                    float(pose["yaw"]),
+                )
+            )
+            rigid_view = getattr(reader, "_rigid_prim_view", None)
+            if rigid_view is None or not hasattr(rigid_view, "set_world_poses"):
+                raise RuntimeError(
+                    f"support reader lacks tensor pose API: role={role}"
+                )
+            rigid_view.set_world_poses(
+                positions=torch.tensor(
+                    [target_position],
+                    dtype=torch.float32,
+                    device=device,
+                ),
+                orientations=torch.tensor(
+                    [target_quaternion],
+                    dtype=torch.float32,
+                    device=device,
+                ),
+            )
+            body["target_position_xyz"] = target_position
+            body["target_quaternion_wxyz"] = target_quaternion
+            actual_position_raw, actual_quaternion_raw = reader.get_world_pose()
+            actual_position = tuple(
+                float(value) for value in _as_tuple(actual_position_raw)
+            )
+            actual_quaternion = tuple(
+                float(value) for value in _as_tuple(actual_quaternion_raw)
+            )
+            position_error = math.sqrt(
+                sum(
+                    (actual - expected) ** 2
+                    for actual, expected in zip(actual_position, target_position)
+                )
+            )
+            orientation_error = _quat_angle_error_rad(
+                actual_quaternion,
+                target_quaternion,
+            )
+            reports[role] = {
+                "prim_path": body["prim_path"],
+                "previous_pose_xyz_wxyz": [
+                    *current_position,
+                    *current_quaternion,
+                ],
+                "target_pose_xyz_wxyz": [
+                    *target_position,
+                    *target_quaternion,
+                ],
+                "actual_pose_xyz_wxyz": [
+                    *actual_position,
+                    *actual_quaternion,
+                ],
+                "position_error_m": position_error,
+                "orientation_error_rad": orientation_error,
+                "verified": bool(
+                    position_error <= 1.0e-4
+                    and orientation_error <= 1.0e-4
+                ),
+            }
+        verified = bool(reports) and all(
+            report["verified"] is True for report in reports.values()
+        )
+        result = {
+            "applied": True,
+            "verified": verified,
+            "reason": reason,
+            "physics_time_advanced": False,
+            "supports": reports,
+        }
+        if not verified:
+            raise RuntimeError(f"episode support tensor pose write failed: {result}")
+        return result
+
+    def _episode_support_pose_diagnostic(self, *, label: str) -> dict[str, Any]:
+        if not self._config.enable_relocatable_episode_supports:
+            return {
+                "available": False,
+                "verified": True,
+                "label": label,
+                "reason": "relocatable_episode_supports_disabled",
+            }
+        reports: dict[str, Any] = {}
+        for role, body in self._episode_support_bodies.items():
+            position_raw, quaternion_raw = body["reader"].get_world_pose()
+            position = tuple(float(value) for value in _as_tuple(position_raw))
+            quaternion = tuple(float(value) for value in _as_tuple(quaternion_raw))
+            target_position = tuple(body["target_position_xyz"])
+            target_quaternion = tuple(body["target_quaternion_wxyz"])
+            position_error = math.sqrt(
+                sum(
+                    (actual - expected) ** 2
+                    for actual, expected in zip(position, target_position)
+                )
+            )
+            orientation_error = _quat_angle_error_rad(
+                quaternion,
+                target_quaternion,
+            )
+            reports[role] = {
+                "prim_path": body["prim_path"],
+                "target_pose_xyz_wxyz": [
+                    *target_position,
+                    *target_quaternion,
+                ],
+                "actual_pose_xyz_wxyz": [*position, *quaternion],
+                "position_error_m": position_error,
+                "orientation_error_rad": orientation_error,
+                "verified": bool(
+                    position_error <= 1.0e-4
+                    and orientation_error <= 1.0e-4
+                ),
+            }
+        verified = bool(reports) and all(
+            report["verified"] is True for report in reports.values()
+        )
+        return {
+            "available": bool(reports),
+            "verified": verified,
+            "label": label,
+            "supports": reports,
         }
 
     def _initialize_object_reader(self, episode_spec: EpisodeSpec) -> None:
@@ -5088,9 +5920,44 @@ class IsaacLabNavigationRuntime:
         }
 
     def _read_camera_images(self) -> dict[str, Any]:
-        """只暴露当前渲染完成的 tensor；JPEG 编码由 5 Hz recorder 负责。"""
+        """Expose one camera set per render-grid step and cache duplicate reads."""
 
+        started_at = time.perf_counter()
         if self._runtime is None:
+            return {}
+        interval = int(self._config.camera_render_interval_control_steps)
+        step_calls = int(getattr(self, "_step_calls", 0))
+        if step_calls % interval != 0:
+            return {}
+        if getattr(self, "_cached_camera_step", None) == step_calls:
+            return dict(getattr(self, "_cached_camera_images", {}))
+        render_step = self._last_camera_render_step
+        if render_step != step_calls:
+            # Never relabel a pre-reset or older render as the current state.  The
+            # recorder may simply skip this control step; it must not receive a
+            # visually stale packet with a fresh logical timestamp.
+            self._metadata["camera_capture_report"] = {
+                "requested_camera_keys": [
+                    key
+                    for key, enabled in (
+                        ("front", self._config.enable_front_camera),
+                        ("wrist", self._config.enable_wrist_camera),
+                        ("overview", self._config.enable_overview_camera),
+                    )
+                    if enabled
+                ],
+                "available_camera_keys": [],
+                "missing_camera_keys": [],
+                "capture_step_index": step_calls,
+                "render_step_index": render_step,
+                "render_generation": int(self._camera_render_generation),
+                "render_reason": self._last_camera_render_reason,
+                "accepted": False,
+                "reason": "stale_or_unrendered_state_rejected",
+                "synchronization_source": "explicit_render_state_step_contract",
+            }
+            self._cached_camera_step = step_calls
+            self._cached_camera_images = {}
             return {}
         images: dict[str, Any] = {}
         sensor_names = []
@@ -5120,7 +5987,25 @@ class IsaacLabNavigationRuntime:
                     key: [int(value) for value in getattr(image, "shape", ())]
                     for key, image in images.items()
                 },
+                "capture_step_index": step_calls,
+                "render_step_index": render_step,
+                "render_generation": int(self._camera_render_generation),
+                "render_reason": self._last_camera_render_reason,
+                "capture_timestamp": (
+                    float(step_calls) * float(getattr(self._runtime, "step_dt", 0.02))
+                ),
+                "render_interval_control_steps": interval,
+                "accepted": bool(images),
+                "synchronization_source": "explicit_render_state_step_contract",
             }
+        self._cached_camera_step = step_calls
+        self._cached_camera_images = dict(images)
+        if getattr(self, "_performance_profiler", None) is not None:
+            self._performance_profiler.record(
+                "runtime.camera_tensor_read",
+                time.perf_counter() - started_at,
+                work_units=len(images),
+            )
         return images
 
     def _resolve_checkpoint(self) -> Path:
