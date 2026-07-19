@@ -69,6 +69,7 @@ _COLORS = {
 _STATE_COLORS = {
     "launching": "cyan",
     "isaac_startup": "yellow",
+    "progress_pending": "yellow",
     "build_stage": "blue",
     "reset_episode": "cyan",
     "plan_nav_to_pick": "magenta",
@@ -443,16 +444,23 @@ def _last_json_line(
 ) -> dict[str, object] | None:
     """只读取文件尾部来解析最后一条 JSONL，避免 heartbeat 扫描完整 frames。"""
 
-    if not path.is_file():
+    try:
+        if not path.is_file():
+            return None
+        stat = path.stat()
+    except OSError:
         return None
-    if min_mtime is not None and path.stat().st_mtime < float(min_mtime):
+    if min_mtime is not None and stat.st_mtime < float(min_mtime):
         return None
-    size = path.stat().st_size
+    size = stat.st_size
     if size <= 0:
         return None
-    with path.open("rb") as stream:
-        stream.seek(max(0, size - max_bytes))
-        data = stream.read().decode("utf-8", errors="ignore")
+    try:
+        with path.open("rb") as stream:
+            stream.seek(max(0, size - max_bytes))
+            data = stream.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return None
     for line in reversed(data.splitlines()):
         line = line.strip()
         if not line:
@@ -463,6 +471,54 @@ def _last_json_line(
             continue
         return payload if isinstance(payload, dict) else None
     return None
+
+
+def _progress_file_is_fresh(path: Path, *, min_mtime: float | None) -> bool:
+    """Return whether a progress artifact belongs to the current child run."""
+
+    try:
+        if not path.is_file():
+            return False
+        return min_mtime is None or path.stat().st_mtime >= float(min_mtime)
+    except OSError:
+        return False
+
+
+def _episode_progress_paths(
+    episode_dir: Path,
+    *,
+    summary_name: str = "summary.json",
+) -> tuple[list[Path], list[Path], list[Path]]:
+    """Build direct and legacy-nested progress paths for one episode."""
+
+    roots = (episode_dir, episode_dir / "episode_000000")
+    return (
+        [root / "frames.jsonl" for root in roots],
+        [root / "events.jsonl" for root in roots],
+        [root / summary_name for root in roots],
+    )
+
+
+def _progress_from_jsonl(
+    path: Path,
+    *,
+    source: str,
+    min_mtime: float | None,
+) -> EpisodeProgress | None:
+    payload = _last_json_line(path, min_mtime=min_mtime)
+    if payload is None:
+        return None
+    state = payload.get("pipeline_state")
+    step_index = payload.get("step_index")
+    return EpisodeProgress(
+        state=state if isinstance(state, str) and state else None,
+        step_index=(
+            int(step_index)
+            if isinstance(step_index, int) and not isinstance(step_index, bool)
+            else None
+        ),
+        source=source,
+    )
 
 
 def _progress_from_summary(
@@ -492,53 +548,118 @@ def _read_episode_progress(
     min_mtime: float | None = None,
 ) -> EpisodeProgress:
     active_episode_index = episode.episode_index
-    active_episode_dir = episode.output_dir
+    active_episode_dir = episode.summary_path.parent
     active_summary_path = episode.summary_path
     if episode.num_episodes > 1:
         for candidate_index in range(episode.num_episodes - 1, -1, -1):
             candidate_dir = episode.output_dir / f"episode_{candidate_index:06d}"
-            if candidate_dir.is_dir():
+            candidate_paths = _episode_progress_paths(
+                candidate_dir,
+                summary_name=episode.summary_path.name,
+            )
+            if any(
+                _progress_file_is_fresh(path, min_mtime=min_mtime)
+                for paths in candidate_paths
+                for path in paths
+            ):
                 active_episode_index = candidate_index
                 active_episode_dir = candidate_dir
-                active_summary_path = candidate_dir / "summary.json"
+                active_summary_path = candidate_dir / episode.summary_path.name
                 break
-    frames_candidates = [
-        active_summary_path.parent / "frames.jsonl",
-        active_episode_dir / "episode_000000" / "frames.jsonl",
-    ]
-    summary_candidates = [
-        active_summary_path,
-        active_summary_path.parent / "episode_000000" / active_summary_path.name,
-    ]
-    any_progress_file_exists = any(path.is_file() for path in frames_candidates + summary_candidates)
-    frames_path = next((path for path in frames_candidates if path.is_file()), frames_candidates[0])
-    frame = _last_json_line(frames_path, min_mtime=min_mtime)
-    if frame is not None:
-        state = frame.get("pipeline_state")
-        step_index = frame.get("step_index")
-        return EpisodeProgress(
-            state=state if isinstance(state, str) else None,
-            step_index=int(step_index) if isinstance(step_index, int) else None,
+    frames_candidates, events_candidates, summary_candidates = _episode_progress_paths(
+        active_episode_dir,
+        summary_name=active_summary_path.name,
+    )
+    episode_seed = episode.seed + active_episode_index - episode.episode_index
+    for path in frames_candidates:
+        frame_progress = _progress_from_jsonl(
+            path,
             source="frames",
-            episode_index=active_episode_index,
-            seed=episode.seed + active_episode_index - episode.episode_index,
+            min_mtime=min_mtime,
         )
-    summary_progress = _progress_from_summary(active_summary_path, min_mtime=min_mtime)
-    if summary_progress is not None:
+        if frame_progress is None:
+            continue
+        return EpisodeProgress(
+            state=frame_progress.state,
+            step_index=frame_progress.step_index,
+            source=frame_progress.source,
+            episode_index=active_episode_index,
+            seed=episode_seed,
+        )
+    for path in events_candidates:
+        event_progress = _progress_from_jsonl(
+            path,
+            source="events",
+            min_mtime=min_mtime,
+        )
+        if event_progress is None:
+            continue
+        return EpisodeProgress(
+            state=event_progress.state,
+            step_index=event_progress.step_index,
+            source=event_progress.source,
+            episode_index=active_episode_index,
+            seed=episode_seed,
+        )
+    for path in summary_candidates:
+        summary_progress = _progress_from_summary(path, min_mtime=min_mtime)
+        if summary_progress is None:
+            continue
         return EpisodeProgress(
             state=summary_progress.state,
             step_index=summary_progress.step_index,
             source=summary_progress.source,
             episode_index=active_episode_index,
-            seed=episode.seed + active_episode_index - episode.episode_index,
+            seed=episode_seed,
         )
-    if any_progress_file_exists:
-        return EpisodeProgress()
+    has_fresh_progress_file = any(
+        _progress_file_is_fresh(path, min_mtime=min_mtime)
+        for path in frames_candidates + events_candidates + summary_candidates
+    )
     return EpisodeProgress(
-        state="isaac_startup",
+        state="progress_pending" if has_fresh_progress_file else "isaac_startup",
         source="batch",
         episode_index=active_episode_index,
-        seed=episode.seed + active_episode_index - episode.episode_index,
+        seed=episode_seed,
+    )
+
+
+def _progress_is_low_information(progress: EpisodeProgress) -> bool:
+    return progress.source == "unavailable" or (
+        progress.source == "batch"
+        and progress.state in {None, "isaac_startup", "progress_pending"}
+    )
+
+
+def _should_print_periodic_progress(
+    progress: EpisodeProgress,
+    *,
+    last_printed_progress: EpisodeProgress | None,
+    now: float,
+    last_low_information_progress_at: float,
+    progress_interval_s: float,
+) -> bool:
+    """Throttle startup/unavailable heartbeats while keeping real states live."""
+
+    if not _progress_is_low_information(progress):
+        return True
+    if last_printed_progress is None:
+        return True
+    identity = (
+        progress.state,
+        progress.source,
+        progress.episode_index,
+        progress.seed,
+    )
+    previous_identity = (
+        last_printed_progress.state,
+        last_printed_progress.source,
+        last_printed_progress.episode_index,
+        last_printed_progress.seed,
+    )
+    return identity != previous_identity or (
+        now - last_low_information_progress_at
+        >= max(30.0, float(progress_interval_s))
     )
 
 
@@ -1018,15 +1139,19 @@ def _read_summary(
     *,
     min_mtime: float | None = None,
 ) -> dict[str, object] | None:
-    if not path.is_file():
-        legacy_path = path.parent / "episode_000000" / path.name
-        if legacy_path.is_file():
-            path = legacy_path
-    if not path.is_file():
+    try:
+        if not path.is_file():
+            legacy_path = path.parent / "episode_000000" / path.name
+            if legacy_path.is_file():
+                path = legacy_path
+        if not path.is_file():
+            return None
+        if min_mtime is not None and path.stat().st_mtime < float(min_mtime):
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
         return None
-    if min_mtime is not None and path.stat().st_mtime < float(min_mtime):
-        return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    return payload if isinstance(payload, dict) else None
 
 
 def _run_child_process(
@@ -1084,7 +1209,7 @@ def _run_child_process(
     selector.register(process.stdout, selectors.EVENT_READ)
     last_progress_at = started_at
     last_printed_progress: EpisodeProgress | None = None
-    last_unknown_progress_at = started_at
+    last_low_information_progress_at = started_at
     select_timeout_s = min(0.5, progress_interval_s * 0.5)
     launching_progress = EpisodeProgress(state="launching", source="batch")
     _print_progress_line(
@@ -1105,12 +1230,14 @@ def _run_child_process(
                     episode,
                     min_mtime=started_at_epoch,
                 )
-                startup_waiting = progress.source == "batch" and progress.state == "isaac_startup"
-                should_print = (
-                    (progress.source != "unavailable" and not startup_waiting)
-                    or last_printed_progress is None
-                    or progress.state != last_printed_progress.state
-                    or now - last_unknown_progress_at >= max(30.0, progress_interval_s)
+                should_print = _should_print_periodic_progress(
+                    progress,
+                    last_printed_progress=last_printed_progress,
+                    now=now,
+                    last_low_information_progress_at=(
+                        last_low_information_progress_at
+                    ),
+                    progress_interval_s=progress_interval_s,
                 )
                 if should_print:
                     _print_progress_line(
@@ -1120,8 +1247,8 @@ def _run_child_process(
                         color_enabled=color_enabled,
                     )
                     last_printed_progress = progress
-                    if progress.source == "batch" and progress.state == "isaac_startup":
-                        last_unknown_progress_at = now
+                    if _progress_is_low_information(progress):
+                        last_low_information_progress_at = now
                 last_progress_at = now
             if returncode is not None:
                 remaining = process.stdout.read()

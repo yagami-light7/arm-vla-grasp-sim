@@ -2,8 +2,8 @@
   "project": "arm_vla_liangzhu",
   "branch": "liangzhu-deploy",
   "goal": "在良渚单层场景中复用原 pct_multifloor locomotion policy，跑通移动操作 pipeline，并导出可验证的数据。",
-  "current_phase": "phase_167_stage_reuse_physx_isolation_batch20",
-  "last_updated": "2026-07-19 20:22:14 CST",
+  "current_phase": "phase_168_batch_progress_heartbeat_reliability",
+  "last_updated": "2026-07-19 21:31:16 CST",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -229,6 +229,10 @@
     "pct_scene_stage_reuse_fix_synchronized": true,
     "pct_scene_stage_reuse_real_gate_episode_count": 2,
     "pct_scene_stage_reuse_real_gate_success_count": 2,
+    "liangzhu_batch_progress_fresh_episode_selection_fixed": true,
+    "liangzhu_batch_progress_events_fallback_added": true,
+    "liangzhu_batch_low_information_heartbeat_throttled": true,
+    "liangzhu_batch_progress_regression_unit_verified": true,
     "liangzhu_optimized_seed7_to_9_batch_attempted": true,
     "liangzhu_optimized_seed7_to_9_batch_success_count": 3,
     "liangzhu_optimized_seed7_to_9_training_quality_count": 3,
@@ -8120,6 +8124,33 @@
         "用户验收后手动 git add/commit/push；Codex 不主动提交。",
         "正式量产继续监控 stage_reuse_report、initialization_base_lock_released、base_settle_timeout 和 sampling_coverage；不要删除 hard reset 以换取表面耗时。",
         "pct_scene 的 multi_floor profile 共享同一修复并已通过全仓回归，但若要宣称多楼层 stage reuse 真实稳定，仍需单独运行至少两条同进程 GPU gate。"
+      ]
+    },
+    {
+      "time": "2026-07-19 21:31:16 CST",
+      "summary": "修复 full-physics batch heartbeat 长时间显示 state=unknown、step=?、source=unavailable 并每 5 秒刷屏的问题。复用输出根目录时，旧实现只按 episode 编号选择最高的现存目录，随后又用本轮子进程启动时间拒绝其旧文件，导致监控器永久失去当前 episode；同时 unavailable 心跳打印后没有更新时间戳，低信息节流失效。现在只从本轮新写入的进度文件选择活动 episode，依次读取 frames、轻量 events 和 summary；旧高编号目录会被忽略，部分写入或不可解析的 frames 会回退 events。startup/progress_pending/unavailable 统一按 30 秒节流，真实状态仍保持配置的 5 秒 heartbeat。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "scripts/pipeline/run_full_physics_batch.py",
+        "tests/test_full_physics_batch.py"
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/test_full_physics_batch.py",
+          "result": "passed",
+          "note": "16 passed；覆盖旧高编号 episode 与当前 seed=5160 并存、events 回退、过期文件隔离和 unavailable 30 秒节流。"
+        },
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -m pytest -q tests/test_full_physics_batch.py tests/test_full_physics_pipeline.py",
+          "result": "passed",
+          "note": "71 passed；确认 heartbeat 修复不影响 batch 命令构建、子进程启动、pipeline 配置和汇总流程。"
+        }
+      ],
+      "next_steps": [
+        "用户下一次启动 batch 时确认 heartbeat 能显示当前 episode/seed/state/step，且 startup 阶段不再每 5 秒刷 unknown。",
+        "正式数据采集继续使用新的 output-dir；本次修复保证监控不被旧目录误导，但不把混放历史数据作为推荐工作流。",
+        "用户验收后手动 git add/commit/push；Codex 不主动提交。"
       ]
     }
   ],

@@ -255,6 +255,14 @@ actuator target 保持支撑腿；这段人为静止不计入稳定步数。随�
 由 `pct_multifloor` RL policy 在真实接触下平衡，并重新满足速度、roll/pitch 和位姿门后
 才进入导航。这样既避免 reset 首步冲击，又不会让固定站姿在不同地面/yaw 下缓慢侧翻。
 
+batch heartbeat 会按子进程启动时间筛选本轮新写入的进度文件，再从
+`frames.jsonl -> events.jsonl -> summary.json` 读取状态。复用一个已经存在的输出根目录时，
+旧的高编号 `episode_XXXXXX` 不会再覆盖当前 episode 的状态；帧诊断文件处于部分写入或
+无法解析时，会回退到轻量的 `events.jsonl`。真实状态仍按
+`--progress-interval-s` 打印；尚未生成本轮进度文件的 startup/pending 信息最多每 30 秒
+打印一次，不再每 5 秒连续刷 `state=unknown source=unavailable`。正式采集仍应使用新的
+输出目录，避免旧数据文件与本轮产物在磁盘上混放。
+
 这一默认模式避免重复启动 Isaac Sim、加载 USD、创建 env/相机和加载
 locomotion policy。若要排查跨 episode 状态污染，可显式使用
 `--no-reuse-isaac-process` 回退到每条独立子进程。
@@ -1478,7 +1486,7 @@ smoke/debug 时传模式参数。
 | `--continue-on-failure` / `--no-continue-on-failure` | 默认继续      | 单 episode 失败后是否继续                   |
 | `--pick-plan-json`                                   | 可选          | 非 full-physics smoke 可转发离线 pick plan  |
 | `--place-plan-json`                                  | 可选          | 非 full-physics smoke 可转发离线 place plan |
-| `--progress-interval-s`                              | `5.0`         | heartbeat 进度打印间隔                      |
+| `--progress-interval-s`                              | `5.0`         | 真实状态 heartbeat 间隔；startup/pending 低信息状态最多每 30 秒打印一次 |
 | `--color` / `--no-color`                             | 默认开启      | 是否使用 ANSI 彩色输出；保存 CI 日志时建议关闭       |
 | `--record-video` / `--no-record-video`               | 完整 pipeline 默认开启 | 默认转发 composite MP4 录制；空间敏感时可显式关闭，展示视频固定 25fps |
 | `--video-mode`                                       | `composite`   | 三视角拼接；也支持 `overview`/`front`/`font`/`wrist`/`all` |

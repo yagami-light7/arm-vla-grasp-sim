@@ -15,6 +15,7 @@ from pathlib import Path
 
 from scripts.pipeline.run_full_physics_batch import (
     BatchEpisodeCommand,
+    EpisodeProgress,
     _build_episode_result,
     _build_child_command,
     _build_parser,
@@ -26,6 +27,7 @@ from scripts.pipeline.run_full_physics_batch import (
     _read_episode_progress,
     _read_summary,
     _run_child_process,
+    _should_print_periodic_progress,
 )
 
 
@@ -634,9 +636,135 @@ class FullPhysicsBatchTest(unittest.TestCase):
             summary = _read_summary(summary_path, min_mtime=time.time())
 
         self.assertIsNone(summary)
-        self.assertIsNone(progress.state)
+        self.assertEqual(progress.state, "isaac_startup")
         self.assertIsNone(progress.step_index)
-        self.assertEqual(progress.source, "unavailable")
+        self.assertEqual(progress.source, "batch")
+
+    def test_reused_process_progress_ignores_stale_higher_episode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_root = Path(tmp_dir)
+            current_dir = output_root / "episode_000000"
+            stale_dir = output_root / "episode_000002"
+            current_dir.mkdir()
+            stale_dir.mkdir()
+            run_started_at = time.time()
+            stale_frames = stale_dir / "frames.jsonl"
+            stale_frames.write_text(
+                json.dumps({"pipeline_state": "failed", "step_index": 999}) + "\n",
+                encoding="utf-8",
+            )
+            stale_mtime = run_started_at - 60.0
+            os.utime(stale_frames, (stale_mtime, stale_mtime))
+            current_events = current_dir / "events.jsonl"
+            current_events.write_text(
+                json.dumps(
+                    {
+                        "name": "state_entered",
+                        "pipeline_state": "exec_pick",
+                        "step_index": 123,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            fresh_mtime = run_started_at + 1.0
+            os.utime(current_events, (fresh_mtime, fresh_mtime))
+            episode = BatchEpisodeCommand(
+                episode_index=0,
+                seed=5160,
+                output_dir=output_root,
+                summary_path=current_dir / "summary.json",
+                command=[],
+                num_episodes=3,
+            )
+
+            progress = _read_episode_progress(
+                episode,
+                min_mtime=run_started_at,
+            )
+
+        self.assertEqual(progress.state, "exec_pick")
+        self.assertEqual(progress.step_index, 123)
+        self.assertEqual(progress.source, "events")
+        self.assertEqual(progress.episode_index, 0)
+        self.assertEqual(progress.seed, 5160)
+
+    def test_episode_progress_uses_events_when_frames_are_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            episode_dir = Path(tmp_dir)
+            run_started_at = time.time()
+            (episode_dir / "frames.jsonl").write_text(
+                '{"pipeline_state":"exec_nav_to_place"',
+                encoding="utf-8",
+            )
+            (episode_dir / "events.jsonl").write_text(
+                json.dumps(
+                    {
+                        "name": "state_entered",
+                        "pipeline_state": "exec_nav_to_place",
+                        "step_index": 456,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            fresh_mtime = run_started_at + 1.0
+            os.utime(
+                episode_dir / "frames.jsonl",
+                (fresh_mtime, fresh_mtime),
+            )
+            os.utime(
+                episode_dir / "events.jsonl",
+                (fresh_mtime, fresh_mtime),
+            )
+            episode = BatchEpisodeCommand(
+                episode_index=0,
+                seed=5160,
+                output_dir=episode_dir,
+                summary_path=episode_dir / "summary.json",
+                command=[],
+            )
+
+            progress = _read_episode_progress(
+                episode,
+                min_mtime=run_started_at,
+            )
+
+        self.assertEqual(progress.state, "exec_nav_to_place")
+        self.assertEqual(progress.step_index, 456)
+        self.assertEqual(progress.source, "events")
+
+    def test_unavailable_progress_is_throttled_after_it_is_printed(self) -> None:
+        unavailable = EpisodeProgress()
+        launching = EpisodeProgress(state="launching", source="batch")
+
+        self.assertTrue(
+            _should_print_periodic_progress(
+                unavailable,
+                last_printed_progress=launching,
+                now=5.0,
+                last_low_information_progress_at=0.0,
+                progress_interval_s=5.0,
+            )
+        )
+        self.assertFalse(
+            _should_print_periodic_progress(
+                unavailable,
+                last_printed_progress=unavailable,
+                now=10.0,
+                last_low_information_progress_at=5.0,
+                progress_interval_s=5.0,
+            )
+        )
+        self.assertTrue(
+            _should_print_periodic_progress(
+                unavailable,
+                last_printed_progress=unavailable,
+                now=35.0,
+                last_low_information_progress_at=5.0,
+                progress_interval_s=5.0,
+            )
+        )
 
     def test_summary_reader_accepts_legacy_nested_episode_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
