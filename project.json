@@ -2,8 +2,8 @@
   "project": "pct_scene",
   "branch": "pct_scene",
   "goal": "在同一代码库中通过 scene profile 选择良渚单层或别墅多楼层 PCT 场景，并支持后续场景扩展、移动操作与可验证数据导出。",
-  "current_phase": "phase_167_stage_reuse_physx_isolation_synced",
-  "last_updated": "2026-07-19 20:22:14 CST",
+  "current_phase": "phase_168_batch_progress_heartbeat_reliability_synced",
+  "last_updated": "2026-07-19 22:30:35 CST",
   "status": {
     "unified_wall_time_profiler_added": true,
     "headless_dataset_camera_render_5hz_added": true,
@@ -31,6 +31,10 @@
     "liangzhu_stage_reuse_real_gate_success_count": 2,
     "liangzhu_stage_reuse_real_gate_training_quality_count": 2,
     "liangzhu_stage_reuse_real_gate_base_settle_timeout_count": 0,
+    "batch_progress_fresh_episode_selection_fixed": true,
+    "batch_progress_events_fallback_added": true,
+    "batch_low_information_heartbeat_throttled": true,
+    "batch_progress_regression_unit_verified": true,
     "liangzhu_stage_reuse_real_gate_lerobot_rows": 475,
     "unified_scene_profile_loader_added": true,
     "unified_scene_profile_dynamic_discovery_verified": true,
@@ -8036,6 +8040,28 @@
         "由用户验收后手动提交；Codex 不 commit、不 push。",
         "liangzhu profile 已有独立 2 条 stage-reuse GPU gate；multi_floor 如需同等级声明，仍应另跑至少两条同进程真实 episode。",
         "正式量产继续保留 hard reset、20-tick 初始化交接与真实稳定门，并监控 base_settle_timeout、sampling_coverage 和 validator。"
+      ]
+    },
+    {
+      "time": "2026-07-19 22:30:35 CST",
+      "summary": "从 arm_vla_liangzhu 增量同步 batch heartbeat 可靠性修复，并保留统一 scene-profile 参数体系。旧实现复用输出根目录时只按编号选择最高现存 episode，随后又以本轮启动时间拒绝旧进度文件，导致 state=unknown/source=unavailable；unavailable 打印后未更新时间戳，又使 30 秒节流退化为每 5 秒刷屏。现在只从本轮新写入的 frames/events/summary 选择活动 episode，frames 不完整时回退轻量 events；startup、progress_pending 和 unavailable 统一按 30 秒节流，真实状态仍按配置间隔输出。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "scripts/pipeline/run_full_physics_batch.py",
+        "tests/test_full_physics_batch.py"
+      ],
+      "tests": [
+        {
+          "command": "PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python -B -m pytest -q -p no:cacheprovider tests/test_full_physics_batch.py tests/test_full_physics_pipeline.py tests/test_scene_profiles.py",
+          "result": "passed",
+          "note": "90 passed、2 subtests；覆盖旧高编号 episode、seed=5160 当前事件、events 回退、过期文件隔离、unavailable 节流，以及 liangzhu/multi_floor profile 保留。"
+        }
+      ],
+      "next_steps": [
+        "下一次 batch 确认 heartbeat 显示当前 episode/seed/state/step，并继续使用新的 output-dir 采集正式数据。",
+        "本次仅改 batch 外层监控，不改变 PhysX、PCT、locomotion、CuRobo 或数据采样时序，因此无需重新建立物理成功率结论。",
+        "由用户验收后手动提交；Codex 不 commit、不 push。"
       ]
     }
   ],

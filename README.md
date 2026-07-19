@@ -368,6 +368,14 @@ physics/control step。episode reset 的第一条审计 action 也严格使用
 actuator target 保持支撑腿；这段人为静止不计入稳定步数。随后同时解除 root/支撑腿锁，
 由 `pct_multifloor` RL policy 在真实接触下平衡，并重新满足速度、roll/pitch 和位姿门后
 才进入导航。这样既避免 reset 首步冲击，又不会让固定站姿在不同地面/yaw 下缓慢侧翻。
+
+batch heartbeat 会按子进程启动时间筛选本轮新写入的进度文件，再从
+`frames.jsonl -> events.jsonl -> summary.json` 读取状态。复用一个已经存在的输出根目录时，
+旧的高编号 `episode_XXXXXX` 不会再覆盖当前 episode；frames 处于部分写入或无法解析时，
+会回退到轻量的 `events.jsonl`。真实状态仍按 `--progress-interval-s` 打印；尚未生成本轮
+进度文件的 startup/pending 信息最多每 30 秒打印一次，不再每 5 秒连续刷
+`state=unknown source=unavailable`。正式采集仍应使用新的输出目录，避免历史数据混放。
+
 需要排查跨 episode 状态污染时，可用 `--no-reuse-isaac-process` 回退到每条独立子进程。
 
 默认使用 headless 模式，episode seed 为 `seed + episode_index`。失败的 episode 会保留
@@ -772,7 +780,7 @@ smoke 测试和调试。
 | `--continue-on-failure` / `--no-continue-on-failure` | 默认继续               | 单 episode 失败后是否继续                                                    |
 | `--pick-plan-json`                                   | 可选                   | 非 full-physics smoke 可转发离线 pick plan                                   |
 | `--place-plan-json`                                  | 可选                   | 非 full-physics smoke 可转发离线 place plan                                  |
-| `--progress-interval-s`                              | `5.0`                  | heartbeat 进度打印间隔                                                       |
+| `--progress-interval-s`                              | `5.0`                  | 真实状态 heartbeat 间隔；startup/pending 低信息状态最多每 30 秒打印一次      |
 | `--color` / `--no-color`                             | 默认开启               | 是否使用 ANSI 彩色输出；保存 CI 日志时建议关闭                               |
 | `--record-video`                                     | full-physics 默认开启  | 沿用单 episode/profile 默认；可用`--no-record-video` 关闭                    |
 | `--dataset-camera-keys`                              | `front wrist overview` | 转发训练数据相机流；可用`--dataset-camera-keys front wrist` 做诊断           |
