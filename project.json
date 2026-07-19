@@ -2,8 +2,8 @@
   "project": "arm_vla_liangzhu",
   "branch": "liangzhu-deploy",
   "goal": "在良渚单层场景中复用原 pct_multifloor locomotion policy，跑通移动操作 pipeline，并导出可验证的数据。",
-  "current_phase": "phase_165_full_visual_authored_stage_lighting_auto",
-  "last_updated": "2026-07-19 00:52:33 CST",
+  "current_phase": "phase_166_headless_batch_wall_time_async_stage_reuse",
+  "last_updated": "2026-07-19 15:28:28 CST",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -203,6 +203,23 @@
     "liangzhu_composite_video_unit_verified": true,
     "liangzhu_full_pipeline_acceptance_validator_added": true,
     "liangzhu_composite_video_real_pipeline_verified": true,
+    "liangzhu_wall_time_profiler_added": true,
+    "liangzhu_headless_dataset_camera_render_hz": 5.0,
+    "liangzhu_headless_sparse_frame_logging_added": true,
+    "liangzhu_async_image_encoding_write_added": true,
+    "liangzhu_camera_state_exact_step_contract_added": true,
+    "liangzhu_camera_state_timestamp_tolerance_seconds": 1e-09,
+    "liangzhu_camera_state_exact_step_contract_real_verified": true,
+    "liangzhu_episode_sampling_coverage_gate_added": true,
+    "liangzhu_single_isaac_process_batch_default": true,
+    "liangzhu_single_stage_batch_default": true,
+    "liangzhu_relocatable_kinematic_supports_added": true,
+    "liangzhu_cross_episode_static_collider_stale_pose_fixed": true,
+    "liangzhu_optimized_seed7_to_9_batch_attempted": true,
+    "liangzhu_optimized_seed7_to_9_batch_success_count": 3,
+    "liangzhu_optimized_seed7_to_9_training_quality_count": 3,
+    "liangzhu_optimized_seed7_to_9_lerobot_rows": 642,
+    "liangzhu_optimized_seed7_to_9_lerobot_validator_verified": true,
     "liangzhu_box_pair_alignment_batch5_attempted": true,
     "liangzhu_box_pair_alignment_batch5_success_count": 5,
     "liangzhu_box_pair_alignment_batch5_dataset_rows": 1004,
@@ -7937,6 +7954,74 @@
         "若需确认具体灯光 prim 的运行时可见性，检查 summary/runtime metadata 中 scene_lighting_report 的 requested_mode=auto、resolved_mode=stage 和 light_visibility_updates。",
         "本阶段未主动占用 GPU 运行完整 Gaussian episode；8GB GPU 上仍需注意 full+三路相机的显存风险。"
       ]
+    },
+    {
+      "time": "2026-07-19 15:05:00 CST",
+      "summary": "完成 headless 量产 wall-time 优化。新增统一 profiler；在 --no-record-video 下将数据相机和 frames.jsonl 诊断格点降至 5Hz，严格保持 physics_dt=0.0025s、control_dt=0.02s、decimation=8；将 JPEG/MP4/CSV/JSONL 改为带 FIFO/backpressure/drain 审计的异步 SynchronizedSamplePacket。batch 默认复用一个 Isaac 进程和 stage；box1/box2 改为 episode 内静止、episode 间通过 PhysX tensor 重定位的 kinematic support，修复第二条 episode 读到上一条静态 collider/Fabric 旧位姿的问题。同时修复 recorder 将上一条最终帧误当新 episode build_stage 第 0 帧的问题，并增加 sampling_coverage 强制门禁。最终 seed 7/8/9 真实 batch 3/3 成功、3/3 质量门通过、统一 LeRobot 642 rows 校验通过。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "scripts/pipeline/run_full_physics_batch.py",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "source/diagnostics/performance.py",
+        "source/pipeline/config.py",
+        "source/pipeline/factory.py",
+        "source/pipeline/full_physics_pipeline.py",
+        "source/pipeline/state_machine.py",
+        "source/recording/jsonl_recorder.py",
+        "source/recording/lerobot_dataset.py",
+        "source/simulation/isaaclab_runtime.py",
+        "source/simulation/receptacle_support.py",
+        "source/simulation/task_scene_pose.py",
+        "tests/test_full_physics_batch.py",
+        "tests/test_full_physics_lerobot.py",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "tests/test_performance_profiler.py",
+        "tests/test_scene_runtime.py"
+      ],
+      "tests": [
+        {
+          "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 focused pipeline/runtime/recording/performance regression",
+          "result": "passed",
+          "note": "159 passed、3 skipped；新增同 step 但 timestamp 不同必须拒绝的 1ns 容差回归；skipped 为普通 pytest 进程中无 pxr，相同 kinematic support 路径已由真实 Isaac batch 覆盖。"
+        },
+        {
+          "command": "run_full_physics_batch.py --num-episodes 3 --seed 7 --no-record-video",
+          "result": "passed",
+          "note": "seed 7/8/9 均 final_state=done、training_quality_gate_passed=true；仅 1 次 stage build，后续 stage_reuse_count=1/2。"
+        },
+        {
+          "command": "validate_lerobot_episode.py --dataset-root <final>/lerobot_dataset",
+          "result": "passed",
+          "note": "3 episodes、642 parquet rows、1926 video frames、5Hz、3 cameras、0 errors；action=10D、control.action=11D、observation.state=17D。"
+        }
+      ],
+      "data_results": {
+        "baseline_output_root": "/mnt/sage_data/outputs/arm_vla_liangzhu/perf_baseline_no_video_seed7_n3_20260719",
+        "optimized_output_root": "/mnt/sage_data/outputs/arm_vla_liangzhu/perf_final_batch_seed7_n3_20260719",
+        "episode_success_count": 3,
+        "training_quality_count": 3,
+        "lerobot_rows": 642,
+        "camera_video_frames_total": 1926,
+        "baseline_batch_wall_seconds": 925,
+        "optimized_batch_wall_seconds": 636,
+        "batch_wall_reduction_ratio": 0.3124,
+        "baseline_pipeline_mean_wall_seconds": 286.849,
+        "optimized_pipeline_mean_wall_seconds": 204.408,
+        "baseline_output_bytes": 1173327963,
+        "optimized_output_bytes": 162070824,
+        "output_reduction_ratio": 0.8619,
+        "estimated_1000_episode_wall_hours": 58.9,
+        "estimated_1000_episode_disk_gb": 54.0,
+        "estimated_1000_episode_wall_hours_saved": 26.7,
+        "estimated_1000_episode_disk_gb_saved": 337.1
+      },
+      "next_steps": [
+        "用户验收后手动 git add/commit/push；Codex 不主动提交。",
+        "扩大到 20 条之前先用当前默认命令跑 5 条小批次，继续监控 success、training_quality_gate、sampling_coverage 和 stage_reuse_count。",
+        "若需展示视频，单独运行 composite 验收；量产数据仍建议 --no-record-video。"
+      ]
     }
   ],
   "open_questions": [
@@ -7960,7 +8045,8 @@
     "GUI 可能在 viewport/timeline 未继续推进时保留 pick 最后一帧；量产 batch 已在 headless 下验证，GUI 卡帧必须用 events.jsonl/summary.json 和同 seed headless 复验区分于状态机失败。",
     "当前 arm_contact 标签来自执行器动作语义、夹爪命令和目标/TCP 运动学启发式，metadata 已明确标记 heuristic_action_and_kinematics；接入可靠接触传感器前不能描述为真实力/触觉接触标签。",
     "attempt14 的真实轨迹只出现 nav_stop 与 nav_turn，没有满足阈值的 nav_straight；这是该条轨迹的运动事实，不是 schema 缺失，六类标签全集由 contract 测试覆盖。",
-    "系统盘空间较紧，批量输出必须继续写入 /mnt/sage_data；attempt14 约 192MB，批量前仍应监控剩余容量。",
+    "系统盘空间较紧，批量输出必须继续写入 /mnt/sage_data。2026-07-19 的 5Hz、三相机、六 subtask、--no-record-video 实测为 3 条 162MB（约 54MB/条）；1000 条约 54GB 只是线性估算，仍应监控剩余容量。",
+    "当前性能与 1000 条估算只基于 RTX 4060 Laptop 上 seed 7/8/9 的 3 条 --no-record-video 实测；更大批次会受随机路径长度、热降频、磁盘和 cuRobo 规划时间影响，不应把 58.9h/54GB 视为硬性上限。",
     "最近一次导航/pipeline 聚焦回归为 254 passed、1 deselected；全仓回归为 472 passed、1 skipped、1 failed，唯一失败依赖迁移后缺失的旧 apple/A* source/scene/839920/nav_map/map.json，不是良渚 PCT 回归，因此仓库 tests_passing 仍保持 false。",
     "共享 CuRobo server 属于其他 worktree 的外部服务；兼容性握手和本轮复用已验证，pipeline 不拥有其生命周期，批量运行前仍需 ping。"
   ]

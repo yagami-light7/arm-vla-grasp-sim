@@ -199,6 +199,86 @@ def _navigation_visual_runtime_kwargs(
     }
 
 
+def _create_full_physics_runtime(
+    *,
+    config: FullPhysicsConfig,
+    args: argparse.Namespace,
+    simulation_app: object,
+):
+    """Create the one IsaacLab runtime optionally shared by all episodes."""
+
+    from source.simulation import (
+        IsaacLabNavigationRuntime,
+        IsaacLabNavigationRuntimeConfig,
+    )
+
+    video_modes = set(config.video.modes) if config.video.enabled else set()
+    return IsaacLabNavigationRuntime(
+        simulation_app=simulation_app,
+        project_root=PROJECT_ROOT,
+        config=IsaacLabNavigationRuntimeConfig(
+            **_locomotion_runtime_kwargs(config),
+            **_navigation_visual_runtime_kwargs(
+                config.locomotion.policy_profile,
+                args.navigation_visual_mode,
+                recording_visual_required=(
+                    config.recording.enabled and bool(config.recording.camera_keys)
+                ),
+            ),
+            enable_front_camera=(
+                (
+                    config.recording.enabled
+                    and "front" in config.recording.camera_keys
+                )
+                or bool({"front", "composite"} & video_modes)
+            ),
+            front_camera_height=config.recording.image_height,
+            front_camera_width=config.recording.image_width,
+            enable_wrist_camera=(
+                (
+                    config.recording.enabled
+                    and "wrist" in config.recording.camera_keys
+                )
+                or bool({"wrist", "composite"} & video_modes)
+            ),
+            wrist_camera_height=config.recording.image_height,
+            wrist_camera_width=config.recording.image_width,
+            enable_overview_camera=(
+                (
+                    config.recording.enabled
+                    and "overview" in config.recording.camera_keys
+                )
+                or "composite" in video_modes
+            ),
+            overview_camera_prim_path=config.recording.overview_camera_prim_path,
+            overview_camera_height=config.recording.image_height,
+            overview_camera_width=config.recording.image_width,
+            camera_render_interval_control_steps=(
+                1
+                if (config.video.enabled or not config.headless)
+                else max(
+                    1,
+                    int(round(1.0 / (config.recording.dataset_fps * 0.02))),
+                )
+            ),
+            enable_relocatable_episode_supports=bool(
+                config.reuse_isaac_stage and config.num_episodes > 1
+            ),
+            viewport_camera_prim_path=config.recording.overview_camera_prim_path,
+            scene_light_mode=config.lighting.scene_light_mode,
+            camera_light_intensity=config.lighting.camera_light_intensity,
+            camera_light_radius=config.lighting.camera_light_radius,
+            place_release_clearance_min_m=(
+                config.manipulation.place_release_clearance_min_m
+            ),
+            place_pre_clearance_min_m=(
+                config.manipulation.place_pre_clearance_min_m
+            ),
+            show_randomization_debug=config.randomization.show_debug_region,
+        ),
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="运行单进程、单 World 的纯物理 nav-pick-place pipeline。",
@@ -214,6 +294,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="episode、事件、帧和 summary 的输出目录。",
     )
     parser.add_argument("--num-episodes", type=int, default=1, help="运行的 episode 数量。")
+    parser.add_argument(
+        "--reuse-isaac-stage",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "多 episode 时复用同一 Isaac 进程和已构建 stage，只重置 episode 位姿；"
+            "默认开启。"
+        ),
+    )
     parser.add_argument(
         "--seed",
         type=int,
@@ -789,6 +878,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--export-video-camera-trajectory 只支持 --video-mode overview 或 all。")
     if args.record_video and args.video_out and Path(args.video_out).suffix.lower() == ".mp4" and args.num_episodes != 1:
         raise SystemExit("--video-out 指向单个 .mp4 文件时只支持 --num-episodes 1；多 episode 请传输出目录。")
+    multi_episode_real_supported = bool(
+        full_physics and args.reuse_isaac_stage and args.headless
+    )
     if (
         simulation_smoke
         or navigation_smoke
@@ -797,8 +889,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         or pick_smoke
         or manipulation_apply_smoke
         or full_physics
-    ) and args.num_episodes != 1:
-        raise SystemExit("真实 Isaac smoke 目前只支持 --num-episodes 1。")
+    ) and args.num_episodes != 1 and not multi_episode_real_supported:
+        raise SystemExit(
+            "真实 Isaac 多 episode 仅支持 headless full_physics，并要求 "
+            "--reuse-isaac-stage。"
+        )
     if flat_episode_output and args.num_episodes != 1:
         raise SystemExit("batch 扁平输出模式只支持单 episode 子进程。")
 
@@ -831,6 +926,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         output_dir=_project_path(args.output_dir),
         num_episodes=args.num_episodes,
         seed=args.seed,
+        reuse_isaac_stage=bool(args.reuse_isaac_stage),
         headless=args.headless,
         keep_window_open=args.keep_window_open,
         show_planned_trajectories=bool(args.show_planned_trajectories),
@@ -1011,7 +1107,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     config.output_dir.mkdir(parents=True, exist_ok=True)
     batch_summary_path = None
     if not flat_episode_output:
-        batch_summary_path = config.output_dir / "batch_summary.jsonl"
+        batch_summary_name = os.environ.get(
+            "FULL_PHYSICS_BATCH_SUMMARY_NAME",
+            "batch_summary.jsonl",
+        )
+        if Path(batch_summary_name).name != batch_summary_name:
+            raise SystemExit("FULL_PHYSICS_BATCH_SUMMARY_NAME must be a file name")
+        batch_summary_path = config.output_dir / batch_summary_name
         batch_summary_path.write_text("", encoding="utf-8")
     stale_startup_failure_path = config.output_dir / "startup_failure.json"
     if stale_startup_failure_path.exists():
@@ -1029,6 +1131,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "headless": bool(config.headless),
         "keep_window_open": bool(config.keep_window_open),
         "record_video": bool(config.video.enabled),
+        "reuse_isaac_stage": bool(config.reuse_isaac_stage),
         "navigation_visual_mode": str(args.navigation_visual_mode),
         "overview_camera_mode": config.video.overview_camera_mode,
         "overview_camera_prim_path": config.recording.overview_camera_prim_path,
@@ -1058,6 +1161,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     app_launcher = None
     planner_server = None
     retained_simulation = None
+    shared_full_physics_simulation = None
     try:
         if config.full_physics or config.pick_smoke:
             from source.manipulation import (
@@ -1262,79 +1366,33 @@ def main(argv: Sequence[str] | None = None) -> int:
                 from source.pipeline.factory import (
                     create_full_physics_pipeline,
                 )
-                from source.simulation import (
-                    IsaacLabNavigationRuntime,
-                    IsaacLabNavigationRuntimeConfig,
-                )
 
-                video_modes = set(config.video.modes) if config.video.enabled else set()
+                share_runtime = bool(
+                    full_physics
+                    and config.reuse_isaac_stage
+                    and config.num_episodes > 1
+                )
+                if share_runtime:
+                    if shared_full_physics_simulation is None:
+                        shared_full_physics_simulation = _create_full_physics_runtime(
+                            config=config,
+                            args=args,
+                            simulation_app=app_launcher.app,
+                        )
+                    simulation = shared_full_physics_simulation
+                else:
+                    simulation = _create_full_physics_runtime(
+                        config=config,
+                        args=args,
+                        simulation_app=app_launcher.app,
+                    )
                 pipeline = create_full_physics_pipeline(
                     config=config,
                     episode_spec=episode_spec,
                     episode_seed=episode_seed,
                     episode_dir=episode_dir,
-                    simulation=IsaacLabNavigationRuntime(
-                        simulation_app=app_launcher.app,
-                        project_root=PROJECT_ROOT,
-                        config=IsaacLabNavigationRuntimeConfig(
-                            **_locomotion_runtime_kwargs(config),
-                            **_navigation_visual_runtime_kwargs(
-                                config.locomotion.policy_profile,
-                                args.navigation_visual_mode,
-                                recording_visual_required=(
-                                    config.recording.enabled
-                                    and bool(config.recording.camera_keys)
-                                ),
-                            ),
-                            enable_front_camera=(
-                                (
-                                    config.recording.enabled
-                                    and "front" in config.recording.camera_keys
-                                )
-                                or bool({"front", "composite"} & video_modes)
-                            ),
-                            front_camera_height=config.recording.image_height,
-                            front_camera_width=config.recording.image_width,
-                            enable_wrist_camera=(
-                                (
-                                    config.recording.enabled
-                                    and "wrist" in config.recording.camera_keys
-                                )
-                                or bool({"wrist", "composite"} & video_modes)
-                            ),
-                            wrist_camera_height=config.recording.image_height,
-                            wrist_camera_width=config.recording.image_width,
-                            enable_overview_camera=(
-                                (
-                                    config.recording.enabled
-                                    and "overview" in config.recording.camera_keys
-                                )
-                                or "composite" in video_modes
-                            ),
-                            overview_camera_prim_path=(
-                                config.recording.overview_camera_prim_path
-                            ),
-                            overview_camera_height=config.recording.image_height,
-                            overview_camera_width=config.recording.image_width,
-                            viewport_camera_prim_path=(
-                                config.recording.overview_camera_prim_path
-                            ),
-                            scene_light_mode=config.lighting.scene_light_mode,
-                            camera_light_intensity=(
-                                config.lighting.camera_light_intensity
-                            ),
-                            camera_light_radius=config.lighting.camera_light_radius,
-                            place_release_clearance_min_m=(
-                                config.manipulation.place_release_clearance_min_m
-                            ),
-                            place_pre_clearance_min_m=(
-                                config.manipulation.place_pre_clearance_min_m
-                            ),
-                            show_randomization_debug=(
-                                config.randomization.show_debug_region
-                            ),
-                        ),
-                    ),
+                    simulation=simulation,
+                    close_simulation_on_exit=not share_runtime,
                 )
             elif pct_plan_preview:
                 from source.pipeline.pct_plan_preview import (
@@ -1474,7 +1532,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise
     finally:
         try:
-            if retained_simulation is not None:
+            if shared_full_physics_simulation is not None:
+                shared_full_physics_simulation.close()
+            elif retained_simulation is not None:
                 retained_simulation.close()
             if app_launcher is not None:
                 app_launcher.app.close()

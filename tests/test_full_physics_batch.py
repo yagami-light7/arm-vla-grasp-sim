@@ -18,6 +18,7 @@ from scripts.pipeline.run_full_physics_batch import (
     _build_episode_result,
     _build_child_command,
     _build_parser,
+    _build_reused_process_command,
     _color,
     _format_duration,
     _format_progress_suffix,
@@ -44,6 +45,38 @@ PLACE_PLAN = (
 
 
 class FullPhysicsBatchTest(unittest.TestCase):
+    def test_reused_process_command_runs_all_episodes_in_one_output_root(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "--output-dir",
+                "/tmp/reused_full_physics_batch",
+                "--num-episodes",
+                "3",
+                "--seed",
+                "7",
+                "--no-record-video",
+            ]
+        )
+
+        child = _build_reused_process_command(args)
+
+        self.assertTrue(args.reuse_isaac_process)
+        self.assertEqual(child.num_episodes, 3)
+        self.assertEqual(child.output_dir, Path("/tmp/reused_full_physics_batch"))
+        self.assertEqual(
+            child.summary_path,
+            Path("/tmp/reused_full_physics_batch/episode_000000/summary.json"),
+        )
+        self.assertEqual(
+            child.command[child.command.index("--num-episodes") + 1],
+            "3",
+        )
+        self.assertEqual(
+            child.command[child.command.index("--output-dir") + 1],
+            "/tmp/reused_full_physics_batch",
+        )
+        self.assertIn("--reuse-isaac-stage", child.command)
+
     def test_liangzhu_stable_profile_is_the_batch_default(self) -> None:
         args = _build_parser().parse_args(
             ["--output-dir", "/tmp/liangzhu_default_batch"]

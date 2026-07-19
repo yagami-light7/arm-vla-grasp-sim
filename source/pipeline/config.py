@@ -281,6 +281,8 @@ class RecordingSettings:
     debug_per_episode_lerobot: bool = True
     unified_dataset: bool = True
     validate_export: bool = True
+    async_encoding_and_write: bool = True
+    async_queue_size: int = 16
 
 
 @dataclass(frozen=True)
@@ -330,6 +332,9 @@ class FullPhysicsConfig:
     output_dir: Path
     num_episodes: int = 1
     seed: int = 0
+    # Multi-episode real runs keep one Isaac application/environment alive and
+    # re-apply episode-level poses before reset. A single episode is unchanged.
+    reuse_isaac_stage: bool = True
     headless: bool = True
     keep_window_open: bool = False
     show_planned_trajectories: bool = False
@@ -694,6 +699,8 @@ class FullPhysicsConfig:
             raise ValueError("recording jpeg_quality must be within [1, 100]")
         if self.recording.chunks_size <= 0:
             raise ValueError("recording chunks_size must be positive")
+        if self.recording.async_queue_size < 1:
+            raise ValueError("recording async_queue_size must be positive")
         if not self.recording.camera_keys:
             raise ValueError("recording camera_keys must not be empty")
         if self.recording.primary_camera_key not in self.recording.camera_keys:

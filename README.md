@@ -237,11 +237,15 @@ build_stage
 
 ### Batch 流程
 
-`run_full_physics_batch.py` 当前按 episode 启动子进程。
+`run_full_physics_batch.py` 默认只启动一个 Isaac 子进程，并在同一个
+IsaacLab env / stage 中连续执行所有 episode。每条 episode 仍会重置机器人、
+可乐、box1/box2、记录器和状态机；box1/box2 在 stage 初建时转为
+“episode 内不可移动、episode 间可重定位”的 kinematic support，避免运行中热改
+USD 静态 collider 时 PhysX/Fabric 仍使用上一条位姿。
 
-优点：每个 episode 隔离，失败不会污染后续 episode
-
-缺点：是每个 episode 都要重复启动 Isaac Sim、加载 USD、创建 env 和相机，耗时时间较长。
+这一默认模式避免重复启动 Isaac Sim、加载 USD、创建 env/相机和加载
+locomotion policy。若要排查跨 episode 状态污染，可显式使用
+`--no-reuse-isaac-process` 回退到每条独立子进程。
 
 batch 结束会打印以下表格：
 
@@ -271,6 +275,52 @@ lerobot_manifest.json / lerobot_dataset/                           失败时删�
 ```
 
 batch 合并统一数据集时只合并成功并通过最终物理来源质量门的 episode。
+
+#### Headless batch 性能与图像/状态同步契约
+
+量产建议使用 `--no-record-video`。该模式下只降低与训练数据相关的渲染和
+诊断 I/O 频率，不改物理或控制时序：
+
+| 时序 / I/O | 当前值 |
+| --- | --- |
+| PhysX | `physics_dt=0.0025s`，400Hz |
+| locomotion/control | `control_dt=0.02s`，50Hz |
+| decimation | `8` 次物理 step / control step |
+| headless 数据相机 | 每 10 个 control step 渲染一次，5Hz |
+| `frames.jsonl` | 5Hz 数据格点 + 所有状态切换 |
+| GUI / 展示视频 | 仍按每个 control step 渲染，本优化不降低 composite 频率 |
+
+图像编码和写盘默认异步，但“取样”仍是同步事务：在同一 control tick
+内读取 `front/wrist/overview`、state 和 action，立即把 GPU image 冻结为独立 CPU
+buffer，并生成一个 `SynchronizedSamplePacket`。后台单 worker 只按 FIFO 顺序执行
+JPEG/MP4/CSV/JSONL 编码写入，不再读仿真状态。每帧同时保存：
+
+```text
+simulation_step == camera_capture_step == state_step
+simulation_timestamp == camera_capture_timestamp == state_timestamp
+```
+
+step 必须严格相等，timestamp 只保留 `1e-9s` 浮点容差；任一不一致都会立即拒绝数据。
+队列满时主线程会 backpressure，episode 结束前
+必须 drain 全部 packet 并审计连续 frame index。另外会根据仿真时长检查
+`sampling_coverage`，防止只有一帧却被误判为有效数据集。
+
+2026-07-19 在同一台 RTX 4060 Laptop、同一 seed 7/8/9、`--no-record-video`
+下的实测：
+
+| 指标 | 优化前 | 当前 | 变化 |
+| --- | ---: | ---: | ---: |
+| 3 条 batch 端到端 wall time | 15m25s | 10m36s | -31.2% |
+| pipeline 内部平均 wall time / episode | 286.85s | 204.41s | -28.7% |
+| RTX render / episode | 48.11s | 5.51s | -88.5% |
+| `frames.jsonl` 写入 / episode | 20.71s | 0.37s | -98.2% |
+| 3 条完整输出占用 | 1.173GB | 0.162GB | -86.2% |
+| 成功 / 质量门 | 3/3 | 3/3 | 不变 |
+
+按当前 3 条端到端平均保守线性外推，1000 条约为 58.9 小时和 54GB；
+优化前约为 85.6 小时和 391GB，约节省 26.7 小时与 337GB。这是基于
+当前 5Hz JPEG + 三路 LeRobot MP4 + 六类 subtask 导出的估算，不包含额外的 25Hz
+composite 展示视频。
 
 ### 当前良渚 box1 -> box2 任务
 
@@ -662,7 +712,8 @@ metadata 和最终 validator 为准。
 | `--no-randomize-task --randomize-base-goal` | 良渚专用 profile 不转入旧通用 sampler，保持固定任务 |
 
 实际运行开关由 CLI 的 `RandomizationSettings` 控制；task JSON 中的
-`randomization.mode` 选择具体随机化算法。batch 为每个 episode 启动独立进程，并使用：
+`randomization.mode` 选择具体随机化算法。batch 默认复用同一 Isaac 进程和
+stage，但每条仍使用独立 seed 和记录目录：
 
 ```text
 episode_seed = batch_seed + episode_index
@@ -1238,13 +1289,16 @@ PYTHONDONTWRITEBYTECODE=1 \
   scripts/pipeline/run_full_physics_batch.py \
   --output-dir /mnt/sage_data/outputs/arm_vla_liangzhu/box_pair_batch_seed5000_n20 \
   --num-episodes 20 \
-  --seed 5000
+  --seed 5000 \
+  --no-record-video
 ```
 
 batch 默认使用当前 box1 -> box2 任务、联合随机化、PCT 单层地图、identity 坐标、禁止 A*
 fallback、`pct_multifloor` locomotion policy/checkpoint、headless 模式、固定 `/World/overview`
-相机、仓库内 collision PLY 和 collision 视觉模式。除输出目录、episode 数和 seed 外，
-无需重复传入稳定参数。box1/box2 只随机 XY；机器人在两箱之间生成且 yaw 在
+相机、仓库内 collision PLY、collision 视觉模式，并默认复用同一 Isaac 进程/
+stage。除输出目录、episode 数和 seed 外，无需重复传入稳定参数。量产时建议
+显式传 `--no-record-video`，LeRobot 的 front/wrist/overview 三路 5Hz 数据仍会完整导出。
+box1/box2 只随机 XY；机器人在两箱之间生成且 yaw 在
 `[-180°, 180°]` 内采样；可乐在 box1 中央安全区随机 XY/yaw。这些范围由
 `tasks/liangzhu_placement_target.json` 管理，不是 CLI 参数。当前已有 seed 5000 的真实
 headless full-physics 成功证据；首次量产仍应先运行独立小批次统计，而不能把单条成功
@@ -1336,7 +1390,8 @@ smoke/debug 时传模式参数。
 | ---------------------------------------------------- | ------------------------------- | --------------------------------------------------- |
 | `--task-json`                                        | 良渚 box1 -> box2 任务          | 默认 `tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json` |
 | `--output-dir`                                       | `outputs/full_physics_pipeline` | 输出目录；真实采集建议使用 `/mnt/sage_data`       |
-| `--num-episodes`                                     | `1`                             | episode 数量；真实 Isaac 模式当前只支持 1           |
+| `--num-episodes`                                     | `1`                             | episode 数量；headless full-physics 可在同一 stage 连续执行 |
+| `--reuse-isaac-stage` / `--no-reuse-isaac-stage`     | 默认开启                        | 多 episode 复用 IsaacLab env/stage；排查隔离问题时可关闭 |
 | `--seed`                                             | `0`                             | episode seed；相同 task/config/seed 复现同一布局       |
 | `--randomize-task` / `--no-randomize-task`           | 默认开启                        | 联合随机化 box XY、机器人 pose、可乐 pose 及同步目标 |
 | `--show-randomization-debug`                         | 默认关闭                        | 显示 box/目标/导航交接点 USD guide                   |
@@ -1377,7 +1432,7 @@ smoke/debug 时传模式参数。
 ### `scripts/pipeline/run_full_physics_batch.py`
 
 默认模式是 full-physics，默认 headless，默认继续执行失败后的 episode。batch
-会为每个 episode 启动独立 Isaac Sim 子进程，并在结束时只合并通过质量门的数据。
+默认只启动一个 Isaac Sim 子进程并复用 stage，在结束时只合并通过质量门的数据。
 
 
 | 参数                                                 | 类型 / 默认   | 说明                                        |
@@ -1385,6 +1440,7 @@ smoke/debug 时传模式参数。
 | `--task-json`                                        | 良渚 box1 -> box2 任务 | 默认 `tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json` |
 | `--output-dir`                                       | 必填          | batch 输出目录；必须使用新目录，避免混入旧摘要       |
 | `--num-episodes`                                     | `1`           | episode 数量                                |
+| `--reuse-isaac-process` / `--no-reuse-isaac-process` | 默认开启      | 复用单个 Isaac 进程/stage；关闭后每条独立进程 |
 | `--seed`                                             | `0`           | 首个 seed，后续使用`seed + episode_index`   |
 | `--randomize-task` / `--no-randomize-task`           | 默认开启      | 是否按 task profile 随机化完整 episode 布局 |
 | `--show-randomization-debug`                         | 默认关闭      | 显示 box/目标/交接点；通常只用于 GUI 单 episode |

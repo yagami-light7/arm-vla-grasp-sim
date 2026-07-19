@@ -290,6 +290,14 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             self.assertTrue(summary["place_verification_result"]["success"])
             self.assertGreater(summary["duration_steps"], len(expected_trace))
             self.assertEqual(pipeline.simulation.apply_calls, summary["duration_steps"])
+            performance = summary["performance_report"]
+            self.assertEqual(performance["schema_version"], "wall_time_profile_v1")
+            self.assertEqual(performance["seed"], 7)
+            self.assertEqual(
+                performance["operations"]["pipeline.state_machine_tick"]["count"],
+                summary["duration_steps"],
+            )
+            self.assertIn("frames.jsonl", performance["artifact_sizes_bytes"])
 
             for filename in (
                 "task.json",

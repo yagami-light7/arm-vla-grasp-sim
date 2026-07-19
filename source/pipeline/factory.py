@@ -106,6 +106,7 @@ def create_full_physics_pipeline(
     episode_seed: int,
     episode_dir: str | Path,
     simulation: IsaacLabNavigationRuntime,
+    close_simulation_on_exit: bool = True,
 ) -> FullPhysicsPipeline:
     """在同一 IsaacLab runtime 中连续调度 nav、在线 cuRobo、arm 和 gripper。"""
 
@@ -248,6 +249,11 @@ def create_full_physics_pipeline(
                 ),
                 unified_dataset=full_physics_config.recording.unified_dataset,
                 validate_export=full_physics_config.recording.validate_export,
+                async_encoding_and_write=(
+                    full_physics_config.recording.async_encoding_and_write
+                ),
+                async_queue_size=full_physics_config.recording.async_queue_size,
             ),
         ),
+        close_simulation_on_exit=close_simulation_on_exit,
     )

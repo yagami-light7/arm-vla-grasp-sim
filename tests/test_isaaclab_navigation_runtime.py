@@ -40,6 +40,7 @@ from source.simulation.isaaclab_runtime import (
     _compute_wrist_camera_object_clearance_sample,
     _derive_mesh_truth_place_pose,
     _dedupe_root_paths,
+    _episode_reset_pose_configuration,
     _path_is_excluded_by_roots,
     _prim_keyword_match_text,
     _front_camera_calibration_metadata,
@@ -288,6 +289,32 @@ class FakeAdapter:
 
 
 class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
+    def test_episode_reset_pose_configuration_updates_xyz_and_full_yaw(self) -> None:
+        episode_spec = EpisodeSpec(
+            task_id=1,
+            episode_id=8,
+            instruction="test",
+            scene_usd="scene.usd",
+            nav_map="nav.npy",
+            start=NavGoal(-1.25, 5.75, -2.8, z=0.31),
+            pick_goal=NavGoal(0.0, 0.0, 0.0),
+            place_goal=None,
+            object_prim_path="/World/cola",
+            object_initial_pose=None,
+            place_target_pose=None,
+        )
+
+        params, report = _episode_reset_pose_configuration(
+            episode_spec,
+            default_root_pos=(0.0, 0.0, 0.45),
+        )
+
+        self.assertEqual(params["pose_range"]["x"], (-1.25, -1.25))
+        self.assertEqual(params["pose_range"]["y"], (5.75, 5.75))
+        self.assertAlmostEqual(params["pose_range"]["z"][0], -0.14)
+        self.assertEqual(params["pose_range"]["yaw"], (-2.8, -2.8))
+        self.assertEqual(report["target_world_xyz_yaw"], (-1.25, 5.75, 0.31, -2.8))
+
     def test_gripper_collision_patch_defaults_match_requested_values(self) -> None:
         config = IsaacLabNavigationRuntimeConfig()
 
@@ -981,6 +1008,13 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
             enable_wrist_camera=True,
         )
         runtime._metadata = {}
+        runtime._step_calls = 0
+        runtime._camera_render_generation = 1
+        runtime._last_camera_render_step = 0
+        runtime._last_camera_render_reason = "test_render"
+        runtime._cached_camera_step = None
+        runtime._cached_camera_images = {}
+        runtime._performance_profiler = None
         runtime._runtime = type(
             "Runtime",
             (),
@@ -999,6 +1033,10 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         self.assertEqual(images["wrist"].shape, (4, 6, 3))
         self.assertTrue(np.all(images["wrist"] == 22))
         self.assertEqual(
+            runtime._metadata["camera_capture_report"]["synchronization_source"],
+            "explicit_render_state_step_contract",
+        )
+        self.assertEqual(
             runtime._metadata["camera_capture_report"]["available_camera_keys"],
             ["front", "wrist"],
         )
@@ -1006,6 +1044,26 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
             runtime._metadata["camera_capture_report"]["missing_camera_keys"],
             [],
         )
+
+    def test_runtime_rejects_camera_frame_from_another_state_step(self) -> None:
+        runtime = object.__new__(IsaacLabNavigationRuntime)
+        runtime._config = IsaacLabNavigationRuntimeConfig(enable_front_camera=True)
+        runtime._metadata = {}
+        runtime._step_calls = 10
+        runtime._camera_render_generation = 3
+        runtime._last_camera_render_step = 0
+        runtime._last_camera_render_reason = "episode_reset_state_sync"
+        runtime._cached_camera_step = None
+        runtime._cached_camera_images = {}
+        runtime._performance_profiler = None
+        runtime._runtime = type("Runtime", (), {"scene": {}})()
+
+        self.assertEqual(runtime._read_camera_images(), {})
+        report = runtime._metadata["camera_capture_report"]
+        self.assertFalse(report["accepted"])
+        self.assertEqual(report["capture_step_index"], 10)
+        self.assertEqual(report["render_step_index"], 0)
+        self.assertEqual(report["reason"], "stale_or_unrendered_state_rejected")
 
     def test_front_and_wrist_camera_use_d436_calibrated_intrinsics(self) -> None:
         source_text = (

@@ -1122,8 +1122,20 @@ class FullPhysicsStateMachine:
         return handlers[self.state](observation)
 
     def _build_stage(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
-        self.simulation.build(self.episode_spec)
-        events = [self._event("stage_built", observation.step_index)]
+        prepare_episode = getattr(self.simulation, "prepare_episode", None)
+        if callable(prepare_episode):
+            prepare_report = dict(prepare_episode(self.episode_spec))
+            event_name = (
+                "stage_reused"
+                if prepare_report.get("stage_reused") is True
+                else "stage_built"
+            )
+            events = [
+                self._event(event_name, observation.step_index, prepare_report)
+            ]
+        else:
+            self.simulation.build(self.episode_spec)
+            events = [self._event("stage_built", observation.step_index)]
         events.extend(self._transition(PipelineState.RESET_EPISODE, observation.step_index))
         metadata = {}
         if self._physical_pick_enabled():
@@ -1164,7 +1176,14 @@ class FullPhysicsStateMachine:
                 )
                 return RobotAction(
                     source="object_settle",
-                    metadata={"object_settle_active": True},
+                    metadata={
+                        "object_settle_active": True,
+                        # Observe and record the exact post-reset state before the
+                        # first task physics step.  This makes reset regressions
+                        # distinguishable from failures caused by the first action.
+                        "skip_physics_step": True,
+                        "skip_reason": "audit_post_reset_state_before_first_physics_step",
+                    },
                 ), events
         if self._object_settle_enabled() and not self._object_settle_completed:
             settle_action, settle_events, settled = self._advance_object_settle(observation)
