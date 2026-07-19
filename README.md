@@ -243,6 +243,18 @@ IsaacLab env / stage 中连续执行所有 episode。每条 episode 仍会重置
 “episode 内不可移动、episode 间可重定位”的 kinematic support，避免运行中热改
 USD 静态 collider 时 PhysX/Fabric 仍使用上一条位姿。
 
+复用 stage 不等于复用上一条 episode 的 PhysX 求解器状态。每个后续 episode
+会先写入本次 box/可乐 USD 位姿，再执行 `SimulationContext.reset(soft=False)`：
+USD stage 不重开、不重建，但 articulation/contact solver、PhysX tensor view 会重新创建；
+随后重新绑定可乐/支撑物 reader，并重新应用 front/wrist D436 内参。硬重置本身不推进
+physics/control step。episode reset 的第一条审计 action 也严格使用
+`skip_physics_step`，不会提前消耗 RL warmup 或推进 action history。
+
+机器人初始化采用两阶段交接：前 20 个 control tick 同时固定 reset root，并用
+actuator target 保持支撑腿；这段人为静止不计入稳定步数。随后同时解除 root/支撑腿锁，
+由 `pct_multifloor` RL policy 在真实接触下平衡，并重新满足速度、roll/pitch 和位姿门后
+才进入导航。这样既避免 reset 首步冲击，又不会让固定站姿在不同地面/yaw 下缓慢侧翻。
+
 这一默认模式避免重复启动 Isaac Sim、加载 USD、创建 env/相机和加载
 locomotion policy。若要排查跨 episode 状态污染，可显式使用
 `--no-reuse-isaac-process` 回退到每条独立子进程。
@@ -305,22 +317,28 @@ step 必须严格相等，timestamp 只保留 `1e-9s` 浮点容差；任一不�
 必须 drain 全部 packet 并审计连续 frame index。另外会根据仿真时长检查
 `sampling_coverage`，防止只有一帧却被误判为有效数据集。
 
-2026-07-19 在同一台 RTX 4060 Laptop、同一 seed 7/8/9、`--no-record-video`
-下的实测：
+2026-07-19 在同一台 RTX 4060 Laptop、相同任务、相同 seed 7/8/9、
+`--no-record-video` 下做了严格逐 seed 对照。当前列使用包含上述 PhysX 隔离修复的
+20-seed 运行结果，不使用更早但存在 `base_settle_timeout` 的复用结果：
 
-| 指标 | 优化前 | 当前 | 变化 |
-| --- | ---: | ---: | ---: |
-| 3 条 batch 端到端 wall time | 15m25s | 10m36s | -31.2% |
-| pipeline 内部平均 wall time / episode | 286.85s | 204.41s | -28.7% |
-| RTX render / episode | 48.11s | 5.51s | -88.5% |
-| `frames.jsonl` 写入 / episode | 20.71s | 0.37s | -98.2% |
-| 3 条完整输出占用 | 1.173GB | 0.162GB | -86.2% |
-| 成功 / 质量门 | 3/3 | 3/3 | 不变 |
+| Seed | 未优化 pipeline wall | 当前 pipeline wall | 每条节省 | 降幅 |
+| ---: | ---: | ---: | ---: | ---: |
+| 7 | 303.06s | 205.85s | 97.21s | 32.1% |
+| 8 | 275.29s | 182.33s | 92.96s | 33.8% |
+| 9 | 282.20s | 177.89s | 104.31s | 37.0% |
+| 平均 | 286.85s | 188.69s | 98.16s | 34.2% |
 
-按当前 3 条端到端平均保守线性外推，1000 条约为 58.9 小时和 54GB；
-优化前约为 85.6 小时和 391GB，约节省 26.7 小时与 337GB。这是基于
-当前 5Hz JPEG + 三路 LeRobot MP4 + 六类 subtask 导出的估算，不包含额外的 25Hz
-composite 展示视频。
+同三条 aggregate real-time factor 从 `0.1526` 提升到 `0.2136`，吞吐约为旧版
+`1.52x`。先前独立 I/O benchmark 中，RTX render 从 48.11s/条降到 5.51s/条，
+`frames.jsonl` 写入从 20.71s/条降到 0.37s/条，3 条完整输出从 1.173GB 降到
+0.162GB；安全修复没有撤销这些 5Hz/异步导出优化。
+
+最终唯一 seeds 7..26 的 20 条真实 full-physics 结果为 `20/20` 成功、
+`20/20` 训练质量门通过、`base_settle_timeout=0`。其中最长连续单进程 stage 复用为
+15 条；外部工具中断后补齐剩余 seed，并让 seed 26 再次作为复用后的第二条验证。
+20 条 pipeline 内部 wall time 平均 191.94s（约 3m12s）、中位数 189.10s。
+按旧版 3-seed 均值作吞吐估算，每条约省 94.91s（33.1%），20 条约省 31m38s；
+该 20 条估算不是逐 seed 旧版配对，严格配对结论只使用上表 seeds 7/8/9。
 
 ### 当前良渚 box1 -> box2 任务
 
@@ -1300,9 +1318,10 @@ stage。除输出目录、episode 数和 seed 外，无需重复传入稳定参�
 显式传 `--no-record-video`，LeRobot 的 front/wrist/overview 三路 5Hz 数据仍会完整导出。
 box1/box2 只随机 XY；机器人在两箱之间生成且 yaw 在
 `[-180°, 180°]` 内采样；可乐在 box1 中央安全区随机 XY/yaw。这些范围由
-`tasks/liangzhu_placement_target.json` 管理，不是 CLI 参数。当前已有 seed 5000 的真实
-headless full-physics 成功证据；首次量产仍应先运行独立小批次统计，而不能把单条成功
-等同于 batch 稳定率。
+`tasks/liangzhu_placement_target.json` 管理，不是 CLI 参数。2026-07-19 已用该默认入口
+完成唯一 seeds 7..26 的 20 条真实 headless full-physics 验证：20/20 到达 `done`，
+20/20 通过训练质量门，`base_settle_timeout=0`。更换场景资产、randomization 范围、
+locomotion checkpoint 或控制参数后仍需重新建立小批次门禁，不能沿用本轮成功率。
 
 ### 复现固定任务
 
@@ -1391,7 +1410,7 @@ smoke/debug 时传模式参数。
 | `--task-json`                                        | 良渚 box1 -> box2 任务          | 默认 `tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json` |
 | `--output-dir`                                       | `outputs/full_physics_pipeline` | 输出目录；真实采集建议使用 `/mnt/sage_data`       |
 | `--num-episodes`                                     | `1`                             | episode 数量；headless full-physics 可在同一 stage 连续执行 |
-| `--reuse-isaac-stage` / `--no-reuse-isaac-stage`     | 默认开启                        | 多 episode 复用 IsaacLab env/stage；排查隔离问题时可关闭 |
+| `--reuse-isaac-stage` / `--no-reuse-isaac-stage`     | 默认开启                        | 复用 USD env/stage；每条仍硬重置 PhysX view/solver，排查隔离问题时可关闭 |
 | `--seed`                                             | `0`                             | episode seed；相同 task/config/seed 复现同一布局       |
 | `--randomize-task` / `--no-randomize-task`           | 默认开启                        | 联合随机化 box XY、机器人 pose、可乐 pose 及同步目标 |
 | `--show-randomization-debug`                         | 默认关闭                        | 显示 box/目标/导航交接点 USD guide                   |
@@ -1440,7 +1459,7 @@ smoke/debug 时传模式参数。
 | `--task-json`                                        | 良渚 box1 -> box2 任务 | 默认 `tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json` |
 | `--output-dir`                                       | 必填          | batch 输出目录；必须使用新目录，避免混入旧摘要       |
 | `--num-episodes`                                     | `1`           | episode 数量                                |
-| `--reuse-isaac-process` / `--no-reuse-isaac-process` | 默认开启      | 复用单个 Isaac 进程/stage；关闭后每条独立进程 |
+| `--reuse-isaac-process` / `--no-reuse-isaac-process` | 默认开启      | 复用单个 Isaac 进程/USD stage；episode 间硬重置 PhysX，关闭后每条独立进程 |
 | `--seed`                                             | `0`           | 首个 seed，后续使用`seed + episode_index`   |
 | `--randomize-task` / `--no-randomize-task`           | 默认开启      | 是否按 task profile 随机化完整 episode 布局 |
 | `--show-randomization-debug`                         | 默认关闭      | 显示 box/目标/交接点；通常只用于 GUI 单 episode |

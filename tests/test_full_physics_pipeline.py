@@ -1303,12 +1303,26 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             self.assertEqual(pipeline.machine.state, PipelineState.RESET_EPISODE)
 
             reset = pipeline.machine.tick(simulation.read())
+            self.assertTrue(
+                reset.action.metadata["manipulation_support_joint_lock"]
+            )
+            self.assertEqual(
+                reset.action.metadata["manipulation_support_joint_lock_phase"],
+                "episode_initialization_settle",
+            )
             simulation.apply(reset.action)
             simulation.step(render=False)
             self.assertEqual(pipeline.machine.state, PipelineState.RESET_EPISODE)
             self.assertIn("object_settle_started", {event.name for event in reset.events})
 
             settling = pipeline.machine.tick(simulation.read())
+            self.assertTrue(
+                settling.action.metadata["manipulation_support_joint_lock"]
+            )
+            self.assertEqual(
+                settling.action.metadata["manipulation_support_joint_lock_phase"],
+                "episode_initialization_settle",
+            )
             simulation.apply(settling.action)
             simulation.step(render=False)
             self.assertEqual(pipeline.machine.state, PipelineState.RESET_EPISODE)
@@ -1461,6 +1475,72 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             stability = stabilized_event.metadata["stability"]
             self.assertTrue(stability["base_settle_enabled"])
             self.assertTrue(stability["base_stable"])
+
+    def test_full_physics_revalidates_base_after_initialization_lock_release(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            task_path = PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json"
+            config = FullPhysicsConfig(
+                task_json=task_path,
+                output_dir=root,
+                full_physics=True,
+                navigation=_liangzhu_pct_navigation_settings(),
+                manipulation=ManipulationSettings(
+                    settle_object_before_navigation=True,
+                    settle_base_before_navigation=True,
+                    initialization_base_lock_steps=2,
+                    object_settle_max_steps=8,
+                    object_settle_required_stable_steps=2,
+                ),
+            )
+            spec = JsonTaskProvider().load(task_path)
+            simulation = InMemorySimulationRuntime()
+            pipeline = create_full_physics_pipeline(
+                config=config,
+                episode_spec=spec,
+                episode_seed=3,
+                episode_dir=root / "episode",
+                simulation=simulation,  # type: ignore[arg-type]
+            )
+
+            build = pipeline.machine.tick(simulation.read())
+            simulation.apply(build.action)
+            reset = pipeline.machine.tick(simulation.read())
+            self.assertTrue(reset.action.metadata["manipulation_base_lock"])
+            simulation.apply(reset.action)
+            simulation.step(render=False)
+
+            for expected_elapsed in (1, 2):
+                locked = pipeline.machine.tick(simulation.read())
+                report = locked.action.metadata["object_settle_report"]
+                self.assertEqual(report["elapsed_steps"], expected_elapsed)
+                self.assertTrue(report["initialization_base_lock_active"])
+                self.assertEqual(report["stable_steps"], 0)
+                self.assertTrue(locked.action.metadata["manipulation_base_lock"])
+                simulation.apply(locked.action)
+                simulation.step(render=False)
+
+            released = pipeline.machine.tick(simulation.read())
+            release_report = released.action.metadata["object_settle_report"]
+            self.assertFalse(release_report["initialization_base_lock_active"])
+            self.assertTrue(release_report["initialization_base_lock_released"])
+            self.assertEqual(release_report["stable_steps"], 1)
+            self.assertFalse(released.action.metadata["manipulation_base_lock"])
+            self.assertFalse(
+                released.action.metadata["manipulation_support_joint_lock"]
+            )
+            self.assertFalse(
+                release_report["initialization_support_joint_lock_active"]
+            )
+            simulation.apply(released.action)
+            simulation.step(render=False)
+
+            stabilized = pipeline.machine.tick(simulation.read())
+            self.assertEqual(pipeline.machine.state, PipelineState.PLAN_NAV_TO_PICK)
+            self.assertIn(
+                "object_initial_pose_stabilized",
+                {event.name for event in stabilized.events},
+            )
 
     def test_full_physics_verifier_checks_navigation_gripper_and_object_tcp_distance(self) -> None:
         spec = JsonTaskProvider().load(PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json")

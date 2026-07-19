@@ -2,8 +2,8 @@
   "project": "arm_vla_liangzhu",
   "branch": "liangzhu-deploy",
   "goal": "在良渚单层场景中复用原 pct_multifloor locomotion policy，跑通移动操作 pipeline，并导出可验证的数据。",
-  "current_phase": "phase_166_headless_batch_wall_time_async_stage_reuse",
-  "last_updated": "2026-07-19 15:28:28 CST",
+  "current_phase": "phase_167_stage_reuse_physx_isolation_batch20",
+  "last_updated": "2026-07-19 20:22:14 CST",
   "status": {
     "astar_default_preserved": true,
     "pct_adapter_added": true,
@@ -215,6 +215,20 @@
     "liangzhu_single_stage_batch_default": true,
     "liangzhu_relocatable_kinematic_supports_added": true,
     "liangzhu_cross_episode_static_collider_stale_pose_fixed": true,
+    "liangzhu_stage_reuse_physx_hard_reset_added": true,
+    "liangzhu_stage_reuse_tensor_readers_rebound": true,
+    "liangzhu_skip_physics_action_strict_noop_added": true,
+    "liangzhu_initialization_base_lock_steps": 20,
+    "liangzhu_initialization_lock_releases_to_rl_policy": true,
+    "liangzhu_stage_reuse_batch20_unique_seed_count": 20,
+    "liangzhu_stage_reuse_batch20_success_count": 20,
+    "liangzhu_stage_reuse_batch20_success_rate": 1.0,
+    "liangzhu_stage_reuse_batch20_training_quality_count": 20,
+    "liangzhu_stage_reuse_batch20_base_settle_timeout_count": 0,
+    "liangzhu_stage_reuse_longest_uninterrupted_process_episode_count": 15,
+    "pct_scene_stage_reuse_fix_synchronized": true,
+    "pct_scene_stage_reuse_real_gate_episode_count": 2,
+    "pct_scene_stage_reuse_real_gate_success_count": 2,
     "liangzhu_optimized_seed7_to_9_batch_attempted": true,
     "liangzhu_optimized_seed7_to_9_batch_success_count": 3,
     "liangzhu_optimized_seed7_to_9_training_quality_count": 3,
@@ -8022,6 +8036,91 @@
         "扩大到 20 条之前先用当前默认命令跑 5 条小批次，继续监控 success、training_quality_gate、sampling_coverage 和 stage_reuse_count。",
         "若需展示视频，单独运行 composite 验收；量产数据仍建议 --no-record-video。"
       ]
+    },
+    {
+      "time": "2026-07-19 20:22:14 CST",
+      "summary": "修复单进程 batch stage reuse 导致大面积 base_settle_timeout 的跨 episode 物理状态污染。根因不是 CUDA 或随机化本身，而是 ManagerBasedEnv reset 只重写 tensor pose，未清除上一条 episode 的 articulation/contact solver warm-start；同时 reset 审计帧仍提前推进 RL action history。现在每个复用 episode 在保留已打开 USD stage 的前提下执行 SimulationContext.reset(soft=False)，重新创建 PhysX view、重绑物体/支撑 reader 并重应用 D436 内参；skip_physics_step 成为严格无物理事务。初始化前 20 control tick 固定 root 和支撑腿，随后同时释放给 pct_multifloor RL policy，并在真实接触动力学下从零重新累计稳定步数。唯一 seeds 7..26 共 20 条真实 full-physics 全部成功并通过训练质量门，base_settle_timeout=0；同一修复已增量同步到 pct_scene，并由同进程 seeds 27/28 真实 gate 独立验证。",
+      "files_changed": [
+        "README.md",
+        "project.json",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "source/pipeline/config.py",
+        "source/pipeline/state_machine.py",
+        "source/simulation/isaaclab_runtime.py",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "/mnt/sage_data/workspace/pct_scene/README.md",
+        "/mnt/sage_data/workspace/pct_scene/project.json",
+        "/mnt/sage_data/workspace/pct_scene/scripts/pipeline/run_full_physics_pipeline.py",
+        "/mnt/sage_data/workspace/pct_scene/source/pipeline/config.py",
+        "/mnt/sage_data/workspace/pct_scene/source/pipeline/state_machine.py",
+        "/mnt/sage_data/workspace/pct_scene/source/simulation/isaaclab_runtime.py",
+        "/mnt/sage_data/workspace/pct_scene/tests/test_full_physics_pipeline.py",
+        "/mnt/sage_data/workspace/pct_scene/tests/test_isaaclab_navigation_runtime.py"
+      ],
+      "tests": [
+        {
+          "command": "liangzhu focused full-physics/state-machine/IsaacLab/batch/scene regression",
+          "result": "passed",
+          "note": "145 passed、3 skipped；覆盖 hard reset reader 重绑、skip_physics_step 不推进 policy/action history，以及初始化锁释放后 RL 动力学重新验稳。"
+        },
+        {
+          "command": "liangzhu unique seeds 7..26 real headless full-physics --no-record-video",
+          "result": "passed",
+          "note": "20/20 final_state=done、20/20 training_quality_gate_passed、20/20 stable_physics_success，base_settle_timeout=0。外部工具中断将输出拆为 15+4+复用后的 seed26；最长单进程连续复用 15 条，不能表述为一次未中断的 20 条进程。"
+        },
+        {
+          "command": "pct_scene focused regression and full pytest tests",
+          "result": "passed",
+          "note": "定向 160 passed、4 skipped、4 subtests；全仓 575 passed、4 skipped、15 subtests。"
+        },
+        {
+          "command": "pct_scene run_full_physics_batch.py --scene-profile liangzhu --num-episodes 2 --seed 27 --no-record-video",
+          "result": "passed",
+          "note": "2/2 完整成功并通过质量门；第二条 stage_reused=true、stage_reuse_count=1、PhysX hard reset applied=true、USD 未重开/未重建、physics_time_advanced=false。"
+        },
+        {
+          "command": "pct_scene validate_lerobot_episode.py --dataset-root <gate>/lerobot_dataset",
+          "result": "passed",
+          "note": "2 episodes、475 rows、三相机 1425 video frames、5Hz、0 error；action=10D、control.action=11D、observation.state=17D。"
+        }
+      ],
+      "data_results": {
+        "source_output_roots": [
+          "/mnt/sage_data/outputs/arm_vla_liangzhu/base_settle_fix_batch20_stage_reuse_seed7_20260719",
+          "/mnt/sage_data/outputs/arm_vla_liangzhu/base_settle_fix_batch20_continuation_seed22_20260719",
+          "/mnt/sage_data/outputs/arm_vla_liangzhu/base_settle_fix_seed26_stage_reuse_retry_seed25_20260719"
+        ],
+        "source_unique_seed_range": [7, 26],
+        "source_unique_episode_count": 20,
+        "source_success_count": 20,
+        "source_training_quality_count": 20,
+        "source_base_settle_timeout_count": 0,
+        "source_pipeline_wall_seconds_total": 3838.749,
+        "source_pipeline_wall_seconds_mean": 191.937,
+        "source_pipeline_wall_seconds_median": 189.102,
+        "source_simulation_seconds_total": 816.84,
+        "source_aggregate_real_time_factor": 0.212788,
+        "strict_paired_seed_range": [7, 9],
+        "strict_paired_baseline_mean_wall_seconds": 286.849,
+        "strict_paired_current_mean_wall_seconds": 188.689,
+        "strict_paired_mean_wall_seconds_saved": 98.16,
+        "strict_paired_wall_reduction_ratio": 0.342,
+        "strict_paired_throughput_multiplier": 1.52,
+        "pct_scene_output_root": "/mnt/sage_data/outputs/pct_scene/stage_reuse_base_settle_fix_gate2_seed27_20260719",
+        "pct_scene_seed_range": [27, 28],
+        "pct_scene_success_count": 2,
+        "pct_scene_training_quality_count": 2,
+        "pct_scene_lerobot_rows": 475,
+        "pct_scene_camera_video_frames_total": 1425,
+        "pct_scene_validator_errors": 0,
+        "pct_scene_reused_episode_hard_reset_wall_seconds": 3.1947530360012024
+      },
+      "next_steps": [
+        "用户验收后手动 git add/commit/push；Codex 不主动提交。",
+        "正式量产继续监控 stage_reuse_report、initialization_base_lock_released、base_settle_timeout 和 sampling_coverage；不要删除 hard reset 以换取表面耗时。",
+        "pct_scene 的 multi_floor profile 共享同一修复并已通过全仓回归，但若要宣称多楼层 stage reuse 真实稳定，仍需单独运行至少两条同进程 GPU gate。"
+      ]
     }
   ],
   "open_questions": [
@@ -8029,7 +8128,7 @@
     "现有几何随机化在 20-seed 回归中达到 100% 接受率后，是先扩大几何范围，还是保持当前范围并优先加入光照、相机噪声与遮挡随机化？"
   ],
   "known_limitations": [
-    "2026-07-18 当前 box1->box2 连续 seeds 0..19 在 pct_scene 的历史真实接受率为 90%（18/20）。seed 7 还存在初始化倾倒被旧 settle 门误接收的问题，已由 phase164 修复并定向完整复跑通过；seed 19 仍是水平释放速度超限。定向复跑不回写原连续 batch 统计，扩大 batch 前仍需做多 seed 初始化回归。",
+    "2026-07-18 pct_scene seeds 0..19 的 18/20 是旧实现历史结果，不能覆盖或改写。当前 phase167 在 arm_vla_liangzhu 上对唯一 seeds 7..26 得到 20/20 成功、base_settle_timeout=0；因外部工具中断，输出拆为 15+4+复用后的 seed26，最长单进程连续复用为 15 条，因此只能表述为同代码/配置的 20 个唯一 seed 全通过，不能表述为一次未中断进程连续 20/20。",
     "当前活动任务已切换为 box1 上抓取可乐并放到 box2。seed 5002 在最新导航结构下完整成功；seed 5003 的导航回归成功，但 CuRobo place 规划因实际 pre-place 目标约 0.4746m arm-base radial 而失败。base-goal 生成/导航验收尚未显式包含机械臂可达裕量，不能把该问题归因于 PCT/DWA，也不能通过逐地图调参宣称已解决。",
     "当前全向 yaw 的最新 v3 数据集是 validation_full_yaw_seed7000_n20_final_v2_20260715/lerobot_dataset，共 19 条 accepted episode；旧 validation_seed4013_n20_final_carry_map_v2 的 20 条数据只覆盖±30° yaw。phase146/147 历史数据仍是旧 front-only/连续 segment 目录，不能与 v3 直接混用。",
     "全向 yaw 的连续 20-seed batch 接受率为 95%（19/20）；唯一失败 seed 7018 在 0.040m placement center 修正后定向复跑通过，但这不能表述为同一次连续 batch 20/20。",
@@ -8046,7 +8145,7 @@
     "当前 arm_contact 标签来自执行器动作语义、夹爪命令和目标/TCP 运动学启发式，metadata 已明确标记 heuristic_action_and_kinematics；接入可靠接触传感器前不能描述为真实力/触觉接触标签。",
     "attempt14 的真实轨迹只出现 nav_stop 与 nav_turn，没有满足阈值的 nav_straight；这是该条轨迹的运动事实，不是 schema 缺失，六类标签全集由 contract 测试覆盖。",
     "系统盘空间较紧，批量输出必须继续写入 /mnt/sage_data。2026-07-19 的 5Hz、三相机、六 subtask、--no-record-video 实测为 3 条 162MB（约 54MB/条）；1000 条约 54GB 只是线性估算，仍应监控剩余容量。",
-    "当前性能与 1000 条估算只基于 RTX 4060 Laptop 上 seed 7/8/9 的 3 条 --no-record-video 实测；更大批次会受随机路径长度、热降频、磁盘和 cuRobo 规划时间影响，不应把 58.9h/54GB 视为硬性上限。",
+    "严格优化前后配对仍只覆盖 RTX 4060 Laptop 上 seed 7/8/9 三条；这三条平均提速 34.2%。当前版本另有 seeds 7..26 的 20 条耗时分布（均值 191.94s、中位数 189.10s），但 seed 10..26 没有旧版同 seed 对照；1000 条 wall time/磁盘估算仍会受路径长度、热降频、失败率、压缩率和 cuRobo 规划时间影响，不是硬性上限。",
     "最近一次导航/pipeline 聚焦回归为 254 passed、1 deselected；全仓回归为 472 passed、1 skipped、1 failed，唯一失败依赖迁移后缺失的旧 apple/A* source/scene/839920/nav_map/map.json，不是良渚 PCT 回归，因此仓库 tests_passing 仍保持 false。",
     "共享 CuRobo server 属于其他 worktree 的外部服务；兼容性握手和本轮复用已验证，pipeline 不拥有其生命周期，批量运行前仍需 ping。"
   ]

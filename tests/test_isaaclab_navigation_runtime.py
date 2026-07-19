@@ -289,6 +289,75 @@ class FakeAdapter:
 
 
 class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
+    def test_stage_reuse_hard_reset_rebinds_invalidated_tensor_readers(self) -> None:
+        episode_spec = EpisodeSpec(
+            task_id=1,
+            episode_id=8,
+            instruction="test",
+            scene_usd="scene.usd",
+            nav_map="nav.npy",
+            start=NavGoal(0.0, 0.0, 0.0),
+            pick_goal=NavGoal(1.0, 0.0, 0.0),
+            place_goal=None,
+            object_prim_path="/World/cola",
+            object_initial_pose=(1.0, 0.0, 0.2, 0.0, 0.0, 0.0),
+            place_target_pose=None,
+        )
+        calls: list[tuple[str, object]] = []
+
+        def reset(*, soft: bool) -> None:
+            calls.append(("sim.reset", soft))
+
+        def scene_update(*, dt: float) -> None:
+            calls.append(("scene.update", dt))
+
+        runtime = object.__new__(IsaacLabNavigationRuntime)
+        runtime._runtime = SimpleNamespace(  # type: ignore[attr-defined]
+            sim=SimpleNamespace(
+                reset=reset,
+                forward=lambda: calls.append(("sim.forward", None)),
+            ),
+            scene=SimpleNamespace(update=scene_update),
+            physics_dt=0.0025,
+            _sim_step_counter=57,
+        )
+        runtime._step_calls = 23  # type: ignore[attr-defined]
+        runtime._metadata = {}  # type: ignore[attr-defined]
+        runtime._initialize_object_reader = (  # type: ignore[method-assign]
+            lambda spec: calls.append(("object_reader", spec.episode_id))
+        )
+        runtime._initialize_episode_support_readers = (  # type: ignore[method-assign]
+            lambda spec: calls.append(("support_readers", spec.episode_id))
+        )
+        runtime._apply_d436_runtime_intrinsics = (  # type: ignore[method-assign]
+            lambda manager_runtime: {
+                "applied": manager_runtime is runtime._runtime  # type: ignore[attr-defined]
+            }
+        )
+
+        report = runtime._hard_reset_stage_reuse_physics(episode_spec)
+
+        self.assertEqual(
+            calls,
+            [
+                ("sim.reset", False),
+                ("scene.update", 0.0025),
+                ("object_reader", 8),
+                ("support_readers", 8),
+                ("sim.forward", None),
+            ],
+        )
+        self.assertTrue(report["applied"])
+        self.assertFalse(report["soft"])
+        self.assertTrue(report["physx_views_recreated"])
+        self.assertFalse(report["usd_stage_reopened"])
+        self.assertEqual(report["control_step_before_after"], [23, 23])
+        self.assertEqual(report["manager_sim_step_before_after"], [57, 57])
+        self.assertEqual(
+            runtime._metadata["camera_runtime_intrinsics_report"],  # type: ignore[attr-defined]
+            {"applied": True},
+        )
+
     def test_episode_reset_pose_configuration_updates_xyz_and_full_yaw(self) -> None:
         episode_spec = EpisodeSpec(
             task_id=1,
@@ -1468,6 +1537,36 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
                 "gripper_joint_names": ("arm_joint7", "arm_joint8"),
                 "gripper_joint_positions": (0.0, 0.0),
                 "world_step_owned_by_pipeline": True,
+            },
+        )
+
+    def test_apply_skip_physics_does_not_advance_policy_or_action_history(self) -> None:
+        runtime, adapter, fake_runtime = _fake_runtime()
+        action = RobotAction(
+            base_velocity=(0.4, -0.2, 0.3),
+            source="object_settle",
+            metadata={
+                "skip_physics_step": True,
+                "skip_reason": "audit_post_reset_state_before_first_physics_step",
+            },
+        )
+
+        runtime.apply(action)
+
+        self.assertEqual(adapter.base_commands, [])
+        self.assertEqual(adapter.refresh_flags, [])
+        self.assertEqual(fake_runtime.action_manager.processed_actions, [])
+        self.assertFalse(runtime._action_prepared)  # type: ignore[attr-defined]
+        self.assertEqual(runtime._last_action, action)  # type: ignore[attr-defined]
+        self.assertEqual(
+            runtime._metadata["last_no_physics_action_report"],  # type: ignore[attr-defined]
+            {
+                "skipped": True,
+                "source": "object_settle",
+                "skip_reason": "audit_post_reset_state_before_first_physics_step",
+                "policy_action_processed": False,
+                "action_history_advanced": False,
+                "physics_step_required": False,
             },
         )
 

@@ -1690,6 +1690,66 @@ class IsaacLabNavigationRuntime:
 
         return self._env is not None and self._runtime is not None
 
+    def _hard_reset_stage_reuse_physics(
+        self,
+        episode_spec: EpisodeSpec,
+    ) -> dict[str, Any]:
+        """Recreate PhysX views while preserving the already-open USD stage.
+
+        ``ManagerBasedEnv.reset`` only rewrites tensor state for one environment.
+        It does not clear the articulation/contact solver warm-start accumulated by
+        the previous episode.  In a reused stage that stale state can fold the Go2
+        legs on the first physics step even though the visible reset tensors are
+        correct.  A hard ``SimulationContext.reset`` stops and restarts the
+        timeline, which recreates the PhysX simulation view without reopening or
+        rebuilding the USD stage.
+
+        Timeline STOP invalidates both IsaacLab asset handles and the standalone
+        ``SingleRigidPrim`` readers used here.  IsaacLab assets reinitialize from
+        their PLAY callbacks; the standalone object/support readers and calibrated
+        camera matrices must be rebound explicitly before the episode reset.
+        """
+
+        started_at = time.perf_counter()
+        control_step_before = int(self._step_calls)
+        manager_sim_step_before = int(self._runtime._sim_step_counter)
+
+        self._runtime.sim.reset(soft=False)
+        # Match ManagerBasedEnv's initial construction sequence so freshly
+        # reinitialized assets and sensors have populated data buffers.
+        self._runtime.scene.update(dt=float(self._runtime.physics_dt))
+
+        self._initialize_object_reader(episode_spec)
+        self._initialize_episode_support_readers(episode_spec)
+        camera_intrinsics_report = self._apply_d436_runtime_intrinsics(
+            self._runtime
+        )
+        self._metadata["camera_runtime_intrinsics_report"] = (
+            camera_intrinsics_report
+        )
+        self._runtime.sim.forward()
+
+        return {
+            "applied": True,
+            "mode": "simulation_context_hard_reset",
+            "soft": False,
+            "usd_stage_reopened": False,
+            "usd_stage_rebuilt": False,
+            "physx_views_recreated": True,
+            "standalone_tensor_readers_reinitialized": True,
+            "camera_intrinsics_reapplied": camera_intrinsics_report,
+            "control_step_before_after": [
+                control_step_before,
+                int(self._step_calls),
+            ],
+            "manager_sim_step_before_after": [
+                manager_sim_step_before,
+                int(self._runtime._sim_step_counter),
+            ],
+            "physics_time_advanced": False,
+            "wall_seconds": time.perf_counter() - started_at,
+        }
+
     def prepare_episode(self, episode_spec: EpisodeSpec) -> dict[str, Any]:
         """Build once, then reconfigure episode-level poses on the live stage."""
 
@@ -1734,6 +1794,18 @@ class IsaacLabNavigationRuntime:
             episode_spec.raw_task,
         )
         self._metadata["task_receptacle_pose_report"] = receptacle_pose_report
+        # Author every episode-local USD pose before restarting PhysX so the new
+        # simulation view is born from the requested scene configuration rather
+        # than from the previous episode's terminal contact state.
+        self._metadata["object_pose_setup_report"] = self._apply_object_pose(
+            episode_spec
+        )
+        physics_context_reset_report = self._hard_reset_stage_reuse_physics(
+            episode_spec
+        )
+        self._metadata["stage_reuse_physics_context_reset_report"] = (
+            physics_context_reset_report
+        )
         support_pose_write_report = self._write_episode_support_physics_poses(
             episode_spec,
             reason="stage_reuse_prepare_episode",
@@ -1756,9 +1828,6 @@ class IsaacLabNavigationRuntime:
                 episode_spec.raw_task,
                 source="isaaclab_reused_runtime_stage",
             )
-        )
-        self._metadata["object_pose_setup_report"] = self._apply_object_pose(
-            episode_spec
         )
         self._metadata["object_visibility_report"] = self._show_only_task_object(
             stage,
@@ -1807,6 +1876,7 @@ class IsaacLabNavigationRuntime:
             ),
             "robot_reset_event_updated": True,
             "physics_static_scene_sync": static_sync_report,
+            "physics_context_reset": physics_context_reset_report,
             "physics_time_advanced": False,
             "prepare_wall_seconds": time.perf_counter() - started_at,
         }
@@ -2141,6 +2211,23 @@ class IsaacLabNavigationRuntime:
 
     def apply(self, action: RobotAction) -> None:
         self._require_ready()
+        if action.metadata.get("skip_physics_step") is True:
+            # ``skip_physics_step`` 是严格的无物理事务：既不能推进 PhysX，也不能
+            # 提前推进 RL policy warmup、ActionManager history 或 actuator target。
+            # 否则 reset 审计帧会吞掉第一条 warmup action，真正的首个物理步从
+            # 第二条 action 开始，在不规则碰撞地面上会产生明显冲击甚至把机器狗
+            # 直接打翻。状态机动作仍保留在 recorder/last_action 中用于审计。
+            self._last_action = action
+            self._action_prepared = False
+            self._metadata["last_no_physics_action_report"] = {
+                "skipped": True,
+                "source": action.source,
+                "skip_reason": action.metadata.get("skip_reason"),
+                "policy_action_processed": False,
+                "action_history_advanced": False,
+                "physics_step_required": False,
+            }
+            return
         self._apply_object_initialization_pose_stabilization(action)
         self._configure_manipulation_base_lock(action)
         arm_report = self._stage_arm_target(action)

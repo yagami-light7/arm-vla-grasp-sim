@@ -1060,6 +1060,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 str(args.policy_profile) == "pct_multifloor"
                 and (pick_smoke or full_physics)
             ),
+            initialization_base_lock_steps=(
+                20
+                if (
+                    str(args.policy_profile) == "pct_multifloor"
+                    and (pick_smoke or full_physics)
+                )
+                else 0
+            ),
         ),
         randomization=RandomizationSettings(
             enabled=args.randomize_task,
