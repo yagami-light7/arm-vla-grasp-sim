@@ -448,6 +448,15 @@ python scripts/pipeline/run_full_physics_pipeline.py \
 PhysX pose；其中 world quaternion 已反解为 `rotateX:unitsResolve=90°` 之前的根 RPY。
 运行时仍保留沉降检查，以适应碰撞求解器和初始接触的微小变化。
 
+`/World/apple_01/Apple_M_Apple_0/Apple_M_Apple_0` 是带
+`PhysicsCollisionAPI` 的碰撞 Mesh，保持 `visibility=invisible`；实际渲染 Mesh
+是同级的 `/World/apple_01/Apple_M_Apple_0/visual`。运行时 collision visual
+过滤器只隐藏带碰撞 schema 或 `physics:collisionEnabled` 属性的 Mesh，不能仅因
+完整 prim path 含有 `Apple_M_Apple` 就隐藏节点，否则会同时隐藏 `visual` 并让
+CuRobo 导出得到零尺寸 bbox。若再次出现 `authored object bbox 必须具有正尺寸`，
+应先检查 summary 中 `last_current_state_curobo_pick_export.bbox_world.size_xyz`
+以及 visibility filter report，不要直接把碰撞代理改为可见。
+
 pick-smoke 通过后，再去掉 `--pick-smoke` 运行完整 `nav_to_pick -> pick ->
 nav_to_place -> place`。当前该命令会进入跨楼层 place 验收：
 

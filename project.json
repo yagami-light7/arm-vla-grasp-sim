@@ -2,9 +2,16 @@
   "project": "pct_scene",
   "branch": "pct_scene",
   "goal": "在同一代码库中通过 scene profile 选择良渚单层或别墅多楼层 PCT 场景，并支持后续场景扩展、移动操作与可验证数据导出。",
-  "current_phase": "phase_168_batch_progress_heartbeat_reliability_synced",
-  "last_updated": "2026-07-19 22:30:35 CST",
+  "current_phase": "phase_169_multifloor_apple_visual_bbox_filter_fixed",
+  "last_updated": "2026-07-21 22:57:38 CST",
   "status": {
+    "multifloor_apple_collision_visual_filter_schema_scoped": true,
+    "multifloor_apple_visible_bbox_regression_added": true,
+    "multifloor_apple_pick_plan_bbox_real_verified": true,
+    "multifloor_apple_pick_smoke_after_visibility_fix_success": true,
+    "multifloor_apple_bbox_fix_full_visual_runtime_verified": true,
+    "multifloor_apple_bbox_fix_full_test_passed_count": 581,
+    "multifloor_apple_bbox_fix_full_test_skipped_count": 5,
     "unified_wall_time_profiler_added": true,
     "headless_dataset_camera_render_5hz_added": true,
     "physics_timing_unchanged_400hz_50hz_decimation8": true,
@@ -8061,6 +8068,59 @@
       "next_steps": [
         "下一次 batch 确认 heartbeat 显示当前 episode/seed/state/step，并继续使用新的 output-dir 采集正式数据。",
         "本次仅改 batch 外层监控，不改变 PhysX、PCT、locomotion、CuRobo 或数据采样时序，因此无需重新建立物理成功率结论。",
+        "由用户验收后手动提交；Codex 不 commit、不 push。"
+      ]
+    },
+    {
+      "time": "2026-07-21 22:57:38 CST",
+      "summary": "定位并修复 multi_floor 苹果在 plan_pick 导出 CuRobo 当前状态时出现零尺寸 authored bbox 的运行时可见性 bug。USDA 组合检查证明 /World/apple_01/Apple_M_Apple_0/visual 是碰撞 Mesh 的同级可见节点，而不是被 visibility=invisible 的碰撞父级子节点；真正原因是 collision visual 过滤器按完整路径匹配 Apple_M_Apple，误把同一碰撞命名祖先下的 visual Mesh 一并隐藏。过滤器现要求匹配 Mesh 同时具有 PhysicsCollisionAPI 或 physics:collisionEnabled 属性，因而只隐藏碰撞代理并保留实际 visual。真实 GPU pick-smoke 已越过 plan_pick、向 CuRobo 发出请求并完成物理抓取。",
+      "files_changed": [
+        "docs/pct_multifloor_navigation.md",
+        "project.json",
+        "source/simulation/visibility_patch.py",
+        "tests/test_visibility_patch.py"
+      ],
+      "tests": [
+        {
+          "command": "pytest tests/test_visibility_patch.py tests/test_isaaclab_navigation_runtime.py",
+          "result": "passed",
+          "note": "61 passed、3 skipped、2 subtests；普通 Python 环境覆盖碰撞 Mesh 判定及 IsaacLab runtime 回归。"
+        },
+        {
+          "command": "OpenUSD standalone unittest tests.test_visibility_patch",
+          "result": "passed",
+          "note": "4/4 passed；直接组合 multifloor.usda，确认只隐藏 /World/apple_01/Apple_M_Apple_0/Apple_M_Apple_0，保留 /visual，根 bbox 三轴均为正。"
+        },
+        {
+          "command": "run_full_physics_pipeline.py --scene-profile multi_floor --pick-smoke --headless --navigation-visual-mode full --no-record-video --no-record-dataset",
+          "result": "passed",
+          "note": "seed 0、success=true、final_state=done；full 视觉真实日志确认只隐藏 1 个 collision Mesh，不隐藏 /visual；状态经过 plan_pick、exec_pick 和 verify_pick_success。运行时 bbox=0.060644×0.063975×0.072642m，physical_navigation_success=true、physical_manipulation_success=true。"
+        },
+        {
+          "command": "PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest -q -p no:cacheprovider tests",
+          "result": "passed",
+          "note": "581 passed、5 skipped、15 subtests；4 条 warning 仅为沙盒内 NVML 不可用。"
+        }
+      ],
+      "data_results": {
+        "output_root": "/mnt/sage_data/outputs/pct_scene/apple_visual_bbox_fix_full_pick_smoke_20260721",
+        "episode_id": 0,
+        "seed": 0,
+        "execution_mode": "pick_smoke",
+        "success": true,
+        "final_state": "done",
+        "duration_seconds": 82.38336825370789,
+        "runtime_bbox_size_xyz_m": [
+          0.06064425415871222,
+          0.06397478679428215,
+          0.07264236542166913
+        ],
+        "physical_navigation_success": true,
+        "physical_manipulation_success": true
+      },
+      "next_steps": [
+        "用户验收后可运行 multi_floor 完整跨楼层 nav-pick-place；本轮 pick-smoke 已充分覆盖原 plan_pick bbox 失败点，但不替代完整 place 验收。",
+        "不要把 USDA 中碰撞 Mesh 的 visibility=invisible 改为 inherited；collision proxy 与 visual 当前已经分离，运行时只应隐藏带碰撞 schema 的 Mesh。",
         "由用户验收后手动提交；Codex 不 commit、不 push。"
       ]
     }

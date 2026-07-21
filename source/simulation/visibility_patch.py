@@ -76,6 +76,34 @@ def _is_renderable_leaf_candidate(prim: Any, *, UsdGeom: Any) -> bool:
         return str(prim.GetTypeName()) == "Mesh"
 
 
+def _is_collision_mesh_candidate(prim: Any, *, UsdGeom: Any) -> bool:
+    """Return whether a renderable mesh is authored as collision geometry.
+
+    Matching only the full prim path is insufficient for assets where a visual
+    mesh lives below a collision-named parent (for example
+    Apple_M_Apple_0/visual). In that layout both meshes match the parent
+    keyword, so hiding every matching Mesh also removes the real visual and
+    leaves the object with an empty visible bbox.
+    """
+
+    if not _is_renderable_leaf_candidate(prim, UsdGeom=UsdGeom):
+        return False
+    try:
+        schemas = tuple(str(schema) for schema in prim.GetAppliedSchemas())
+    except Exception:
+        schemas = ()
+    if any(
+        schema == "PhysicsCollisionAPI"
+        or schema.startswith("PhysicsCollisionAPI:")
+        for schema in schemas
+    ):
+        return True
+    # Keep compatibility with flattened or partially composed collision assets
+    # that expose the collision property without retaining applied-schema data.
+    collision_enabled = _attribute_value(prim, "physics:collisionEnabled")
+    return collision_enabled is not None
+
+
 def hide_visual_prims_by_keywords(
     root_path: str = "/World",
     hide_keywords: tuple[str, ...] = ("Apple_M_Apple",),
@@ -84,11 +112,11 @@ def hide_visual_prims_by_keywords(
     stage: Any | None = None,
     logger: Callable[[str], None] = print,
 ) -> dict[str, Any]:
-    """按关键词隐藏视觉 mesh，同时保留其物理碰撞属性。
+    """按关键词隐藏碰撞 mesh 的渲染，同时保留其物理碰撞属性。
 
     Apple_M_Apple 的父 Xform 下通常还包含 visual_video 补偿层。这里不隐藏包含
-    keep keyword 子节点的父 Xform，只隐藏真正的碰撞/占位 Mesh，避免相机画面里把
-    visual_video 也一并继承隐藏。
+    keep keyword 子节点的父 Xform，并要求叶子 Mesh 具有碰撞 schema/属性，只隐藏
+    真正的碰撞/占位 Mesh，避免同一父节点下的 visual 或 visual_video 被误隐藏。
     """
 
     Usd, UsdGeom = _usd_modules()
@@ -145,6 +173,14 @@ def hide_visual_prims_by_keywords(
         if not _is_renderable_leaf_candidate(prim, UsdGeom=UsdGeom):
             skipped.append({"prim_path": path, "reason": "not_mesh_leaf"})
             continue
+        if not _is_collision_mesh_candidate(prim, UsdGeom=UsdGeom):
+            skipped.append(
+                {
+                    "prim_path": path,
+                    "reason": "mesh_without_collision_schema_or_attribute",
+                }
+            )
+            continue
 
         imageable = UsdGeom.Imageable(prim)
         before = {
@@ -188,6 +224,7 @@ def hide_visual_prims_by_keywords(
         "hide_keywords": list(hide_tuple),
         "keep_keywords": list(keep_tuple),
         "matched_paths": matched_paths,
+        "collision_mesh_required": True,
         "skipped_paths": skipped,
         "hidden_count": len(hidden),
         "hidden_prims": hidden,
