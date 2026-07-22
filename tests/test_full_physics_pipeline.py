@@ -10,6 +10,7 @@ from pathlib import Path
 
 from scripts.pipeline.run_full_physics_pipeline import (
     _build_parser,
+    _camera_sensor_runtime_kwargs,
     _locomotion_runtime_kwargs,
     _navigation_visual_runtime_kwargs,
     _navigation_smoke_viewport_runtime_kwargs,
@@ -38,6 +39,7 @@ from source.pipeline import (
     NavigationSettings,
     PCT_MULTIFLOOR_LOCOMOTION_TASK,
     PipelineState,
+    RecordingSettings,
     StateLimits,
     VideoRecordingSettings,
 )
@@ -932,6 +934,29 @@ class FullPhysicsPipelineTest(unittest.TestCase):
 
         self.assertTrue(_should_auto_switch_overview_camera(stair_config))
         self.assertTrue(_should_auto_switch_overview_camera(regular_gui_config))
+
+    def test_composite_video_enables_three_runtime_cameras_without_dataset(self) -> None:
+        config = FullPhysicsConfig(
+            task_json=PROJECT_ROOT / "tasks/nav_pick_place_apple_multifloor_pct.json",
+            output_dir=PROJECT_ROOT / "outputs/test",
+            headless=True,
+            navigation_smoke=True,
+            recording=RecordingSettings(enabled=False),
+            video=VideoRecordingSettings(
+                enabled=True,
+                mode="composite",
+                overview_camera_mode="auto",
+            ),
+        )
+
+        runtime_kwargs = _camera_sensor_runtime_kwargs(config)
+
+        self.assertTrue(runtime_kwargs["enable_front_camera"])
+        self.assertTrue(runtime_kwargs["enable_wrist_camera"])
+        self.assertTrue(runtime_kwargs["enable_overview_camera"])
+        self.assertEqual(runtime_kwargs["front_camera_width"], 640)
+        self.assertEqual(runtime_kwargs["front_camera_height"], 480)
+        self.assertEqual(runtime_kwargs["camera_render_interval_control_steps"], 1)
 
     def test_multifloor_gui_defaults_to_auto_overview_composite(self) -> None:
         args = _parse_args(

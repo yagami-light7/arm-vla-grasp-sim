@@ -361,6 +361,16 @@ class SimulationViewportTest(unittest.TestCase):
         self.assertGreater(int(frame[180, 200, 0]), 200)
         self.assertGreater(int(frame[90, 500, 1]), 200)
         self.assertGreater(int(frame[270, 500, 2]), 200)
+        for x, y, label_width in ((0, 0, 150), (400, 0, 120), (400, 180, 120)):
+            label_region = frame[y : y + 42, x : x + label_width]
+            self.assertGreater(
+                int(np.count_nonzero(np.all(label_region >= 220, axis=2))),
+                10,
+            )
+            self.assertGreater(
+                int(np.count_nonzero(np.all(label_region <= 20, axis=2))),
+                100,
+            )
 
     def test_composite_video_mode_writes_one_labeled_multiview_mp4(self) -> None:
         import cv2
@@ -443,7 +453,7 @@ class SimulationViewportTest(unittest.TestCase):
         switched_overview = np.zeros((90, 160, 3), dtype=np.uint8)
         switched_overview[:, :, 0] = 255
         fixed_observation_overview = np.zeros((90, 160, 3), dtype=np.uint8)
-        fixed_observation_overview[:, :, 2] = 255
+        fixed_observation_overview[:, :, 1] = 255
         camera_images = {
             "overview": fixed_observation_overview,
             "front": np.zeros((90, 160, 3), dtype=np.uint8),
@@ -477,12 +487,25 @@ class SimulationViewportTest(unittest.TestCase):
                 step_index=10,
                 camera_images=camera_images,
             )
+            recorder.add_frame(
+                state="exec_nav_to_pick",
+                timestamp=0.04,
+                step_index=11,
+                camera_images=camera_images,
+            )
 
-        composite_frame = write_frame.call_args.args[0]
-        self.assertEqual(write_frame.call_args.kwargs["stream"], "composite")
-        self.assertGreater(int(composite_frame[180, 200, 0]), 200)
-        self.assertLess(int(composite_frame[180, 200, 2]), 50)
+        self.assertEqual(write_frame.call_count, 2)
+        switch_frame = write_frame.call_args_list[0].args[0]
+        rendered_frame = write_frame.call_args_list[1].args[0]
+        self.assertEqual(
+            write_frame.call_args_list[0].kwargs["stream"],
+            "composite",
+        )
+        self.assertGreater(int(switch_frame[180, 200, 1]), 200)
+        self.assertGreater(int(rendered_frame[180, 200, 0]), 200)
+        self.assertLess(int(rendered_frame[180, 200, 2]), 50)
         self.assertEqual(recorder._current_camera_path, "/World/Camera1")  # noqa: SLF001
+        self.assertEqual(recorder._camera_switch_settle_skip_count, 1)  # noqa: SLF001
         self.assertEqual(
             recorder._capture_backend,  # noqa: SLF001
             "scheduled_overview_plus_synchronized_observations",
@@ -566,7 +589,129 @@ class SimulationViewportTest(unittest.TestCase):
             recorder._capture_backend,  # noqa: SLF001
             "synchronized_camera_images_overview_fallback",
         )
-        self.assertEqual(recorder._capture_error, "scheduled_overview_near_black")  # noqa: SLF001
+        self.assertEqual(  # noqa: SLF001
+            recorder._capture_error,
+            "scheduled_overview_near_black",
+        )
+
+    def test_composite_rejects_blue_placeholder_scheduled_overview_frame(self) -> None:
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(
+                mode="composite",
+                width=600,
+                height=360,
+            ),
+            episode_dir=".",
+            episode_id=5,
+        )
+        fallback = np.zeros((90, 160, 3), dtype=np.uint8)
+        fallback[:, :, 1] = 255
+        blue_placeholder = np.full(
+            (90, 160, 3),
+            (88, 118, 154),
+            dtype=np.uint8,
+        )
+        camera_images = {
+            "overview": fallback,
+            "front": np.zeros((90, 160, 3), dtype=np.uint8),
+            "wrist": np.zeros((90, 160, 3), dtype=np.uint8),
+        }
+
+        with mock.patch.object(
+            recorder,
+            "_write_video_frame",
+            return_value=0,
+        ) as write_frame:
+            recorder._add_composite_frame(  # noqa: SLF001
+                camera_images=camera_images,
+                timestamp=0.0,
+                scheduled_overview_frame=blue_placeholder,
+            )
+
+        composite_frame = write_frame.call_args.args[0]
+        self.assertGreater(int(composite_frame[180, 200, 1]), 200)
+        self.assertEqual(  # noqa: SLF001
+            recorder._overview_frame_rejection_counts,
+            {"scheduled_overview_blue_placeholder": 1},
+        )
+
+    def test_composite_drops_frame_when_both_overviews_are_placeholders(self) -> None:
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(
+                mode="composite",
+                width=600,
+                height=360,
+            ),
+            episode_dir=".",
+            episode_id=5,
+        )
+        blue_placeholder = np.full(
+            (90, 160, 3),
+            (88, 118, 154),
+            dtype=np.uint8,
+        )
+        camera_images = {
+            "overview": blue_placeholder.copy(),
+            "front": np.zeros((90, 160, 3), dtype=np.uint8),
+            "wrist": np.zeros((90, 160, 3), dtype=np.uint8),
+        }
+
+        with mock.patch.object(recorder, "_write_video_frame") as write_frame:
+            recorder._add_composite_frame(  # noqa: SLF001
+                camera_images=camera_images,
+                timestamp=0.0,
+                scheduled_overview_frame=blue_placeholder,
+            )
+
+        write_frame.assert_not_called()
+        self.assertEqual(recorder._stream_dropped_frame_counts["composite"], 1)  # noqa: SLF001
+        self.assertEqual(  # noqa: SLF001
+            recorder._overview_frame_rejection_counts,
+            {
+                "scheduled_overview_blue_placeholder": 1,
+                "observation_overview_blue_placeholder": 1,
+            },
+        )
+
+    def test_composite_skips_reset_preroll_before_first_task_frame(self) -> None:
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(
+                mode="composite",
+                overview_camera_mode="fixed",
+                width=600,
+                height=360,
+            ),
+            episode_dir=".",
+            episode_id=5,
+        )
+        camera_images = {
+            "overview": np.full((90, 160, 3), (255, 0, 0), dtype=np.uint8),
+            "front": np.full((90, 160, 3), (0, 255, 0), dtype=np.uint8),
+            "wrist": np.full((90, 160, 3), (255, 255, 0), dtype=np.uint8),
+        }
+
+        with mock.patch.object(
+            recorder,
+            "_write_video_frame",
+            return_value=0,
+        ) as write_frame:
+            recorder.add_frame(
+                state="reset_episode",
+                timestamp=0.0,
+                step_index=0,
+                camera_images=camera_images,
+            )
+            recorder.add_frame(
+                state="exec_nav_to_pick",
+                timestamp=0.04,
+                step_index=1,
+                camera_images=camera_images,
+            )
+
+        self.assertEqual(write_frame.call_count, 1)
+        self.assertEqual(recorder._preroll_skipped_frame_count, 1)  # noqa: SLF001
+        self.assertEqual(recorder._recording_start_state, "exec_nav_to_pick")  # noqa: SLF001
+        self.assertEqual(recorder._recording_start_step, 1)  # noqa: SLF001
 
     def test_overview_recorder_saves_low_frequency_jpeg_frames(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -694,6 +839,46 @@ class SimulationViewportTest(unittest.TestCase):
         recorder._overview_cameras = (fallback_camera, real_camera)  # noqa: SLF001
         self.assertFalse(recorder._should_rediscover_cameras())  # noqa: SLF001
         self.assertEqual(recorder.select_camera_for_state("RESET_EPISODE"), "/World/third_person1")
+
+    def test_auto_composite_rediscovers_after_early_empty_discovery(self) -> None:
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(mode="composite"),
+            episode_dir=".",
+            episode_id=0,
+        )
+        recorder._discovery_done = True  # noqa: SLF001
+        recorder._all_cameras = ()  # noqa: SLF001
+        recorder._overview_cameras = ()  # noqa: SLF001
+
+        self.assertTrue(recorder._uses_scheduled_overview)  # noqa: SLF001
+        self.assertTrue(recorder._should_rediscover_cameras())  # noqa: SLF001
+
+    def test_auto_composite_stops_rediscovery_when_schedule_is_satisfied(self) -> None:
+        recorder = OverviewVideoRecorder(
+            settings=_OverviewVideoSettings(mode="composite"),
+            episode_dir=".",
+            episode_id=0,
+        )
+        recorder._camera_schedule = {  # noqa: SLF001
+            "default_camera": "/World/Camera0",
+            "rules": [
+                {"states": ["exec_nav_to_pick"], "camera": "/World/Camera1"},
+            ],
+        }
+        cameras = tuple(
+            _CameraCandidate(
+                path=f"/World/Camera{index}",
+                name=f"Camera{index}",
+                normalized_text=f"/world/camera{index} camera{index}",
+                is_observation=False,
+                overview_score=100,
+            )
+            for index in range(2)
+        )
+        recorder._all_cameras = cameras  # noqa: SLF001
+        recorder._overview_cameras = cameras  # noqa: SLF001
+
+        self.assertFalse(recorder._should_rediscover_cameras())  # noqa: SLF001
 
     def test_viewport_capture_does_not_call_async_wait_or_tick_app(self) -> None:
         calls: list[str] = []

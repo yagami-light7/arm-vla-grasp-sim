@@ -92,7 +92,8 @@ _FALLBACK_CAPTURE_ROOT = "/World/overview_video_cameras"
 _FALLBACK_AFTER_DISCOVERY_ATTEMPTS = 60
 _COMPOSITE_STREAM = "composite"
 _COMPOSITE_VIEW_KEYS = ("overview", "front", "wrist")
-_COMPOSITE_LAYOUT_VERSION = "overview_left_front_wrist_right_v1"
+_COMPOSITE_LAYOUT_VERSION = "overview_left_front_wrist_right_v2"
+_VIDEO_PREROLL_STATES = frozenset({"build_stage", "reset_episode"})
 _FALLBACK_THIRD_PERSON_SOURCE_TOKENS = {
     1: ("top", "persp", "front", "right"),
     2: ("right", "persp", "front", "top"),
@@ -388,6 +389,60 @@ def _draw_panel_label(
     )
 
 
+def _overview_frame_quality(frame: Any | None) -> tuple[bool, str | None, dict[str, float]]:
+    """识别 viewport 尚未渲染完成时的黑帧和纯色蓝灰占位帧。"""
+
+    if frame is None:
+        return False, "missing", {}
+    try:
+        rgb = _image_to_rgb_uint8(frame)
+    except Exception:
+        return False, "invalid", {}
+    if rgb.size == 0:
+        return False, "empty", {}
+
+    sample_y = max(1, int(math.ceil(rgb.shape[0] / 180.0)))
+    sample_x = max(1, int(math.ceil(rgb.shape[1] / 240.0)))
+    sample = rgb[::sample_y, ::sample_x]
+    percentile_99 = float(np.percentile(sample, 99.0))
+    metrics: dict[str, float] = {
+        "percentile_99": percentile_99,
+    }
+    if percentile_99 <= 4.0:
+        return False, "near_black", metrics
+
+    # Kit/RTX 在 camera prim 切换后偶尔先返回蓝灰色 viewport background。
+    # 忽略 letterbox 黑边，仅检查有亮度的内容像素是否几乎全是同一种蓝灰色。
+    content_mask = np.max(sample, axis=2) > 16
+    content_fraction = float(np.mean(content_mask))
+    metrics["content_fraction"] = content_fraction
+    if content_fraction <= 0.01:
+        return False, "near_black", metrics
+    content = sample[content_mask].astype(np.int16)
+    red = content[:, 0]
+    green = content[:, 1]
+    blue = content[:, 2]
+    blue_dominant_fraction = float(
+        np.mean(
+            (blue >= 72)
+            & (blue - red >= 28)
+            & (blue - green >= 14)
+        )
+    )
+    channel_spread = float(
+        max(
+            np.percentile(content[:, channel], 95.0)
+            - np.percentile(content[:, channel], 5.0)
+            for channel in range(3)
+        )
+    )
+    metrics["blue_dominant_fraction"] = blue_dominant_fraction
+    metrics["channel_spread"] = channel_spread
+    if blue_dominant_fraction >= 0.90 and channel_spread <= 20.0:
+        return False, "blue_placeholder", metrics
+    return True, None, metrics
+
+
 def compose_multiview_frame(
     camera_images: dict[str, Any],
     *,
@@ -427,7 +482,7 @@ def compose_multiview_frame(
     canvas = np.zeros((height, width, 3), dtype=np.uint8)
     import cv2
 
-    for key, label, x, y, panel_width, panel_height in panel_specs:
+    for key, _label, x, y, panel_width, panel_height in panel_specs:
         panel = _letterbox_rgb(
             camera_images[key],
             width=panel_width,
@@ -441,6 +496,9 @@ def compose_multiview_frame(
             (72, 72, 72),
             thickness=1,
         )
+
+    # 所有 panel 写完后再统一覆盖标签，防止后续 panel/letterbox 写入把标签擦掉。
+    for _key, label, x, y, panel_width, panel_height in panel_specs:
         _draw_panel_label(
             canvas,
             label=label,
@@ -553,6 +611,12 @@ class OverviewVideoRecorder:
         self._overview_image_dir = self.episode_dir / "images" / "overview"
         self._overview_image_count = 0
         self._last_overview_image_timestamp: float | None = None
+        self._recording_started = False
+        self._recording_start_state: str | None = None
+        self._recording_start_step: int | None = None
+        self._preroll_skipped_frame_count = 0
+        self._camera_switch_settle_skip_count = 0
+        self._overview_frame_rejection_counts: dict[str, int] = {}
 
     @property
     def _overview_frame_count(self) -> int:
@@ -610,6 +674,14 @@ class OverviewVideoRecorder:
     ) -> None:
         if not self.enabled:
             return
+        normalized_state = str(state).strip().lower()
+        if not self._recording_started:
+            if normalized_state in _VIDEO_PREROLL_STATES:
+                self._preroll_skipped_frame_count += 1
+                return
+            self._recording_started = True
+            self._recording_start_state = normalized_state
+            self._recording_start_step = int(step_index)
         scheduled_overview_frame = None
         if self._uses_scheduled_overview:
             scheduled_overview_frame = self._add_overview_frame(
@@ -649,6 +721,7 @@ class OverviewVideoRecorder:
     ) -> np.ndarray | None:
         if not self._discovery_done or self._should_rediscover_cameras():
             self._discover_cameras_from_current_stage()
+        camera_switched = False
         if self.auto_switch_camera:
             camera_path = self.select_camera_for_state(
                 state,
@@ -656,13 +729,23 @@ class OverviewVideoRecorder:
                 step_index=step_index,
             )
             if camera_path is not None:
-                self._maybe_switch_camera(camera_path, state=state, step_index=step_index)
+                camera_switched = self._maybe_switch_camera(
+                    camera_path,
+                    state=state,
+                    step_index=step_index,
+                )
         else:
             # GUI 视口完全由用户手动控制；录像器只读取当前相机，不写 active camera。
             manual_camera = self._read_active_viewport_camera_path()
             if manual_camera:
                 self._active_viewport_camera_path = manual_camera
                 self._current_camera_path = manual_camera
+        if camera_switched:
+            # active camera 的写入发生在本 control tick 的 render 之后。此时立刻读
+            # viewport 只能得到旧相机或蓝灰背景；下一次 physics/render 后再采集。
+            self._camera_switch_settle_skip_count += 1
+            self._capture_error = "scheduled_overview_waiting_for_post_switch_render"
+            return None
         capture_stream = "overview" if write_overview_stream else _COMPOSITE_STREAM
         if not self._should_capture(capture_stream, timestamp):
             return None
@@ -745,11 +828,23 @@ class OverviewVideoRecorder:
             return
         try:
             composite_images = dict(camera_images or {})
-            scheduled_overview_usable = self._scheduled_overview_frame_usable(
-                scheduled_overview_frame
+            scheduled_overview_usable = bool(
+                scheduled_overview_frame is not None
+                and self._overview_frame_usable(
+                    scheduled_overview_frame,
+                    source="scheduled_overview",
+                )
             )
             if scheduled_overview_usable:
                 composite_images["overview"] = scheduled_overview_frame
+            elif not self._overview_frame_usable(
+                composite_images.get("overview"),
+                source="observation_overview",
+            ):
+                raise ValueError(
+                    "both scheduled and observation overview frames are unavailable "
+                    "or placeholder frames"
+                )
             frame = compose_multiview_frame(
                 composite_images,
                 width=int(getattr(self.settings, "width", 1280)),
@@ -771,24 +866,28 @@ class OverviewVideoRecorder:
         self._last_capture_timestamps[_COMPOSITE_STREAM] = float(timestamp)
 
     def _scheduled_overview_frame_usable(self, frame: Any | None) -> bool:
-        """拒绝 viewport 尚未完成渲染时返回的空白黑帧。"""
+        """兼容旧调用：拒绝未渲染完成的 scheduled overview。"""
 
         if frame is None:
             return False
-        try:
-            rgb = _image_to_rgb_uint8(frame)
-        except Exception:
-            return False
-        if rgb.size == 0:
-            return False
-        near_black = float(np.percentile(rgb, 99.0)) <= 4.0
-        if near_black:
-            self._capture_error = "scheduled_overview_near_black"
+        return self._overview_frame_usable(frame, source="scheduled_overview")
+
+    def _overview_frame_usable(self, frame: Any | None, *, source: str) -> bool:
+        usable, reason, metrics = _overview_frame_quality(frame)
+        if usable:
+            return True
+        rejection_reason = f"{source}_{reason or 'invalid'}"
+        self._capture_error = rejection_reason
+        previous_count = self._overview_frame_rejection_counts.get(
+            rejection_reason,
+            0,
+        )
+        self._overview_frame_rejection_counts[rejection_reason] = previous_count + 1
+        if previous_count == 0:
             self._warn_once(
-                "scheduled overview frame is near-black; using observation overview fallback"
+                f"{source} frame rejected ({reason}); metrics={metrics}"
             )
-            return False
-        return True
+        return False
 
     def discover_cameras(self, stage: Any) -> dict[str, Any]:
         """Discover UsdGeom.Camera prims and rank non-observation overview candidates."""
@@ -1088,6 +1187,21 @@ class OverviewVideoRecorder:
             "capture_backend": self._capture_backend,
             "capture_error": self._capture_error,
             "writer_backends": dict(self._writer_backends),
+            "recording_gate": {
+                "started": bool(self._recording_started),
+                "start_state": self._recording_start_state,
+                "start_step": self._recording_start_step,
+                "preroll_states": sorted(_VIDEO_PREROLL_STATES),
+                "preroll_skipped_frame_count": int(
+                    self._preroll_skipped_frame_count
+                ),
+            },
+            "camera_switch_settle_skip_count": int(
+                self._camera_switch_settle_skip_count
+            ),
+            "overview_frame_rejection_counts": dict(
+                self._overview_frame_rejection_counts
+            ),
         }
         if _COMPOSITE_STREAM in self.modes:
             summary["composite_layout"] = {
@@ -1099,6 +1213,7 @@ class OverviewVideoRecorder:
                 "wrist_panel": "right_bottom",
                 "aspect_policy": "letterbox_no_distortion",
                 "labels": True,
+                "labels_drawn_after_panel_composition": True,
             }
         if self._camera_trajectory_enabled():
             summary["camera_trajectory"] = {
@@ -1161,7 +1276,7 @@ class OverviewVideoRecorder:
         self.discover_cameras(stage)
 
     def _should_rediscover_cameras(self) -> bool:
-        if "overview" not in self.modes:
+        if not self._uses_scheduled_overview:
             return False
         if not self._all_cameras:
             return True
@@ -1170,6 +1285,25 @@ class OverviewVideoRecorder:
                 camera.path == self._preferred_camera_path
                 for camera in self._all_cameras
             )
+        # Explicit schedules (the multi-floor Camera0-8 profile) are already a
+        # complete camera contract.  Once every referenced camera exists, a
+        # per-frame USD stage traversal cannot discover anything useful and can
+        # become measurable overhead in long videos.
+        scheduled_paths = {
+            camera_path
+            for camera_path in (
+                self._camera_schedule.get("default_camera"),
+                *(
+                    rule.get("camera")
+                    for rule in self._camera_schedule.get("rules", [])
+                    if isinstance(rule, dict)
+                ),
+            )
+            if isinstance(camera_path, str) and camera_path
+        }
+        discovered_paths = {camera.path for camera in self._all_cameras}
+        if scheduled_paths and scheduled_paths.issubset(discovered_paths):
+            return False
         if self._has_third_person_camera(self._overview_cameras):
             return False
         return True
@@ -1338,9 +1472,15 @@ class OverviewVideoRecorder:
             return str(camera_path)
         return None
 
-    def _maybe_switch_camera(self, camera_path: str, *, state: str, step_index: int) -> None:
+    def _maybe_switch_camera(
+        self,
+        camera_path: str,
+        *,
+        state: str,
+        step_index: int,
+    ) -> bool:
         if camera_path == self._current_camera_path and state == self._last_state:
-            return
+            return False
         min_interval = int(getattr(self.settings, "min_switch_interval_frames", 5))
         new_role = _state_role(str(state), previous_role=self._last_role)
         state_role_changed = self._last_role is None or new_role != self._last_role
@@ -1358,18 +1498,18 @@ class OverviewVideoRecorder:
                     flush=True,
                 )
                 self._last_hold_log = hold_key
-            return
+            return False
         if (
             self._current_camera_path is not None
             and camera_path != self._current_camera_path
             and not state_role_changed
             and self._overview_frame_count - self._last_switch_frame < min_interval
         ):
-            return
+            return False
         if camera_path == self._current_camera_path:
             self._last_state = state
             self._last_role = new_role
-            return
+            return False
         report = self.set_active_camera(camera_path)
         self._current_camera_path = camera_path
         self._last_state = state
@@ -1392,6 +1532,7 @@ class OverviewVideoRecorder:
             f"applied={switch['applied']} reason={switch['reason']}",
             flush=True,
         )
+        return True
 
     def _should_hold_initial_overview(self, target_camera_path: str) -> bool:
         initial_hold_frames = int(getattr(self.settings, "overview_initial_hold_frames", 160))

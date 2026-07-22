@@ -4549,25 +4549,22 @@ class IsaacLabNavigationRuntime:
         initialization_policy = resolve_object_initialization_policy(
             episode_spec.raw_task
         )
-        live_pose_write_report: dict[str, Any] | None = None
-        if initialization_policy.get("enabled") and initialization_policy.get(
-            "restore_pose_after_runtime_reset"
-        ):
-            live_pose_write_report = self._write_object_physics_state(
-                position_xyz=target_position,
-                quaternion_wxyz=world_quaternion,
-                velocity_xyz_rpy=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-            )
-        else:
-            import torch
-
-            device = getattr(self._runtime, "device", "cpu")
-            rigid_view = getattr(self._object, "_rigid_prim_view", None)
-            if rigid_view is None or not hasattr(rigid_view, "set_velocities"):
-                raise RuntimeError("SingleRigidPrim 缺少 GPU 合并速度写入接口。")
-            rigid_view.set_velocities(
-                torch.zeros((1, 6), dtype=torch.float32, device=device)
-            )
+        # ManagerBasedEnv.reset() only resets bodies owned by the IsaacLab scene.
+        # Task objects referenced directly from the stage (for example the
+        # multi-floor apple) keep the live PhysX pose reached during simulation
+        # startup.  Re-authoring USD xform ops above is therefore insufficient:
+        # Fabric can publish that stale live pose again on the first render.
+        #
+        # Restoring the episode pose is a reset contract for every task object,
+        # independent of the optional supported-upright stabilization policy.
+        # The physics-tensor write preserves the authored unitsResolve xform
+        # stack and is still classified as episode setup, not navigation-time
+        # object teleportation.
+        live_pose_write_report = self._write_object_physics_state(
+            position_xyz=target_position,
+            quaternion_wxyz=world_quaternion,
+            velocity_xyz_rpy=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        )
         sleep_report = self._set_object_sleeping(enabled=sleep_until_contact)
         actual_position, actual_orientation = self._object.get_world_pose()
         report = {
@@ -4588,11 +4585,12 @@ class IsaacLabNavigationRuntime:
                 and live_pose_write_report.get("applied") is True
             ),
             "live_pose_write_report": live_pose_write_report,
-            "live_pose_write_skipped": live_pose_write_report is None,
-            "live_pose_write_skip_reason": (
-                None
-                if live_pose_write_report is not None
-                else "task_object_initialization_policy_disabled"
+            "live_pose_write_skipped": False,
+            "live_pose_write_skip_reason": None,
+            "live_pose_write_contract": "episode_reset_all_task_objects_v1",
+            "policy_restore_pose_after_runtime_reset": bool(
+                initialization_policy.get("enabled")
+                and initialization_policy.get("restore_pose_after_runtime_reset")
             ),
             "linear_velocity_zeroed": True,
             "angular_velocity_zeroed": True,

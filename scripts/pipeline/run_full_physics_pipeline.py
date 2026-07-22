@@ -251,6 +251,52 @@ def _navigation_smoke_viewport_runtime_kwargs(
     }
 
 
+def _camera_sensor_runtime_kwargs(
+    config: FullPhysicsConfig,
+) -> dict[str, object]:
+    """让 full-physics 与各类 smoke 对 video/recording 启用同一组相机。"""
+
+    video_modes = set(config.video.modes) if config.video.enabled else set()
+    return {
+        "enable_front_camera": bool(
+            (
+                config.recording.enabled
+                and "front" in config.recording.camera_keys
+            )
+            or {"front", "composite"} & video_modes
+        ),
+        "front_camera_height": config.recording.image_height,
+        "front_camera_width": config.recording.image_width,
+        "enable_wrist_camera": bool(
+            (
+                config.recording.enabled
+                and "wrist" in config.recording.camera_keys
+            )
+            or {"wrist", "composite"} & video_modes
+        ),
+        "wrist_camera_height": config.recording.image_height,
+        "wrist_camera_width": config.recording.image_width,
+        "enable_overview_camera": bool(
+            (
+                config.recording.enabled
+                and "overview" in config.recording.camera_keys
+            )
+            or "composite" in video_modes
+        ),
+        "overview_camera_prim_path": config.recording.overview_camera_prim_path,
+        "overview_camera_height": config.recording.image_height,
+        "overview_camera_width": config.recording.image_width,
+        "camera_render_interval_control_steps": (
+            1
+            if (config.video.enabled or not config.headless)
+            else max(
+                1,
+                int(round(1.0 / (config.recording.dataset_fps * 0.02))),
+            )
+        ),
+    }
+
+
 def _create_full_physics_runtime(
     *,
     config: FullPhysicsConfig,
@@ -265,7 +311,6 @@ def _create_full_physics_runtime(
         IsaacLabNavigationRuntimeConfig,
     )
 
-    video_modes = set(config.video.modes) if config.video.enabled else set()
     runtime_overrides = dict(scene_isaac_runtime_overrides or {})
     return IsaacLabNavigationRuntime(
         simulation_app=simulation_app,
@@ -280,44 +325,9 @@ def _create_full_physics_runtime(
                 ),
             ),
             **runtime_overrides,
+            **_camera_sensor_runtime_kwargs(config),
             auto_manage_viewport_camera=bool(
                 config.headless or config.video.overview_camera_mode == "fixed"
-            ),
-            enable_front_camera=(
-                (
-                    config.recording.enabled
-                    and "front" in config.recording.camera_keys
-                )
-                or bool({"front", "composite"} & video_modes)
-            ),
-            front_camera_height=config.recording.image_height,
-            front_camera_width=config.recording.image_width,
-            enable_wrist_camera=(
-                (
-                    config.recording.enabled
-                    and "wrist" in config.recording.camera_keys
-                )
-                or bool({"wrist", "composite"} & video_modes)
-            ),
-            wrist_camera_height=config.recording.image_height,
-            wrist_camera_width=config.recording.image_width,
-            enable_overview_camera=(
-                (
-                    config.recording.enabled
-                    and "overview" in config.recording.camera_keys
-                )
-                or "composite" in video_modes
-            ),
-            overview_camera_prim_path=config.recording.overview_camera_prim_path,
-            overview_camera_height=config.recording.image_height,
-            overview_camera_width=config.recording.image_width,
-            camera_render_interval_control_steps=(
-                1
-                if (config.video.enabled or not config.headless)
-                else max(
-                    1,
-                    int(round(1.0 / (config.recording.dataset_fps * 0.02))),
-                )
             ),
             enable_relocatable_episode_supports=bool(
                 config.reuse_isaac_stage and config.num_episodes > 1
@@ -1779,6 +1789,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                     config.recording.overview_camera_prim_path
                                 ),
                             ),
+                            **_camera_sensor_runtime_kwargs(config),
                             show_velocity_command_debug=bool(
                                 stair_locomotion_smoke
                                 and config.show_planned_trajectories

@@ -2,8 +2,8 @@
   "project": "pct_scene",
   "branch": "pct_scene",
   "goal": "在同一代码库中通过 scene profile 选择良渚单层或别墅多楼层 PCT 场景，并支持后续场景扩展、移动操作与可验证数据导出。",
-  "current_phase": "phase_169_multifloor_apple_visual_bbox_filter_fixed",
-  "last_updated": "2026-07-21 22:57:38 CST",
+  "current_phase": "phase_170_composite_video_startup_and_placeholder_fixed",
+  "last_updated": "2026-07-22 13:14:30 CST",
   "status": {
     "multifloor_apple_collision_visual_filter_schema_scoped": true,
     "multifloor_apple_visible_bbox_regression_added": true,
@@ -53,7 +53,19 @@
     "composite_video_same_simulation_step_sync": true,
     "composite_video_unit_verified": true,
     "liangzhu_composite_video_real_batch_verified": true,
-    "multi_floor_composite_video_real_pipeline_verified": false,
+    "multi_floor_composite_video_real_pipeline_verified": true,
+    "composite_video_preroll_state_gate_added": true,
+    "liangzhu_composite_first_frame_robot_pose_real_verified": true,
+    "composite_overview_blue_placeholder_gate_added": true,
+    "composite_camera_switch_post_render_settle_added": true,
+    "composite_labels_final_overlay_added": true,
+    "composite_encoded_frame_quality_validator_added": true,
+    "multifloor_composite_pick_smoke_real_verified": true,
+    "multifloor_composite_navigation_smoke_real_verified": true,
+    "multifloor_composite_invalid_overview_frame_count": 0,
+    "multifloor_composite_missing_label_frame_count": 0,
+    "multifloor_schedule_camera_discovery_attempt_count": 2,
+    "task_object_reset_live_physx_pose_unconditional": true,
     "liangzhu_box_pair_batch20_attempted": true,
     "liangzhu_box_pair_batch20_success_count": 18,
     "liangzhu_box_pair_batch20_success_rate": 0.9,
@@ -8121,6 +8133,60 @@
       "next_steps": [
         "用户验收后可运行 multi_floor 完整跨楼层 nav-pick-place；本轮 pick-smoke 已充分覆盖原 plan_pick bbox 失败点，但不替代完整 place 验收。",
         "不要把 USDA 中碰撞 Mesh 的 visibility=invisible 改为 inherited；collision proxy 与 visual 当前已经分离，运行时只应隐藏带碰撞 schema 的 Mesh。",
+        "由用户验收后手动提交；Codex 不 commit、不 push。"
+      ]
+    },
+    {
+      "time": "2026-07-22 13:14:30 CST",
+      "summary": "修复统一 pct_scene 的 composite 首帧与 overview 占位帧问题。录像器不再记录 build_stage/reset_episode 的未稳定画面，避免良渚首帧出现悬空折叠机器人；viewport 切换相机后等待下一次 render，逐帧拒绝近黑和蓝灰占位帧并回退同步 observation overview；所有 panel 完成后最后绘制 OVERVIEW/FRONT/WRIST 标签。acceptance validator 现在扫描全部编码帧。同步修复 multi_floor 无 object_initialization 策略时 episode reset 只清速度、不恢复 live PhysX pose 的缺陷，并在 Camera0-8 schedule 全部发现后停止重复 USD 遍历。",
+      "files_changed": [
+        "project.json",
+        "scripts/pipeline/run_full_physics_pipeline.py",
+        "scripts/pipeline/validate_full_pipeline_acceptance.py",
+        "source/recording/overview_video_recorder.py",
+        "source/simulation/isaaclab_runtime.py",
+        "tests/test_full_physics_pipeline.py",
+        "tests/test_full_pipeline_acceptance.py",
+        "tests/test_isaaclab_navigation_runtime.py",
+        "tests/test_simulation_viewport.py"
+      ],
+      "tests": [
+        {
+          "command": "python -m unittest tests.test_simulation_viewport tests.test_full_physics_pipeline tests.test_isaaclab_navigation_runtime",
+          "result": "passed",
+          "note": "158 passed、2 skipped；另直接执行 4 个 acceptance 测试函数全部通过。当前基础 Python 环境未安装 pytest。"
+        },
+        {
+          "command": "run_full_physics_pipeline.py --scene-profile liangzhu --navigation-smoke --seed 7000 --headless --no-record-dataset --record-video --video-mode composite",
+          "result": "passed",
+          "note": "success=true；96 帧、0 dropped；首帧机器人正常落地站立，逐帧扫描 0 个无效 overview、0 个缺失标签。"
+        },
+        {
+          "command": "run_full_physics_pipeline.py --scene-profile multi_floor --pick-smoke --seed 0 --headless --no-record-dataset --record-video --video-mode composite",
+          "result": "passed",
+          "note": "success=true，经过 nav、plan_pick、exec_pick、verify_pick_success；503 帧、0 dropped，逐帧扫描 0 个无效 overview、0 个缺失标签。"
+        },
+        {
+          "command": "run_full_physics_pipeline.py --scene-profile multi_floor --navigation-smoke --seed 0 --headless --no-record-dataset --record-video --video-mode composite",
+          "result": "passed",
+          "note": "最终优化回归 success=true；354 帧、0 dropped，逐帧扫描 0 个无效 overview、0 个缺失标签；相机 discovery 从旧回归的 1006 次降为 2 次。"
+        }
+      ],
+      "data_results": {
+        "liangzhu_output_root": "/mnt/sage_data/outputs/pct_scene/composite_recording_fix_liangzhu_seed7000_20260722_v2",
+        "liangzhu_composite_frames": 96,
+        "multifloor_pick_output_root": "/mnt/sage_data/outputs/pct_scene/composite_recording_fix_multifloor_seed0_20260722_v3",
+        "multifloor_pick_composite_frames": 503,
+        "multifloor_navigation_output_root": "/mnt/sage_data/outputs/pct_scene/composite_recording_fix_multifloor_seed0_20260722_v4",
+        "multifloor_navigation_composite_frames": 354,
+        "invalid_overview_frame_count": 0,
+        "missing_label_frame_count": 0,
+        "composite_dropped_frame_count": 0,
+        "final_camera_discovery_attempt_count": 2
+      },
+      "next_steps": [
+        "用户可直接查看两个 output root 中的 composite MP4 进行视觉验收。",
+        "完整 multi_floor 跨层 place 成功率仍沿用已有独立结果；本轮 pick/navigation smoke 的目标是覆盖视频与 reset 缺陷，不替代新的全流程批量统计。",
         "由用户验收后手动提交；Codex 不 commit、不 push。"
       ]
     }

@@ -6,8 +6,17 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Any
+
+import numpy as np
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from source.recording.overview_video_recorder import _overview_frame_quality
 
 
 def _read_json(path: Path, *, errors: list[str]) -> dict[str, Any]:
@@ -68,16 +77,130 @@ def _probe_video(path: Path, *, errors: list[str]) -> dict[str, Any]:
         if not capture.isOpened():
             errors.append(f"OpenCV 无法打开 composite MP4：{path}")
             return {}
+        width = int(round(capture.get(cv2.CAP_PROP_FRAME_WIDTH)))
+        height = int(round(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+        quality = _scan_composite_video_quality(
+            capture,
+            width=width,
+            height=height,
+        )
+        if quality["invalid_overview_frame_count"] > 0:
+            errors.append(
+                "composite overview 存在无效/占位帧："
+                f"count={quality['invalid_overview_frame_count']} "
+                f"first={quality['invalid_overview_frames'][:10]}"
+            )
+        if quality["missing_label_frame_count"] > 0:
+            errors.append(
+                "composite 存在标签缺失帧："
+                f"count={quality['missing_label_frame_count']} "
+                f"first={quality['missing_label_frames'][:10]}"
+            )
         return {
             "path": str(path),
-            "width": int(round(capture.get(cv2.CAP_PROP_FRAME_WIDTH))),
-            "height": int(round(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))),
+            "width": width,
+            "height": height,
             "fps": float(capture.get(cv2.CAP_PROP_FPS)),
             "frame_count": int(round(capture.get(cv2.CAP_PROP_FRAME_COUNT))),
             "size_bytes": int(path.stat().st_size),
+            "quality": quality,
         }
     finally:
         capture.release()
+
+
+def _composite_label_present(
+    frame_bgr: np.ndarray,
+    *,
+    x: int,
+    y: int,
+    panel_width: int,
+    panel_height: int,
+) -> bool:
+    roi_width = min(panel_width, 180)
+    roi_height = min(panel_height, max(24, min(42, panel_height // 5)))
+    region = frame_bgr[y : y + roi_height, x : x + roi_width]
+    if region.size == 0:
+        return False
+    white_fraction = float(np.mean(np.all(region >= 170, axis=2)))
+    black_fraction = float(np.mean(np.all(region <= 55, axis=2)))
+    return bool(white_fraction >= 0.004 and black_fraction >= 0.20)
+
+
+def _scan_composite_video_quality(
+    capture: Any,
+    *,
+    width: int,
+    height: int,
+) -> dict[str, Any]:
+    """逐帧检查编码后的 overview 占位帧和三个固定标签。"""
+
+    import cv2
+
+    overview_width = min(width - 1, max(1, int(round(width * 2.0 / 3.0))))
+    side_width = width - overview_width
+    front_height = height // 2
+    invalid_overview_frames: list[dict[str, Any]] = []
+    missing_label_frames: list[dict[str, Any]] = []
+    decoded_frame_count = 0
+    while True:
+        readable, frame_bgr = capture.read()
+        if not readable:
+            break
+        label_crop_y = min(48, max(1, height // 4))
+        overview_rgb = cv2.cvtColor(
+            frame_bgr[label_crop_y:height, 0:overview_width],
+            cv2.COLOR_BGR2RGB,
+        )
+        overview_usable, reason, metrics = _overview_frame_quality(overview_rgb)
+        if not overview_usable:
+            invalid_overview_frames.append(
+                {
+                    "frame_index": decoded_frame_count,
+                    "reason": reason,
+                    "metrics": metrics,
+                }
+            )
+
+        labels = {
+            "overview": _composite_label_present(
+                frame_bgr,
+                x=0,
+                y=0,
+                panel_width=overview_width,
+                panel_height=height,
+            ),
+            "front": _composite_label_present(
+                frame_bgr,
+                x=overview_width,
+                y=0,
+                panel_width=side_width,
+                panel_height=front_height,
+            ),
+            "wrist": _composite_label_present(
+                frame_bgr,
+                x=overview_width,
+                y=front_height,
+                panel_width=side_width,
+                panel_height=height - front_height,
+            ),
+        }
+        missing_labels = [label for label, present in labels.items() if not present]
+        if missing_labels:
+            missing_label_frames.append(
+                {
+                    "frame_index": decoded_frame_count,
+                    "labels": missing_labels,
+                }
+            )
+        decoded_frame_count += 1
+    return {
+        "decoded_frame_count": decoded_frame_count,
+        "invalid_overview_frame_count": len(invalid_overview_frames),
+        "invalid_overview_frames": invalid_overview_frames[:100],
+        "missing_label_frame_count": len(missing_label_frames),
+        "missing_label_frames": missing_label_frames[:100],
+    }
 
 
 def validate_full_pipeline_episode(

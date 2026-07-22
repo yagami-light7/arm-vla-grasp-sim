@@ -2362,6 +2362,98 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
             ]["supported_pose_frozen_until_contact"]
         )
 
+    def test_reset_restores_live_object_pose_without_initialization_policy(self) -> None:
+        runtime, _adapter, _fake_runtime_obj = _fake_runtime()
+
+        class FakeRigidView:
+            def __init__(self, owner):
+                self.owner = owner
+                self.velocities = []
+
+            def set_world_poses(self, *, positions, orientations) -> None:
+                self.owner.position = np.asarray(
+                    positions.detach().cpu().tolist()[0],
+                    dtype=np.float64,
+                )
+                self.owner.orientation = np.asarray(
+                    orientations.detach().cpu().tolist()[0],
+                    dtype=np.float64,
+                )
+
+            def set_velocities(self, velocities) -> None:
+                values = velocities.detach().cpu().tolist()[0]
+                self.velocities.append(values)
+                self.owner.linear_velocity = np.asarray(values[:3], dtype=np.float64)
+
+        class FakeObject:
+            def __init__(self):
+                self.position = np.asarray((-3.51, 7.24, 0.558), dtype=np.float64)
+                self.orientation = np.asarray(
+                    (0.6436, 0.7621, -0.0569, 0.0414),
+                    dtype=np.float64,
+                )
+                self.linear_velocity = np.asarray((0.1, -0.1, 0.2), dtype=np.float64)
+                self._rigid_prim_view = FakeRigidView(self)
+
+            def get_world_pose(self):
+                return self.position.copy(), self.orientation.copy()
+
+        expected_position = (-3.5059431, 7.2452841, 0.5628773)
+        expected_world_quaternion = (0.6950288, 0.7188951, -0.0105537, 0.0036741)
+        spec = EpisodeSpec(
+            task_id=1,
+            episode_id=1,
+            instruction="test",
+            scene_usd="scene.usd",
+            nav_map="",
+            start=NavGoal(0.0, 0.0, 0.0),
+            pick_goal=NavGoal(0.0, 0.0, 0.0),
+            place_goal=None,
+            object_prim_path="/World/apple_01",
+            object_initial_pose=(*expected_position, 0.0, 0.0, 0.0),
+            place_target_pose=None,
+            raw_task={},
+        )
+        fake_object = FakeObject()
+        runtime._object = fake_object  # type: ignore[attr-defined]
+        runtime._episode_spec = spec  # type: ignore[attr-defined]
+        runtime._settled_object_pose = None  # type: ignore[attr-defined]
+        runtime._apply_object_pose = lambda _spec: {  # type: ignore[method-assign]
+            "applied": True,
+            "authored_world_quaternion_wxyz": list(expected_world_quaternion),
+        }
+        sleep_reports = []
+        runtime._set_object_sleeping = (  # type: ignore[method-assign]
+            lambda *, enabled: sleep_reports.append(enabled)
+            or {"applied": True, "sleeping": enabled}
+        )
+
+        report = runtime._reset_object_pose_and_motion(  # type: ignore[attr-defined]
+            spec,
+            sleep_until_contact=True,
+            reason="unit_test_episode_reset",
+        )
+
+        np.testing.assert_allclose(fake_object.position, expected_position, atol=1.0e-6)
+        np.testing.assert_allclose(
+            fake_object.orientation,
+            expected_world_quaternion,
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            fake_object._rigid_prim_view.velocities[-1],
+            [0.0] * 6,
+            atol=1.0e-6,
+        )
+        self.assertTrue(report["live_pose_write_applied"])
+        self.assertFalse(report["live_pose_write_skipped"])
+        self.assertEqual(
+            report["live_pose_write_contract"],
+            "episode_reset_all_task_objects_v1",
+        )
+        self.assertFalse(report["object_initialization_policy"]["enabled"])
+        self.assertEqual(sleep_reports, [True])
+
 
 class FakeJointPositionMatrix:
     def __init__(self, values: tuple[float, ...]):
