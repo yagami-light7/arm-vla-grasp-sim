@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from pathlib import Path
+
+from source.navigation_contract import DEFAULT_NAVIGATION_BODY_HEIGHT_M
 
 
 PCT_MULTIFLOOR_LOCOMOTION_TASK = "RobotLab-Isaac-Velocity-Rough-Go2-X5-DogOnly-v0"
@@ -62,8 +65,8 @@ class StateLimits:
 class NavigationSettings:
     """第三阶段短路线导航 smoke 的固定参数。"""
 
-    global_planner: str = "astar"
-    pct_enabled: bool = False
+    global_planner: str = "pct"
+    pct_enabled: bool = True
     pct_planner_root: Path | None = None
     pct_server_script: Path | None = None
     pct_server_python: Path | None = None
@@ -71,12 +74,17 @@ class NavigationSettings:
     pct_walkable_path: Path | None = None
     pct_collision_ply_path: Path | None = None
     pct_tomogram_name: str = "mutifloor"
-    pct_fallback_to_astar: bool = True
+    pct_fallback_to_astar: bool = False
     pct_coord_mode: str = "sim_to_pct_180deg"
     pct_offset_x: float = 0.0
     pct_offset_y: float = 0.0
+    pct_offset_z: float = 0.0
     pct_scale_x: float = 1.0
     pct_scale_y: float = 1.0
+    pct_scale_z: float = 1.0
+    pct_rotation_x_rad: float = 0.0
+    pct_rotation_y_rad: float = 0.0
+    pct_rotation_z_rad: float = 0.0
     pct_vertical_obstacle_min_slices: int = 0
     pct_vertical_obstacle_dilation_radius_cells: int = 0
     pct_global_vertical_obstacle_min_slices: int = 7
@@ -116,6 +124,10 @@ class NavigationSettings:
     pct_carry_initial_alignment_path_deviation_limit: float = 0.40
     pct_carry_path_recovery_deviation_limit: float = 0.35
     pct_carry_max_infeasible_recomputes: int = 8
+    # 仅用于隔离低层 checkpoint 的真实楼梯 A/B；不会启动 PCT、SCAN 或 Float。
+    stair_fixed_command_probe: bool = False
+    stair_probe_forward_velocity_mps: float = 0.25
+    stair_probe_drive_duration_s: float = 3.84
     pct_stair_float_enabled: bool = False
     pct_stair_float_speed_mps: float = 0.18
     pct_stair_float_activation_radius_m: float = 0.12
@@ -128,6 +140,70 @@ class NavigationSettings:
     pct_stair_float_yaw_lookahead_m: float = 0.35
     pct_stair_float_min_root_z_offset_m: float = 0.18
     pct_stair_float_release_root_z_offset_m: float = 0.36
+    # 生产导航唯一机体高度合同。ROS 组合 launch、host 楼梯冻结、live
+    # 标定与有效目标投影必须读取同一值，禁止再引入模块专用高度副本。
+    navigation_body_height_m: float = DEFAULT_NAVIGATION_BODY_HEIGHT_M
+    # SCAN 主链只复用通用 root/joint lock，不实例化旧 PCT+DWA stair-float。
+    scan_stair_freeze_enabled: bool = True
+    scan_stair_freeze_speed_mps: float = 0.18
+    scan_stair_freeze_activation_radius_m: float = 0.12
+    scan_stair_freeze_min_component_z_delta_m: float = 0.10
+    scan_stair_freeze_min_step_z_delta_m: float = 0.05
+    scan_stair_freeze_min_step_grade: float = 0.30
+    scan_stair_freeze_min_riser_grade_variation: float = 0.15
+    scan_stair_freeze_max_inter_step_gap_m: float = 0.45
+    # 携臂收纳姿态前向包络约 0.38 m；冻结保护区需在第一阶碰撞急停前开始。
+    scan_stair_freeze_approach_distance_m: float = 0.40
+    scan_stair_freeze_exit_distance_m: float = 0.40
+    scan_stair_freeze_activation_lookahead_m: float = 0.50
+    scan_stair_freeze_activation_timeout_s: float = 8.00
+    scan_stair_freeze_activation_passed_margin_m: float = 0.05
+    scan_stair_freeze_full_lock_settle_time_s: float = 1.20
+    scan_stair_freeze_root_release_settle_time_s: float = 1.00
+    scan_stair_freeze_post_release_stable_time_s: float = 0.50
+    scan_stair_freeze_post_release_stabilization_timeout_s: float = 5.00
+    scan_stair_freeze_resume_wait_fresh_cmd_timeout_s: float = 3.00
+    scan_stair_freeze_terminal_goal_hold_timeout_s: float = 8.00
+    scan_stair_freeze_post_release_max_linear_speed_mps: float = 0.08
+    scan_stair_freeze_post_release_max_angular_speed_rps: float = 0.20
+    scan_stair_freeze_post_release_max_z_error_m: float = 0.10
+    scan_stair_freeze_post_release_max_tilt_rad: float = 0.35
+    scan_stair_freeze_yaw_lookahead_m: float = 0.35
+    scan_stair_freeze_terminal_goal_xy_tolerance_m: float = 1.0e-6
+    scan_stair_freeze_terminal_goal_z_tolerance_m: float = 1.0e-4
+    scan_stair_freeze_terminal_goal_yaw_tolerance_rad: float = 1.0e-5
+    scan_stair_freeze_min_measured_body_height_m: float = 0.15
+    scan_stair_freeze_max_measured_body_height_m: float = 0.60
+    scan_stair_freeze_certified_progress_m: float = 0.02
+    scan_stair_freeze_require_supervisor_sensor_status: bool = True
+    scan_stair_freeze_supervisor_sensor_status_timeout_s: float = 0.25
+    # 控制循环时间戳跳变时只允许在该上限内积分；由生产冻结 profile 绑定。
+    scan_stair_freeze_max_control_dt_s: float = 0.20
+    # 生产 PCT 目标发布前，用解锁、零速且机械臂收纳的 live base 位姿校验
+    # collision PLY 与统一 body-height 合同；历史 task z 只保留作审计。
+    body_height_calibration_enabled: bool = False
+    body_height_calibration_min_samples: int = 50
+    body_height_calibration_min_duration_s: float = 1.0
+    body_height_calibration_timeout_s: float = 5.0
+    body_height_calibration_max_linear_speed_mps: float = 0.03
+    body_height_calibration_max_angular_speed_rps: float = 0.08
+    # 关节静止门以连续位置/里程计时间差分为准；raw PhysX dq 只作审计。
+    body_height_calibration_max_joint_speed_rps: float = 0.08
+    body_height_calibration_max_joint_position_dt_s: float = 0.05
+    body_height_calibration_max_tilt_rad: float = 0.15
+    body_height_calibration_arm_position_tolerance_rad: float = 0.05
+    body_height_calibration_max_hint_error_m: float = 0.60
+    body_height_calibration_max_mad_m: float = 0.01
+    body_height_calibration_max_spread_m: float = 0.03
+    body_height_calibration_contract_tolerance_m: float = 0.08
+    # 快速窗口只在更严格的离散度和配置误差门全部通过时提前结束；失败后
+    # 自动继续上面的完整窗口，不能通过关闭完整校验来换取启动速度。
+    body_height_calibration_quick_enabled: bool = True
+    body_height_calibration_quick_min_samples: int = 26
+    body_height_calibration_quick_min_duration_s: float = 0.50
+    body_height_calibration_quick_max_mad_m: float = 0.0025
+    body_height_calibration_quick_max_spread_m: float = 0.0075
+    body_height_calibration_quick_contract_tolerance_m: float = 0.02
     goal_z_tolerance: float = 0.35
     # 对齐稳定 random nav-pick-place baseline；0.25 m 已会占用当前 place goal。
     global_inflate_radius: float = 0.20
@@ -345,6 +421,7 @@ class FullPhysicsConfig:
     headless: bool = True
     keep_window_open: bool = False
     show_planned_trajectories: bool = False
+    diagnostic_frame_stride: int = 1
     dry_run: bool = False
     simulation_smoke: bool = False
     navigation_smoke: bool = False
@@ -369,13 +446,59 @@ class FullPhysicsConfig:
     def __post_init__(self) -> None:
         if self.num_episodes < 1:
             raise ValueError("num_episodes must be at least 1")
+        if (
+            isinstance(self.diagnostic_frame_stride, bool)
+            or not isinstance(self.diagnostic_frame_stride, int)
+            or self.diagnostic_frame_stride < 1
+        ):
+            raise ValueError("diagnostic_frame_stride 必须是正整数")
         if self.limits.episode < 1:
             raise ValueError("episode tick limit must be positive")
         if self.navigation.max_linear_velocity <= 0.0:
             raise ValueError("max_linear_velocity must be positive")
-        if self.navigation.global_planner not in {"astar", "pct"}:
-            raise ValueError("global_planner must be one of: astar, pct")
-        if self.navigation.pct_scale_x == 0.0 or self.navigation.pct_scale_y == 0.0:
+        if (
+            self.navigation.stair_fixed_command_probe
+            and not self.stair_locomotion_smoke
+        ):
+            raise ValueError(
+                "stair_fixed_command_probe requires stair_locomotion_smoke=True"
+            )
+        allowed_global_planners = {"astar", "pct"}
+        if self.navigation.stair_fixed_command_probe:
+            # bypassed 只允许作为固定速度探针组装后的内部终态，防止普通导航
+            # 静默绕过全局规划器。
+            allowed_global_planners.add("bypassed")
+        if self.navigation.global_planner not in allowed_global_planners:
+            allowed_names = ", ".join(sorted(allowed_global_planners))
+            raise ValueError(
+                f"global_planner must be one of: {allowed_names}"
+            )
+        if self.navigation.pct_coord_mode not in {
+            "sim_to_pct_180deg",
+            "identity",
+        }:
+            raise ValueError("unsupported PCT coordinate mode")
+        coordinate_values = (
+            self.navigation.pct_offset_x,
+            self.navigation.pct_offset_y,
+            self.navigation.pct_offset_z,
+            self.navigation.pct_scale_x,
+            self.navigation.pct_scale_y,
+            self.navigation.pct_scale_z,
+            self.navigation.pct_rotation_x_rad,
+            self.navigation.pct_rotation_y_rad,
+            self.navigation.pct_rotation_z_rad,
+        )
+        if not all(math.isfinite(value) for value in coordinate_values):
+            raise ValueError("PCT coordinate transform values must be finite")
+        if any(
+            scale == 0.0
+            for scale in (
+                self.navigation.pct_scale_x,
+                self.navigation.pct_scale_y,
+                self.navigation.pct_scale_z,
+            )
+        ):
             raise ValueError("PCT coordinate scales must be non-zero")
         if self.navigation.pct_vertical_obstacle_min_slices < 0:
             raise ValueError("pct_vertical_obstacle_min_slices must be non-negative")
@@ -452,6 +575,200 @@ class FullPhysicsConfig:
             raise ValueError(
                 "pct_stair_float_release_root_z_offset_m must be non-negative"
             )
+        if not isinstance(self.navigation.scan_stair_freeze_enabled, bool):
+            raise TypeError("scan_stair_freeze_enabled must be boolean")
+        if not isinstance(
+            self.navigation.scan_stair_freeze_require_supervisor_sensor_status,
+            bool,
+        ):
+            raise TypeError(
+                "scan_stair_freeze_require_supervisor_sensor_status must be boolean"
+            )
+        if (
+            not math.isfinite(self.navigation.navigation_body_height_m)
+            or self.navigation.navigation_body_height_m <= 0.0
+        ):
+            raise ValueError("navigation_body_height_m must be finite and positive")
+        scan_stair_positive_fields = (
+            "scan_stair_freeze_speed_mps",
+            "scan_stair_freeze_min_component_z_delta_m",
+            "scan_stair_freeze_min_step_z_delta_m",
+            "scan_stair_freeze_min_step_grade",
+            "scan_stair_freeze_max_inter_step_gap_m",
+            "scan_stair_freeze_activation_timeout_s",
+            "scan_stair_freeze_post_release_stabilization_timeout_s",
+            "scan_stair_freeze_resume_wait_fresh_cmd_timeout_s",
+            "scan_stair_freeze_terminal_goal_hold_timeout_s",
+            "scan_stair_freeze_max_measured_body_height_m",
+            "scan_stair_freeze_certified_progress_m",
+            "scan_stair_freeze_supervisor_sensor_status_timeout_s",
+            "scan_stair_freeze_max_control_dt_s",
+            "scan_stair_freeze_post_release_max_linear_speed_mps",
+            "scan_stair_freeze_post_release_max_angular_speed_rps",
+            "scan_stair_freeze_post_release_max_z_error_m",
+            "scan_stair_freeze_post_release_max_tilt_rad",
+            "scan_stair_freeze_terminal_goal_xy_tolerance_m",
+            "scan_stair_freeze_terminal_goal_z_tolerance_m",
+            "scan_stair_freeze_terminal_goal_yaw_tolerance_rad",
+        )
+        scan_stair_nonnegative_fields = (
+            "scan_stair_freeze_activation_radius_m",
+            "scan_stair_freeze_min_riser_grade_variation",
+            "scan_stair_freeze_approach_distance_m",
+            "scan_stair_freeze_exit_distance_m",
+            "scan_stair_freeze_activation_lookahead_m",
+            "scan_stair_freeze_activation_passed_margin_m",
+            "scan_stair_freeze_full_lock_settle_time_s",
+            "scan_stair_freeze_root_release_settle_time_s",
+            "scan_stair_freeze_post_release_stable_time_s",
+            "scan_stair_freeze_yaw_lookahead_m",
+            "scan_stair_freeze_min_measured_body_height_m",
+        )
+        for field_name in scan_stair_positive_fields:
+            if getattr(self.navigation, field_name) <= 0.0:
+                raise ValueError(f"{field_name} must be positive")
+        for field_name in scan_stair_nonnegative_fields:
+            if getattr(self.navigation, field_name) < 0.0:
+                raise ValueError(f"{field_name} must be non-negative")
+        if not math.isfinite(
+            self.navigation.scan_stair_freeze_max_control_dt_s
+        ):
+            raise ValueError(
+                "scan_stair_freeze_max_control_dt_s must be finite and positive"
+            )
+        if (
+            self.navigation.scan_stair_freeze_max_control_dt_s
+            < self.navigation.control_dt
+        ):
+            raise ValueError(
+                "scan_stair_freeze_max_control_dt_s must not be smaller than "
+                "control_dt"
+            )
+        if (
+            self.navigation.scan_stair_freeze_min_measured_body_height_m
+            >= self.navigation.scan_stair_freeze_max_measured_body_height_m
+        ):
+            raise ValueError(
+                "scan stair measured body height maximum must exceed minimum"
+            )
+        if (
+            self.navigation.navigation_body_height_m
+            > self.navigation.scan_stair_freeze_max_measured_body_height_m
+        ):
+            raise ValueError(
+                "navigation_body_height_m must not exceed the measured body "
+                "height maximum"
+            )
+        if not isinstance(
+            self.navigation.body_height_calibration_enabled,
+            bool,
+        ):
+            raise TypeError("body_height_calibration_enabled must be boolean")
+        if not isinstance(
+            self.navigation.body_height_calibration_quick_enabled,
+            bool,
+        ):
+            raise TypeError(
+                "body_height_calibration_quick_enabled must be boolean"
+            )
+        minimum_samples = self.navigation.body_height_calibration_min_samples
+        if (
+            isinstance(minimum_samples, bool)
+            or not isinstance(minimum_samples, int)
+            or minimum_samples < 2
+        ):
+            raise ValueError(
+                "body_height_calibration_min_samples must be an integer >= 2"
+            )
+        quick_minimum_samples = (
+            self.navigation.body_height_calibration_quick_min_samples
+        )
+        if (
+            isinstance(quick_minimum_samples, bool)
+            or not isinstance(quick_minimum_samples, int)
+            or quick_minimum_samples < 2
+        ):
+            raise ValueError(
+                "body_height_calibration_quick_min_samples must be an "
+                "integer >= 2"
+            )
+        body_height_calibration_positive_fields = (
+            "body_height_calibration_min_duration_s",
+            "body_height_calibration_timeout_s",
+            "body_height_calibration_max_linear_speed_mps",
+            "body_height_calibration_max_angular_speed_rps",
+            "body_height_calibration_max_joint_speed_rps",
+            "body_height_calibration_max_joint_position_dt_s",
+            "body_height_calibration_max_tilt_rad",
+            "body_height_calibration_arm_position_tolerance_rad",
+            "body_height_calibration_max_hint_error_m",
+            "body_height_calibration_max_mad_m",
+            "body_height_calibration_max_spread_m",
+            "body_height_calibration_contract_tolerance_m",
+            "body_height_calibration_quick_min_duration_s",
+            "body_height_calibration_quick_max_mad_m",
+            "body_height_calibration_quick_max_spread_m",
+            "body_height_calibration_quick_contract_tolerance_m",
+        )
+        for field_name in body_height_calibration_positive_fields:
+            value = getattr(self.navigation, field_name)
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{field_name} must be finite and positive")
+        if (
+            self.navigation.body_height_calibration_max_joint_position_dt_s
+            < self.navigation.control_dt
+        ):
+            raise ValueError(
+                "body_height_calibration_max_joint_position_dt_s must not be "
+                "smaller than control_dt"
+            )
+        if (
+            self.navigation.body_height_calibration_max_spread_m
+            < self.navigation.body_height_calibration_max_mad_m
+        ):
+            raise ValueError(
+                "body-height calibration spread must not be smaller than MAD"
+            )
+        if (
+            self.navigation.body_height_calibration_quick_max_spread_m
+            < self.navigation.body_height_calibration_quick_max_mad_m
+        ):
+            raise ValueError(
+                "quick body-height calibration spread must not be smaller "
+                "than quick MAD"
+            )
+        if self.navigation.body_height_calibration_quick_enabled:
+            if quick_minimum_samples > minimum_samples:
+                raise ValueError(
+                    "quick body-height sample count must not exceed the "
+                    "full-window sample count"
+                )
+            if (
+                self.navigation.body_height_calibration_quick_min_duration_s
+                > self.navigation.body_height_calibration_min_duration_s
+            ):
+                raise ValueError(
+                    "quick body-height duration must not exceed the "
+                    "full-window duration"
+                )
+            if (
+                self.navigation.body_height_calibration_quick_max_mad_m
+                > self.navigation.body_height_calibration_max_mad_m
+                or self.navigation.body_height_calibration_quick_max_spread_m
+                > self.navigation.body_height_calibration_max_spread_m
+            ):
+                raise ValueError(
+                    "quick body-height dispersion gates must not be wider "
+                    "than the full-window gates"
+                )
+            if (
+                self.navigation.body_height_calibration_quick_contract_tolerance_m
+                > self.navigation.body_height_calibration_contract_tolerance_m
+            ):
+                raise ValueError(
+                    "quick body-height contract tolerance must not exceed "
+                    "the full-window tolerance"
+                )
         if self.navigation.pct_body_obstacle_min_height_m < 0.0:
             raise ValueError(
                 "pct_body_obstacle_min_height_m must be non-negative"
@@ -502,6 +819,24 @@ class FullPhysicsConfig:
             raise ValueError("pct_carry_max_angular_velocity must be positive")
         if self.navigation.pct_carry_max_linear_accel <= 0.0:
             raise ValueError("pct_carry_max_linear_accel must be positive")
+        if self.navigation.stair_fixed_command_probe and not any(
+            math.isclose(
+                self.navigation.stair_probe_forward_velocity_mps,
+                allowed,
+                rel_tol=0.0,
+                abs_tol=1.0e-9,
+            )
+            for allowed in (0.20, 0.25, 0.30)
+        ):
+            raise ValueError(
+                "stair_probe_forward_velocity_mps must be 0.20, 0.25 or 0.30"
+            )
+        if self.navigation.stair_fixed_command_probe and not (
+            3.0 <= self.navigation.stair_probe_drive_duration_s <= 5.0
+        ):
+            raise ValueError(
+                "stair_probe_drive_duration_s must be between 3 and 5 seconds"
+            )
         if self.navigation.pct_carry_path_deviation_limit <= 0.0:
             raise ValueError("pct_carry_path_deviation_limit must be positive")
         if self.navigation.pct_carry_initial_alignment_path_deviation_limit <= 0.0:

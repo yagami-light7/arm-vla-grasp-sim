@@ -18,12 +18,15 @@ from source.manipulation.dry_run import (
 )
 from source.navigation import (
     AStarNavPlanner,
-    DwaNavExecutor,
+    FixedCommandStairProbeConfig,
+    FixedCommandStairProbeExecutor,
+    FixedCommandStairProbePlanner,
     PCTNavPlanner,
     PCTPlannerConfig,
-    StairLocomotionExecutor,
-    StairLocomotionExecutorConfig,
+    ScanStairFreezeConfig,
+    load_scan_reference_path,
 )
+from source.navigation.executor import DwaNavExecutor
 from source.navigation.adapters.yaw_align import TerminalPoseConfig
 from source.navigation.navlib import DWAConfig, OccupancyGridMap
 from source.navigation.pct_local_map import (
@@ -42,6 +45,72 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PCT_SERVER_SCRIPT = PROJECT_ROOT / "scripts/navigation/pct_grid_server.py"
 
 
+def _requires_extended_pct_navigation_limits(
+    config: FullPhysicsConfig,
+    episode_spec: EpisodeSpec,
+) -> bool:
+    """按任务声明或起终楼层关系决定是否使用跨楼层长时限。"""
+
+    if config.locomotion.policy_profile != "pct_multifloor":
+        return False
+    raw_execution = episode_spec.raw_task.get("navigation_execution") or {}
+    if not isinstance(raw_execution, dict):
+        raise ValueError("task.navigation_execution 必须是对象")
+    explicit = raw_execution.get("extended_state_limits")
+    if explicit is not None:
+        if not isinstance(explicit, bool):
+            raise ValueError(
+                "task.navigation_execution.extended_state_limits 必须是布尔值"
+            )
+        return explicit
+    start_floor = (episode_spec.raw_task.get("start") or {}).get("floor_id")
+    place_floor = (
+        ((episode_spec.raw_task.get("place") or {}).get("base_goal") or {}).get(
+            "floor_id"
+        )
+    )
+    if start_floor is not None and place_floor is not None:
+        return start_floor != place_floor
+    # 旧任务没有 scene_profile / navigation_execution 声明。保留其原有长时限，
+    # 新增场景则要求在 task 中显式声明能力，避免再按场景名称分支。
+    return "scene_profile" not in episode_spec.raw_task
+
+
+def _navigation_settings_for_episode(settings: Any, episode_spec: EpisodeSpec):
+    """把任务声明的终点交接精度统一映射到所有物理导航入口。"""
+
+    raw_config = episode_spec.raw_task.get("navigation_execution")
+    if raw_config is None:
+        return settings
+    if not isinstance(raw_config, dict):
+        raise ValueError("task.navigation_execution 必须是对象")
+
+    numeric_fields = (
+        "final_position_tolerance",
+        "place_position_tolerance",
+        "final_yaw_tolerance",
+        "stable_linear_velocity",
+        "stable_angular_velocity",
+    )
+    boolean_fields = ("require_yaw_alignment", "require_stable_base")
+    updates: dict[str, Any] = {}
+    for field_name in numeric_fields:
+        if field_name not in raw_config:
+            continue
+        value = float(raw_config[field_name])
+        if value <= 0.0:
+            raise ValueError(f"task.navigation_execution.{field_name} 必须大于零")
+        updates[field_name] = value
+    for field_name in boolean_fields:
+        if field_name not in raw_config:
+            continue
+        value = raw_config[field_name]
+        if not isinstance(value, bool):
+            raise ValueError(f"task.navigation_execution.{field_name} 必须是布尔值")
+        updates[field_name] = value
+    return replace(settings, **updates)
+
+
 def _project_path(raw_path: str | Path) -> Path:
     path = Path(raw_path).expanduser()
     if not path.is_absolute():
@@ -53,6 +122,113 @@ def _optional_project_path(raw_path: str | Path | None) -> Path | None:
     if raw_path is None:
         return None
     return _project_path(raw_path)
+
+
+def _scan_reference_path_for_episode(episode_spec: EpisodeSpec):
+    """读取任务声明的手工 Path；未声明时保留动态 ROS Path 模式。"""
+
+    notes = episode_spec.raw_task.get("notes")
+    if notes is None:
+        return None
+    if not isinstance(notes, dict):
+        raise ValueError("task.notes 必须是对象。")
+    raw_path = notes.get("online_reference_path")
+    if raw_path is None:
+        return None
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ValueError("task.notes.online_reference_path 必须是非空路径。")
+    return load_scan_reference_path(_project_path(raw_path))
+
+
+def _episode_declares_scan_reference_path(episode_spec: EpisodeSpec) -> bool:
+    """返回任务是否声明由 ROS 手工发布器使用的参考路径。"""
+
+    notes = episode_spec.raw_task.get("notes")
+    return isinstance(notes, dict) and notes.get("online_reference_path") is not None
+
+
+def _scan_stair_freeze_config(nav: Any) -> ScanStairFreezeConfig:
+    """把 pipeline 配置转换为与传输层无关的 SCAN 楼梯冻结参数。"""
+
+    return ScanStairFreezeConfig(
+        enabled=nav.scan_stair_freeze_enabled,
+        speed_mps=nav.scan_stair_freeze_speed_mps,
+        activation_radius_m=nav.scan_stair_freeze_activation_radius_m,
+        min_component_z_delta_m=(
+            nav.scan_stair_freeze_min_component_z_delta_m
+        ),
+        min_step_z_delta_m=nav.scan_stair_freeze_min_step_z_delta_m,
+        min_step_grade=nav.scan_stair_freeze_min_step_grade,
+        min_riser_grade_variation=(
+            nav.scan_stair_freeze_min_riser_grade_variation
+        ),
+        max_inter_step_gap_m=nav.scan_stair_freeze_max_inter_step_gap_m,
+        approach_distance_m=nav.scan_stair_freeze_approach_distance_m,
+        exit_distance_m=nav.scan_stair_freeze_exit_distance_m,
+        activation_lookahead_m=(
+            nav.scan_stair_freeze_activation_lookahead_m
+        ),
+        activation_timeout_s=nav.scan_stair_freeze_activation_timeout_s,
+        activation_passed_margin_m=(
+            nav.scan_stair_freeze_activation_passed_margin_m
+        ),
+        full_lock_settle_time_s=(
+            nav.scan_stair_freeze_full_lock_settle_time_s
+        ),
+        root_release_settle_time_s=(
+            nav.scan_stair_freeze_root_release_settle_time_s
+        ),
+        post_release_stable_time_s=(
+            nav.scan_stair_freeze_post_release_stable_time_s
+        ),
+        post_release_stabilization_timeout_s=(
+            nav.scan_stair_freeze_post_release_stabilization_timeout_s
+        ),
+        resume_wait_fresh_cmd_timeout_s=(
+            nav.scan_stair_freeze_resume_wait_fresh_cmd_timeout_s
+        ),
+        terminal_goal_hold_timeout_s=(
+            nav.scan_stair_freeze_terminal_goal_hold_timeout_s
+        ),
+        post_release_max_linear_speed_mps=(
+            nav.scan_stair_freeze_post_release_max_linear_speed_mps
+        ),
+        post_release_max_angular_speed_rps=(
+            nav.scan_stair_freeze_post_release_max_angular_speed_rps
+        ),
+        post_release_max_z_error_m=(
+            nav.scan_stair_freeze_post_release_max_z_error_m
+        ),
+        post_release_max_tilt_rad=(
+            nav.scan_stair_freeze_post_release_max_tilt_rad
+        ),
+        yaw_lookahead_m=nav.scan_stair_freeze_yaw_lookahead_m,
+        body_height_m=nav.navigation_body_height_m,
+        terminal_goal_xy_tolerance_m=(
+            nav.scan_stair_freeze_terminal_goal_xy_tolerance_m
+        ),
+        terminal_goal_z_tolerance_m=(
+            nav.scan_stair_freeze_terminal_goal_z_tolerance_m
+        ),
+        terminal_goal_yaw_tolerance_rad=(
+            nav.scan_stair_freeze_terminal_goal_yaw_tolerance_rad
+        ),
+        min_measured_body_height_m=(
+            nav.scan_stair_freeze_min_measured_body_height_m
+        ),
+        max_measured_body_height_m=(
+            nav.scan_stair_freeze_max_measured_body_height_m
+        ),
+        certified_progress_m=nav.scan_stair_freeze_certified_progress_m,
+        require_supervisor_sensor_status=(
+            nav.scan_stair_freeze_require_supervisor_sensor_status
+        ),
+        supervisor_sensor_status_timeout_s=(
+            nav.scan_stair_freeze_supervisor_sensor_status_timeout_s
+        ),
+        default_control_dt_s=nav.control_dt,
+        max_control_dt_s=nav.scan_stair_freeze_max_control_dt_s,
+    )
 
 
 def _required_pct_asset_path(
@@ -81,8 +257,24 @@ def create_navigation_smoke_pipeline(
 ) -> FullPhysicsPipeline:
     """创建只执行 nav_to_pick 的真实物理导航 smoke pipeline。"""
 
+    smoke_config = replace(
+        config,
+        navigation=_navigation_settings_for_episode(
+            config.navigation,
+            episode_spec,
+        ),
+    )
+    if _requires_extended_pct_navigation_limits(config, episode_spec):
+        smoke_config = replace(
+            smoke_config,
+            limits=replace(
+                smoke_config.limits,
+                navigation=max(smoke_config.limits.navigation, 12000),
+                episode=max(smoke_config.limits.episode, 15000),
+            ),
+        )
     return _create_navigation_pipeline(
-        config=config,
+        config=smoke_config,
         episode_spec=episode_spec,
         episode_seed=episode_seed,
         episode_dir=episode_dir,
@@ -116,14 +308,20 @@ def create_navigation_carry_smoke_pipeline(
         start=carry_start,
         raw_task=raw_task,
     )
-    carry_config = config
+    carry_config = replace(
+        config,
+        navigation=_navigation_settings_for_episode(
+            config.navigation,
+            carry_spec,
+        ),
+    )
     if config.locomotion.policy_profile == "pct_multifloor":
         carry_config = replace(
-            config,
+            carry_config,
             limits=replace(
-                config.limits,
-                navigation=max(config.limits.navigation, 12000),
-                episode=max(config.limits.episode, 15000),
+                carry_config.limits,
+                navigation=max(carry_config.limits.navigation, 12000),
+                episode=max(carry_config.limits.episode, 15000),
             ),
         )
     return _create_navigation_pipeline(
@@ -143,49 +341,113 @@ def create_stair_locomotion_smoke_pipeline(
     episode_dir: str | Path,
     simulation: IsaacLabNavigationRuntime,
 ) -> FullPhysicsPipeline:
-    """用真实 PCT 路径和直接速度命令验证 locomotion policy 上楼。"""
+    """验证 PCT→SCAN 楼梯冻结主链；固定速度分支仅作隔离诊断。"""
 
-    stair_spec = _stair_locomotion_smoke_spec(config, episode_spec)
+    fixed_command_probe = bool(
+        config.navigation.stair_fixed_command_probe
+    )
+    if fixed_command_probe:
+        stair_spec = _stair_fixed_command_probe_spec(config, episode_spec)
+    elif _episode_declares_scan_reference_path(episode_spec):
+        # 手工 SCAN 楼梯任务已经提供精确起终点和地面高度 Path，不能再用
+        # 旧 PCT gateway 覆盖它们。
+        runtime_override = dict(
+            episode_spec.raw_task.get("runtime_override") or {}
+        )
+        runtime_override.update(
+            {
+                "mode": "scan_stair_freeze_smoke",
+                "controller": "scan_stair_freeze",
+                "global_planner": "external_ros2_path",
+                "scan_enabled": True,
+                "pct_enabled": False,
+                "dwa_enabled": False,
+                "base_pose_lock": True,
+                "pure_physics": False,
+            }
+        )
+        stair_spec = replace(
+            episode_spec,
+            place_goal=None,
+            object_prim_path=None,
+            object_initial_pose=None,
+            place_target_pose=None,
+            raw_task={
+                **episode_spec.raw_task,
+                "runtime_override": runtime_override,
+            },
+        )
+    else:
+        stair_spec = _stair_locomotion_smoke_spec(config, episode_spec)
+        runtime_override = dict(
+            stair_spec.raw_task.get("runtime_override") or {}
+        )
+        runtime_override.update(
+            {
+                "controller": "scan_stair_freeze",
+                "global_planner": "external_ros2_path",
+                "scan_enabled": True,
+                "pct_enabled": False,
+                "dwa_enabled": False,
+                "base_pose_lock": True,
+                "pure_physics": False,
+            }
+        )
+        stair_spec = replace(
+            stair_spec,
+            raw_task={
+                **stair_spec.raw_task,
+                "runtime_override": runtime_override,
+            },
+        )
+    stair_navigation = replace(
+        config.navigation,
+        global_planner=("bypassed" if fixed_command_probe else "pct"),
+        pct_enabled=False,
+        pct_fallback_to_astar=False,
+        pct_stair_float_enabled=False,
+        body_height_calibration_enabled=bool(
+            not fixed_command_probe
+            and not _episode_declares_scan_reference_path(episode_spec)
+        ),
+    )
     stair_config = replace(
         config,
         navigation_smoke=False,
         navigation_carry_smoke=False,
         stair_locomotion_smoke=True,
         full_physics=False,
-        navigation=replace(
-            config.navigation,
-            global_planner="pct",
-            pct_enabled=True,
-            pct_fallback_to_astar=False,
-            pct_stair_float_enabled=False,
-        ),
+        navigation=stair_navigation,
         limits=replace(
             config.limits,
             navigation=max(config.limits.navigation, 6000),
             episode=max(config.limits.episode, 8000),
         ),
     )
-    planner = _create_navigation_planner(
-        config=stair_config,
-        episode_spec=stair_spec,
-    )
-    executor = StairLocomotionExecutor(
-        StairLocomotionExecutorConfig(
-            forward_velocity_mps=config.navigation.pct_carry_max_linear_velocity,
-            max_angular_velocity_rps=max(
-                0.50,
-                config.navigation.pct_carry_max_angular_velocity,
-            ),
-            goal_z_tolerance_m=config.navigation.goal_z_tolerance,
+    if fixed_command_probe:
+        planner = FixedCommandStairProbePlanner()
+        executor = FixedCommandStairProbeExecutor(
+            FixedCommandStairProbeConfig(
+                forward_velocity_mps=(
+                    config.navigation.stair_probe_forward_velocity_mps
+                ),
+                drive_duration_s=(
+                    config.navigation.stair_probe_drive_duration_s
+                ),
+            )
         )
-    )
+    else:
+        planner, executor, _ = create_navigation_components(
+            config=stair_config,
+            episode_spec=stair_spec,
+        )
     verifier = NavigationEpisodeVerifier(
         position_tolerance=0.25,
         yaw_tolerance=config.navigation.final_yaw_tolerance,
         linear_velocity_tolerance=config.navigation.stable_linear_velocity,
         angular_velocity_tolerance=config.navigation.stable_angular_velocity,
         require_yaw_alignment=False,
-        require_stable_base=False,
+        require_stable_base=True,
         goal_z_tolerance=config.navigation.goal_z_tolerance,
     )
     return _create_navigation_pipeline(
@@ -195,6 +457,66 @@ def create_stair_locomotion_smoke_pipeline(
         episode_dir=episode_dir,
         simulation=simulation,
         components=(planner, executor, verifier),
+    )
+
+
+def _stair_fixed_command_probe_spec(
+    config: FullPhysicsConfig,
+    episode_spec: EpisodeSpec,
+) -> EpisodeSpec:
+    """保留任务精确起终点，记录固定速度低层探针合同。"""
+
+    if episode_spec.start.z is None or episode_spec.pick_goal.z is None:
+        raise ValueError("楼梯固定速度探针要求任务提供 start/pick base z。")
+    runtime_override = dict(
+        episode_spec.raw_task.get("runtime_override") or {}
+    )
+    runtime_override.update(
+        {
+            "mode": "stair_fixed_command_probe",
+            "controller": "fixed_body_velocity_probe",
+            "global_planner": "bypassed",
+            "scan_enabled": False,
+            "pct_enabled": False,
+            "float_enabled": False,
+            "base_pose_lock": False,
+            "requested_command_vx_vy_wz": [
+                config.navigation.stair_probe_forward_velocity_mps,
+                0.0,
+                0.0,
+            ],
+            "warmup_duration_s": 1.0,
+            "drive_duration_s": (
+                config.navigation.stair_probe_drive_duration_s
+            ),
+            "start_xyz_yaw": [
+                episode_spec.start.x,
+                episode_spec.start.y,
+                episode_spec.start.z,
+                episode_spec.start.yaw,
+            ],
+            "goal_xyz_yaw": [
+                episode_spec.pick_goal.x,
+                episode_spec.pick_goal.y,
+                episode_spec.pick_goal.z,
+                episode_spec.pick_goal.yaw,
+            ],
+        }
+    )
+    return replace(
+        episode_spec,
+        instruction=(
+            "固定初始航向并以恒定机体系前进速度验证低层 locomotion "
+            "checkpoint 的真实楼梯响应。"
+        ),
+        place_goal=None,
+        object_prim_path=None,
+        object_initial_pose=None,
+        place_target_pose=None,
+        raw_task={
+            **episode_spec.raw_task,
+            "runtime_override": runtime_override,
+        },
     )
 
 
@@ -343,6 +665,10 @@ def _create_navigation_pipeline(
         )
     else:
         planner, executor, verifier = components
+    config = enable_production_pct_goal_body_height_calibration(
+        config,
+        planner=planner,
+    )
     gripper = DryRunGripperController()
     return FullPhysicsPipeline(
         config=config,
@@ -356,7 +682,30 @@ def _create_navigation_pipeline(
         arm_executor=DryRunArmExecutor(gripper),
         gripper=gripper,
         verifier=verifier,
-        recorder=JsonlEpisodeRecorder(episode_dir),
+        recorder=JsonlEpisodeRecorder(
+            episode_dir,
+            diagnostic_frame_stride=config.diagnostic_frame_stride,
+        ),
+    )
+
+
+def enable_production_pct_goal_body_height_calibration(
+    config: FullPhysicsConfig,
+    *,
+    planner: Any,
+) -> FullPhysicsConfig:
+    """所有在线 PCT goal 在发布前都必须完成统一机体高度投影。"""
+
+    if getattr(planner, "publish_pct_goal", False) is not True:
+        return config
+    if config.navigation.body_height_calibration_enabled:
+        return config
+    return replace(
+        config,
+        navigation=replace(
+            config.navigation,
+            body_height_calibration_enabled=True,
+        ),
     )
 
 
@@ -368,25 +717,20 @@ def _create_navigation_planner(
     """创建完整 pipeline 与楼梯 smoke 共用的全局规划器。"""
 
     nav = config.navigation
+    if nav.pct_fallback_to_astar:
+        raise ValueError("pct-scan 分支禁止 PCT→A* fallback")
     nav_map = _project_path(episode_spec.nav_map) if episode_spec.nav_map else None
     nav_map_exists = nav_map is not None and nav_map.is_file()
     astar_planner = None
-    pct_fallback_to_astar = bool(nav.pct_fallback_to_astar and nav_map_exists)
-    if nav.global_planner == "astar" or pct_fallback_to_astar:
+    if nav.global_planner == "astar":
         if not nav_map_exists:
             raise ValueError(
-                "A* planner/fallback requires an existing nav_map; "
-                "provide a valid task nav_map or disable PCT fallback with --pct-no-fallback."
+                "A* planner requires an existing nav_map; "
+                "provide a valid task nav_map."
             )
         astar_planner = AStarNavPlanner(
             nav_map,
             inflate_radius=nav.global_inflate_radius,
-        )
-    elif nav.global_planner == "pct" and nav.pct_fallback_to_astar:
-        print(
-            "[navigation] 任务缺少可用 flat nav_map，已关闭 PCT 到 A* 的 fallback；"
-            "后续 PCT 失败会直接报错。",
-            flush=True,
         )
     if nav.global_planner == "astar":
         if astar_planner is None:
@@ -455,11 +799,15 @@ def _create_navigation_planner(
                 coord_mode=nav.pct_coord_mode,
                 pct_offset_x=nav.pct_offset_x,
                 pct_offset_y=nav.pct_offset_y,
+                pct_offset_z=nav.pct_offset_z,
                 pct_scale_x=nav.pct_scale_x,
                 pct_scale_y=nav.pct_scale_y,
-                fallback_to_astar=pct_fallback_to_astar,
+                pct_scale_z=nav.pct_scale_z,
+                pct_rotation_x_rad=nav.pct_rotation_x_rad,
+                pct_rotation_y_rad=nav.pct_rotation_y_rad,
+                pct_rotation_z_rad=nav.pct_rotation_z_rad,
+                fallback_to_astar=False,
             ),
-            fallback_planner=astar_planner if pct_fallback_to_astar else None,
         )
     else:
         raise ValueError(f"unsupported global planner: {nav.global_planner}")
@@ -471,7 +819,38 @@ def create_navigation_components(
     config: FullPhysicsConfig,
     episode_spec: EpisodeSpec,
 ):
-    """创建可被独立 smoke 和连续联调共同复用的导航组件。"""
+    """为 pct-scan 主 pipeline 创建唯一的 ROS 2 SCAN 导航组件。"""
+
+    from source.navigation.scan_ros2_executor import (
+        ScanRos2LifecyclePlanner,
+        ScanRos2NavExecutor,
+        ScanRos2NavExecutorConfig,
+    )
+
+    nav = config.navigation
+    reference_path = _scan_reference_path_for_episode(episode_spec)
+    return (
+        ScanRos2LifecyclePlanner(
+            reference_path=reference_path,
+            publish_pct_goal=reference_path is None,
+        ),
+        ScanRos2NavExecutor(
+            ScanRos2NavExecutorConfig(
+                require_live_reference_path=True,
+            ),
+            stair_freeze_config=_scan_stair_freeze_config(nav),
+            allow_carry_object_follow=bool(episode_spec.object_prim_path),
+        ),
+        _create_navigation_verifier(nav),
+    )
+
+
+def _create_legacy_navigation_components_for_tests(
+    *,
+    config: FullPhysicsConfig,
+    episode_spec: EpisodeSpec,
+):
+    """只为历史隔离单测创建旧 PCT/A* + DWA 组件，主 pipeline 禁止调用。"""
 
     nav = config.navigation
     nav_map = _project_path(episode_spec.nav_map) if episode_spec.nav_map else None
@@ -657,7 +1036,14 @@ def create_navigation_components(
             nav.pct_stair_float_release_root_z_offset_m
         ),
     )
-    verifier = NavigationEpisodeVerifier(
+    verifier = _create_navigation_verifier(nav)
+    return planner, executor, verifier
+
+
+def _create_navigation_verifier(nav: Any) -> NavigationEpisodeVerifier:
+    """创建 SCAN 与旧离线测试共用的最终位姿验收器。"""
+
+    return NavigationEpisodeVerifier(
         position_tolerance=nav.final_position_tolerance,
         place_position_tolerance=nav.place_position_tolerance,
         yaw_tolerance=nav.final_yaw_tolerance,
@@ -667,7 +1053,6 @@ def create_navigation_components(
         require_stable_base=nav.require_stable_base,
         goal_z_tolerance=nav.goal_z_tolerance,
     )
-    return planner, executor, verifier
 
 
 def _open_local_grid_map(episode_spec: EpisodeSpec) -> OccupancyGridMap:

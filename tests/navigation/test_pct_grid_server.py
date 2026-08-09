@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from scripts.navigation.pct_grid_server import (
     _State,
+    _astar,
     _build_gateway_mask,
     _build_stair_surface_mask,
     _compress_path,
@@ -16,6 +18,7 @@ from scripts.navigation.pct_grid_server import (
     _stair_progress_allowed,
     _stair_same_slice_progress_allowed,
     _vertical_transition_path_is_walkable,
+    plan_request,
 )
 
 
@@ -70,6 +73,28 @@ class _SnapState:
         return node in self.free
 
 
+def _open_grid_state(
+    walkable: np.ndarray,
+    *,
+    grid_timeout_sec: float = 10.0,
+) -> _State:
+    """构造不含硬障碍的小型 PCT 三维栅格。"""
+
+    traversability = np.ones(walkable.shape, dtype=np.float32)
+    return _State(
+        tomogram={
+            "data": np.stack([traversability] * 5, axis=0),
+            "resolution": 0.2,
+            "center": np.array([0.0, 0.0]),
+            "slice_h0": 0.0,
+            "slice_dh": 0.5,
+        },
+        walkable=walkable,
+        robot_root_to_floor_m=0.0,
+        grid_timeout_sec=grid_timeout_sec,
+    )
+
+
 def test_snap_to_walkable_breaks_equal_distance_tie_toward_route_goal() -> None:
     state = _SnapState()
 
@@ -82,6 +107,80 @@ def test_snap_to_walkable_breaks_equal_distance_tie_toward_route_goal() -> None:
 
     assert distance == 1
     assert node == (0, 4, 3)
+
+
+def test_snap_to_walkable_never_falls_back_to_same_xy_on_wrong_slice() -> None:
+    walkable = np.zeros((3, 5, 5), dtype=bool)
+    state = _open_grid_state(walkable)
+    state.traversability.fill(0.0)
+    query_xy = np.asarray([0.0, 0.0])
+    query_x, query_y = state.pct_xy_to_grid(query_xy)
+    state.walkable[2, query_x, query_y] = True
+
+    with pytest.raises(RuntimeError, match=r"slice 0 .*找不到可走格"):
+        _snap_to_walkable(state, query_xy, 0)
+
+    response = plan_request(
+        state,
+        start=(0.0, 0.0, 0.0),
+        end=(0.0, 0.0, 1.0),
+    )
+    assert response["status"] == "error"
+    assert "slice 0" in response["msg"]
+
+
+def test_astar_cancel_check_interrupts_an_active_search() -> None:
+    state = _open_grid_state(np.ones((1, 9, 9), dtype=bool))
+    cancel_call_count = 0
+
+    def cancel_after_first_expansion() -> bool:
+        nonlocal cancel_call_count
+        cancel_call_count += 1
+        return cancel_call_count >= 2
+
+    with pytest.raises(InterruptedError, match="规划已取消"):
+        _astar(
+            state,
+            (0, 1, 1),
+            (0, 7, 7),
+            cancel_check=cancel_after_first_expansion,
+        )
+
+    assert cancel_call_count == 2
+
+
+def test_astar_deadline_interrupts_an_active_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _open_grid_state(np.ones((1, 9, 9), dtype=bool))
+    clock_samples = iter((0.0, 2.0))
+    monkeypatch.setattr(
+        "scripts.navigation.pct_grid_server.time.monotonic",
+        lambda: next(clock_samples),
+    )
+
+    with pytest.raises(TimeoutError, match="超过截止时间"):
+        _astar(
+            state,
+            (0, 1, 1),
+            (0, 7, 7),
+            deadline_monotonic=1.0,
+        )
+
+
+def test_plan_request_honors_preexisting_cancellation() -> None:
+    state = _open_grid_state(np.ones((1, 5, 5), dtype=bool))
+
+    response = plan_request(
+        state,
+        start=(0.0, 0.0, 0.0),
+        end=(0.2, 0.0, 0.0),
+        cancel_check=lambda: True,
+    )
+
+    assert response["status"] == "error"
+    assert response["msg"] == "PCT grid 规划已取消。"
+    assert "InterruptedError" in response["traceback"]
 
 
 def test_same_floor_direct_path_accepts_clear_robot_width_corridor() -> None:
@@ -110,6 +209,39 @@ def test_compress_path_preserves_every_vertical_slice_transition() -> None:
 
     assert [0.4, 0.2, 0.5] in compressed
     assert [0.6, 0.4, 1.0] in compressed
+
+
+def test_state_owned_search_and_compression_limits_are_honored() -> None:
+    traversability = np.ones((1, 5, 5), dtype=np.float32)
+    state = _State(
+        tomogram={
+            "data": np.stack([traversability] * 5, axis=0),
+            "resolution": 0.2,
+            "center": np.array([0.0, 0.0]),
+            "slice_h0": 0.0,
+            "slice_dh": 0.5,
+        },
+        walkable=np.ones((1, 5, 5), dtype=bool),
+        grid_max_expansions=1,
+        grid_compress_max_segment_m=0.30,
+    )
+
+    with pytest.raises(TimeoutError, match="最大扩展数: 1"):
+        _astar(state, (0, 1, 1), (0, 3, 3))
+    compressed = _compress_path(
+        [
+            [0.0, 0.0, 0.0],
+            [0.2, 0.0, 0.0],
+            [0.4, 0.0, 0.0],
+            [0.6, 0.0, 0.0],
+        ],
+        max_segment_length_m=state.grid_compress_max_segment_m,
+    )
+    assert compressed == [
+        [0.0, 0.0, 0.0],
+        [0.4, 0.0, 0.0],
+        [0.6, 0.0, 0.0],
+    ]
 
 
 def test_same_floor_direct_path_rejects_blocked_corridor_across_neighbor_slices() -> None:
@@ -588,8 +720,70 @@ def test_request_uses_robot_root_to_floor_offset_for_slice_selection() -> None:
     assert response["status"] == "ok"
     assert response["slice_start"] == 0
     assert response["slice_end"] == 1
+    assert response["snapped_start_slice"] == 0
+    assert response["snapped_end_slice"] == 1
+    assert response["snap_start_slice_delta"] == 0
+    assert response["snap_end_slice_delta"] == 0
+    assert response["snapped_start_xyz"][2] == 0.0
+    assert response["snapped_end_xyz"][2] == 0.5
     assert response["planning_start_z"] == 0.0
     assert np.isclose(response["planning_end_z"], 0.5)
+
+
+def test_typed_plan_request_matches_legacy_json_boundary() -> None:
+    traversability = np.ones((2, 5, 5), dtype=np.float32)
+    tomogram = {
+        "data": np.stack([traversability] * 5, axis=0),
+        "resolution": 0.2,
+        "center": np.array([0.0, 0.0]),
+        "slice_h0": 0.0,
+        "slice_dh": 0.5,
+    }
+    state = _State(
+        tomogram=tomogram,
+        walkable=np.ones((2, 5, 5), dtype=bool),
+        robot_root_to_floor_m=0.0,
+    )
+
+    typed = plan_request(
+        state,
+        start=(0.0, 0.0, 0.0),
+        end=(0.2, 0.0, 0.0),
+    )
+    legacy = _handle_request(
+        state,
+        '{"start":[0.0,0.0,0.0],"end":[0.2,0.0,0.0]}',
+    )
+
+    assert typed == legacy
+    assert typed["status"] == "ok"
+
+
+def test_typed_plan_request_rejects_nonfinite_or_wrong_shape_input() -> None:
+    traversability = np.ones((1, 3, 3), dtype=np.float32)
+    tomogram = {
+        "data": np.stack([traversability] * 5, axis=0),
+        "resolution": 0.2,
+        "center": np.array([0.0, 0.0]),
+        "slice_h0": 0.0,
+        "slice_dh": 0.5,
+    }
+    state = _State(
+        tomogram=tomogram,
+        walkable=np.ones((1, 3, 3), dtype=bool),
+    )
+
+    wrong_shape = plan_request(state, start=(0.0, 0.0), end=(0.0, 0.0, 0.0))
+    nonfinite = plan_request(
+        state,
+        start=(0.0, 0.0, 0.0),
+        end=(float("nan"), 0.0, 0.0),
+    )
+
+    assert wrong_shape["status"] == "error"
+    assert "3 个坐标" in wrong_shape["msg"]
+    assert nonfinite["status"] == "error"
+    assert "NaN 或 Inf" in nonfinite["msg"]
 
 
 def test_no_path_response_includes_hard_obstacle_diagnostics() -> None:

@@ -1,0 +1,575 @@
+diff --git a/planner/lib/CMakeLists.txt b/planner/lib/CMakeLists.txt
+index 0b85d4c..d6f0e93 100755
+--- a/planner/lib/CMakeLists.txt
++++ b/planner/lib/CMakeLists.txt
+@@ -11,12 +11,30 @@ endif()
+ set(CMAKE_CXX_FLAGS "-Wall -Wextra")
+ set(CMAKE_CXX_FLAGS_DEBUG "-g")
+ set(CMAKE_CXX_FLAGS_RELEASE "-O2")
+-set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -march=native") # have to enable because of gtsam
++
++set(CMAKE_BUILD_RPATH_USE_ORIGIN ON)
++set(PCT_RELATIVE_LIBRARY_RPATH
++  "\$ORIGIN"
++  "\$ORIGIN/3rdparty/gtsam-4.1.1/install/lib"
++  "\$ORIGIN/3rdparty/osqp/install/lib"
++)
++set(CMAKE_BUILD_RPATH "${PCT_RELATIVE_LIBRARY_RPATH}")
++set(CMAKE_INSTALL_RPATH "${PCT_RELATIVE_LIBRARY_RPATH}")
++set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
++set(CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE)
+ 
+ set(GTSAM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/gtsam-4.1.1/install/lib/cmake/GTSAM)
+ 
+ find_package(GTSAM REQUIRED)
+ find_package(Eigen3 REQUIRED)
++
++get_target_property(PCT_GTSAM_COMPILE_OPTIONS gtsam INTERFACE_COMPILE_OPTIONS)
++if(PCT_GTSAM_COMPILE_OPTIONS)
++  list(FILTER PCT_GTSAM_COMPILE_OPTIONS EXCLUDE REGEX "^-march=native$")
++  set_property(TARGET gtsam PROPERTY
++    INTERFACE_COMPILE_OPTIONS "${PCT_GTSAM_COMPILE_OPTIONS}")
++endif()
++
+ include_directories(
+   src
+   ${EIGEN3_INCLUDE_DIR}
+@@ -28,4 +46,4 @@ add_subdirectory(3rdparty/pybind11)
+ add_subdirectory(src/a_star)
+ add_subdirectory(src/trajectory_optimization)
+ add_subdirectory(src/map_manager)
+-add_subdirectory(src/ele_planner)
+\ No newline at end of file
++add_subdirectory(src/ele_planner)
+diff --git a/planner/lib/src/a_star/a_star_search.cc b/planner/lib/src/a_star/a_star_search.cc
+index de57824..04aae05 100755
+--- a/planner/lib/src/a_star/a_star_search.cc
++++ b/planner/lib/src/a_star/a_star_search.cc
+@@ -17,11 +17,38 @@ static std::vector<Eigen::Vector2i> kNeighbors = std::vector<Eigen::Vector2i>{
+     Eigen::Vector2i(1, 0),   Eigen::Vector2i(1, 1),
+ };
+ 
++namespace {
++
++struct OpenEntry {
++  double f;
++  double g;
++  Node* node;
++};
++
++struct OpenEntryCompare {
++  bool operator()(const OpenEntry& lhs, const OpenEntry& rhs) const {
++    if (lhs.f != rhs.f) return lhs.f > rhs.f;
++    if (lhs.g != rhs.g) return lhs.g > rhs.g;
++    if (lhs.node->layer != rhs.node->layer) {
++      return lhs.node->layer > rhs.node->layer;
++    }
++    if (lhs.node->idx[1] != rhs.node->idx[1]) {
++      return lhs.node->idx[1] > rhs.node->idx[1];
++    }
++    return lhs.node->idx[2] > rhs.node->idx[2];
++  }
++};
++
++}  // namespace
++
+ void Astar::Init(const double cost_threshold, const int num_layers,
+                  const double resolution,  const double step_cost_weight, const Eigen::MatrixXd& cost_map,
+                  const Eigen::MatrixXd& height_map,
+                  const Eigen::MatrixXd& ele_map) {
+   auto t0 = std::chrono::high_resolution_clock::now();
++  Reset();
++  ResetCancellation();
++  grid_map_.clear();
+   cost_threshold_ = cost_threshold;
+ step_cost_weight_  = step_cost_weight;
+ 
+@@ -65,46 +92,77 @@ step_cost_weight_  = step_cost_weight;
+ }
+ 
+ void Astar::Reset() {
+-  for (size_t i = 0; i < grid_map_.size(); ++i) {
+-    for (size_t j = 0; j < grid_map_[i].size(); ++j) {
+-      for (size_t k = 0; k < grid_map_[i][j].size(); ++k) {
+-        grid_map_[i][j][k].Reset();
+-      }
+-    }
++  for (Node* node : touched_nodes_) {
++    node->Reset();
+   }
++  touched_nodes_.clear();
++  search_result_.clear();
++  visited_set_.resize(0, 0);
++  expanded_node_count_.store(0, std::memory_order_relaxed);
++  last_search_status_.store(SearchStatus::kIdle, std::memory_order_relaxed);
+ }
+ 
+-int Astar::GetHash(const Eigen::Vector3i& idx) const {
+-  return idx[0] * 10000000 + idx[1] * max_x_ + idx[2];
++void Astar::TouchNode(Node* node) {
++  if (node->search_state_dirty) {
++    return;
++  }
++  node->Reset();
++  node->search_state_dirty = true;
++  touched_nodes_.emplace_back(node);
++}
++
++int Astar::GetHash(const Node* node) const {
++  return node->layer * xy_size_ + node->idx[1] * max_x_ + node->idx[2];
+ }
+ 
+ bool Astar::Search(const Eigen::Vector3i& start, const Eigen::Vector3i& goal) {
+   auto t0 = std::chrono::high_resolution_clock::now();
+ 
+-  if (!search_result_.empty()) {
+-    Reset();
+-    search_result_.clear();
++  Reset();
++  if (IsCancellationRequested()) {
++    last_search_status_.store(SearchStatus::kCancelled,
++                              std::memory_order_relaxed);
++    return false;
+   }
+ 
+   auto start_node = &grid_map_[start[0]][start[2]][start[1]];
+   auto goal_node = &grid_map_[goal[0]][goal[2]][goal[1]];
++  TouchNode(start_node);
+   start_node->g = 0.0;
++  start_node->f = GetHeuristic(start_node, goal_node);
+ 
+   if (goal_node->cost > cost_threshold_) {
+     printf("goal node is not reachable, cost: %f", goal_node->cost);
++    last_search_status_.store(SearchStatus::kNoPath,
++                              std::memory_order_relaxed);
+     return false;
+   }
+ 
+-  std::priority_queue<Node*, std::vector<Node*>, NodeCompare> open_set;
++  std::priority_queue<OpenEntry, std::vector<OpenEntry>, OpenEntryCompare>
++      open_set;
+   std::unordered_map<int, Node*> closed_set;
+ 
+-  open_set.push(start_node);
++  open_set.push(OpenEntry{start_node->f, start_node->g, start_node});
+ 
+   printf("start searching\n");
+ 
+   while (!open_set.empty()) {
+-    Node* current_node = open_set.top();
++    if (IsCancellationRequested()) {
++      search_result_.clear();
++      last_search_status_.store(SearchStatus::kCancelled,
++                                std::memory_order_relaxed);
++      return false;
++    }
++
++    const OpenEntry current_entry = open_set.top();
+     open_set.pop();
++    Node* current_node = current_entry.node;
++    // 同一节点可能因更短路径被重复放入队列。队列项保存入队时的 g/f
++    // 快照，旧项不能再参与扩展或提前结束搜索。
++    if (current_entry.g > current_node->g + 1e-12) {
++      continue;
++    }
++    expanded_node_count_.fetch_add(1, std::memory_order_relaxed);
+ 
+     if (current_node->idx == goal_node->idx) {
+       while (current_node->parent != nullptr) {
+@@ -115,15 +173,23 @@ bool Astar::Search(const Eigen::Vector3i& start, const Eigen::Vector3i& goal) {
+         current_node = current_node->parent;
+       }
+       std::reverse(search_result_.begin(), search_result_.end());
++      if (IsCancellationRequested()) {
++        search_result_.clear();
++        last_search_status_.store(SearchStatus::kCancelled,
++                                  std::memory_order_relaxed);
++        return false;
++      }
+       if (debug_) ConvertClosedSetToMatrix(closed_set);
+       auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+           std::chrono::high_resolution_clock::now() - t0);
+       printf("path found, time elapsed: %f ms\n",
+              duration.count() / 1000.0);
++      last_search_status_.store(SearchStatus::kSuccess,
++                                std::memory_order_relaxed);
+       return true;
+     }
+ 
+-    closed_set[GetHash(current_node->idx)] = current_node;
++    closed_set[GetHash(current_node)] = current_node;
+ 
+     // int layer = current_node->layer;
+     // if (current_node->ele > 0.5) {
+@@ -155,6 +221,8 @@ bool Astar::Search(const Eigen::Vector3i& start, const Eigen::Vector3i& goal) {
+         }
+       }
+ 
++      TouchNode(neighbor_node);
++
+       // if ((neighbor_node->cost > cost_threshold_) ||
+       //     std::abs(neighbor_node->height - current_node->height) > 0.3) {
+       //   continue;
+@@ -168,7 +236,7 @@ bool Astar::Search(const Eigen::Vector3i& start, const Eigen::Vector3i& goal) {
+           std::sqrt(diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]) +
+           step_cost;
+ 
+-      auto p_neighbor = closed_set.find(GetHash(neighbor_node->idx));
++      auto p_neighbor = closed_set.find(GetHash(neighbor_node));
+       if (p_neighbor != closed_set.end()) {
+         if (tentative_g >= p_neighbor->second->g) {
+           continue;
+@@ -179,7 +247,8 @@ bool Astar::Search(const Eigen::Vector3i& start, const Eigen::Vector3i& goal) {
+         neighbor_node->g = tentative_g;
+         neighbor_node->f = tentative_g + GetHeuristic(neighbor_node, goal_node);
+         neighbor_node->parent = current_node;
+-        open_set.push(neighbor_node);
++        open_set.push(
++            OpenEntry{neighbor_node->f, neighbor_node->g, neighbor_node});
+       }
+     }
+   }
+@@ -191,6 +260,8 @@ bool Astar::Search(const Eigen::Vector3i& start, const Eigen::Vector3i& goal) {
+   if (debug_) {
+     ConvertClosedSetToMatrix(closed_set);
+   }
++  last_search_status_.store(SearchStatus::kNoPath,
++                            std::memory_order_relaxed);
+   return false;
+ }
+ 
+@@ -339,4 +410,4 @@ Eigen::MatrixXd Astar::GetEleLayer(int layer) const {
+     }
+   }
+   return ele_layer;
+-}
+\ No newline at end of file
++}
+diff --git a/planner/lib/src/a_star/a_star_search.h b/planner/lib/src/a_star/a_star_search.h
+index 888de4c..bc179fa 100755
+--- a/planner/lib/src/a_star/a_star_search.h
++++ b/planner/lib/src/a_star/a_star_search.h
+@@ -1,5 +1,7 @@
+ #pragma once
+ 
++#include <atomic>
++#include <cstddef>
+ #include <Eigen/Core>
+ #include <unordered_map>
+ #include <vector>
+@@ -8,6 +10,13 @@
+ 
+ enum HeuristicType : int { kEuclidean = 0, kManhattan = 1, kDiagonal = 2 };
+ 
++enum class SearchStatus : int {
++  kIdle = 0,
++  kSuccess = 1,
++  kNoPath = 2,
++  kCancelled = 3,
++};
++
+ class Node {
+  public:
+   Node() = default;
+@@ -17,9 +26,10 @@ class Node {
+   bool operator==(const Node& other) const { return idx == other.idx; }
+ 
+   void Reset() {
+-    f = 0.0;
++    f = 1e9;
+     g = 1e9;
+     parent = nullptr;
++    search_state_dirty = false;
+   }
+ 
+   double f = 1e9;
+@@ -30,6 +40,7 @@ class Node {
+   int layer = 0;
+   Eigen::Vector3i idx = Eigen::Vector3i(0, 0, 0);  // layer, row, col
+   Node* parent = nullptr;
++  bool search_state_dirty = false;
+ };
+ 
+ struct NodeCompare {
+@@ -55,12 +66,39 @@ class Astar {
+   }
+   ~Astar() = default;
+ 
++  Astar(const Astar&) = delete;
++  Astar& operator=(const Astar&) = delete;
++
+   void Init(const double cost_threshold, const int num_layers,
+             const double resolution, const double step_cost_weight,  const Eigen::MatrixXd& cost_map,
+             const Eigen::MatrixXd& height_map, const Eigen::MatrixXd& ele_map);
+ 
+   void Reset();
+ 
++  void RequestCancel() noexcept {
++    cancel_requested_.store(true, std::memory_order_relaxed);
++  }
++
++  void ResetCancellation() noexcept {
++    cancel_requested_.store(false, std::memory_order_relaxed);
++  }
++
++  bool IsCancellationRequested() const noexcept {
++    return cancel_requested_.load(std::memory_order_relaxed);
++  }
++
++  bool WasCancelled() const noexcept {
++    return GetLastSearchStatus() == SearchStatus::kCancelled;
++  }
++
++  SearchStatus GetLastSearchStatus() const noexcept {
++    return last_search_status_.load(std::memory_order_relaxed);
++  }
++
++  std::size_t GetExpandedNodeCount() const noexcept {
++    return expanded_node_count_.load(std::memory_order_relaxed);
++  }
++
+   void Debug() { debug_ = true; }
+ 
+   bool Search(const Eigen::Vector3i& start, const Eigen::Vector3i& goal);
+@@ -78,7 +116,7 @@ class Astar {
+ 
+   int DecideLayer(const Node* cur_node) const;
+ 
+-  int GetHash(const Eigen::Vector3i& idx) const;
++  int GetHash(const Node* node) const;
+ 
+   std::vector<Eigen::Vector3i> GetNeighbors(Node* node) const;
+ 
+@@ -92,6 +130,8 @@ class Astar {
+   void ConvertClosedSetToMatrix(
+       const std::unordered_map<int, Node*>& closed_set);
+ 
++  void TouchNode(Node* node);
++
+  private:
+   HeuristicType h_type_ = kDiagonal;
+ 
+@@ -112,4 +152,8 @@ class Astar {
+ 
+   // std::vector<Eigen::Vector3i> search_result_;
+   std::vector<Node*> search_result_;
++  std::vector<Node*> touched_nodes_;
++  std::atomic<bool> cancel_requested_{false};
++  std::atomic<SearchStatus> last_search_status_{SearchStatus::kIdle};
++  std::atomic<std::size_t> expanded_node_count_{0};
+ };
+diff --git a/planner/lib/src/a_star/python_interface.cc b/planner/lib/src/a_star/python_interface.cc
+index 65d79f6..b0c0205 100755
+--- a/planner/lib/src/a_star/python_interface.cc
++++ b/planner/lib/src/a_star/python_interface.cc
+@@ -12,15 +12,29 @@ PYBIND11_MODULE(a_star, m) {
+       .value("DIAGONAL", HeuristicType::kDiagonal)
+       .export_values();
+ 
++  py::enum_<SearchStatus>(m, "SearchStatus")
++      .value("IDLE", SearchStatus::kIdle)
++      .value("SUCCESS", SearchStatus::kSuccess)
++      .value("NO_PATH", SearchStatus::kNoPath)
++      .value("CANCELLED", SearchStatus::kCancelled)
++      .export_values();
++
+   auto pyAstar = py::class_<Astar>(m, "Astar");
+   pyAstar
+       .def(py::init<HeuristicType>(),
+            py::arg("h_type") = HeuristicType::kDiagonal)
+-      .def("init", &Astar::Init)
+-      .def("search", &Astar::Search)
++      .def("init", &Astar::Init,
++           py::call_guard<py::gil_scoped_release>())
++      .def("search", &Astar::Search,
++           py::call_guard<py::gil_scoped_release>())
++      .def("request_cancel", &Astar::RequestCancel)
++      .def("reset_cancellation", &Astar::ResetCancellation)
++      .def("was_cancelled", &Astar::WasCancelled)
++      .def("get_last_search_status", &Astar::GetLastSearchStatus)
++      .def("get_expanded_node_count", &Astar::GetExpandedNodeCount)
+       .def("debug", &Astar::Debug)
+       .def("get_result_matrix", &Astar::GetResultMatrix)
+       .def("get_cost_layer", &Astar::GetCostLayer)
+       .def("get_ele_layer", &Astar::GetEleLayer)
+       .def("get_visited_set", &Astar::GetVisitedSet);
+-}
+\ No newline at end of file
++}
+diff --git a/planner/lib/src/ele_planner/offline_ele_planner.h b/planner/lib/src/ele_planner/offline_ele_planner.h
+index 4638b94..bb66886 100755
+--- a/planner/lib/src/ele_planner/offline_ele_planner.h
++++ b/planner/lib/src/ele_planner/offline_ele_planner.h
+@@ -24,6 +24,20 @@ class OfflineElePlanner {
+   bool Plan(const Eigen::Vector3i& start, const Eigen::Vector3i& goal,
+             const bool optimize = true);
+ 
++  void RequestCancel() noexcept { path_finder_.RequestCancel(); }
++
++  void ResetCancellation() noexcept { path_finder_.ResetCancellation(); }
++
++  bool WasCancelled() const noexcept { return path_finder_.WasCancelled(); }
++
++  SearchStatus GetLastSearchStatus() const noexcept {
++    return path_finder_.GetLastSearchStatus();
++  }
++
++  std::size_t GetExpandedNodeCount() const noexcept {
++    return path_finder_.GetExpandedNodeCount();
++  }
++
+   void SetReferenceHeight(const double height) {
+     trajectory_optimizer_wnoj_.SetReferenceHeight(height);
+   }
+@@ -62,4 +76,4 @@ class OfflineElePlanner {
+ 
+   std::vector<PathPoint> path_;
+   std::vector<Eigen::Vector3d> trajectory_;
+-};
+\ No newline at end of file
++};
+diff --git a/planner/lib/src/ele_planner/python_interface.cc b/planner/lib/src/ele_planner/python_interface.cc
+index 9b4d41f..7961175 100755
+--- a/planner/lib/src/ele_planner/python_interface.cc
++++ b/planner/lib/src/ele_planner/python_interface.cc
+@@ -10,16 +10,28 @@ PYBIND11_MODULE(ele_planner, m) {
+   pyOfflineElePlanner
+       .def(py::init<double, bool>(), py::arg("max_heading_rate"),
+            py::arg("use_quintic") = false)
+-      .def("init_map", &OfflineElePlanner::InitMap)
+-      .def("plan", &OfflineElePlanner::Plan)
++      .def("init_map", &OfflineElePlanner::InitMap,
++           py::call_guard<py::gil_scoped_release>())
++      .def("plan", &OfflineElePlanner::Plan,
++           py::call_guard<py::gil_scoped_release>())
++      .def("request_cancel", &OfflineElePlanner::RequestCancel)
++      .def("reset_cancellation", &OfflineElePlanner::ResetCancellation)
++      .def("was_cancelled", &OfflineElePlanner::WasCancelled)
++      .def("get_last_search_status", &OfflineElePlanner::GetLastSearchStatus)
++      .def("get_expanded_node_count",
++           &OfflineElePlanner::GetExpandedNodeCount)
+       .def("debug", &OfflineElePlanner::Debug)
+       .def("set_reference_height", &OfflineElePlanner::SetReferenceHeight)
+       .def("set_max_iterations", &OfflineElePlanner::set_max_iterations)
+-      .def("get_path_finder", &OfflineElePlanner::get_path_finder)
+-      .def("get_map", &OfflineElePlanner::get_map)
++      .def("get_path_finder", &OfflineElePlanner::get_path_finder,
++           py::return_value_policy::reference_internal)
++      .def("get_map", &OfflineElePlanner::get_map,
++           py::return_value_policy::reference_internal)
+       .def("get_trajectory_optimizer",
+-           &OfflineElePlanner::get_trajectory_optimizer)
++           &OfflineElePlanner::get_trajectory_optimizer,
++           py::return_value_policy::reference_internal)
+       .def("get_trajectory_optimizer_wnoj",
+-           &OfflineElePlanner::get_trajectory_optimizer_wnoj)
++           &OfflineElePlanner::get_trajectory_optimizer_wnoj,
++           py::return_value_policy::reference_internal)
+       .def("get_debug_path", &OfflineElePlanner::GetDebugPath);
+-}
+\ No newline at end of file
++}
+diff --git a/planner/scripts/planner_wrapper.py b/planner/scripts/planner_wrapper.py
+index 0ba7a6e..a24e228 100644
+--- a/planner/scripts/planner_wrapper.py
++++ b/planner/scripts/planner_wrapper.py
+@@ -17,6 +17,14 @@ class TomogramPlanner(object):
+ 
+         self.use_quintic = self.cfg.planner.use_quintic
+         self.max_heading_rate = self.cfg.planner.max_heading_rate
++        self.astar_step_cost_weight = float(
++            self.cfg.planner.astar_step_cost_weight
++        )
++        if (
++            not np.isfinite(self.astar_step_cost_weight)
++            or self.astar_step_cost_weight <= 0.0
++        ):
++            raise ValueError("planner.astar_step_cost_weight must be positive")
+ 
+         self.tomo_dir = rsg_root + self.cfg.wrapper.tomo_dir
+ 
+@@ -77,7 +85,8 @@ class TomogramPlanner(object):
+             max_heading_rate=self.max_heading_rate, use_quintic=self.use_quintic
+         )
+         self.planner.init_map(
+-            20, 15, self.resolution, self.n_slice, 0.2,
++            20, 15, self.resolution, self.n_slice,
++            self.astar_step_cost_weight,
+             trav.reshape(-1, trav.shape[-1]).astype(np.double),
+             elev_g.reshape(-1, elev_g.shape[-1]).astype(np.double),
+             elev_c.reshape(-1, elev_c.shape[-1]).astype(np.double),
+@@ -121,4 +130,4 @@ class TomogramPlanner(object):
+         pos = pos - self.center
+         idx = np.round(pos / self.resolution).astype(np.int32) + self.offset
+         idx = np.array([idx[1], idx[0]], dtype=np.float32)
+-        return idx
+\ No newline at end of file
++        return idx
+diff --git a/planner/lib/src/a_star/a_star_search.cc b/planner/lib/src/a_star/a_star_search.cc
+index 04aae05..4a67146 100755
+--- a/planner/lib/src/a_star/a_star_search.cc
++++ b/planner/lib/src/a_star/a_star_search.cc
+@@ -211,6 +211,24 @@ bool Astar::Search(const Eigen::Vector3i& start, const Eigen::Vector3i& goal) {
+ 
+       auto neighbor_node = &grid_map_[layer][i][j];
+ 
++      // 同一逻辑层的对角边必须同时经过两个正交邻格。只检查终点会让
++      // 机器人中心从墙角两侧的禁行格之间斜穿，PCT 点路径虽然可达，
++      // 但携臂 Go2-X5 的双圆柱包络会在 SCAN 中与墙体重叠。
++      if (layer == current_node->layer && neighbor[0] != 0 &&
++          neighbor[1] != 0) {
++        const auto orthogonal_is_blocked = [&](const int row,
++                                               const int col) {
++          const auto& node = grid_map_[layer][row][col];
++          if (node.cost <= cost_threshold_) return false;
++          if (abs(node.ele) < 0.5) return true;
++          return std::abs(node.height - current_node->height) > 0.3;
++        };
++        if (orthogonal_is_blocked(i, current_node->idx[2]) ||
++            orthogonal_is_blocked(current_node->idx[1], j)) {
++          continue;
++        }
++      }
++
+       if (neighbor_node->cost > cost_threshold_) {
+         if (abs(neighbor_node->ele) < 0.5) {
+           continue;
+@@ -230,7 +248,7 @@ bool Astar::Search(const Eigen::Vector3i& start, const Eigen::Vector3i& goal) {
+ 
+       auto diff = neighbor_node->idx - current_node->idx;
+       double step_cost = step_cost_weight_ * neighbor_node->cost;
+-      if (step_cost < 5) step_cost = 0.0;
++      if (step_cost < 0.0) step_cost = 0.0;
+       tentative_g =
+           current_node->g +
+           std::sqrt(diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]) +
+diff --git a/planner/scripts/planner_wrapper.py b/planner/scripts/planner_wrapper.py
+index a24e228..2c49a81 100644
+--- a/planner/scripts/planner_wrapper.py
++++ b/planner/scripts/planner_wrapper.py
+@@ -63,8 +63,23 @@ class TomogramPlanner(object):
+ 
+         self.initPlanner(trav, trav_gx, trav_gy, elev_g, elev_c)
+         
+-    def initPlanner(self, trav, trav_gx, trav_gy, elev_g, elev_c):
+-        diff_t = trav[1:] - trav[:-1]
++    def initPlanner(
++        self,
++        trav,
++        trav_gx,
++        trav_gy,
++        elev_g,
++        elev_c,
++        gateway_trav=None,
++    ):
++        gateway_source = (
++            trav
++            if gateway_trav is None
++            else np.asarray(gateway_trav, dtype=np.float32)
++        )
++        if gateway_source.shape != trav.shape:
++            raise ValueError("gateway_trav shape must match trav")
++        diff_t = gateway_source[1:] - gateway_source[:-1]
+         diff_g = np.abs(elev_g[1:] - elev_g[:-1])
+ 
+         gateway_up = np.zeros_like(trav, dtype=bool)

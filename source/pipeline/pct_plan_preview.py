@@ -181,8 +181,13 @@ class PCTPlanPreviewPipeline:
                 coord_mode=nav.pct_coord_mode,
                 pct_offset_x=nav.pct_offset_x,
                 pct_offset_y=nav.pct_offset_y,
+                pct_offset_z=nav.pct_offset_z,
                 pct_scale_x=nav.pct_scale_x,
                 pct_scale_y=nav.pct_scale_y,
+                pct_scale_z=nav.pct_scale_z,
+                pct_rotation_x_rad=nav.pct_rotation_x_rad,
+                pct_rotation_y_rad=nav.pct_rotation_y_rad,
+                pct_rotation_z_rad=nav.pct_rotation_z_rad,
                 fallback_to_astar=False,
             )
         )

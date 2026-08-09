@@ -1,0 +1,49 @@
+scan_planner_node:
+  ros__parameters:
+    # 0.31 m 请求宽度离散为实际 0.30 m 踏面；固定 8 m 高度场由
+    # 13 级变为 9 级，因此中央低平台地面由 -2.47 m 变为 -1.71 m。
+    grid_map.need_extrinsic: false
+    grid_map.ground_height: -1.71
+
+    # 使用用户选定的高速实验包络；参考巡航与局部轨迹速度上限均为
+    # 1.00 m/s，不能在修复航向语义时暗中回退用户参数。
+    fsm.planning_horizon: 0.60
+    fsm.thresh_replan: 0.30
+    fsm.reference_cruise_speed: 1.00
+    fsm.reference_velocity_filter_time_constant_sec: 0.12
+
+    manager.max_vel: 1.00
+    manager.max_acc: 1.50
+    manager.max_jerk: 4.0
+    manager.control_points_distance: 0.20
+    manager.reference_profile_acceleration_scale: 0.75
+    # 最终动态采样门默认为 0.005 m/s 和 0.01 m/s²。
+    # 速度余量：1.00 * 0.0045 + 0.0001 = 0.0046 <= 0.005。
+    # 加速度余量：1.50 * 0.0045 + 0.0001 = 0.00685 <= 0.01。
+    manager.feasibility_tolerance: 0.0045
+    optimization.max_vel: 1.00
+    optimization.max_acc: 1.50
+
+scan_controller:
+  ros__parameters:
+    controller.publish_rate_hz: 50.0
+
+    # 楼梯前后各 0.45m 的完整 Path 窗口内，只要存在坡角不小于
+    # 0.45rad 的陡升段，就让机体朝向跟随 Path 水平切向。SCAN 仍负责
+    # 世界系 XY 轨迹，横向重接由 vy 完成，不能再把它转换成饱和 wz。
+    controller.stair_heading_lock_enabled: true
+    controller.stair_heading_lock_half_window_arc_m: 0.45
+    controller.stair_heading_lock_min_pitch_rad: 0.45
+    # 精确踏面 Path 的近竖直段会把 3D B-spline 速度主要分配到 z，而 Go2
+    # policy 只消费平面 cmd_vel。只在有效楼梯窗口和正向轨迹上补到官方
+    # MoE-CTS 固定速度演示使用的 1.00m/s；安全停车与反向意图保持原样。
+    controller.stair_forward_speed_floor: 1.00
+
+    limits.max_vx: 1.50
+    limits.max_vy: 0.5
+    limits.max_yaw_rate: 0.8
+    limits.max_ax: 2.50
+    limits.max_ay: 0.80
+    limits.max_yaw_acc: 1.50
+
+    finish.min_approach_speed: 0.28

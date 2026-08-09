@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Go2-X5 A* + DWA navigation in Isaac Lab and write a grasp handoff JSON."""
+"""已退役的 Go2-X5 A* + DWA 导航入口。"""
 
 from __future__ import annotations
 
@@ -11,6 +11,15 @@ import os
 import sys
 import time
 from pathlib import Path
+
+
+_RETIRED_MESSAGE = (
+    "run_nav_only.py 已在 pct-scan 分支退役；请使用 "
+    "scripts/pipeline/run_full_physics_pipeline.py 启动 PCT→SCAN ROS 2 主链。"
+)
+if __name__ == "__main__":
+    print(_RETIRED_MESSAGE, file=sys.stderr)
+    raise SystemExit(2)
 
 from isaaclab.app import AppLauncher
 
@@ -256,7 +265,9 @@ from source.navigation.adapters.yaw_align import (
     compute_terminal_pose_command,
 )
 from source.navigation.navlib import DWAConfig
-from source.navigation import NavPlanner
+from source.navigation.adapters.dwa_nav_adapter import (
+    NavPlanner as LegacyDwaNavPlanner,
+)
 
 
 def _project_path(raw_path: str) -> Path:
@@ -752,8 +763,8 @@ def _open_scene_stage(scene_usd: Path) -> Usd.Stage:
     return stage
 
 
-def _validate_scene_collision(scene_usd: Path, prim_path: str) -> None:
-    """Fail fast if the scene collision payload is missing or empty."""
+def _validate_scene_collision(scene_usd: Path, prim_path: str) -> bool:
+    """校验碰撞子树，并返回碰撞根本身是否为 Mesh。"""
 
     stage = _open_scene_stage(scene_usd)
     prim = stage.GetPrimAtPath(prim_path)
@@ -776,6 +787,7 @@ def _validate_scene_collision(scene_usd: Path, prim_path: str) -> None:
             f"Scene collision prim {prim_path} has no mesh geometry. "
             "请检查 task 的 scene_usd 是否指向当前仓库内的场景，并确认 collision USD payload 可打开。"
         )
+    return prim.IsA(UsdGeom.Mesh)
 
 
 def _validate_scene_prim(scene_usd: Path, prim_path: str, label: str) -> None:
@@ -793,19 +805,38 @@ def _configure_env(
     *,
     scene_usd: Path,
     start_pose: tuple[float, float, float],
+    source_collision_prim_is_mesh: bool = False,
     visual_exclude_prim_paths: list[str] | tuple[str, ...] = (),
 ) -> None:
     env_cfg.scene.num_envs = 1
     if args_cli.device is not None:
         env_cfg.sim.device = args_cli.device
     if not args_cli.flat_terrain:
-        terrain_usd = write_collision_terrain_wrapper(scene_usd, args_cli.terrain_prim_path)
+        terrain_usd = write_collision_terrain_wrapper(
+            scene_usd,
+            args_cli.terrain_prim_path,
+            source_prim_is_mesh=source_collision_prim_is_mesh,
+        )
         print(f"[INFO] Navigation terrain wrapper: {terrain_usd} -> {scene_usd}<{args_cli.terrain_prim_path}>")
         env_cfg.scene.terrain = TerrainImporterCfg(
             prim_path="/World/nav_collision",
             terrain_type="usd",
             usd_path=str(terrain_usd),
             debug_vis=False,
+        )
+        # TerrainImporter 把 wrapper 的 default prim 放在 ``terrain`` 子节点；
+        # 两个高度扫描器必须读取同一个运行时 Mesh，不能保留训练场景的 /World/ground。
+        terrain_mesh_prim_path = f"{env_cfg.scene.terrain.prim_path}/terrain"
+        updated_height_scanners: list[str] = []
+        for sensor_name in ("height_scanner", "height_scanner_base"):
+            sensor_cfg = getattr(env_cfg.scene, sensor_name, None)
+            if sensor_cfg is None:
+                continue
+            sensor_cfg.mesh_prim_paths = [terrain_mesh_prim_path]
+            updated_height_scanners.append(sensor_name)
+        print(
+            "[INFO] Navigation height scanners: "
+            f"{tuple(updated_height_scanners)} -> {terrain_mesh_prim_path}"
         )
         if args_cli.add_nav_ground:
             env_cfg.scene.nav_ground = AssetBaseCfg(
@@ -1103,8 +1134,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     dataset_dir = _project_path(args_cli.dataset_dir or task.recording.dataset_dir)
     nav_result_path = Path(args_cli.nav_result).expanduser().resolve()
 
+    source_collision_prim_is_mesh = False
     if not args_cli.flat_terrain:
-        _validate_scene_collision(scene_usd, args_cli.terrain_prim_path)
+        source_collision_prim_is_mesh = _validate_scene_collision(
+            scene_usd,
+            args_cli.terrain_prim_path,
+        )
     if args_cli.load_visual_scene:
         _validate_scene_prim(scene_usd, args_cli.visual_prim_path, "visual")
     visual_exclude_prim_paths = [
@@ -1123,6 +1158,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg,
         scene_usd=scene_usd,
         start_pose=(task.start.x, task.start.y, task.start.yaw),
+        source_collision_prim_is_mesh=source_collision_prim_is_mesh,
         visual_exclude_prim_paths=visual_exclude_prim_paths,
     )
     agent_cfg = isaaclab_cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
@@ -1188,36 +1224,46 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         f"close_goal_vx={dwa_cfg.close_goal_speed_limit:.2f} "
         f"speed_bias={dwa_cfg.speed_bias:.2f} max_accel={dwa_cfg.max_linear_accel:.2f}"
     )
-    planner = NavPlanner(
-        str(nav_map),
-        args_cli.inflate_radius,
-        dwa_cfg,
-        local_clearance_radius=args_cli.local_clearance_radius,
-    )
     goal = task.pick.base_goal
-    try:
-        path_world = planner.plan_global_path(settled_pose[:2], (goal.x, goal.y))
-    except (RuntimeError, ValueError) as exc:
-        result = {
-            "schema_version": 1,
-            "success": False,
-            "failure_reason": "nav_collision",
-            "failure_detail": str(exc),
-            "final_base_pose_world": adapter.get_base_pose_full(),
-            "goal_xyyaw": [goal.x, goal.y, goal.yaw],
-            "yaw_error": wrap_yaw(goal.yaw - settled_pose[2]),
-            "path_length": 0.0,
-            "timeout": False,
-            "episode_dir": str(recorder.episode_dir),
-            "elapsed_wall_time_s": 0.0,
-        }
-        if replay_recorder.enabled:
-            replay_recorder.write()
-            result["replay_trajectory_path"] = str(replay_recorder.output_path)
-            result["replay_frame_count"] = replay_recorder.frame_count
-        _write_nav_result(nav_result_path, recorder, result)
-        env.close()
-        return
+    planner: LegacyDwaNavPlanner | None = None
+    if args_cli.debug_command is not None:
+        # 固定速度诊断只验证 policy 与地形，不应要求一个不会参与控制的二维地图。
+        path_world = [settled_pose[:2], (goal.x, goal.y)]
+    else:
+        planner = LegacyDwaNavPlanner(
+            str(nav_map),
+            args_cli.inflate_radius,
+            dwa_cfg,
+            local_clearance_radius=args_cli.local_clearance_radius,
+        )
+        try:
+            path_world = planner.plan_global_path(
+                settled_pose[:2],
+                (goal.x, goal.y),
+            )
+        except (RuntimeError, ValueError) as exc:
+            result = {
+                "schema_version": 1,
+                "success": False,
+                "failure_reason": "nav_collision",
+                "failure_detail": str(exc),
+                "final_base_pose_world": adapter.get_base_pose_full(),
+                "goal_xyyaw": [goal.x, goal.y, goal.yaw],
+                "yaw_error": wrap_yaw(goal.yaw - settled_pose[2]),
+                "path_length": 0.0,
+                "timeout": False,
+                "episode_dir": str(recorder.episode_dir),
+                "elapsed_wall_time_s": 0.0,
+            }
+            if replay_recorder.enabled:
+                replay_recorder.write()
+                result["replay_trajectory_path"] = str(
+                    replay_recorder.output_path
+                )
+                result["replay_frame_count"] = replay_recorder.frame_count
+            _write_nav_result(nav_result_path, recorder, result)
+            env.close()
+            return
     if math.hypot(path_world[-1][0] - goal.x, path_world[-1][1] - goal.y) > 0.01:
         path_world.append((goal.x, goal.y))
     if len(path_world) >= 2:
@@ -1318,6 +1364,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         else:
             yaw_stall_detector.reset()
             final_phase = "nav"
+            assert planner is not None
             dwa_start = time.perf_counter() if profile_enabled else 0.0
             vx, vy, wz, planner_debug = planner.compute_command_with_debug(pose, speed, path_world)
             if profile_enabled:

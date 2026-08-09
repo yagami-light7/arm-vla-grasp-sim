@@ -1,0 +1,28 @@
+manual_path_publisher:
+  ros__parameters:
+    use_sim_time: true
+
+    # SCAN 的手工参考路径。
+    topic: /initial_path
+    frame_id: world
+
+    # 当前倒金字塔楼梯中心低平台上的短直线路径。
+    # 每三个数依次表示 world 坐标系中的 x、y、地面高度 z。
+    # 注意：z 是地面高度，不是 base_link 高度。
+    points_xyz:
+      - -0.05
+      - 0.02
+      - -2.47
+
+      - 0.35
+      - 0.02
+      - -2.47
+
+      - 0.75
+      - 0.02
+      - -2.47
+
+    min_point_distance_m: 0.02
+
+    # 等待 Isaac 的 /clock、Odometry 和订阅节点就绪。
+    startup_delay_sec: 1.0

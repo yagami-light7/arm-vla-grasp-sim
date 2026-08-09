@@ -1,5 +1,3 @@
-"""Adapters that connect pure navigation logic to runtime-specific APIs."""
+"""导航外部适配器包；旧 DWA 只能按完整模块路径用于隔离回归。"""
 
-from .dwa_nav_adapter import NavPlanner
-
-__all__ = ["NavPlanner"]
+__all__: list[str] = []

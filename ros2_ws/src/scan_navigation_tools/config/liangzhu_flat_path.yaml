@@ -1,0 +1,20 @@
+manual_path_publisher:
+  ros__parameters:
+    use_sim_time: true
+    topic: /initial_path
+    frame_id: world
+
+    # 良渚固定 seed 的平地首验路径。z 来自 collision PLY 支撑面，
+    # SCAN 入口统一增加 body_height。
+    points_xyz:
+      - -0.54684120694198
+      - 5.052347877290755
+      - -0.15357718367978318
+      - -0.548770205782914
+      - 5.565258534870541
+      - -0.1362913549292977
+      - -0.550699204623848
+      - 6.078169192450327
+      - -0.11858208595509626
+    min_point_distance_m: 0.02
+    startup_delay_sec: 1.0

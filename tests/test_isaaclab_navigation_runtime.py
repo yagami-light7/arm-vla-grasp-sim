@@ -8,10 +8,11 @@ import sys
 import unittest
 from copy import deepcopy
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 
 from source.interfaces import EpisodeSpec, NavGoal, RobotAction
 from source.navigation.adapters.isaaclab_go2_adapter import (
@@ -44,6 +45,7 @@ from source.simulation.isaaclab_runtime import (
     _path_is_excluded_by_roots,
     _prim_keyword_match_text,
     _front_camera_calibration_metadata,
+    _object_pose_reset_gate,
     _overwrite_d436_intrinsic_matrices,
     _retarget_height_scanners,
     _resolve_rigid_body_prim_path,
@@ -57,9 +59,138 @@ from source.simulation.collision_patch import (
     install_gripper_collision_patch_on_spawn,
     keyword_collision_patch_report,
 )
+from source.simulation.dynamic_obstacles import resolve_dynamic_obstacle_plan
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _dynamic_obstacle_episode_spec() -> EpisodeSpec:
+    raw_task = json.loads(
+        (
+            PROJECT_ROOT
+            / "tasks/nav_smoke_scan_multifloor_dynamic_cart_f1.json"
+        ).read_text(encoding="utf-8")
+    )
+    return EpisodeSpec(
+        task_id=int(raw_task["task_id"]),
+        episode_id=int(raw_task["episode_id"]),
+        instruction=str(raw_task["instruction"]),
+        scene_usd=str(raw_task["scene_usd"]),
+        nav_map=str(raw_task["nav_map"]),
+        start=NavGoal(-4.2, 1.6, 1.5855269056817287, z=0.18324563340693345),
+        pick_goal=NavGoal(-3.50493, 6.7491, 1.5707963267948966, z=0.1251194919198741),
+        place_goal=None,
+        object_prim_path=None,
+        object_initial_pose=None,
+        place_target_pose=None,
+        raw_task=raw_task,
+    )
+
+
+def test_object_pose_reset_gate_skips_objectless_navigation_task() -> None:
+    report = _object_pose_reset_gate(
+        object_pose_required=False,
+        diagnostic={
+            "available": False,
+            "reason": "object_initial_pose_missing",
+        },
+    )
+
+    assert report == {
+        "required": False,
+        "verified": False,
+        "skipped": True,
+        "reason": "navigation_task_has_no_object_initial_pose",
+    }
+
+
+def test_object_pose_reset_gate_keeps_manipulation_diagnostic_strict() -> None:
+    failed = _object_pose_reset_gate(
+        object_pose_required=True,
+        diagnostic={"available": False, "within_tolerance": False},
+    )
+    passed = _object_pose_reset_gate(
+        object_pose_required=True,
+        diagnostic={"available": True, "within_tolerance": True},
+    )
+
+    assert failed == {
+        "required": True,
+        "verified": False,
+        "skipped": False,
+        "reason": "object_pose_reset_diagnostic_failed",
+    }
+    assert passed == {
+        "required": True,
+        "verified": True,
+        "skipped": False,
+        "reason": None,
+    }
+
+
+def test_navigation_ros2_extension_is_enabled_before_environment_build() -> None:
+    runtime = object.__new__(IsaacLabNavigationRuntime)
+    episode_spec = EpisodeSpec(
+        task_id=1,
+        episode_id=1,
+        instruction="测试 ROS 2 初始化顺序",
+        scene_usd="scene.usd",
+        nav_map="nav.json",
+        start=NavGoal(0.0, 0.0, 0.0),
+        pick_goal=NavGoal(1.0, 0.0, 0.0),
+        place_goal=None,
+        object_prim_path=None,
+        object_initial_pose=None,
+        place_target_pose=None,
+    )
+    calls: list[object] = []
+    extension_report = {"extension": "isaacsim.ros2.bridge", "enabled": True}
+    runtime._prepare_navigation_ros2_extension = (  # type: ignore[method-assign]
+        lambda: calls.append("extension") or extension_report
+    )
+    runtime._build_environment = (  # type: ignore[method-assign]
+        lambda spec: calls.append(("environment", spec.episode_id))
+    )
+    runtime._initialize_navigation_ros2_bridge = (  # type: ignore[method-assign]
+        lambda *, extension_report: calls.append(("ogn", extension_report))
+    )
+
+    runtime._build_environment_with_navigation_ros2(episode_spec)
+
+    assert calls == [
+        "extension",
+        ("environment", 1),
+        ("ogn", extension_report),
+    ]
+
+
+def test_navigation_ros2_extension_prepare_respects_disabled_config() -> None:
+    runtime = object.__new__(IsaacLabNavigationRuntime)
+    runtime._config = SimpleNamespace(ros2_ogn_bridge_config=None)
+
+    with patch(
+        "source.simulation.isaaclab_runtime.enable_ros2_bridge_extension"
+    ) as enable_extension:
+        report = runtime._prepare_navigation_ros2_extension()
+
+    assert report is None
+    enable_extension.assert_not_called()
+
+
+def test_navigation_ros2_extension_prepare_returns_enable_report() -> None:
+    runtime = object.__new__(IsaacLabNavigationRuntime)
+    runtime._config = SimpleNamespace(ros2_ogn_bridge_config=object())
+    expected = {"extension": "isaacsim.ros2.bridge", "enabled": True}
+
+    with patch(
+        "source.simulation.isaaclab_runtime.enable_ros2_bridge_extension",
+        return_value=expected,
+    ) as enable_extension:
+        report = runtime._prepare_navigation_ros2_extension()
+
+    assert report == expected
+    enable_extension.assert_called_once_with()
 
 
 class FakeSpawnCfg:
@@ -541,6 +672,292 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
             configure_source.index("TerrainImporterCfg("),
         )
 
+    def test_dynamic_obstacle_configuration_is_default_disabled_without_isaac_import(self) -> None:
+        runtime = object.__new__(IsaacLabNavigationRuntime)
+        runtime._metadata = {}  # type: ignore[attr-defined]
+        env_cfg = SimpleNamespace(scene=SimpleNamespace())
+        episode_spec = EpisodeSpec(
+            task_id=1,
+            episode_id=1,
+            instruction="默认无动态障碍",
+            scene_usd="scene.usd",
+            nav_map="map.json",
+            start=NavGoal(0.0, 0.0, 0.0),
+            pick_goal=NavGoal(1.0, 0.0, 0.0),
+            place_goal=None,
+            object_prim_path=None,
+            object_initial_pose=None,
+            place_target_pose=None,
+            raw_task={"task_id": 1},
+        )
+
+        runtime._configure_dynamic_obstacles(  # type: ignore[attr-defined]
+            env_cfg,
+            episode_spec,
+            sim_utils=None,
+        )
+
+        report = runtime._metadata[  # type: ignore[attr-defined]
+            "dynamic_obstacle_configuration_report"
+        ]
+        self.assertFalse(report["enabled"])
+        self.assertEqual(report["registered_scene_assets"], [])
+        lifecycle = runtime._metadata[  # type: ignore[attr-defined]
+            "dynamic_obstacle_lifecycle_report"
+        ]
+        self.assertFalse(lifecycle["enabled"])
+        self.assertEqual(lifecycle["obstacle_count"], 0)
+        self.assertTrue(lifecycle["all_configured_obstacles_sampled"])
+        self.assertEqual(vars(env_cfg.scene), {})
+
+    def test_dynamic_cart_is_registered_as_visible_kinematic_rigid_object(self) -> None:
+        class FakeCfg:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class FakeRigidObjectCfg(FakeCfg):
+            InitialStateCfg = FakeCfg
+
+        fake_assets = ModuleType("isaaclab.assets")
+        fake_assets.RigidObjectCfg = FakeRigidObjectCfg  # type: ignore[attr-defined]
+        fake_isaaclab = ModuleType("isaaclab")
+        fake_isaaclab.__path__ = []  # type: ignore[attr-defined]
+        fake_isaaclab.assets = fake_assets  # type: ignore[attr-defined]
+        sim_utils = SimpleNamespace(
+            CuboidCfg=FakeCfg,
+            CollisionPropertiesCfg=FakeCfg,
+            RigidBodyPropertiesCfg=FakeCfg,
+            MassPropertiesCfg=FakeCfg,
+            RigidBodyMaterialCfg=FakeCfg,
+            PreviewSurfaceCfg=FakeCfg,
+        )
+        env_cfg = SimpleNamespace(scene=SimpleNamespace())
+        runtime = object.__new__(IsaacLabNavigationRuntime)
+        runtime._metadata = {}  # type: ignore[attr-defined]
+
+        with patch.dict(
+            sys.modules,
+            {"isaaclab": fake_isaaclab, "isaaclab.assets": fake_assets},
+        ):
+            runtime._configure_dynamic_obstacles(  # type: ignore[attr-defined]
+                env_cfg,
+                _dynamic_obstacle_episode_spec(),
+                sim_utils,
+            )
+
+        cfg = env_cfg.scene.dynamic_obstacle_00
+        self.assertEqual(
+            cfg.prim_path,
+            "{ENV_REGEX_NS}/DynamicObstacle_crossing_cart",
+        )
+        self.assertEqual(
+            cfg.prim_path.rsplit("/", 1)[0],
+            "{ENV_REGEX_NS}",
+        )
+        self.assertEqual(cfg.spawn.size, (0.55, 0.35, 0.75))
+        self.assertTrue(cfg.spawn.collision_props.collision_enabled)
+        self.assertTrue(cfg.spawn.rigid_props.kinematic_enabled)
+        self.assertTrue(cfg.spawn.rigid_props.disable_gravity)
+        self.assertEqual(cfg.spawn.visual_material.opacity, 1.0)
+        self.assertEqual(cfg.init_state.pos, (-4.15, 4.2, 0.235))
+        report = runtime._metadata[  # type: ignore[attr-defined]
+            "dynamic_obstacle_configuration_report"
+        ]
+        self.assertTrue(report["enabled"])
+        self.assertTrue(report["stair_corridor_overlap_verified_false"])
+        self.assertEqual(
+            report["registered_scene_assets"][0]["scene_asset_name"],
+            "dynamic_obstacle_00",
+        )
+
+    def test_dynamic_cart_raw_rtx_cloud_visibility_is_bounded_and_lifecycle_scoped(
+        self,
+    ) -> None:
+        episode_spec = _dynamic_obstacle_episode_spec()
+        plan = resolve_dynamic_obstacle_plan(episode_spec.raw_task)
+        runtime = object.__new__(IsaacLabNavigationRuntime)
+        runtime._dynamic_obstacle_plan = plan  # type: ignore[attr-defined]
+        runtime._metadata = {  # type: ignore[attr-defined]
+            "dynamic_obstacle_raw_cloud_lifecycle_report": (
+                runtime._new_dynamic_obstacle_raw_cloud_lifecycle_report(plan)
+            )
+        }
+        sample_time_s = plan.obstacles[0].start_delay_s + 1.0
+        physics_dt_s = 0.1
+        sample_step = round(sample_time_s / physics_dt_s)
+        runtime._runtime = SimpleNamespace(  # type: ignore[attr-defined]
+            physics_dt=physics_dt_s,
+            _sim_step_counter=sample_step,
+        )
+        state = plan.state_at(sample_time_s)[0]
+        center = np.asarray(state.position_world_xyz, dtype=np.float64)
+        points = np.stack(
+            (
+                center,
+                center + np.asarray((0.275, 0.0, 0.0)),
+                center + np.asarray((2.0, 2.0, 2.0)),
+            )
+        )
+
+        frame = runtime._update_dynamic_obstacle_raw_cloud_lifecycle_report(  # type: ignore[attr-defined]
+            points_world_xyz=points,
+            timestamp=sample_time_s,
+            completed_control_step=20,
+        )
+
+        self.assertEqual(frame["proof_scope"], "raw_cloud_visibility_only")
+        self.assertEqual(frame["total_obstacle_point_count"], 2)
+        self.assertEqual(
+            frame["obstacles"]["crossing_cart"]["point_count"],
+            2,
+        )
+        lifecycle = runtime._metadata[  # type: ignore[attr-defined]
+            "dynamic_obstacle_raw_cloud_lifecycle_report"
+        ]
+        self.assertEqual(lifecycle["sample_frame_count"], 1)
+        self.assertEqual(lifecycle["frames_with_any_obstacle_points"], 1)
+        self.assertEqual(
+            lifecycle["frames_with_motion_started_obstacle_points"],
+            1,
+        )
+        self.assertTrue(lifecycle["all_configured_obstacles_observed"])
+        self.assertTrue(
+            lifecycle["obstacles"]["crossing_cart"]
+            ["motion_started_detection_seen"]
+        )
+
+        runtime._runtime._sim_step_counter = sample_step + 1  # type: ignore[attr-defined]
+        runtime._update_dynamic_obstacle_raw_cloud_lifecycle_report(  # type: ignore[attr-defined]
+            points_world_xyz=np.asarray(((9.0, 9.0, 9.0),)),
+            timestamp=sample_time_s + 0.1,
+            completed_control_step=21,
+        )
+        lifecycle = runtime._metadata[  # type: ignore[attr-defined]
+            "dynamic_obstacle_raw_cloud_lifecycle_report"
+        ]
+        self.assertEqual(lifecycle["sample_frame_count"], 2)
+        self.assertEqual(lifecycle["frames_with_any_obstacle_points"], 1)
+        self.assertEqual(
+            lifecycle["obstacles"]["crossing_cart"]["detected_frame_count"],
+            1,
+        )
+        self.assertEqual(
+            runtime._metadata["dynamic_obstacle_raw_cloud_last_report"]
+            ["total_obstacle_point_count"],
+            0,
+        )
+
+    def test_dynamic_cart_pose_is_written_for_every_physics_substep_target(self) -> None:
+        class FakePoseTensor:
+            def __init__(self, values):
+                self.values = np.asarray(values, dtype=np.float64)
+
+            @property
+            def shape(self):
+                return self.values.shape
+
+            def clone(self):
+                return FakePoseTensor(self.values.copy())
+
+            def new_tensor(self, values):
+                return np.asarray(values, dtype=np.float64)
+
+            def __setitem__(self, key, value):
+                self.values[key] = value
+
+        class FakeDynamicAsset:
+            def __init__(self):
+                self.data = SimpleNamespace(
+                    root_pose_w=FakePoseTensor(np.zeros((1, 7), dtype=np.float64))
+                )
+                self.writes: list[np.ndarray] = []
+
+            def write_root_pose_to_sim(self, root_pose):
+                self.writes.append(root_pose.values.copy())
+
+        episode_spec = _dynamic_obstacle_episode_spec()
+        raw_task = deepcopy(episode_spec.raw_task)
+        raw_task["dynamic_obstacles"][0]["start_delay_s"] = 0.0
+        plan = resolve_dynamic_obstacle_plan(raw_task)
+        asset = FakeDynamicAsset()
+        runtime = object.__new__(IsaacLabNavigationRuntime)
+        runtime._dynamic_obstacle_plan = plan  # type: ignore[attr-defined]
+        runtime._metadata = {  # type: ignore[attr-defined]
+            "dynamic_obstacle_pose_write_count": 0,
+        }
+        runtime._runtime = SimpleNamespace(  # type: ignore[attr-defined]
+            scene={"dynamic_obstacle_00": asset},
+            physics_dt=0.1,
+            _sim_step_counter=3,
+        )
+
+        runtime._advance_dynamic_obstacles_for_physics_step()  # type: ignore[attr-defined]
+
+        self.assertEqual(len(asset.writes), 1)
+        self.assertEqual(
+            asset.writes[0][0],
+            pytest.approx((-4.18, 4.2, 0.235, 1.0, 0.0, 0.0, 0.0)),
+        )
+        report = runtime._metadata[  # type: ignore[attr-defined]
+            "dynamic_obstacle_runtime_report"
+        ]
+        self.assertEqual(report["physics_step_index"], 3)
+        self.assertEqual(report["elapsed_time_s"], pytest.approx(0.3))
+        self.assertFalse(report["root_lock_state_used"])
+        self.assertEqual(report["pose_write_count"], 1)
+        lifecycle = runtime._metadata[  # type: ignore[attr-defined]
+            "dynamic_obstacle_lifecycle_report"
+        ]
+        self.assertEqual(lifecycle["schema"], "dynamic_obstacle_lifecycle_v1")
+        self.assertEqual(lifecycle["sample_frame_count"], 1)
+        self.assertTrue(lifecycle["all_configured_obstacles_sampled"])
+        self.assertFalse(lifecycle["all_configured_obstacles_moved"])
+        self.assertEqual(lifecycle["maximum_path_distance_span_m"], 0.0)
+
+        runtime._runtime._sim_step_counter = 10  # type: ignore[attr-defined]
+        runtime._advance_dynamic_obstacles_for_physics_step()  # type: ignore[attr-defined]
+        runtime._runtime._sim_step_counter = 60  # type: ignore[attr-defined]
+        runtime._advance_dynamic_obstacles_for_physics_step()  # type: ignore[attr-defined]
+
+        lifecycle = runtime._metadata[  # type: ignore[attr-defined]
+            "dynamic_obstacle_lifecycle_report"
+        ]
+        obstacle_lifecycle = lifecycle["obstacles"]["crossing_cart"]
+        self.assertEqual(lifecycle["pose_write_count"], 3)
+        self.assertEqual(lifecycle["sample_frame_count"], 3)
+        self.assertTrue(lifecycle["all_configured_obstacles_moved"])
+        self.assertGreater(lifecycle["maximum_path_distance_span_m"], 0.3)
+        self.assertEqual(lifecycle["direction_transition_count"], 1)
+        self.assertEqual(obstacle_lifecycle["path_directions_seen"], [0, 1])
+        self.assertTrue(obstacle_lifecycle["motion_started_seen"])
+        self.assertGreater(
+            obstacle_lifecycle["maximum_displacement_from_first_m"],
+            0.3,
+        )
+
+    def test_dynamic_obstacle_step_hook_precedes_scene_write_and_is_fingerprinted(self) -> None:
+        step_source = inspect.getsource(IsaacLabNavigationRuntime.step)
+        configure_source = inspect.getsource(IsaacLabNavigationRuntime._configure_env)
+        runtime = object.__new__(IsaacLabNavigationRuntime)
+        runtime._project_root = PROJECT_ROOT  # type: ignore[attr-defined]
+        runtime._config = IsaacLabNavigationRuntimeConfig()  # type: ignore[attr-defined]
+        fingerprint = runtime._episode_stage_fingerprint(  # type: ignore[attr-defined]
+            _dynamic_obstacle_episode_spec()
+        )
+
+        self.assertLess(
+            step_source.index("_advance_dynamic_obstacles_for_physics_step"),
+            step_source.index("scene.write_data_to_sim"),
+        )
+        self.assertIn("_configure_dynamic_obstacles", configure_source)
+        self.assertEqual(
+            fingerprint["dynamic_obstacle_topology"][0]["scene_asset_name"],
+            "dynamic_obstacle_00",
+        )
+        self.assertTrue(
+            fingerprint["dynamic_obstacle_topology"][0]["kinematic_enabled"]
+        )
+
     def test_visual_sublayer_stage_validates_task_receptacle_support(self) -> None:
         load_source = inspect.getsource(IsaacLabNavigationRuntime._load_visual_scene)
 
@@ -914,6 +1331,38 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         self.assertEqual(payload["release_clearance"], 0.02)
         self.assertEqual(payload["pre_place_clearance"], 0.08)
         self.assertEqual(payload["retreat_clearance"], 0.10)
+
+    def test_task_can_lower_release_clearance_for_rounded_object(self) -> None:
+        """场景任务可降低通用松爪高度，但仍需通过有限非负数校验。"""
+
+        runtime = object.__new__(IsaacLabNavigationRuntime)
+        runtime._config = IsaacLabNavigationRuntimeConfig()
+        episode_spec = EpisodeSpec(
+            task_id=0,
+            episode_id=0,
+            instruction="place rounded apple",
+            scene_usd="",
+            nav_map="",
+            start=NavGoal(0.0, 0.0, 0.0),
+            pick_goal=NavGoal(0.0, 0.0, 0.0),
+            place_goal=NavGoal(0.0, 0.0, 0.0),
+            object_prim_path="/World/apple",
+            object_initial_pose=None,
+            place_target_pose=(0.6, 5.0, 0.72, 0.0, 0.0, 0.0),
+            raw_task={
+                "manipulation_execution": {
+                    "place_release_clearance_min_m": 0.004,
+                },
+                "place": {
+                    "place_pose_world": {"x": 0.6, "y": 5.0, "z": 0.72},
+                },
+            },
+        )
+
+        payload = runtime._place_pose_world_from_episode(episode_spec)
+
+        self.assertEqual(payload["release_clearance"], 0.004)
+        self.assertEqual(payload["pre_place_clearance"], 0.06)
 
     def test_distractor_root_paths_match_baseline_asset_metadata(self) -> None:
         class FakePrim:
@@ -1468,6 +1917,68 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
             [10.0, -10.0, 5.0, 0.0, 2.0, -3.0],
         )
 
+    def test_policy_step_preserves_checkpoint_default_arm_command_without_override(
+        self,
+    ) -> None:
+        try:
+            import torch
+        except ModuleNotFoundError:
+            self.skipTest("torch is not available")
+
+        class FakeBaseCommandTerm:
+            def __init__(self) -> None:
+                self.device = torch.device("cpu")
+                self.vel_command_b = torch.zeros((1, 3), dtype=torch.float32)
+
+        class FakeArmCommandTerm:
+            def __init__(self) -> None:
+                self.command_buffer = torch.tensor(
+                    [[0.0, 0.3, 0.5, 0.0, 0.0, 0.0]],
+                    dtype=torch.float32,
+                )
+
+        class FakeEnv:
+            clip_actions = None
+
+            def get_observations(self):
+                return {"policy": torch.zeros((1, 1), dtype=torch.float32)}
+
+        adapter = object.__new__(Go2LocomotionAdapter)
+        adapter.env = FakeEnv()
+        adapter.policy = lambda _observations: torch.zeros(
+            (1, 12), dtype=torch.float32
+        )
+        adapter.observations = {}
+        adapter.base_cmd_term = FakeBaseCommandTerm()
+        adapter.arm_term = FakeArmCommandTerm()
+        adapter.joint_pos_action_term = None
+        adapter.dog_action_indices = list(range(12))
+        adapter.arm_action_indices = None
+        adapter.direct_arm_action_override = False
+        adapter.gripper_joint_ids = ()
+        adapter._base_pose_lock_xyzyaw = None
+        adapter._dog_joint_lock_target = None
+        adapter.standing_command_threshold = 0.08
+        adapter.policy_action_warmup_steps = 0
+        adapter._policy_action_step = 0
+        adapter._policy_action_warmup_scale = 1.0
+        adapter._command = (0.2, 0.0, 0.0)
+        adapter._effective_command = (0.0, 0.0, 0.0)
+        adapter._command_is_standing = False
+        adapter._arm_joint_target = None
+        adapter._gripper_joint_target = None
+        adapter._last_actions = None
+
+        adapter.compute_policy_action(refresh_observations=True)
+
+        self.assertEqual(
+            [
+                round(float(value), 4)
+                for value in adapter.arm_term.command_buffer[0]
+            ],
+            [0.0, 0.3, 0.5, 0.0, 0.0, 0.0],
+        )
+
     def test_support_joint_lock_does_not_write_joint_state(self) -> None:
         try:
             import torch
@@ -1808,6 +2319,32 @@ class IsaacLabNavigationRuntimeActionTest(unittest.TestCase):
         runtime.apply(action)
 
         self.assertEqual(adapter.arm_velocity_hold_flags, [True])
+        self.assertTrue(
+            runtime._metadata["last_arm_action_report"]["arm_velocity_hold"]  # type: ignore[attr-defined]
+        )
+
+    def test_navigation_stow_records_phase_and_requests_velocity_hold(self) -> None:
+        runtime, adapter, _fake_runtime_obj = _fake_runtime()
+        adapter.arm_action_indices_for_report = []
+        stow = (0.0, 0.3, 0.5, 0.0, 0.0, 0.0)
+
+        runtime.apply(
+            RobotAction(
+                base_velocity=(0.2, 0.0, 0.0),
+                arm_joint_positions=stow,
+                source="scan_ros2_navigation",
+                metadata={
+                    "arm_joint_names": tuple(ARM_JOINT_NAMES),
+                    "navigation_arm_stow_phase": "exec_nav_to_pick",
+                    "arm_velocity_hold": True,
+                },
+            )
+        )
+
+        self.assertEqual(adapter.arm_targets, [stow])
+        self.assertEqual(adapter.arm_velocity_hold_flags, [True])
+        pending = runtime._pending_arm_tracking_target  # type: ignore[attr-defined]
+        self.assertEqual(pending["pipeline_state"], "exec_nav_to_pick")
         self.assertTrue(
             runtime._metadata["last_arm_action_report"]["arm_velocity_hold"]  # type: ignore[attr-defined]
         )

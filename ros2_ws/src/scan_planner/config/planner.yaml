@@ -1,0 +1,196 @@
+scan_planner_node:
+  ros__parameters:
+    use_sim_time: true
+
+    # typed stair-freeze bridge 独占写入；planner 以 transient-local 接收晚加入状态。
+    topics.stair_execution_frozen: /planning/stair_execution_frozen
+    # stationary final 的目标生命周期只接受这条 typed status 的精确 identity。
+    topics.controller_status: /planning/controller_status
+    # 与 controller publisher 同为 reliable + transient-local + KeepLast(64)；
+    # 固定深度保留同回调突发发布的旧轨迹终态与新轨迹接管证据。
+    qos.controller_status_depth: 64
+    # 自包含规划快照；可靠、持久缓存且只保留最新一条。
+    topics.planning_status: /planning/scan_status
+    # dynamic_f1 审计证据均为 typed、bounded、reliable transient-local。
+    topics.grid_map_observation_diagnostics: /planning/grid_map_observation_diagnostics
+    topics.bspline_diagnostics: /planning/bspline_diagnostics
+
+    fsm.navi_mode: 3
+    # 每执行约半个局部视距即滚动重规划，避免非最终局部轨迹耗尽后停等新目标。
+    fsm.thresh_replan: 0.30
+    # 接近终点时先让当前轨迹继续收敛；若轨迹耗尽仍未达到 0.08 m 真到达门，
+    # reference 模式会生成受碰撞与 ordered-corridor 检查约束的短 final 段。
+    fsm.thresh_no_replan: 0.22
+    # 室内 Go2-X5 的参考路径前视距离。community 的 7.5 m 会让短路径直接以
+    # 最终点为局部目标；0.60 m 可在 1.2 m 的 90° 验收路径上保留折角。
+    fsm.planning_horizon: 0.60
+    fsm.emergency_time: 1.0
+    fsm.fail_safe: true
+    fsm.max_replan_fail_count: 5
+    fsm.input_timeout_sec: 0.50
+    # Isaac 每个控制拍刷新绑定当前 Path 的快照；超过 0.25s 立即 fail-closed。
+    fsm.stair_execution_freeze_timeout_sec: 0.25
+    # 首次超时立即冻结，但只在调度宽限期内仍无更高合法序列时发布故障。
+    fsm.stair_execution_freeze_confirmation_sec: 0.05
+    fsm.min_path_point_spacing: 0.05
+    # Odometry 距已认证折线超过该值时停止推进进度并拒绝规划，等待 PCT
+    # 重规划；完整 Path 仅线性处理，并设置输入点数上限避免资源耗尽。
+    fsm.reference_projection_max_distance: 0.50
+    # 三次 B-spline 末端不严格插值局部目标；至少保留两个 5cm 体素的
+    # 后向连续自由支撑区，避免“目标点自由、实际样条末端仍占据”。
+    fsm.reference_target_free_runway: 0.10
+    # 非最终局部段的末端切向巡航速度。独立启动 planner 时默认保持 0；
+    # 生产组合 launch 由 pct_scan_tuning.yaml 覆盖，避免短窗口反复减速停车。
+    fsm.reference_cruise_speed: 0.0
+    # 对四足步态造成的单帧速度振荡做一阶低通；0 表示兼容旧行为、直接使用
+    # 实测单帧速度。生产组合 launch 使用非零时间常数。
+    fsm.reference_velocity_filter_time_constant_sec: 0.0
+    fsm.max_reference_path_points: 4096
+    # 局部规划失败后最多 2 Hz 重试，避免急停状态形成 CPU/日志风暴。
+    fsm.reference_retry_period_sec: 0.50
+    # final B-spline 名义时长结束后，允许 controller 在原终点继续闭环 2 秒；
+    # 该值短于 controller 的 3 秒软失效宽限，超时仍回到局部重规划。
+    fsm.final_trajectory_convergence_grace_sec: 2.0
+    # 0.04 m / 0.18 rad 用于选择末端安全目标，也用于发布严格
+    # 零速 stationary final hold 的迟滞内门。controller 仍以独立的
+    # 0.08 m / 0.20 rad 外门和连续稳定驻留认证 GOAL_REACHED。
+    # phase271 seed=2 表明旧 0.06 m 目标与 0.075 m controller 捕获门
+    # 只留 5 mm 回弹余量；收紧后仍由 SCAN 碰撞安全轨迹送达。
+    fsm.reference_goal_hold_distance_xy: 0.04
+    fsm.reference_goal_hold_distance_z: 0.12
+    fsm.reference_goal_hold_yaw_error: 0.18
+    fsm.reference_goal_hold_planar_speed: 0.05
+    fsm.reference_goal_hold_vertical_speed: 0.05
+    fsm.reference_goal_hold_yaw_rate: 0.10
+    # 必须连续满足上述物理门后才允许用 stationary final hold 替换 moving
+    # final；默认 0.75s 长于 controller 的 0.50s，到达状态应优先由 controller
+    # 完成，stationary hold 只作为同代轨迹的迟到兜底。
+    fsm.reference_goal_hold_stable_dwell_sec: 0.75
+    # 稳定导航基线不依赖原地转头复观测；动态障碍专项实验可显式打开，
+    # 打开后每个 Path 代际最多触发一次 yaw-only 主动感知。
+    fsm.enable_active_sensing: false
+    fsm.active_sensing_yaw_offset: 0.20
+    fsm.active_sensing_yaw_rate: 0.20
+    fsm.active_sensing_max_planar_speed: 0.03
+    # 必须不宽于 controller yaw-only 严格零保持容差 0.02 rad。
+    fsm.active_sensing_yaw_error: 0.02
+    fsm.active_sensing_max_angular_speed: 0.05
+    fsm.active_sensing_stable_duration_sec: 0.10
+    fsm.active_sensing_max_position_drift: 0.04
+    # 轨迹时长覆盖 controller 接管、转向、三帧真实融合等待和安全余量；
+    # canonical empty 不推进 fused sequence，也不能解锁重试。
+    fsm.active_sensing_accept_timeout_sec: 0.50
+    fsm.active_sensing_observation_timeout_sec: 1.00
+    fsm.active_sensing_safety_margin_sec: 0.25
+    fsm.trajectory_diagnostic_max_samples: 64
+    fsm.trajectory_diagnostic_history_depth: 64
+
+    grid_map.resolution: 0.05
+    grid_map.sliding_map_size_x: 10.0
+    grid_map.sliding_map_size_y: 10.0
+    grid_map.sliding_map_size_z: 5.0
+    grid_map.local_update_range_x: 5.0
+    grid_map.local_update_range_y: 5.0
+    grid_map.local_update_range_z: 2.5
+    grid_map.map_sliding_en: true
+    grid_map.map_sliding_thresh: 0.2
+
+    # Go2-X5 携臂收纳姿态的双圆柱包络，数值来自本项目实测碰撞边界。
+    grid_map.double_cylinder_radius: 0.27
+    grid_map.double_cylinder_offset: 0.16
+    grid_map.body_height: 0.30
+    # GridMap 的 up/down 描述“障碍点”的膨胀方向：障碍向上 0.40 m
+    # 对应机器人中心以下 0.40 m，障碍向下 0.50 m 对应中心以上 0.50 m。
+    # 因而这里分别映射携臂收纳姿态的 z=[-0.40,+0.50] 包络。
+    grid_map.obstacles_inflation_z_up: 0.40
+    grid_map.obstacles_inflation_z_down: 0.50
+
+    grid_map.frame_id: world
+    grid_map.base_frame_id: base_link
+    grid_map.sliding_map_frame_id: sliding_map
+    grid_map.ground_height: 0.0
+    grid_map.sensor_type: lidar
+    grid_map.cloud_is_world: true
+    # PointCloud2 已在 world 中，但 raycast 原点仍必须是生成该深度云的真实
+    # head_camera，而不能复用 base_link 原点。外参与 Isaac CameraCfg 完全一致。
+    grid_map.need_extrinsic: true
+    grid_map.cloud_sensor_extrinsic_x: 0.28
+    grid_map.cloud_sensor_extrinsic_y: 0.0
+    grid_map.cloud_sensor_extrinsic_z: 0.07
+    grid_map.cloud_sensor_extrinsic_qw: 0.5
+    grid_map.cloud_sensor_extrinsic_qx: -0.5
+    grid_map.cloud_sensor_extrinsic_qy: 0.5
+    grid_map.cloud_sensor_extrinsic_qz: -0.5
+    grid_map.observation_timeout_sec: 0.50
+    grid_map.max_cloud_pose_skew_sec: 0.20
+    # 50 Hz pose 下可覆盖约 2 秒跨 topic 排队；匹配后仍执行 0.20 秒严格门限。
+    grid_map.sensor_sync_queue_size: 100
+    grid_map.diagnostic_max_samples: 64
+    grid_map.diagnostic_history_depth: 64
+
+    # 深度相机参数在 lidar 模式下不会参与在线点云融合，但保留有效值避免非法默认量。
+    grid_map.cx: 321.04638671875
+    grid_map.cy: 243.44969177246094
+    grid_map.fx: 387.229248046875
+    grid_map.fy: 387.229248046875
+    grid_map.depth_filter_maxdist: 5.0
+    grid_map.depth_filter_mindist: 0.3
+    grid_map.depth_filter_margin: 1
+    grid_map.k_depth_scaling_factor: 1000.0
+    grid_map.skip_pixel: 2
+
+    grid_map.p_hit: 0.85
+    grid_map.p_miss: 0.30
+    grid_map.p_min: 0.12
+    grid_map.p_max: 0.98
+    grid_map.p_occ: 0.80
+    grid_map.max_ray_length: 5.0
+    grid_map.vis_height: 0.3
+    grid_map.show_occ_time: false
+
+    # 与携臂 controller 的保守导航包络一致，避免 B-spline 标称进度跑在
+    # 真实坡面步态之前。
+    manager.max_vel: 0.30
+    manager.max_acc: 0.50
+    manager.max_jerk: 4.0
+    manager.control_points_distance: 0.20
+    # reference 梯形速度初值使用的加速度占物理上限比例。1.0 保持基础包原行为；
+    # 生产覆盖层会按实测降低它，避免三次样条拟合产生加速度尖峰后整段降速。
+    manager.reference_profile_acceleration_scale: 1.0
+    # 单包默认关闭；生产组合入口在统一 tuning YAML 中显式开启。
+    manager.reference_free_guide_refine_enabled: false
+    # 平滑候选至少节省该时长才采用，且仍必须通过碰撞与 ordered corridor 门。
+    manager.reference_free_guide_refine_minimum_duration_gain: 0.05
+    # 只保留数值误差余量；最终发布门仍以 max_vel/max_acc 加下方小容差为硬界。
+    manager.feasibility_tolerance: 0.01
+    # manager 仅用该值检查局部轨迹异常长度，不参与参考路径局部目标选取。
+    manager.planning_horizon: 1.2
+    # 容忍起步落脚的毫米级回摆；v5 坏轨迹的 0.0287m / -0.0437m/s
+    # 明显越过该门限，并会令 controller 的 0.60s 前视航向翻转。
+    manager.max_reference_reverse_distance: 0.02
+    manager.max_reference_reverse_speed: 0.02
+    # 空旷 guide 的 B-spline 受 0.10 m 偏差与 0.035 m 进度超前硬门约束；
+    # 35mm 覆盖 v32 实测 34.4mm 三次样条圆角，仍远小于 Go2-X5 430mm 包络。
+    # U 形、平行近邻和自交跳段继续由有序锚点与进度门拒绝。
+    manager.reference_corridor_max_deviation: 0.10
+    # guide 自身被在线障碍占据时，rebound 仍需保留 dist0=0.20 m 安全余量；
+    # 仅在该条件下允许更宽但有界的侧向绕行，空旷 guide 继续受 0.10 m 门约束。
+    manager.reference_obstacle_corridor_max_deviation: 0.35
+    manager.reference_corridor_max_progress_lead: 0.035
+    manager.reference_obstacle_corridor_max_progress_lead: 0.05
+    # 三次 B-spline 的过定起点约束会产生亚毫米到毫米级前移；只给 t=0
+    # 拟合增加 1mm 容差。折线投影与 10ms 采样的 relative progress 再保留
+    # 独立 1mm 测量容差；两项都有代码上限，不改变 0.035/0.05m 业务门限。
+    manager.reference_corridor_initial_progress_tolerance: 0.001
+    manager.reference_corridor_progress_measurement_tolerance: 0.001
+
+    optimization.lambda_smooth: 1.0
+    optimization.lambda_collision: 1.0
+    optimization.lambda_feasibility: 0.1
+    optimization.lambda_fitness: 1.0
+    optimization.dist0: 0.20
+    optimization.max_vel: 0.30
+    optimization.max_acc: 0.50
+    optimization.vel_tolerance: 0.005
+    optimization.acc_tolerance: 0.01
+    optimization.order: 3

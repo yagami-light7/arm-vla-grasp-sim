@@ -12,6 +12,7 @@
   ],
   "task_scene_profile": "multi_floor",
   "runtime_asset_manifest": "source/scene/multifloor/runtime_asset_manifest.json",
+  "scan_stair_freeze_profile": "configs/navigation/scan_stair_freeze_go2_x5_multifloor_v1.json",
   "defaults": {
     "task_json": "tasks/nav_pick_place_apple_multifloor_pct.json",
     "output_dir": "outputs/multi_floor",
@@ -30,7 +31,7 @@
       "1.9202,9.52807,1.71919",
       "2.69841,7.79872,2.61031"
     ],
-    "pct_stair_float": true,
+    "pct_stair_float": false,
     "policy_profile": "pct_multifloor",
     "locomotion_task": "RobotLab-Isaac-Velocity-Rough-Go2-X5-DogOnly-v0",
     "locomotion_checkpoint": "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
@@ -65,6 +66,7 @@
     "source/scene/multifloor/mutifloor.pickle",
     "source/scene/multifloor/mutifloor_ply_walkable.npy",
     "source/scene/multifloor/ply/3dgs_collision.ply",
+    "configs/navigation/scan_stair_freeze_go2_x5_multifloor_v1.json",
     "source/scene/objects/apple/MesaTask-10K/MesaTask_Assets/apple/0176be079c2449e7aaebfb652910a854/usd/0176be079c2449e7aaebfb652910a854.usd",
     "checkpoints/go2_x5/pct_multifloor/model_26000.pt"
   ]

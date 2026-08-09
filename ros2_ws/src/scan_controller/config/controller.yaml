@@ -1,0 +1,140 @@
+scan_controller:
+  ros__parameters:
+    use_sim_time: true
+
+    frames.world: world
+    frames.base: base_link
+
+    topics.bspline: /planning/bspline
+    topics.initial_path: /initial_path
+    topics.body_pose: /body_pose
+    topics.cloud: /cloud_registered
+    topics.cmd_vel: /cmd_vel
+    topics.execution_frozen: /planning/go2_execution_frozen
+    topics.goal_reached: /planning/goal_reached
+    topics.trajectory_finished: /planning/trajectory_finished
+    topics.controller_status: /planning/controller_status
+
+    controller.publish_rate_hz: 100.0
+    controller.time_forward: 0.60
+    # 低于 3cm 的 B-spline 短弦容易被毫米级边界优化抖动翻转，不能作为
+    # 原地对齐的锁存航向；普通跟踪会继续推进，直到几何方向重新可信。
+    controller.yaw_alignment_min_chord_distance: 0.03
+    # 普通航向误差超过 0.70rad 才进入原地对齐，降到 0.55rad 内才释放，
+    # 避免 policy 在单一阈值附近反复切换冻结状态。
+    controller.heading_error_threshold: 0.70
+    controller.heading_error_release_threshold: 0.55
+    # 相对完整有序 Path 的横向偏离超过 0.12m 后进入恢复门；回到 0.08m
+    # 内才释放。恢复时保留受限前向牵引、显式法向纠偏，并只向路径中心
+    # 加入小于原地对齐阈值的航向辅助。
+    controller.cross_track_alignment_distance: 0.12
+    controller.cross_track_alignment_release_distance: 0.08
+    controller.cross_track_heading_error_threshold: 0.20
+    controller.cross_track_heading_error_release_threshold: 0.18
+    # 此值是 SCAN 切向命令上限而非强制前进速度；零速/后退命令仍保留。
+    controller.cross_track_recovery_forward_speed: 0.18
+    controller.cross_track_recovery_taper_distance: 0.30
+    # 只限制新增的全局 Path 回正增量；SCAN 自身法向绕障分量仍保留，并在
+    # 两者方向相反时优先。中心航向辅助保持在 0.20rad 原地对齐门以内。
+    controller.cross_track_recovery_lateral_gain: 0.45
+    controller.cross_track_recovery_lateral_speed: 0.08
+    controller.cross_track_heading_assist_gain: 1.00
+    controller.cross_track_heading_assist_max: 0.16
+    # 默认通用配置不改变历史行为。携臂高速 profile 可单独启用：当目标
+    # yaw 角速度达到阈值时，仅限制二维合成平移速度，防止实际机体切弯。
+    controller.turning_speed_limit_enabled: false
+    controller.turning_yaw_rate_threshold: 0.35
+    controller.turning_max_planar_speed: 0.30
+    # 默认关闭。楼梯专用 profile 可在当前进度前后指定弧长窗口内检测陡升段，
+    # 并让机体沿完整 Path 的水平合成切向；局部 B-spline 的 XY 速度不改变，
+    # 因此横向重接使用 vy，而不会把几厘米侧移误解为约 90 度转身。
+    controller.stair_heading_lock_enabled: false
+    controller.stair_heading_lock_half_window_arc_m: 0.45
+    controller.stair_heading_lock_min_pitch_rad: 0.45
+    # 默认关闭。楼梯实验 profile 可在 B-spline 明确向前、未横向越界且
+    # 未进入终点制动时补足 policy 的前向牵引；零速、反向和急停不会被覆盖。
+    controller.stair_forward_speed_floor: 0.0
+    controller.kp_position: 0.80
+    controller.kp_yaw: 1.50
+    # 主动观测只允许不超过 0.22rad 的短程原地扫描，并以独立的 0.20rad/s
+    # 上限约束消息隐含速度和实际 cmd_vel；角加速度沿用全局安全上限。
+    controller.active_sensing_max_yaw_excursion: 0.22
+    controller.active_sensing_max_yaw_rate: 0.20
+    # 该容差同时绑定 yaw_pts[0] 与新鲜 Odometry，并在目标附近切换为严格
+    # 全零保持，避免 PhysX 小幅姿态噪声造成无休止的微小角速度命令。
+    controller.active_sensing_yaw_tolerance: 0.02
+
+    # 与 bridge 的地面 Path 语义、去重和有序投影窗口保持一致。
+    reference_path.body_height_m: 0.30
+    reference_path.min_point_spacing_m: 0.05
+    reference_path.backward_arc_m: 1.0
+    reference_path.forward_arc_m: 3.0
+    reference_path.max_points: 4096
+    qos.initial_path_depth: 1
+    # typed 状态需保留连续生命周期证据；固定 reliable + transient-local +
+    # keep-last(64)，不得通过参数缩短历史。
+    qos.controller_status_depth: 64
+
+    # Go2-X5 携臂收纳姿态的第一阶段保守导航包络；低于 policy 训练命令上限，
+    # 避免 v11/v12 在 8.5° 坡面以 0.5 m/s 前进时横向失稳。
+    limits.max_vx: 0.30
+    limits.max_vy: 0.15
+    limits.max_yaw_rate: 0.45
+    limits.max_ax: 0.50
+    limits.max_ay: 0.40
+    limits.max_yaw_acc: 1.00
+
+    # 必须不宽于 pipeline 的 pick 0.10 m / place 0.08 m 物理验收，
+    # 否则 controller 会先锁存 GOAL_REACHED，随后 verifier 才判定未到达。
+    finish.distance_xy: 0.08
+    finish.distance_z: 0.12
+    # moving final 进入 0.055m 捕获内门后先保持严格全零，让下游 policy
+    # 限速器清除历史；它仍严格小于 0.08m 物理完成门，0.12m 仅是
+    # terminal orientation mode
+    # 外圈，不参与 GOAL_REACHED 判定。各门之间若
+    # 姿态与速度已稳定，只恢复 SCAN B-spline 平移，仍锁定完整 Path terminal yaw。
+    # 相比旧 0.075m，当前值为原 Go2-X5 policy 的减速回弹留出更大余量。
+    finish.capture_entry_distance_xy: 0.055
+    # 首次进入内门并清除历史速度后，允许在 0.075m 内继续严格零命令驻留。
+    # 该迟滞吸收四足站立摆动；超过它才恢复位置回收，且它必须
+    # 严格小于 0.08m 的真实完成门，不能用于放宽 GOAL_REACHED。
+    finish.capture_zero_hold_distance_xy: 0.075
+    finish.capture_release_distance_xy: 0.12
+    finish.capture_brake_hold_sec: 0.06
+    finish.capture_stable_dwell_sec: 0.50
+    # 纯 yaw 命令下四足策略仍可能产生根位姿漂移；首段全零制动结束后，
+    # 用有界 XY 闭环抵消该漂移。它不改变 0.08m 的 GOAL_REACHED 位置门。
+    finish.position_hold_gain: 0.80
+    finish.max_position_hold_speed: 0.10
+    # final 轨迹进入终点外圈后仍未到捕获内门时，保持原 B-spline 方向的
+    # 最低有效步态合成速度；已经捕获、转向漂出并解除平移制动后的回收阶段也
+    # 使用同一门，避免原始 Go2-X5 policy 在几厘米段上再次低速失响应。
+    # phase244 实测 0.12m/s 斜向命令持续 4s 只移动 7.3mm；0.22m/s 与旧
+    # DWA 同一 policy 的近目标可执行下限一致。vx/vy 仍分别服从各自硬上限。
+    finish.min_approach_speed: 0.22
+    finish.max_capture_yaw_rate: 0.25
+    finish.max_capture_yaw_acc: 0.50
+    # moving final 的控制死区必须严格窄于完成门；在 0.18~0.20rad 内继续
+    # 原地收敛，给 RL 稳态波动留下余量。stationary final 仍始终严格全零。
+    finish.yaw_control_deadband: 0.18
+    finish.max_yaw_error: 0.20
+    finish.max_planar_speed: 0.05
+    finish.max_vertical_speed: 0.05
+    # stationary final 与 moving final 进入终点捕获后的零平移驻留，都只用
+    # 机体系 |wz| 判断导航转向是否停止；尚未捕获的普通运动轨迹仍使用
+    # 下面的三轴角速度范数，避免在运动中放宽完成门。
+    finish.max_yaw_rate: 0.10
+    finish.max_angular_speed: 0.10
+
+    timeouts.bspline_sec: 1.50
+    timeouts.odom_sec: 0.30
+    timeouts.cloud_sec: 0.50
+    # B-spline 时间只描述几何参考的标称进度；RL policy 仍需末端减速与闭环
+    # 收敛。航向对齐会顺延软截止，但最多只允许以下冻结预算，保持硬截止有限。
+    timeouts.trajectory_expiry_grace_sec: 3.0
+    timeouts.max_yaw_alignment_freeze_sec: 6.0
+    timeouts.max_control_dt_sec: 0.20
+
+    timestamps.future_tolerance_sec: 0.10
+    timestamps.max_start_stamp_skew_sec: 0.50
+    validation.quaternion_norm_tolerance: 0.05

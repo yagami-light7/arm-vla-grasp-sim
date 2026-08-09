@@ -1,0 +1,51 @@
+navigation_supervisor:
+  ros__parameters:
+    use_sim_time: true
+
+    frames.world: world
+    frames.base: base_link
+
+    topics.odometry: /body_pose
+    topics.point_cloud: /cloud_registered
+    # supervisor 与 SCAN/controller 消费同一份适配后 Path；PCT 原始输出保留
+    # 在 /pct/global_path 供审计和 RViz 对照。
+    topics.global_path: /initial_path
+    topics.pct_status: /pct/planning_status
+    topics.bspline: /planning/bspline
+    topics.scan_status: /planning/scan_status
+    topics.controller_status: /planning/controller_status
+    topics.navigation_status: /navigation/status
+    topics.pct_command_service: /pct/planning_command
+
+    qos.sensor_depth: 5
+    qos.path_depth: 1
+    qos.trajectory_depth: 1
+    qos.status_depth: 1
+
+    timeouts.odometry_sec: 0.30
+    timeouts.point_cloud_sec: 0.50
+    timeouts.bspline_sec: 1.50
+    # DDS 跨 topic 乱序时，等待同代 PCT Path 到达的最大窗口。
+    timeouts.pending_path_evidence_sec: 2.00
+    timeouts.future_tolerance_sec: 0.10
+    timeouts.timer_period_sec: 0.05
+    timeouts.replan_retry_period_sec: 0.50
+    timeouts.replan_response_sec: 1.00
+    timeouts.replan_service_wait_sec: 3.00
+    # 初始规划，或故障重规划服务 ACK 后，等待匹配 status+Path 的硬截止。
+    timeouts.global_planning_sec: 15.00
+    # 与 controller 配置同名同值：普通轨迹先使用有限收敛宽限；只有 final
+    # 或已认证 ALIGNING_YAW 才提升到额外冻结硬上限，状态心跳不能滚动续期。
+    timeouts.trajectory_expiry_grace_sec: 3.00
+    timeouts.max_yaw_alignment_freeze_sec: 6.00
+
+    # 小于 policy gate 的 0.25s NavigationStatus freshness timeout。
+    status.heartbeat_sec: 0.10
+
+    limits.max_consecutive_scan_failures: 5
+    limits.max_path_points: 4096
+    # B-spline 与 SCAN typed status 共用的乱序缓存硬上限。
+    limits.max_pending_path_evidence: 64
+    limits.replan_max_attempts: 3
+    # 每个故障链最多允许三个已被 PCT ACK 的全局重规划周期。
+    limits.max_global_replan_cycles: 3

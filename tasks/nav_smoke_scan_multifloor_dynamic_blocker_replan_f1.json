@@ -1,0 +1,101 @@
+{
+  "task_id": 17705,
+  "episode_id": 1,
+  "scene_profile": "multi_floor",
+  "scene_runtime": {
+    "collision_prim_path": "/World/scene_collision",
+    "visual_prim_path": "/World/gauss",
+    "collision_floor_proxy_profile": "yinluyuan_f2"
+  },
+  "navigation_execution": {
+    "extended_state_limits": true,
+    "require_yaw_alignment": true,
+    "require_stable_base": true
+  },
+  "instruction": "使用 PCT 全局 Path 与 SCAN 在线局部规划，在一楼等待横向阻断走廊的动态推车离开，并验证 PCT 重规划后恢复跟踪。",
+  "scene_usd": "source/scene/multifloor/usda/multifloor.usda",
+  "nav_map": "source/scene/multifloor/nav_map/map.json",
+  "start": {
+    "x": -4.2,
+    "y": 1.6,
+    "z": 0.18324563340693345,
+    "yaw": 1.5855269056817287,
+    "floor_id": "F1",
+    "slice_id": null
+  },
+  "pick": {
+    "base_goal": {
+      "x": -3.50493,
+      "y": 6.7491,
+      "z": 0.1251194919198741,
+      "yaw": 1.5707963267948966,
+      "floor_id": "F1",
+      "slice_id": null
+    },
+    "object_prim_path": null,
+    "grasp_mode": "none"
+  },
+  "place": {
+    "enabled": false,
+    "base_goal": null,
+    "place_pose_world": null
+  },
+  "carry": {
+    "mode": "none",
+    "arm_posture": "stow",
+    "gripper_hold_command": "close"
+  },
+  "dynamic_obstacles": [
+    {
+      "id": "blocking_cart",
+      "shape": "cuboid",
+      "floor_id": "F1",
+      "surface_class": "flat",
+      "size_xyz_m": [1.6, 0.45, 0.8],
+      "waypoints_world_xyz": [
+        [-3.85, 4.2, 0.235],
+        [-2.4, 4.2, 0.235]
+      ],
+      "speed_mps": 0.8,
+      "start_delay_s": 3.0,
+      "yaw_rad": 0.0,
+      "motion": "one_shot",
+      "color_rgb": [0.95, 0.45, 0.05],
+      "mass_kg": 30.0,
+      "collision_enabled": true,
+      "visible": true
+    }
+  ],
+  "dynamic_obstacle_safety": {
+    "minimum_stair_clearance_m": 1.0,
+    "stair_exclusion_aabbs_world": [
+      {
+        "id": "multifloor_scan_stair_freeze_corridor",
+        "min_xyz": [0.5, 4.5, -0.6],
+        "max_xyz": [3.2, 10.5, 3.8]
+      }
+    ]
+  },
+  "loop": {
+    "enabled": false,
+    "num_cycles": 1
+  },
+  "recording": {
+    "dataset_dir": "episodes/scan_multifloor_dynamic_blocker_replan_f1",
+    "front_camera": false,
+    "wrist_camera": false,
+    "save_every_n_steps": 10
+  },
+  "notes": {
+    "validation_only": true,
+    "planner_chain": "PCT global Path -> SCAN local Bspline -> cmd_vel -> Go2-X5 policy",
+    "dynamic_obstacle_scope": "F1 flat global-replan acceptance",
+    "dynamic_obstacle_position_semantics": "waypoints_world_xyz 表示 cuboid 中心；推车在参考走廊上驻留 3 秒后单程移到右侧净空位置并保持。",
+    "collision_ply": "source/scene/multifloor/ply/3dgs_collision.ply",
+    "collision_ply_sha256": "8975b79a74c9d233a4f3eda7acedd830938a1c0c8d485a60671653aceffcabd",
+    "stair_isolation": "推车 swept AABB 为 [-4.650,3.975,-0.165]..[-1.600,4.425,0.635]，与楼梯冻结排除 AABB 在额外 1.0 m 安全距下仍不相交。",
+    "replan_contract": "默认 0.5 秒重试、5 次失败约 2.5 秒触发首次重规划；推车 3 秒前保持阻断，4.8125 秒前完整到达净空端，早于 3 轮 7.5 秒失败预算。必须观测同一推车的 free-to-occupied typed transition，随后发生 SCAN failure 驱动的 PCT replan request/in-flight/new plan，并在 explicit miss clear 后恢复非零 identity-valid TRACKING。",
+    "root_lock_contract": "本任务只在 F1 平地运行，不得启用 scan_stair_freeze active、root/support/full-body lock 或 stair_execution_frozen。",
+    "real_smoke_required": true
+  }
+}

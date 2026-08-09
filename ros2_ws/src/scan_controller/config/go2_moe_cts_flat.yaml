@@ -1,0 +1,27 @@
+scan_controller:
+  ros__parameters:
+    # 标准 Go2 + MoE-CTS 的平地闭环验收覆盖层。
+    # 其余安全门、topic、QoS 与终点合同继续继承 controller.yaml。
+
+    # /initial_path 使用地面高度；这里是当前标准 Go2 站立时
+    # world→base_link 的实测高度，只允许在 controller 内增加一次。
+    reference_path.body_height_m: 0.342
+
+    # 与 MoE-CTS 的 50 Hz policy 控制周期一致，减少相同 ROS 时刻下的
+    # 重复 Twist，同时仍显著快于 0.25 s 的 policy 超时停车门。
+    controller.publish_rate_hz: 50.0
+
+    # 第一轮只验证低平台 0.8 m 短直线，不探索 policy 能力上限。
+    # 这些值均严格小于 Isaac 入口的 0.80/0.50/0.80 硬限幅。
+    limits.max_vx: 0.30
+    limits.max_vy: 0.15
+    limits.max_yaw_rate: 0.45
+
+    # controller 先执行该变化率限制，Isaac command gate 仍保留第二层
+    # 2.0/1.5/2.5 的更宽硬门，二者不会互相制造额外滞后。
+    limits.max_ax: 0.50
+    limits.max_ay: 0.40
+    limits.max_yaw_acc: 1.00
+
+    # 保持在正常前进包络内，避免接近最终点时降到 policy 难以执行的微速。
+    finish.min_approach_speed: 0.22

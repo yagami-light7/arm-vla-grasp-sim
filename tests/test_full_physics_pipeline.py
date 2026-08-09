@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import inspect
 import json
+import os
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.pipeline.run_full_physics_pipeline import (
+    _apply_scan_manual_path_goal_override,
     _build_parser,
     _camera_sensor_runtime_kwargs,
     _locomotion_runtime_kwargs,
+    _load_body_height_preflight_settings,
+    _load_navigation_point_cloud_settings,
+    _navigation_ros2_runtime_kwargs,
     _navigation_visual_runtime_kwargs,
     _navigation_smoke_viewport_runtime_kwargs,
     _parse_args,
@@ -23,7 +30,14 @@ from source.diagnostics import (
     ManipulationApplySmokeVerifier,
     NavigationEpisodeVerifier,
 )
-from source.interfaces import ArmPlan, EpisodeSpec, RobotAction, SimulationState, VerificationResult
+from source.interfaces import (
+    ArmPlan,
+    EpisodeSpec,
+    NavGoal,
+    RobotAction,
+    SimulationState,
+    VerificationResult,
+)
 from source.manipulation import (
     BinaryGripperController,
     SegmentedArmExecutor,
@@ -49,13 +63,17 @@ from source.pipeline.factory import create_full_physics_pipeline
 from source.pipeline.full_physics_pipeline import _should_auto_switch_overview_camera
 from source.pipeline.manipulation_apply_smoke import create_manipulation_apply_smoke_pipeline
 from source.pipeline.manipulation_smoke import create_manipulation_smoke_pipeline
-from source.pipeline.navigation_smoke import _build_dwa_config
+from source.pipeline.navigation_smoke import (
+    _build_dwa_config,
+    _scan_stair_freeze_config,
+)
 from source.pipeline.state_machine import (
     FullPhysicsStateMachine,
     _accept_successful_navigation_handoff_drift,
     _navigation_handoff_requires_zero_command_settle,
 )
 from source.recording import JsonlEpisodeRecorder
+from source.recording.jsonl_recorder import _compact_simulation_metadata
 from source.simulation import InMemorySimulationRuntime
 from source.simulation.lighting import resolve_scene_light_mode
 from source.tasks import JsonTaskProvider
@@ -87,7 +105,255 @@ def _liangzhu_pct_navigation_settings() -> NavigationSettings:
     )
 
 
+_STRICT_STAIR_HOLD_XYZYAW = (1.25, -0.5, 0.82, 0.35)
+
+
+class _StrictScanCompletionExecutor:
+    """构造可审计的 SCAN 成功终态及楼梯冻结动作。"""
+
+    def __init__(
+        self,
+        terminal_fields: dict[str, object] | None = None,
+        *,
+        invalidate_hold_on_call: int | None = None,
+    ) -> None:
+        self._terminal_fields = (
+            {
+                "success": True,
+                "failed": False,
+                "failure_reason": "",
+            }
+            if terminal_fields is None
+            else dict(terminal_fields)
+        )
+        self._has_plan = False
+        self._completed = False
+        self._invalidate_hold_on_call = invalidate_hold_on_call
+        self.compute_action_calls = 0
+
+    def reset(self, plan: object) -> None:
+        del plan
+        self._has_plan = True
+        self._completed = False
+        self.compute_action_calls = 0
+
+    def compute_action(self, state: SimulationState) -> RobotAction:
+        del state
+        if not self._has_plan:
+            raise RuntimeError("SCAN 测试 executor 尚未接收路径。")
+        self.compute_action_calls += 1
+        self._completed = True
+        metadata = {
+            "navigation_base_pose_lock": True,
+            "navigation_base_pose_lock_phase": "terminal_hold",
+            "navigation_base_pose_lock_xyzyaw": _STRICT_STAIR_HOLD_XYZYAW,
+            "navigation_support_joint_lock": True,
+            "navigation_full_body_joint_lock": True,
+            "navigation_scan_stair_freeze": True,
+            "navigation_scan_stair_freeze_phase": "terminal_hold",
+            "navigation_cmd_vel_inhibit": True,
+            "navigation_cmd_vel_inhibit_reason": "scan_stair_terminal_hold",
+        }
+        if self.compute_action_calls == self._invalidate_hold_on_call:
+            metadata.pop("navigation_full_body_joint_lock")
+        return RobotAction(
+            base_velocity=(0.2, -0.1, 0.3),
+            source="strict_scan_terminal_hold_fixture",
+            metadata=metadata,
+        )
+
+    def is_done(self, state: SimulationState) -> bool:
+        del state
+        return self._completed and self.status().get("done") is True
+
+    def status(self) -> dict[str, object]:
+        if not self._completed:
+            return {
+                "backend": "scan_ros2_goal_event",
+                "phase": "tracking",
+                "done": False,
+                "success": False,
+                "failed": False,
+                "failure_reason": "",
+            }
+        return {
+            "backend": "scan_ros2_goal_event",
+            "phase": "completed",
+            "done": True,
+            "stair_freeze": {
+                "phase": "terminal_hold",
+                "finish_ready": True,
+                "terminal_goal_bound": True,
+                "terminal_supervisor_goal_acknowledged": True,
+                "hold_xyzyaw": _STRICT_STAIR_HOLD_XYZYAW,
+            },
+            **self._terminal_fields,
+        }
+
+
+class _PickReachabilitySpyVerifier(DryRunEpisodeVerifier):
+    """记录导航交接校验次数，必要时令意外调用立即暴露。"""
+
+    def __init__(self, *, raise_on_call: bool = False) -> None:
+        self.raise_on_call = bool(raise_on_call)
+        self.pick_reachable_calls = 0
+
+    def verify_pick_reachable(
+        self,
+        state: SimulationState,
+        episode_spec: EpisodeSpec,
+    ) -> VerificationResult:
+        del state, episode_spec
+        self.pick_reachable_calls += 1
+        if self.raise_on_call:
+            raise AssertionError("strict 楼梯完成后不应调用抓取可达性校验器")
+        return VerificationResult(
+            success=True,
+            metadata={"verifier": "pick_reachability_spy"},
+        )
+
+
 class FullPhysicsPipelineTest(unittest.TestCase):
+    def test_dynamic_obstacle_lifecycle_evidence_is_preserved_in_outputs(self) -> None:
+        summary_source = inspect.getsource(FullPhysicsPipeline._build_summary)
+        for key in (
+            "dynamic_obstacle_configuration_report",
+            "dynamic_obstacle_runtime_report",
+            "dynamic_obstacle_lifecycle_report",
+            "dynamic_obstacle_raw_cloud_last_report",
+            "dynamic_obstacle_raw_cloud_lifecycle_report",
+            "dynamic_obstacle_pose_write_count",
+            "scan_controller_status_lifecycle_report",
+            "grid_map_observation_diagnostics_last_report",
+            "grid_map_observation_lifecycle_report",
+            "bspline_diagnostics_last_report",
+            "bspline_diagnostics_lifecycle_report",
+            "active_sensing_lifecycle_report",
+            "dynamic_navigation_evidence_report",
+        ):
+            self.assertIn(f'"{key}"', summary_source)
+
+        lifecycle = {
+            "schema": "dynamic_obstacle_lifecycle_v1",
+            "all_configured_obstacles_moved": True,
+        }
+        grid_map_last = {
+            "observation_sequence": 17,
+            "accepted_endpoint_count": 23,
+        }
+        grid_map_lifecycle = {
+            "schema": "grid_map_observation_lifecycle_v1",
+            "observation_count": 17,
+        }
+        bspline_last = {
+            "diagnostic_sequence": 9,
+            "trajectory_id": 4,
+        }
+        bspline_lifecycle = {
+            "schema": "bspline_diagnostics_lifecycle_v1",
+            "diagnostic_count": 9,
+        }
+        dynamic_navigation_evidence = {
+            "schema": "dynamic_navigation_evidence_v1",
+            "verified": True,
+        }
+        active_sensing_lifecycle = {
+            "schema": "active_sensing_lifecycle_v1",
+            "attempt_count": 1,
+            "attempts": [{"identity": {"traj_id": 7}}],
+        }
+        compact = _compact_simulation_metadata(
+            {
+                "dynamic_obstacle_runtime_report": {"enabled": True},
+                "dynamic_obstacle_lifecycle_report": lifecycle,
+                "dynamic_obstacle_raw_cloud_last_report": {
+                    "total_obstacle_point_count": 5,
+                },
+                "dynamic_obstacle_raw_cloud_lifecycle_report": {
+                    "schema": "dynamic_obstacle_raw_cloud_lifecycle_v1",
+                },
+                "scan_controller_status_lifecycle_report": {
+                    "schema": "scan_controller_status_lifecycle_v1",
+                },
+                "grid_map_observation_diagnostics_last_report": grid_map_last,
+                "grid_map_observation_lifecycle_report": grid_map_lifecycle,
+                "bspline_diagnostics_last_report": bspline_last,
+                "bspline_diagnostics_lifecycle_report": bspline_lifecycle,
+                "active_sensing_lifecycle_report": active_sensing_lifecycle,
+                "dynamic_navigation_evidence_report": (
+                    dynamic_navigation_evidence
+                ),
+            }
+        )
+        self.assertEqual(
+            compact["dynamic_obstacle_lifecycle_report"],
+            lifecycle,
+        )
+        self.assertEqual(
+            compact["dynamic_obstacle_raw_cloud_lifecycle_report"]["schema"],
+            "dynamic_obstacle_raw_cloud_lifecycle_v1",
+        )
+        self.assertEqual(
+            compact["scan_controller_status_lifecycle_report"]["schema"],
+            "scan_controller_status_lifecycle_v1",
+        )
+        self.assertEqual(
+            compact["grid_map_observation_diagnostics_last_report"],
+            grid_map_last,
+        )
+        self.assertEqual(
+            compact["grid_map_observation_lifecycle_report"],
+            grid_map_lifecycle,
+        )
+        self.assertEqual(
+            compact["grid_map_observation_lifecycle_report"]["schema"],
+            "grid_map_observation_lifecycle_v1",
+        )
+        self.assertEqual(
+            compact["bspline_diagnostics_last_report"],
+            bspline_last,
+        )
+        self.assertEqual(
+            compact["bspline_diagnostics_lifecycle_report"],
+            bspline_lifecycle,
+        )
+        self.assertEqual(
+            compact["bspline_diagnostics_lifecycle_report"]["schema"],
+            "bspline_diagnostics_lifecycle_v1",
+        )
+        self.assertEqual(
+            compact["active_sensing_lifecycle_report"],
+            {
+                "schema": "active_sensing_lifecycle_v1",
+                "attempt_count": 1,
+            },
+        )
+        self.assertEqual(
+            compact["dynamic_navigation_evidence_report"],
+            dynamic_navigation_evidence,
+        )
+        self.assertEqual(
+            compact["dynamic_navigation_evidence_report"]["schema"],
+            "dynamic_navigation_evidence_v1",
+        )
+
+    def test_navigation_failure_decision_requests_latched_policy_stop(self) -> None:
+        machine = object.__new__(FullPhysicsStateMachine)
+        machine.state = PipelineState.FAILED
+        machine.failure_reason = "locomotion_stall"
+
+        decision = machine._decision(PipelineState.EXEC_NAV_TO_PICK, [])
+
+        self.assertTrue(decision.terminal)
+        self.assertEqual(decision.action.base_velocity, (0.0, 0.0, 0.0))
+        self.assertEqual(
+            decision.action.metadata,
+            {
+                "navigation_emergency_stop": True,
+                "navigation_emergency_stop_reason": "locomotion_stall",
+            },
+        )
+
     def test_successful_navigation_handoff_accepts_only_bounded_frame_drift(self) -> None:
         base_metadata = {
             "goal_distance": 0.100017,
@@ -310,9 +576,36 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 "events.jsonl",
                 "frames.jsonl",
                 "lerobot_manifest.json",
+                "pipeline_startup_status.json",
+                "pipeline_startup_traceback.log",
                 "summary.json",
             ):
                 self.assertTrue((output_dir / filename).exists(), filename)
+
+            startup_status = json.loads(
+                (output_dir / "pipeline_startup_status.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(startup_status["status"], "completed")
+            self.assertEqual(startup_status["pid"], os.getpid())
+            self.assertEqual(
+                [phase["phase"] for phase in startup_status["phases"]],
+                [
+                    "run_episode_entered",
+                    "task_saved",
+                    "initial_simulation_read_started",
+                    "initial_simulation_read_finished",
+                    "initial_state_machine_tick_started",
+                    "initial_state_machine_tick_finished",
+                ],
+            )
+            self.assertEqual(
+                (output_dir / "pipeline_startup_traceback.log").read_text(
+                    encoding="utf-8"
+                ),
+                "",
+            )
 
             manifest = json.loads((output_dir / "lerobot_manifest.json").read_text(encoding="utf-8"))
             self.assertFalse(manifest["lerobot_exported"])
@@ -697,6 +990,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             "tasks/nav_pick_place_cola_box1_to_box2_liangzhu_pct.json",
         )
         self.assertEqual(args.global_planner, "pct")
+        self.assertTrue(args.enable_navigation_ros2_bridge)
         self.assertEqual(args.pct_coord_mode, "identity")
         self.assertTrue(args.pct_no_fallback)
         self.assertEqual(
@@ -774,7 +1068,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             args.overview_camera_schedule,
             "configs/recording/multifloor_overview_camera_schedule.json",
         )
-        self.assertTrue(args.pct_stair_float)
+        self.assertFalse(args.pct_stair_float)
 
     def test_full_visual_auto_uses_stage_lights_for_both_scene_profiles(self) -> None:
         for argv in (
@@ -899,6 +1193,31 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertFalse(args.record_dataset)
         self.assertEqual(args.output_dir, "/tmp/stair_override")
 
+    def test_stair_fixed_command_probe_cli_preserves_ab_parameters(self) -> None:
+        args = _parse_args(
+            [
+                "--scene-profile",
+                "multi_floor",
+                "--stair-locomotion-smoke",
+                "--task-json",
+                "tasks/nav_smoke_scan_multifloor_stair_two_step.json",
+                "--stair-fixed-command-probe",
+                "--stair-probe-vx",
+                "0.30",
+                "--stair-probe-duration",
+                "3.20",
+                "--headless",
+                "--no-record-video",
+                "--no-record-dataset",
+            ]
+        )
+
+        self.assertTrue(args.stair_fixed_command_probe)
+        self.assertEqual(args.stair_probe_vx, 0.30)
+        self.assertEqual(args.stair_probe_duration, 3.20)
+        self.assertFalse(args.enable_navigation_ros2_bridge)
+        self.assertFalse(args.pct_stair_float)
+
     def test_stair_locomotion_smoke_manages_gui_camera3(self) -> None:
         stair = _navigation_smoke_viewport_runtime_kwargs(
             headless=False,
@@ -957,6 +1276,414 @@ class FullPhysicsPipelineTest(unittest.TestCase):
         self.assertEqual(runtime_kwargs["front_camera_width"], 640)
         self.assertEqual(runtime_kwargs["front_camera_height"], 480)
         self.assertEqual(runtime_kwargs["camera_render_interval_control_steps"], 1)
+
+    def test_navigation_ros2_cli_builds_paired_runtime_config(self) -> None:
+        disabled = _navigation_ros2_runtime_kwargs(_parse_args(["--dry-run"]))
+        default_mainline = _navigation_ros2_runtime_kwargs(_parse_args([]))
+        args = _parse_args(
+            [
+                "--enable-navigation-ros2-bridge",
+                "--ros2-domain-id",
+                "17",
+                "--ros2-point-cloud-stride",
+                "8",
+                "--ros2-point-cloud-interval",
+                "4",
+                "--ros2-point-cloud-max-depth",
+                "6.5",
+                "--ros2-cmd-vel-topic",
+                "/scan/cmd_vel",
+                "--ros2-goal-reached-topic",
+                "/scan/goal_reached",
+                "--ros2-grid-map-diagnostics-topic",
+                "/scan/grid_map_diagnostics",
+                "--ros2-bspline-diagnostics-topic",
+                "/scan/bspline_diagnostics",
+                "--ros2-navigation-status-topic",
+                "/scan/navigation_status",
+                "--ros2-reference-path-topic",
+                "/scan/initial_path",
+                "--ros2-pct-goal-topic",
+                "/scan/pct_goal",
+                "--ros2-stair-execution-frozen-topic",
+                "/scan/stair_execution_frozen",
+                "--ros2-world-frame",
+                "map",
+                "--ros2-base-frame",
+                "robot/base_link",
+            ]
+        )
+
+        enabled = _navigation_ros2_runtime_kwargs(args)
+
+        self.assertEqual(disabled, {})
+        self.assertTrue(
+            default_mainline["ros2_ogn_bridge_config"].enable_pct_goal_publisher
+        )
+        self.assertTrue(
+            default_mainline[
+                "ros2_ogn_bridge_config"
+            ].enable_stair_execution_frozen_publisher
+        )
+        default_cloud = default_mainline["depth_point_cloud_config"]
+        self.assertEqual(default_cloud.pixel_stride, 8)
+        self.assertEqual(default_cloud.publish_interval_control_steps, 10)
+        self.assertEqual(default_cloud.max_points, 12000)
+        bridge = enabled["ros2_ogn_bridge_config"]
+        cloud = enabled["depth_point_cloud_config"]
+        command_gate = enabled["cmd_vel_to_policy_config"]
+        self.assertEqual(bridge.domain_id, 17)
+        self.assertEqual(bridge.odometry_topic, "/isaac/body_pose_raw")
+        self.assertEqual(bridge.odom_frame_id, "map")
+        self.assertEqual(bridge.point_cloud_frame_id, "map")
+        self.assertEqual(bridge.base_frame_id, "robot/base_link")
+        self.assertTrue(bridge.enable_command_subscription)
+        self.assertTrue(bridge.enable_goal_reached_subscription)
+        self.assertEqual(bridge.command_topic, "/scan/cmd_vel")
+        self.assertEqual(bridge.goal_reached_topic, "/scan/goal_reached")
+        self.assertTrue(bridge.enable_grid_map_diagnostics_subscription)
+        self.assertEqual(
+            bridge.grid_map_diagnostics_topic,
+            "/scan/grid_map_diagnostics",
+        )
+        self.assertTrue(bridge.enable_bspline_diagnostics_subscription)
+        self.assertEqual(
+            bridge.bspline_diagnostics_topic,
+            "/scan/bspline_diagnostics",
+        )
+        self.assertEqual(
+            bridge.navigation_status_topic,
+            "/scan/navigation_status",
+        )
+        self.assertEqual(bridge.reference_path_topic, "/scan/initial_path")
+        self.assertTrue(bridge.enable_reference_path_subscription)
+        self.assertEqual(bridge.pct_goal_topic, "/scan/pct_goal")
+        self.assertTrue(bridge.enable_pct_goal_publisher)
+        self.assertEqual(
+            bridge.stair_execution_frozen_topic,
+            "/scan/stair_execution_frozen",
+        )
+        self.assertTrue(bridge.enable_stair_execution_frozen_publisher)
+        self.assertEqual(cloud.sensor_name, "head_camera")
+        self.assertEqual(cloud.pixel_stride, 8)
+        self.assertEqual(cloud.publish_interval_control_steps, 4)
+        self.assertEqual(cloud.max_depth_m, 6.5)
+        self.assertEqual(cloud.minimum_valid_points, 64)
+        self.assertEqual(command_gate.max_vx, 0.65)
+        self.assertEqual(command_gate.max_vy, 0.15)
+        self.assertEqual(command_gate.max_wz, 0.60)
+        self.assertEqual(command_gate.max_vx_rate, 1.20)
+        self.assertEqual(command_gate.max_vy_rate, 0.40)
+        self.assertEqual(command_gate.max_wz_rate, 1.50)
+
+    def test_navigation_point_cloud_tuning_rejects_invalid_resource_contract(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "invalid_tuning.yaml"
+            config_path.write_text(
+                """
+isaac_navigation_runtime:
+  ros__parameters:
+    point_cloud.pixel_stride: 6
+    point_cloud.publish_interval_control_steps: 10
+    point_cloud.min_depth_m: 0.15
+    point_cloud.max_depth_m: 8.0
+    point_cloud.max_points: 32
+    point_cloud.minimum_valid_points: 64
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "minimum_valid_points 不能大于 max_points",
+            ):
+                _load_navigation_point_cloud_settings(config_path)
+
+    def test_body_height_preflight_tuning_loads_strict_quick_and_full_windows(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "preflight_tuning.yaml"
+            config_path.write_text(
+                """
+navigation_contract:
+  ros__parameters:
+    body_height_preflight.quick.enabled: true
+    body_height_preflight.quick.minimum_samples: 26
+    body_height_preflight.quick.minimum_duration_s: 0.50
+    body_height_preflight.quick.maximum_mad_m: 0.0025
+    body_height_preflight.quick.maximum_p95_p05_m: 0.0075
+    body_height_preflight.quick.maximum_configured_height_error_m: 0.020
+    body_height_preflight.full.minimum_samples: 50
+    body_height_preflight.full.minimum_duration_s: 1.00
+    body_height_preflight.full.maximum_mad_m: 0.010
+    body_height_preflight.full.maximum_p95_p05_m: 0.030
+    body_height_preflight.full.maximum_configured_height_error_m: 0.080
+    body_height_preflight.timeout_s: 5.00
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            settings = _load_body_height_preflight_settings(config_path)
+
+            self.assertTrue(
+                settings["body_height_calibration_quick_enabled"]
+            )
+            self.assertEqual(
+                settings["body_height_calibration_quick_min_samples"],
+                26,
+            )
+            self.assertEqual(
+                settings["body_height_calibration_min_samples"],
+                50,
+            )
+            self.assertEqual(
+                settings["body_height_calibration_quick_min_duration_s"],
+                0.5,
+            )
+            self.assertEqual(
+                settings["body_height_calibration_min_duration_s"],
+                1.0,
+            )
+            self.assertEqual(
+                settings[
+                    "body_height_calibration_quick_contract_tolerance_m"
+                ],
+                0.02,
+            )
+
+    def test_body_height_preflight_tuning_rejects_non_boolean_quick_gate(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "invalid_preflight.yaml"
+            config_path.write_text(
+                """
+navigation_contract:
+  ros__parameters:
+    body_height_preflight.quick.enabled: 1
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "必须是布尔值"):
+                _load_body_height_preflight_settings(config_path)
+
+    def test_navigation_ros2_environment_fails_before_isaac_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_dir = Path(temporary_directory) / "navigation_environment"
+            with patch(
+                "scripts.pipeline.run_full_physics_pipeline."
+                "validate_isaac_ros2_custom_message_environment",
+                side_effect=RuntimeError("custom_message_environment_sentinel"),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "custom_message_environment_sentinel",
+                ):
+                    main(
+                        [
+                            "--scene-profile",
+                            "multi_floor",
+                            "--stair-locomotion-smoke",
+                            "--headless",
+                            "--no-record-video",
+                            "--no-record-dataset",
+                            "--output-dir",
+                            str(output_dir),
+                        ]
+                    )
+
+            status = json.loads(
+                (output_dir / "startup_status.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            phases = [entry["phase"] for entry in status["phases"]]
+            self.assertEqual(status["status"], "failed")
+            self.assertEqual(
+                status["exception"]["type"],
+                "RuntimeError",
+            )
+            self.assertEqual(
+                status["exception"]["message"],
+                "custom_message_environment_sentinel",
+            )
+            self.assertIn("config_ready", phases)
+            self.assertNotIn("isaac_app_starting", phases)
+            self.assertNotIn("curobo_server_starting", phases)
+
+    def test_scan_manual_path_goal_override_preserves_height_and_provenance(
+        self,
+    ) -> None:
+        original_goal = NavGoal(
+            x=-0.55,
+            y=6.08,
+            z=0.31,
+            yaw=1.57,
+            floor_id="liangzhu_F1",
+            slice_id=1,
+        )
+        episode_spec = EpisodeSpec(
+            task_id=1,
+            episode_id=2,
+            instruction="测试手工转弯路径。",
+            scene_usd="scene.usda",
+            nav_map="",
+            start=NavGoal(x=-0.55, y=5.05, z=0.28, yaw=0.0),
+            pick_goal=original_goal,
+            place_goal=None,
+            object_prim_path=None,
+            object_initial_pose=None,
+            place_target_pose=None,
+            raw_task={"runtime_override": {"existing": True}},
+        )
+
+        result = _apply_scan_manual_path_goal_override(
+            episode_spec,
+            (0.05315879305802, 5.652347877290755, 1.5707963267948966),
+        )
+
+        self.assertAlmostEqual(result.pick_goal.x, 0.05315879305802)
+        self.assertAlmostEqual(result.pick_goal.y, 5.652347877290755)
+        self.assertAlmostEqual(result.pick_goal.yaw, 1.5707963267948966)
+        self.assertEqual(result.pick_goal.z, original_goal.z)
+        self.assertEqual(result.pick_goal.floor_id, original_goal.floor_id)
+        self.assertEqual(result.pick_goal.slice_id, original_goal.slice_id)
+        runtime_override = result.raw_task["runtime_override"]
+        self.assertTrue(runtime_override["existing"])
+        self.assertEqual(
+            runtime_override["scan_manual_path_goal"]["path_source"],
+            "external_ros2_nav_msgs_path",
+        )
+        self.assertEqual(
+            runtime_override["scan_manual_path_goal"][
+                "original_pick_goal_xyyaw"
+            ],
+            [original_goal.x, original_goal.y, original_goal.yaw],
+        )
+        self.assertIsNone(
+            _apply_scan_manual_path_goal_override(episode_spec, None)
+            .raw_task.get("scan_manual_path_goal")
+        )
+        with self.assertRaisesRegex(ValueError, "三个有限"):
+            _apply_scan_manual_path_goal_override(
+                episode_spec,
+                (0.0, float("nan"), 0.0),
+            )
+
+    def test_scan_manual_path_goal_override_requires_ros2_navigation_smoke(
+        self,
+    ) -> None:
+        args = _parse_args(
+            [
+                "--navigation-smoke",
+                "--enable-navigation-ros2-bridge",
+                "--scan-manual-path-goal-xyyaw",
+                "0.05",
+                "5.65",
+                "1.57",
+            ]
+        )
+        self.assertEqual(
+            args.scan_manual_path_goal_xyyaw,
+            [0.05, 5.65, 1.57],
+        )
+        with self.assertRaisesRegex(
+            SystemExit,
+            "只允许用于.*navigation-smoke",
+        ):
+            main(
+                [
+                    "--dry-run",
+                    "--scan-manual-path-goal-xyyaw",
+                    "0.05",
+                    "5.65",
+                    "1.57",
+                ]
+            )
+
+    def test_navigation_ros2_runtime_disables_post_gate_standing_deadzone(
+        self,
+    ) -> None:
+        config = FullPhysicsConfig(
+            task_json=PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json",
+            output_dir=Path("/tmp/pct_scan_deadzone_test"),
+            full_physics=True,
+            pct_plan_preview=True,
+            locomotion=LocomotionPolicySettings(
+                policy_profile="pct_multifloor",
+            ),
+        )
+
+        self.assertEqual(
+            _locomotion_runtime_kwargs(config)["standing_command_threshold"],
+            0.08,
+        )
+        self.assertEqual(
+            _locomotion_runtime_kwargs(
+                config,
+                navigation_ros2_bridge_enabled=True,
+            )["standing_command_threshold"],
+            0.0,
+        )
+
+    def test_navigation_ros2_cli_rejects_mode_without_navigation_runtime(self) -> None:
+        with self.assertRaisesRegex(
+            SystemExit,
+            "只支持会创建 IsaacLabNavigationRuntime",
+        ):
+            main(["--dry-run", "--enable-navigation-ros2-bridge"])
+
+    def test_pct_scan_navigation_cli_rejects_legacy_planner_switches(self) -> None:
+        cases = (
+            (
+                ["--navigation-smoke", "--no-enable-navigation-ros2-bridge"],
+                "只允许 PCT→SCAN ROS 2 链",
+            ),
+            (
+                ["--navigation-smoke", "--global-planner", "astar"],
+                "只允许 PCT 全局规划器",
+            ),
+            (
+                ["--navigation-smoke", "--pct-allow-fallback"],
+                r"禁止 PCT→A\* fallback",
+            ),
+        )
+        for argv, pattern in cases:
+            with self.subTest(argv=argv):
+                with self.assertRaisesRegex(SystemExit, pattern):
+                    main(argv)
+
+    def test_navigation_ros2_cli_rejects_unsafe_multi_episode_lifecycle(self) -> None:
+        with self.assertRaisesRegex(
+            SystemExit,
+            "epoch/reset/ack",
+        ):
+            main(
+                [
+                    "--navigation-smoke",
+                    "--enable-navigation-ros2-bridge",
+                    "--num-episodes",
+                    "2",
+                ]
+            )
+
+    def test_navigation_ros2_cli_requires_collision_visual_mode(self) -> None:
+        with self.assertRaisesRegex(
+            SystemExit,
+            "navigation-visual-mode collision",
+        ):
+            main(
+                [
+                    "--navigation-smoke",
+                    "--enable-navigation-ros2-bridge",
+                    "--navigation-visual-mode",
+                    "full",
+                ]
+            )
 
     def test_multifloor_gui_defaults_to_auto_overview_composite(self) -> None:
         args = _parse_args(
@@ -1086,6 +1813,93 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             args.pct_stair_float_release_root_z_offset,
             NavigationSettings().pct_stair_float_release_root_z_offset_m,
         )
+        self.assertEqual(
+            args.navigation_body_height_m,
+            NavigationSettings().navigation_body_height_m,
+        )
+
+    def test_cli_and_host_freeze_share_unique_navigation_body_height(self) -> None:
+        args = _build_parser().parse_args(
+            ["--navigation-body-height-m", "0.34"]
+        )
+        navigation = NavigationSettings(
+            navigation_body_height_m=args.navigation_body_height_m
+        )
+
+        self.assertEqual(args.navigation_body_height_m, 0.34)
+        self.assertEqual(
+            _scan_stair_freeze_config(navigation).body_height_m,
+            0.34,
+        )
+
+    def test_scan_stair_freeze_runtime_receives_max_control_dt(self) -> None:
+        navigation = NavigationSettings(
+            control_dt=0.02,
+            scan_stair_freeze_max_control_dt_s=0.07,
+        )
+
+        runtime_config = _scan_stair_freeze_config(navigation)
+
+        self.assertEqual(runtime_config.default_control_dt_s, 0.02)
+        self.assertEqual(runtime_config.max_control_dt_s, 0.07)
+
+    def test_scan_stair_freeze_max_control_dt_is_validated(self) -> None:
+        common = {
+            "task_json": (
+                PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json"
+            ),
+            "output_dir": PROJECT_ROOT / "outputs/test",
+        }
+        for value in (0.0, -0.1, float("nan"), float("inf")):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "scan_stair_freeze_max_control_dt_s",
+                ):
+                    FullPhysicsConfig(
+                        **common,
+                        navigation=NavigationSettings(
+                            scan_stair_freeze_max_control_dt_s=value
+                        ),
+                    )
+        with self.assertRaisesRegex(ValueError, "smaller than control_dt"):
+            FullPhysicsConfig(
+                **common,
+                navigation=NavigationSettings(
+                    control_dt=0.02,
+                    scan_stair_freeze_max_control_dt_s=0.01,
+                ),
+            )
+
+    def test_legacy_scan_freeze_body_height_source_is_rejected(self) -> None:
+        with self.assertRaisesRegex(TypeError, "scan_stair_freeze_body_height_m"):
+            NavigationSettings(scan_stair_freeze_body_height_m=0.34)
+
+    def test_navigation_body_height_must_be_finite_and_positive(self) -> None:
+        for value in (0.0, -0.1, float("nan"), float("inf")):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "navigation_body_height_m must be finite and positive",
+                ):
+                    FullPhysicsConfig(
+                        task_json=(
+                            PROJECT_ROOT
+                            / "tasks/nav_pick_place_apple_contact.json"
+                        ),
+                        output_dir=PROJECT_ROOT / "outputs/test",
+                        navigation=NavigationSettings(
+                            navigation_body_height_m=value
+                        ),
+                    )
+        with self.assertRaisesRegex(ValueError, "measured body height maximum"):
+            FullPhysicsConfig(
+                task_json=(
+                    PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json"
+                ),
+                output_dir=PROJECT_ROOT / "outputs/test",
+                navigation=NavigationSettings(navigation_body_height_m=0.61),
+            )
 
     def test_cli_accepts_liangzhu_identity_pct_frame(self) -> None:
         """良渚 PLY 与 Isaac 同坐标时必须能显式关闭旧场景的 X/Y 取反。"""
@@ -1103,6 +1917,58 @@ class FullPhysicsPipelineTest(unittest.TestCase):
 
         self.assertEqual(args.global_planner, "pct")
         self.assertEqual(args.pct_coord_mode, "identity")
+
+    def test_cli_accepts_complete_pct_coordinate_transform(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "--pct-offset-x",
+                "1.1",
+                "--pct-offset-y",
+                "-2.2",
+                "--pct-offset-z",
+                "3.3",
+                "--pct-scale-x",
+                "0.7",
+                "--pct-scale-y",
+                "-1.2",
+                "--pct-scale-z",
+                "1.4",
+                "--pct-rotation-x-rad",
+                "0.1",
+                "--pct-rotation-y-rad",
+                "-0.2",
+                "--pct-rotation-z-rad",
+                "0.3",
+            ]
+        )
+
+        self.assertEqual(args.pct_offset_x, 1.1)
+        self.assertEqual(args.pct_offset_y, -2.2)
+        self.assertEqual(args.pct_offset_z, 3.3)
+        self.assertEqual(args.pct_scale_x, 0.7)
+        self.assertEqual(args.pct_scale_y, -1.2)
+        self.assertEqual(args.pct_scale_z, 1.4)
+        self.assertEqual(args.pct_rotation_x_rad, 0.1)
+        self.assertEqual(args.pct_rotation_y_rad, -0.2)
+        self.assertEqual(args.pct_rotation_z_rad, 0.3)
+
+    def test_pipeline_config_rejects_invalid_pct_coordinate_transform(self) -> None:
+        invalid_cases = (
+            ({"pct_scale_z": 0.0}, "scales must be non-zero"),
+            ({"pct_rotation_x_rad": float("nan")}, "must be finite"),
+            ({"pct_coord_mode": "unsupported"}, "coordinate mode"),
+        )
+        for overrides, pattern in invalid_cases:
+            with self.subTest(overrides=overrides):
+                with self.assertRaisesRegex(ValueError, pattern):
+                    FullPhysicsConfig(
+                        task_json=(
+                            PROJECT_ROOT
+                            / "tasks/nav_pick_place_apple_contact.json"
+                        ),
+                        output_dir=PROJECT_ROOT / "outputs/test",
+                        navigation=NavigationSettings(**overrides),
+                    )
 
     def test_cli_accepts_pct_stair_float_overrides(self) -> None:
         args = _build_parser().parse_args(
@@ -1265,6 +2131,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 task_json=task_path,
                 output_dir=root,
                 full_physics=True,
+                diagnostic_frame_stride=7,
                 navigation=_liangzhu_pct_navigation_settings(),
             )
             spec = JsonTaskProvider().load(task_path)
@@ -1278,6 +2145,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             )
 
             self.assertIsInstance(pipeline.machine.arm_executor, SegmentedArmExecutor)
+            self.assertEqual(pipeline.recorder._diagnostic_frame_stride, 7)
             self.assertFalse(
                 pipeline.machine.manipulation_planner._config.side_grasp_plan_vertical_lift
             )
@@ -1497,7 +2365,14 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             self.assertEqual(pipeline.machine.state, PipelineState.RESET_EPISODE)
 
             stabilized = pipeline.machine.tick(simulation.read())
-            self.assertEqual(pipeline.machine.state, PipelineState.PLAN_NAV_TO_PICK)
+            self.assertEqual(pipeline.machine.state, PipelineState.RESET_EPISODE)
+            self.assertTrue(
+                stabilized.action.metadata["body_height_calibration_active"]
+            )
+            self.assertIn(
+                "body_height_preflight_started",
+                {event.name for event in stabilized.events},
+            )
             self.assertIn(
                 "object_initial_pose_stabilized",
                 {event.name for event in stabilized.events},
@@ -1631,7 +2506,14 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             )
 
             stabilized = pipeline.machine.tick(simulation.read())
-            self.assertEqual(pipeline.machine.state, PipelineState.PLAN_NAV_TO_PICK)
+            self.assertEqual(pipeline.machine.state, PipelineState.RESET_EPISODE)
+            self.assertTrue(
+                stabilized.action.metadata["body_height_calibration_active"]
+            )
+            self.assertIn(
+                "body_height_preflight_started",
+                {event.name for event in stabilized.events},
+            )
             self.assertIn(
                 "object_initial_pose_stabilized",
                 {event.name for event in stabilized.events},
@@ -1705,7 +2587,14 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             simulation.step(render=False)
 
             stabilized = pipeline.machine.tick(simulation.read())
-            self.assertEqual(pipeline.machine.state, PipelineState.PLAN_NAV_TO_PICK)
+            self.assertEqual(pipeline.machine.state, PipelineState.RESET_EPISODE)
+            self.assertTrue(
+                stabilized.action.metadata["body_height_calibration_active"]
+            )
+            self.assertIn(
+                "body_height_preflight_started",
+                {event.name for event in stabilized.events},
+            )
             self.assertIn(
                 "object_initial_pose_stabilized",
                 {event.name for event in stabilized.events},
@@ -2307,18 +3196,54 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             machine._carry_arm_home_target["return_home_inserted"]
         )
 
-    def test_place_carry_handoff_keeps_navigation_locks_for_pct_stair_float(self) -> None:
+    def test_navigation_to_pick_holds_pct_checkpoint_stow_pose(self) -> None:
+        machine = object.__new__(FullPhysicsStateMachine)
+        machine.state = PipelineState.EXEC_NAV_TO_PICK
+        machine._navigation_arm_stow_target = {
+            "arm_joint_names": tuple(
+                f"arm_joint{index}" for index in range(1, 7)
+            ),
+            "arm_joint_positions": (0.0, 0.3, 0.5, 0.0, 0.0, 0.0),
+            "source": "pct_multifloor_checkpoint_default",
+            "fixed_during_navigation": True,
+        }
+
+        held = machine._with_navigation_arm_stow_hold(
+            RobotAction(
+                base_velocity=(0.2, 0.0, 0.1),
+                source="scan_ros2_navigation",
+            ),
+            PipelineState.EXEC_NAV_TO_PICK,
+        )
+
+        self.assertEqual(
+            held.arm_joint_positions,
+            (0.0, 0.3, 0.5, 0.0, 0.0, 0.0),
+        )
+        self.assertTrue(held.metadata["navigation_arm_stow_hold"])
+        self.assertEqual(
+            held.metadata["navigation_arm_stow_phase"],
+            PipelineState.EXEC_NAV_TO_PICK.value,
+        )
+        self.assertTrue(held.metadata["arm_velocity_hold"])
+        self.assertEqual(held.base_velocity, (0.2, 0.0, 0.1))
+
+    def test_place_carry_handoff_uses_actual_scan_stair_freeze_provenance(self) -> None:
         machine = object.__new__(FullPhysicsStateMachine)
         machine.config = FullPhysicsConfig(
             task_json=PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json",
             output_dir=PROJECT_ROOT / "outputs",
-            navigation=NavigationSettings(pct_stair_float_enabled=True),
+            navigation=NavigationSettings(
+                pct_stair_float_enabled=False,
+                scan_stair_freeze_enabled=True,
+            ),
         )
         state = SimulationState(
             step_index=9,
             timestamp=0.45,
             robot_root_pose=(0.24, -0.05, 3.28, 0.9238795, 0.0, 0.0, -0.3826834),
             robot_root_velocity=(0.0,) * 6,
+            metadata={"used_navigation_base_lock": True},
         )
 
         action = machine._place_carry_handoff_action(state)
@@ -2336,6 +3261,12 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             action.metadata["navigation_base_pose_lock_xyzyaw"][:3],
             (0.24, -0.05, 3.28),
         )
+
+        no_stair_action = machine._place_carry_handoff_action(
+            replace(state, metadata={"used_navigation_base_lock": False})
+        )
+        self.assertEqual(no_stair_action.source, "verify_place_reachable")
+        self.assertNotIn("navigation_base_pose_lock", no_stair_action.metadata)
 
     def test_pick_smoke_stops_after_physical_pick_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -2399,6 +3330,7 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                     PipelineState.DONE.value,
                 ],
             )
+
             event_names = [
                 json.loads(line)["name"]
                 for line in (root / "episode" / "events.jsonl")
@@ -3249,6 +4181,81 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                 all(frame["action"]["gripper_command"] == "close" for frame in carry_frames)
             )
 
+    def test_navigation_carry_terminal_uses_latest_exec_arm_sample(self) -> None:
+        """导航前收拢峰值不得否决已经稳定到点的 carry 姿态。"""
+
+        class _PreNavigationArmPeakRuntime(InMemorySimulationRuntime):
+            def read(self) -> SimulationState:
+                state = super().read()
+                latest = dict(
+                    state.metadata.get("last_arm_tracking_report") or {}
+                )
+                if latest.get("available") is not True:
+                    return state
+                aggregate = dict(state.metadata.get("arm_tracking_report") or {})
+                aggregate.update(
+                    {
+                        "max_abs_error": 0.3588,
+                        "peak_report": {
+                            "pipeline_state": PipelineState.PLAN_NAV_TO_PLACE.value,
+                            "max_abs_error": 0.3588,
+                        },
+                        "latest_report": latest,
+                    }
+                )
+                return replace(
+                    state,
+                    metadata={
+                        **state.metadata,
+                        "arm_tracking_report": aggregate,
+                    },
+                )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            task_path = PROJECT_ROOT / "tasks/nav_pick_place_apple_contact.json"
+            config = FullPhysicsConfig(
+                task_json=task_path,
+                output_dir=root,
+                navigation_carry_smoke=True,
+            )
+            base_spec = JsonTaskProvider().load(task_path)
+            spec = replace(base_spec, start=base_spec.pick_goal)
+            gripper = BinaryGripperController()
+            pipeline = FullPhysicsPipeline(
+                config=config,
+                episode_spec=spec,
+                episode_seed=11,
+                simulation=_PreNavigationArmPeakRuntime(),
+                nav_planner=DryRunNavPlanner(),
+                nav_executor=DryRunNavExecutor(),
+                manipulation_planner=SegmentedSmokeManipulationPlanner(),
+                arm_executor=SegmentedArmExecutor(gripper),
+                gripper=gripper,
+                verifier=NavigationEpisodeVerifier(),
+                recorder=JsonlEpisodeRecorder(root / "episode"),
+            )
+
+            summary = pipeline.run_episode()
+
+            self.assertTrue(summary["success"])
+            self.assertTrue(summary["carry_control_success"])
+            success_event = next(
+                json.loads(line)
+                for line in (root / "episode" / "events.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+                if json.loads(line)["name"] == "navigation_carry_smoke_success"
+            )
+            self.assertEqual(
+                success_event["metadata"]["tracking_scope"],
+                "latest_carry_sample",
+            )
+            self.assertLess(
+                success_event["metadata"]["arm_tracking_report"]["max_abs_error"],
+                config.manipulation.carry_home_tracking_tolerance,
+            )
+
     def test_stair_locomotion_smoke_stops_after_navigation_goal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -3260,17 +4267,19 @@ class FullPhysicsPipelineTest(unittest.TestCase):
             )
             spec = JsonTaskProvider().load(task_path)
             gripper = BinaryGripperController()
+            nav_executor = _StrictScanCompletionExecutor()
+            verifier = _PickReachabilitySpyVerifier(raise_on_call=True)
             pipeline = FullPhysicsPipeline(
                 config=config,
                 episode_spec=spec,
                 episode_seed=5,
                 simulation=InMemorySimulationRuntime(),
                 nav_planner=DryRunNavPlanner(),
-                nav_executor=DryRunNavExecutor(),
+                nav_executor=nav_executor,
                 manipulation_planner=SegmentedSmokeManipulationPlanner(),
                 arm_executor=SegmentedArmExecutor(gripper),
                 gripper=gripper,
-                verifier=NavigationEpisodeVerifier(),
+                verifier=verifier,
                 recorder=JsonlEpisodeRecorder(root / "episode"),
             )
 
@@ -3290,10 +4299,417 @@ class FullPhysicsPipelineTest(unittest.TestCase):
                     PipelineState.RESET_EPISODE.value,
                     PipelineState.PLAN_NAV_TO_PICK.value,
                     PipelineState.EXEC_NAV_TO_PICK.value,
-                    PipelineState.VERIFY_PICK_REACHABLE.value,
                     PipelineState.CLEANUP_EPISODE.value,
                     PipelineState.DONE.value,
                 ],
+            )
+            self.assertEqual(verifier.pick_reachable_calls, 0)
+
+            events = [
+                json.loads(line)
+                for line in (root / "episode" / "events.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            event_names = {event["name"] for event in events}
+            self.assertIn("nav_to_pick_success", event_names)
+            self.assertIn("stair_locomotion_smoke_success", event_names)
+
+            frames = [
+                json.loads(line)
+                for line in (root / "episode" / "frames.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            terminal_hold_frames = [
+                frame
+                for frame in frames
+                if frame["action"]["source"]
+                in {"stair_navigation_complete", "cleanup_episode"}
+            ]
+            self.assertEqual(
+                [frame["action"]["source"] for frame in terminal_hold_frames],
+                ["stair_navigation_complete", "cleanup_episode"],
+            )
+            for frame in terminal_hold_frames:
+                action = frame["action"]
+                metadata = action["metadata"]
+                self.assertEqual(action["base_velocity"], [0.0, 0.0, 0.0])
+                self.assertTrue(metadata["navigation_base_pose_lock"])
+                self.assertEqual(
+                    metadata["navigation_base_pose_lock_phase"],
+                    "terminal_hold",
+                )
+                self.assertEqual(
+                    metadata["navigation_base_pose_lock_xyzyaw"],
+                    list(_STRICT_STAIR_HOLD_XYZYAW),
+                )
+                self.assertTrue(metadata["navigation_support_joint_lock"])
+                self.assertTrue(metadata["navigation_full_body_joint_lock"])
+                self.assertTrue(metadata["navigation_scan_stair_freeze"])
+                self.assertEqual(
+                    metadata["navigation_scan_stair_freeze_phase"],
+                    "terminal_hold",
+                )
+                self.assertTrue(metadata["navigation_cmd_vel_inhibit"])
+                self.assertEqual(
+                    metadata["navigation_cmd_vel_inhibit_reason"],
+                    "scan_stair_terminal_hold",
+                )
+                self.assertTrue(metadata["stair_navigation_strict_completion"])
+                self.assertTrue(
+                    metadata["stair_navigation_terminal_hold_preserved"]
+                )
+
+            final_state = pipeline.simulation.read()
+            workaround_state = replace(
+                final_state,
+                metadata={
+                    **final_state.metadata,
+                    "execution_provenance_verified": True,
+                    "used_base_teleport": True,
+                    "used_direct_joint_state": True,
+                    "used_navigation_base_lock": True,
+                    "used_navigation_support_joint_lock": True,
+                    "used_navigation_joint_pose_lock": True,
+                    "navigation_ros2_bridge_report": {"publish_count": 8},
+                    "navigation_stair_execution_frozen_last_publish_report": {
+                        "sequence": 9,
+                        "value": True,
+                    },
+                    "scan_controller_status_last_report": {
+                        "state_name": "GOAL_REACHED",
+                    },
+                },
+            )
+            workaround = pipeline._build_summary(
+                started_at=0.0,
+                duration_steps=1,
+                final_state=workaround_state,
+                last_action={},
+            )
+            self.assertEqual(
+                workaround["success_semantics"],
+                "scan_stair_root_lock_workaround",
+            )
+            self.assertFalse(workaround["physical_navigation_success"])
+            self.assertFalse(workaround["low_level_stair_locomotion_success"])
+            self.assertTrue(
+                workaround["navigation_root_lock_workaround_success"]
+            )
+            self.assertEqual(
+                workaround["simulation_report"]
+                ["navigation_ros2_bridge_report"]["publish_count"],
+                8,
+            )
+            self.assertTrue(
+                workaround["simulation_report"]
+                ["navigation_stair_execution_frozen_last_publish_report"]
+                ["value"]
+            )
+            self.assertEqual(
+                workaround["simulation_report"]
+                ["scan_controller_status_last_report"]["state_name"],
+                "GOAL_REACHED",
+            )
+
+            # 同一 provenance 出现在完整 pipeline 时也必须明确标成非物理
+            # 楼梯 root-lock，不能只在 stair-smoke 下关闭 physical 成功位。
+            pipeline.config = replace(
+                pipeline.config,
+                stair_locomotion_smoke=False,
+                full_physics=True,
+            )
+            full_pipeline_workaround = pipeline._build_summary(
+                started_at=0.0,
+                duration_steps=1,
+                final_state=workaround_state,
+                last_action={},
+            )
+            self.assertEqual(
+                full_pipeline_workaround["execution_mode"],
+                "full_physics",
+            )
+            self.assertIn(
+                "scan_stair_root_lock_workaround",
+                full_pipeline_workaround["success_semantics"],
+            )
+            self.assertFalse(
+                full_pipeline_workaround["physical_navigation_success"]
+            )
+            self.assertTrue(
+                full_pipeline_workaround[
+                    "navigation_root_lock_workaround_success"
+                ]
+            )
+
+    def test_strict_stair_completion_status_is_fail_closed(self) -> None:
+        cases = (
+            (
+                "missing_success",
+                {"failed": False, "failure_reason": ""},
+                "stair_navigation_executor_completion_invalid",
+            ),
+            (
+                "executor_failed",
+                {
+                    "success": True,
+                    "failed": True,
+                    "failure_reason": "scan_controller_failed",
+                },
+                "scan_controller_failed",
+            ),
+        )
+        for case_name, terminal_fields, expected_reason in cases:
+            with self.subTest(case=case_name), tempfile.TemporaryDirectory() as tmp_dir:
+                root = Path(tmp_dir)
+                task_path = PROJECT_ROOT / "tasks/nav_smoke_example.json"
+                config = FullPhysicsConfig(
+                    task_json=task_path,
+                    output_dir=root,
+                    stair_locomotion_smoke=True,
+                )
+                spec = JsonTaskProvider().load(task_path)
+                gripper = BinaryGripperController()
+                verifier = _PickReachabilitySpyVerifier(raise_on_call=True)
+                pipeline = FullPhysicsPipeline(
+                    config=config,
+                    episode_spec=spec,
+                    episode_seed=5,
+                    simulation=InMemorySimulationRuntime(),
+                    nav_planner=DryRunNavPlanner(),
+                    nav_executor=_StrictScanCompletionExecutor(terminal_fields),
+                    manipulation_planner=SegmentedSmokeManipulationPlanner(),
+                    arm_executor=SegmentedArmExecutor(gripper),
+                    gripper=gripper,
+                    verifier=verifier,
+                    recorder=JsonlEpisodeRecorder(root / "episode"),
+                )
+
+                summary = pipeline.run_episode()
+
+                self.assertFalse(summary["success"])
+                self.assertEqual(summary["failure_reason"], expected_reason)
+                self.assertEqual(verifier.pick_reachable_calls, 0)
+                self.assertNotIn(
+                    PipelineState.VERIFY_PICK_REACHABLE.value,
+                    summary["state_trace"],
+                )
+                self.assertEqual(
+                    summary["state_trace"][-2:],
+                    [
+                        PipelineState.EXEC_NAV_TO_PICK.value,
+                        PipelineState.FAILED.value,
+                    ],
+                )
+                events = [
+                    json.loads(line)
+                    for line in (root / "episode" / "events.jsonl")
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                ]
+                event_names = {event["name"] for event in events}
+                self.assertNotIn("nav_to_pick_success", event_names)
+                self.assertNotIn("stair_locomotion_smoke_success", event_names)
+
+    def test_strict_stair_terminal_hold_contract_is_fail_closed(self) -> None:
+        cases = (
+            (
+                "missing_terminal_supervisor_ack",
+                _StrictScanCompletionExecutor(
+                    {
+                        "success": True,
+                        "failed": False,
+                        "failure_reason": "",
+                        "stair_freeze": {
+                            "phase": "terminal_hold",
+                            "finish_ready": True,
+                            "terminal_goal_bound": True,
+                            "hold_xyzyaw": _STRICT_STAIR_HOLD_XYZYAW,
+                        },
+                    }
+                ),
+                False,
+            ),
+            (
+                "cleanup_action_lost_full_body_lock",
+                _StrictScanCompletionExecutor(invalidate_hold_on_call=3),
+                True,
+            ),
+        )
+        for case_name, nav_executor, reached_cleanup in cases:
+            with self.subTest(case=case_name), tempfile.TemporaryDirectory() as tmp_dir:
+                root = Path(tmp_dir)
+                task_path = PROJECT_ROOT / "tasks/nav_smoke_example.json"
+                config = FullPhysicsConfig(
+                    task_json=task_path,
+                    output_dir=root,
+                    stair_locomotion_smoke=True,
+                )
+                spec = JsonTaskProvider().load(task_path)
+                gripper = BinaryGripperController()
+                verifier = _PickReachabilitySpyVerifier(raise_on_call=True)
+                pipeline = FullPhysicsPipeline(
+                    config=config,
+                    episode_spec=spec,
+                    episode_seed=5,
+                    simulation=InMemorySimulationRuntime(),
+                    nav_planner=DryRunNavPlanner(),
+                    nav_executor=nav_executor,
+                    manipulation_planner=SegmentedSmokeManipulationPlanner(),
+                    arm_executor=SegmentedArmExecutor(gripper),
+                    gripper=gripper,
+                    verifier=verifier,
+                    recorder=JsonlEpisodeRecorder(root / "episode"),
+                )
+
+                summary = pipeline.run_episode()
+
+                self.assertFalse(summary["success"])
+                self.assertEqual(
+                    summary["failure_reason"],
+                    "stair_navigation_terminal_hold_invalid",
+                )
+                self.assertEqual(verifier.pick_reachable_calls, 0)
+                self.assertNotIn(PipelineState.DONE.value, summary["state_trace"])
+                self.assertEqual(
+                    PipelineState.CLEANUP_EPISODE.value in summary["state_trace"],
+                    reached_cleanup,
+                )
+                self.assertEqual(
+                    summary["state_trace"][-1],
+                    PipelineState.FAILED.value,
+                )
+
+    def test_navigation_smoke_still_uses_pick_reachability_verifier(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            task_path = PROJECT_ROOT / "tasks/nav_smoke_example.json"
+            config = FullPhysicsConfig(
+                task_json=task_path,
+                output_dir=root,
+                navigation_smoke=True,
+            )
+            spec = JsonTaskProvider().load(task_path)
+            gripper = BinaryGripperController()
+            verifier = _PickReachabilitySpyVerifier()
+            pipeline = FullPhysicsPipeline(
+                config=config,
+                episode_spec=spec,
+                episode_seed=5,
+                simulation=InMemorySimulationRuntime(),
+                nav_planner=DryRunNavPlanner(),
+                nav_executor=_StrictScanCompletionExecutor(),
+                manipulation_planner=SegmentedSmokeManipulationPlanner(),
+                arm_executor=SegmentedArmExecutor(gripper),
+                gripper=gripper,
+                verifier=verifier,
+                recorder=JsonlEpisodeRecorder(root / "episode"),
+            )
+
+            summary = pipeline.run_episode()
+
+            self.assertTrue(summary["success"])
+            self.assertEqual(verifier.pick_reachable_calls, 1)
+            self.assertIn(
+                PipelineState.VERIFY_PICK_REACHABLE.value,
+                summary["state_trace"],
+            )
+            events = [
+                json.loads(line)
+                for line in (root / "episode" / "events.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            self.assertIn(
+                "navigation_smoke_success",
+                {event["name"] for event in events},
+            )
+            frames = [
+                json.loads(line)
+                for line in (root / "episode" / "frames.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            handoff_states = (
+                PipelineState.EXEC_NAV_TO_PICK.value,
+                PipelineState.VERIFY_PICK_REACHABLE.value,
+                PipelineState.CLEANUP_EPISODE.value,
+            )
+            handoff_frames = [
+                frame
+                for frame in frames
+                if frame["pipeline_state"] in handoff_states
+            ]
+            self.assertEqual(
+                [frame["pipeline_state"] for frame in handoff_frames],
+                list(handoff_states),
+            )
+            for frame in handoff_frames:
+                action = frame["action"]
+                metadata = action["metadata"]
+                self.assertEqual(action["base_velocity"], [0.0, 0.0, 0.0])
+                self.assertTrue(metadata["navigation_base_pose_lock"])
+                self.assertEqual(
+                    metadata["navigation_base_pose_lock_xyzyaw"],
+                    list(_STRICT_STAIR_HOLD_XYZYAW),
+                )
+                self.assertTrue(metadata["navigation_support_joint_lock"])
+                self.assertTrue(metadata["navigation_full_body_joint_lock"])
+                self.assertTrue(metadata["navigation_cmd_vel_inhibit"])
+
+    def test_stair_fixed_command_probe_keeps_legacy_verifier_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            task_path = PROJECT_ROOT / "tasks/nav_smoke_example.json"
+            base_config = FullPhysicsConfig(
+                task_json=task_path,
+                output_dir=root,
+                stair_locomotion_smoke=True,
+            )
+            config = replace(
+                base_config,
+                navigation=replace(
+                    base_config.navigation,
+                    stair_fixed_command_probe=True,
+                ),
+            )
+            spec = JsonTaskProvider().load(task_path)
+            gripper = BinaryGripperController()
+            verifier = _PickReachabilitySpyVerifier()
+            pipeline = FullPhysicsPipeline(
+                config=config,
+                episode_spec=spec,
+                episode_seed=5,
+                simulation=InMemorySimulationRuntime(),
+                nav_planner=DryRunNavPlanner(),
+                nav_executor=_StrictScanCompletionExecutor(),
+                manipulation_planner=SegmentedSmokeManipulationPlanner(),
+                arm_executor=SegmentedArmExecutor(gripper),
+                gripper=gripper,
+                verifier=verifier,
+                recorder=JsonlEpisodeRecorder(root / "episode"),
+            )
+
+            summary = pipeline.run_episode()
+
+            self.assertTrue(summary["success"])
+            self.assertEqual(verifier.pick_reachable_calls, 1)
+            self.assertIn(
+                PipelineState.VERIFY_PICK_REACHABLE.value,
+                summary["state_trace"],
+            )
+            frames = [
+                json.loads(line)
+                for line in (root / "episode" / "frames.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            self.assertFalse(
+                any(
+                    frame["action"]["source"] == "stair_navigation_complete"
+                    for frame in frames
+                )
             )
 
     def test_component_exception_becomes_structured_failure(self) -> None:

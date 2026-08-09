@@ -3,27 +3,33 @@
 ## 架构
 
 ```text
-task JSON
--> EpisodeSpec
--> PCTNavPlanner
--> PCT server
--> NavPlan
--> DwaNavExecutor / RL policy
--> Isaac Sim
+/body_pose + /pct/goal
+-> pct_ros2_adapter
+-> 官方 PCT native A*（三维全局地面 Path）
+-> /pct/global_path（nav_msgs/Path）
+-> SCAN Planner
+-> /planning/bspline
+-> scan_controller
+-> /cmd_vel
+-> cmd_vel_to_policy
+-> Go2-X5 RL policy
+-> Isaac Sim / Isaac Lab
 ```
 
-`PCTNavPlanner` 是全局规划器 adapter，不替换 pipeline 状态机。它通过
-stdin/stdout JSON 协议调用本仓库内迁移的 PCT server，把返回的 3D 轨迹转换回 Isaac
-Sim 世界坐标，写入 `NavPlan.metadata["path_3d"]`，并继续向当前
-`DwaNavExecutor` 暴露兼容旧执行器的 XY waypoints。
+当前生产入口使用 typed ROS 2 消息和进程内 upstream backend；不通过
+stdin/stdout、JSON 或文件轮询传递在线规划结果。`PCTNavPlanner`、portable JSON
+server 与 `DwaNavExecutor` 只保留为迁移历史和隔离兼容诊断，不属于
+`pct-scan` 主运行链，也不能在 PCT/SCAN 失败时自动接管。
 
-## 为什么替换 A*
+## 职责边界
 
-当前 A* 基于 2D occupancy grid，适合 flat single-floor 场景。PCT 基于
-tomogram slice 表达地图，可以描述多楼层路线、楼梯、坡道和上下重叠结构。
+PCT 基于 tomogram slice 选择多楼层、楼梯、坡道和上下重叠结构中的全局三维
+路线，并发布地面高度语义的完整 Path。SCAN 消费该 Path、Odometry 与局部点云，
+负责连续局部避障和 B-spline 优化；controller 只生成 `vx、vy、wz`，RL policy
+只把速度命令转换为关节动作。
 
-PCT 只负责多楼层全局路径。DWA 或 locomotion RL policy 仍负责局部执行。
-真实楼梯、坡道和跨楼层 traversal 需要训练好的 `pct_multifloor` policy。
+本分支不保留 PCT→DWA fallback。用户已接受第一阶段进入认证楼梯段后冻结底盘，
+按有序三维 Path 执行 root-lock 接管；该 workaround 必须标记为非纯物理爬楼。
 
 ## 本地资产约定
 
@@ -68,9 +74,10 @@ action，机械臂通过命令 term 固定姿态跟随。运行 CLI 时只要传
 `--policy-profile pct_multifloor`，pipeline 会默认使用本仓库注册的
 `RobotLab-Isaac-Velocity-Rough-Go2-X5-DogOnly-v0`。不要把该 checkpoint 加载到
 18 维 arm-locomotion task，否则会出现 `std` / `actor.6` / `critic.0` size mismatch。
-多楼层任务会把高度扫描射线限制在当前层高以内，避免命中上层楼板；DWA 命令也会
-限制在该 checkpoint 的训练范围内。两项修改仅作用于 `pct_multifloor` profile，
-原单楼层 profile 保持原配置。
+多楼层任务会把高度扫描射线限制在当前层高以内，避免命中上层楼板；当前
+`scan_controller` 与 `cmd_vel_to_policy` 均把速度限制在该 checkpoint 的训练范围内。
+旧 DWA 的同范围限幅只作为历史基线保留。上述修改仅作用于 `pct_multifloor`
+profile，原单楼层 profile 保持原配置。
 
 `pct_multifloor` 初始化时会在前 50 个控制步把 policy action 从零平滑渐入，避免
 默认关节姿态切换到 policy target 时产生底盘弹跳。nav-to-place 携物阶段使用独立的
@@ -78,8 +85,8 @@ action，机械臂通过命令 term 固定姿态跟随。运行 CLI 时只要传
 collision PLY 的三角面，用顶点、边中点和面中心生成逐 slice 的机器人身体净空障碍体。
 相对地面 `0.30-1.00 m` 内的墙面、桌椅和其他家具都会参与规划，不再只识别贯穿多个
 高度切片的高墙。距离障碍 `0.60 m` 内还会增加软代价，使路径远离家具，同时避免硬
-膨胀封死真实门洞。DWA 局部地图使用相同身体净空语义，并只在已通过 3D 校验的 PCT
-中心线附近清理 `0.16 m` 走廊。
+膨胀封死真实门洞。当前局部占据和连续包络检查由 SCAN/plan_env 承担；旧 DWA
+局部地图的 `0.16 m` 清廊只属于历史 compatible 链。
 
 Yinluyuan 当前楼梯入口是 Isaac Sim 坐标 `(1.5, 5.7, 0.6)`，楼梯平台/拐角是
 `(1.9202, 9.52807, 1.71919)`，上层出口是 `(1.9, 8.0, 3.0)`。PCT server 会按
@@ -109,8 +116,9 @@ task 的 z 是机器人 root 高度；server 默认减去 `0.45 m` 后再选择�
 --pct-collision-ply-path source/scene/multifloor/ply/3dgs_collision.ply
 ```
 
-本仓库已经迁移出一套可复现的 PCT-compatible 离线建图和探针链路。运行时默认使用
-本仓库内脚本，不直接调用 `external/PCT` 的 API：
+本仓库还保留一套可复现的 PCT-compatible 离线建图和探针链路。以下命令仅用于
+历史资产诊断；生产 ROS 2 运行时默认调用固定 upstream 核心，不调用该 portable
+server：
 
 ```bash
 /data/conda_envs/sage/bin/python scripts/navigation/build_pct_multifloor_assets.py \
@@ -120,8 +128,8 @@ task 的 z 是机器人 root 高度；server 默认减去 `0.45 m` 后再选择�
   --report-output outputs/pct_multifloor_asset_build_report.json
 ```
 
-该脚本输出 PCT-compatible `mutifloor.pickle` 和 `mutifloor_ply_walkable.npy`。本地
-portable server 使用同样的 stdin/stdout JSON 协议：
+该脚本输出 PCT-compatible `mutifloor.pickle` 和 `mutifloor_ply_walkable.npy`。历史
+portable server 使用 stdin/stdout JSON 协议：
 
 ```bash
 /data/conda_envs/isaacsim51_3dgs_grasp/bin/python scripts/navigation/probe_pct_plan.py \
@@ -132,17 +140,34 @@ portable server 使用同样的 stdin/stdout JSON 协议：
   --output-json outputs/pct_plan_probe.json
 ```
 
-`pct_grid_server.py` 是本仓库内迁移的 PCT-compatible grid server，用于验证
-NavPlanner adapter、tomogram/walkable 坐标和多楼层 path metadata。`external/PCT`
-仅作为参考 codebase；如果后续需要上游 C++ `planner_wrapper` 的能力，应先把对应
-backend 迁移或封装进本仓库本地脚本，再接入 pipeline。
+`pct_grid_server.py` 是本仓库内的 PCT-compatible 3D A* grid server，用于验证
+ROS 2 adapter、tomogram/walkable 坐标和多楼层 Path metadata；它没有复用上游
+`planner_wrapper.TomogramPlanner`。官方核心已定位并固定为
+`byangw/PCT_planner@35cd73fd82bcd51bc538429294af7646b2a09815`，本机也已
+准备包含 `planner/`、`tomography/`、`LICENSE` 和 `NOTICE` 的 ignored 副本。
+GTSAM 4.1.1、OSQP 和四个 CPython 3.10 原生扩展已经完成 Release 构建，动态库
+闭包与真实导入通过。ROS 2 进程内 upstream backend 现在直接调用官方
+`OfflineElePlanner.plan(..., optimize=false)`；PCT 只输出 native A* 的地面全局
+路径，连续轨迹优化由 SCAN 独立完成。生产组合 launch 默认选择 upstream，扩展
+或固定资产缺失时失败关闭，禁止自动回退。
 
-PCT navigation smoke 中，`DwaNavExecutor` 仍然消费 XY waypoint。为了让局部执行器和
-PCT 全局规划使用一致的地图语义，pipeline 会从 tomogram traversability、
-`mutifloor_ply_walkable.npy` 和 collision mesh 身体净空体合并生成 DWA local map。
-root z 会先减去 `0.45 m` 再选择 floor slice。不要只用
-`walkable.npy` 的单一 slice 替代该 local map，否则 PCT 返回的路径点可能在 DWA 中被误判
-为障碍，表现为机器狗顶住障碍物后原地旋转或滑动逃离。
+原兼容 pickle 只有规则切片高度和零梯度，没有官方 gateway，不能供 upstream
+跨层。当前 `mutifloor_upstream.pickle` 由 collision PLY 复现官方五通道
+tomography，并应用 `configs/navigation/pct_multifloor_stair_profile.json`：该
+profile 从 `pct-scene` 提取 7 个楼梯 ground anchor。构建器会核对 PLY 与基础
+tomogram hash，注入 layer `8→15` gateway 后重算梯度；运行时原生 PCT A* 仍
+决定楼层与楼面路线，adapter 只把已匹配的楼梯区间规范化到这些 anchor，并保留
+精确请求起终点。离线原生探针得到 171 点、`22.831 m`、`3.217 m` 高度跨度
+Path，7 个 anchor 的 XY 误差均为零；隔离 DDS 生命周期探针发布同代 170 点
+`nav_msgs/Path`。大型 pickle 仍为 ignored 资产，不进入 Git。最终 CPU 组合探针
+把该 170 点 upstream Path 接入 SCAN，typed GridMap 证据确认 144/144 个端点已
+融合，并产生 33 控制点三阶正常 B-spline 与非零 `/cmd_vel`。phase218 的同一
+Isaac episode 静态楼梯 root-lock 验收也已通过；它证明用户接受的底盘冻结系统
+通路，不代表纯物理爬楼，也不替代动态障碍验收。
+
+当前 `pct-scan` 生产执行边界固定为 PCT Path→SCAN B-spline→controller，已拒绝
+PCT→A* fallback，并退役 `run_nav_only.py` 的 DWA 入口。旧二维 DWA 实现只供隔离
+回归和历史对照，不再消费 PCT waypoint，也不属于本分支运行命令。
 
 相邻一个 slice 通常只是 base z 与 0.5 m 切片边界的量化差异，不代表跨楼层。同层规划会先
 检查 start 到 goal 的机器人宽度走廊；整条走廊在相邻 slice 中均可走时，PCT server 返回
@@ -320,18 +345,19 @@ python scripts/scene/render_yinluyuan_3dgs.py \
    `source/scene/multifloor/ply/3dgs_visual.ply`，并且不是软链接。
 2. 运行 `bash tools/scene/rebuild_multifloor_sage_assets.sh`，生成 clean NuRec USDZ、
    collision USD 和唯一主 USDA。
-3. 使用本仓库 `scripts/navigation/build_pct_multifloor_assets.py` 从 collision PLY 构建
-   `source/scene/multifloor/mutifloor.pickle` 和
-   `source/scene/multifloor/mutifloor_ply_walkable.npy`。
-4. 用 `scripts/navigation/probe_pct_plan.py` 启动本仓库 `pct_grid_server.py`，先在
-   不启动 Isaac Sim 的情况下验证 `start -> pick -> place` 的 3D path。
+3. 使用 `scripts/navigation/build_pct_multifloor_assets.py` 从 collision PLY 构建
+   官方五通道语义的 `source/scene/multifloor/mutifloor_upstream.pickle`，并核对
+   `configs/navigation/pct_multifloor_stair_profile.json` 的场景和输入哈希。
+4. 用 `pct_ros2_adapter` 的 upstream 离线与 typed DDS 生命周期探针验证 native
+   F1→F2 Path；`probe_pct_plan.py + pct_grid_server.py` 仅用于 compatible 历史对照。
 5. 使用 `scripts/scene/render_yinluyuan_3dgs.py` 验证真实 3DGS 离线渲染质量。
 6. 录制视频时传 `--export-video-camera-trajectory`，导出 overview 相机轨迹。
 7. 使用 `--camera-trajectory-jsonl` 批量渲染 3DGS 背景帧。
 8. 训练或准备 Go2-X5 多楼层 locomotion checkpoint。
 
-`external/PCT` 仅作为参考 codebase，不是当前 pipeline 的默认运行依赖。如确实需要给
-上游 README 兼容脚本准备旧文件名，运行
+旧 `external/PCT` 浅克隆仅作为参考；当前生产依赖是 ignored 的固定官方
+`external/PCT_planner@35cd73fd82bcd51bc538429294af7646b2a09815`，由 ROS 2 adapter
+进程内加载。如确实需要给历史 README 兼容脚本准备旧文件名，运行
    `python scripts/scene/setup_pct_mutifloor_assets.py --copy-assets --force` 复制到
    `external/PCT/mutifloor/`；不要使用软链接。
 
@@ -366,16 +392,19 @@ PATH=/data/conda_envs/sage/bin:$PATH \
   --force
 ```
 
-注意：当前 `external/PCT/scripts/navigation/pct_server.py` 仍包含 `/home/y/...`
-硬编码路径，并依赖 clone 中没有出现的 `planner_wrapper` backend，因此不作为当前
-pipeline 的运行入口。需要上游 backend 时，应先把相关代码迁移到本仓库本地脚本，
-并保留 stdin/stdout JSON 协议。
+注意：`external/PCT/scripts/navigation/pct_server.py` 仍是缺少依赖且含硬编码路径的
+历史副本，不作为当前 pipeline 入口。生产核心已经固定为
+`byangw/PCT_planner@35cd73fd82bcd51bc538429294af7646b2a09815`，由
+`pct_ros2_adapter` 在进程内调用；stdin/stdout JSON 只能用于离线历史探针。
 
 示例 task `tasks/nav_pick_place_apple_multifloor_pct.json` 是模板。当前 `scene_usd`
 指向 `source/scene/multifloor/usda/multifloor.usda`。真实运行前仍需要根据场景
 坐标更新目标、楼层、slice 和 PCT tomogram / walkable 路径。
 
-## 运行命令
+## 历史兼容运行命令（非 pct-scan 主线）
+
+本节命令用于回看旧 PCT+DWA 资产和行为，不应作为当前分支的运行入口。当前
+PCT→SCAN 组合图和 live 验收命令见 `docs/pct_scan_navigation.md`。
 
 使用 PCT 运行 navigation smoke：
 
@@ -396,7 +425,7 @@ python scripts/pipeline/run_full_physics_pipeline.py \
   --no-randomize-base-goal
 ```
 
-如果使用当前仓库默认路径，`--global-planner pct` 会自动选择
+在这套旧 full-physics CLI 中，`--global-planner pct` 会自动选择
 `scripts/navigation/pct_grid_server.py`、
 `source/scene/multifloor/mutifloor.pickle` 和
 `source/scene/multifloor/mutifloor_ply_walkable.npy`。上面的命令显式写出这些参数，
@@ -614,6 +643,9 @@ x / y 符号是否反了。
 - F1/F2 路径穿墙或穿过椅子：确认 metadata 为
   `hard_obstacle_mode="body_clearance_volume"`。如仍过近，可提高
   `--pct-obstacle-clearance-cost`，不要直接增加硬膨胀导致门洞不可达。
+以下 DWA 排障项只适用于旧 compatible/full-physics 历史链，不能用于判断当前
+PCT→SCAN 生产组合图：
+
 - 机器人顶住障碍后旋转或滑动逃离：先确认 PCT local map 是由 tomogram
   traversability 与 walkable 合并生成，而不是只读取单层 `walkable.npy`。如果
   PCT 返回的 `path_3d` 点在 DWA inflated map 中是 occupied，说明局部地图和 PCT

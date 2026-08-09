@@ -53,6 +53,83 @@ def _state(step_index: int, image: np.ndarray | None) -> SimulationState:
 
 
 class FullPhysicsLeRobotTest(unittest.TestCase):
+    def test_non_recording_default_diagnostic_stride_keeps_every_tick(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            recorder = JsonlEpisodeRecorder(Path(tmp_dir) / "episode_000000")
+            for step_index in range(1, 4):
+                state = _state(step_index, None)
+                recorder.record_step(
+                    StepRecord(
+                        step_index=step_index,
+                        timestamp=state.timestamp,
+                        pipeline_state="exec_nav_to_pick",
+                        observation=state,
+                        action=RobotAction(source="nav"),
+                        post_step_observation=state,
+                    )
+                )
+
+            frames = [
+                json.loads(line)
+                for line in recorder.frames_path.read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+            self.assertEqual([frame["step_index"] for frame in frames], [1, 2, 3])
+            self.assertEqual(recorder.control_step_count, 3)
+            self.assertEqual(recorder.frame_count, 3)
+
+    def test_non_recording_diagnostic_stride_keeps_first_grid_and_transition(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            recorder = JsonlEpisodeRecorder(
+                Path(tmp_dir) / "episode_000000",
+                diagnostic_frame_stride=3,
+            )
+            states = (
+                (10, "exec_nav_to_pick"),
+                (11, "exec_nav_to_pick"),
+                (12, "exec_nav_to_pick"),
+                (13, "goal_reached"),
+            )
+            for step_index, pipeline_state in states:
+                state = _state(step_index, None)
+                recorder.record_step(
+                    StepRecord(
+                        step_index=step_index,
+                        timestamp=state.timestamp,
+                        pipeline_state=pipeline_state,
+                        observation=state,
+                        action=RobotAction(source="nav"),
+                        post_step_observation=state,
+                    )
+                )
+
+            frames = [
+                json.loads(line)
+                for line in recorder.frames_path.read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+            self.assertEqual([frame["step_index"] for frame in frames], [10, 12, 13])
+            self.assertEqual(
+                [frame["diagnostic_log_reason"] for frame in frames],
+                ["state_transition", "diagnostic_stride", "state_transition"],
+            )
+            self.assertEqual(recorder.control_step_count, 4)
+            self.assertEqual(recorder.frame_count, 3)
+
+    def test_diagnostic_frame_stride_rejects_invalid_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            for value in (0, -1, True, 1.5):
+                with self.subTest(value=value):
+                    with self.assertRaisesRegex(ValueError, "必须是正整数"):
+                        JsonlEpisodeRecorder(
+                            Path(tmp_dir) / f"episode_{value}",
+                            diagnostic_frame_stride=value,  # type: ignore[arg-type]
+                        )
+
     def test_stage_reuse_build_state_is_not_sampled_into_next_episode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             recorder = JsonlEpisodeRecorder(

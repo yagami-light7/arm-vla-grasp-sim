@@ -1,0 +1,55 @@
+scan_planner_node:
+  ros__parameters:
+    # 点云和地面合同保持不变。
+    grid_map.need_extrinsic: false
+    grid_map.ground_height: -2.47
+
+    # 高速时适当增加前视和提前重规划距离。
+    # 0.70 m 仍没有超过当前 height scanner 约 0.80 m 的有效前向观测。
+    fsm.planning_horizon: 0.70
+    fsm.thresh_replan: 0.40
+
+    # 非最终局部轨迹的目标巡航速度。
+    # 0.78 已非常接近 policy 的 0.80 m/s 硬上限。
+    fsm.reference_cruise_speed: 0.78
+
+    # 越小表示速度响应越快，但命令也会更敏感。
+    fsm.reference_velocity_filter_time_constant_sec: 0.05
+
+    # SCAN 的速度、加速度和轨迹优化包络必须保持一致。
+    manager.max_vel: 0.80
+    manager.max_acc: 1.80
+    manager.max_jerk: 6.0
+    manager.control_points_distance: 0.20
+
+    # 有效初始轨迹加速度为 1.80 × 0.90 = 1.62 m/s²。
+    manager.reference_profile_acceleration_scale: 0.90
+
+    # 必须随着 max_acc 提高而收紧。
+    #
+    # 速度余量：
+    # 0.80 × 0.005 + 0.0001 = 0.0041 <= 0.005 m/s
+    #
+    # 加速度余量：
+    # 1.80 × 0.005 + 0.0001 = 0.0091 <= 0.01 m/s²
+    manager.feasibility_tolerance: 0.005
+
+    optimization.max_vel: 0.80
+    optimization.max_acc: 1.80
+
+scan_controller:
+  ros__parameters:
+    controller.publish_rate_hz: 50.0
+
+    # 全向红线配置。上楼时主要使用 vx。
+    limits.max_vx: 0.80
+    limits.max_vy: 0.25
+    limits.max_yaw_rate: 0.65
+
+    # 仍低于 Isaac command gate 的 2.0/1.5/2.5。
+    limits.max_ax: 1.80
+    limits.max_ay: 0.80
+    limits.max_yaw_acc: 2.00
+
+    # 避免顶层平台前过早进入低效微速。
+    finish.min_approach_speed: 0.35

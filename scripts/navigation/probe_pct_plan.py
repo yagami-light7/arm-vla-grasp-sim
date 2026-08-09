@@ -49,6 +49,26 @@ def main() -> int:
             str(collision_ply_path) if collision_ply_path else None
         ),
         "coord_mode": args.pct_coord_mode,
+        "coordinate_transform": {
+            "offset_xyz": [
+                float(args.pct_offset_x),
+                float(args.pct_offset_y),
+                float(args.pct_offset_z),
+            ],
+            "scale_xyz": [
+                float(args.pct_scale_x),
+                float(args.pct_scale_y),
+                float(args.pct_scale_z),
+            ],
+            "fixed_xyz_rotation_rad": [
+                float(args.pct_rotation_x_rad),
+                float(args.pct_rotation_y_rad),
+                float(args.pct_rotation_z_rad),
+            ],
+            "order": (
+                "coord_mode_then_scale_then_fixed_xyz_rotation_then_offset"
+            ),
+        },
         "cross_floor_gateway_points": _parse_xyz_points(
             args.pct_cross_floor_gateway,
             default=NavigationSettings().pct_cross_floor_gateway_points,
@@ -105,8 +125,13 @@ def main() -> int:
             coord_mode=args.pct_coord_mode,
             pct_offset_x=float(args.pct_offset_x),
             pct_offset_y=float(args.pct_offset_y),
+            pct_offset_z=float(args.pct_offset_z),
             pct_scale_x=float(args.pct_scale_x),
             pct_scale_y=float(args.pct_scale_y),
+            pct_scale_z=float(args.pct_scale_z),
+            pct_rotation_x_rad=float(args.pct_rotation_x_rad),
+            pct_rotation_y_rad=float(args.pct_rotation_y_rad),
+            pct_rotation_z_rad=float(args.pct_rotation_z_rad),
             cross_floor_gateway_points=tuple(
                 tuple(point)
                 for point in report["cross_floor_gateway_points"]
@@ -219,8 +244,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--pct-coord-mode", default="sim_to_pct_180deg", choices=["sim_to_pct_180deg", "identity"])
     parser.add_argument("--pct-offset-x", type=float, default=0.0)
     parser.add_argument("--pct-offset-y", type=float, default=0.0)
+    parser.add_argument("--pct-offset-z", type=float, default=0.0)
     parser.add_argument("--pct-scale-x", type=float, default=1.0)
     parser.add_argument("--pct-scale-y", type=float, default=1.0)
+    parser.add_argument("--pct-scale-z", type=float, default=1.0)
+    parser.add_argument("--pct-rotation-x-rad", type=float, default=0.0)
+    parser.add_argument("--pct-rotation-y-rad", type=float, default=0.0)
+    parser.add_argument("--pct-rotation-z-rad", type=float, default=0.0)
     parser.add_argument(
         "--pct-cross-floor-gateway",
         action="append",

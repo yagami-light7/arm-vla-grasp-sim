@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import shutil
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -56,10 +58,14 @@ def _json_safe(value: Any) -> Any:
         return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_safe(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        # JSON 标准没有 NaN/Infinity；诊断统计已单独保留 nonfinite_count，
+        # 原始非有限采样统一写 null，保证 jq 和严格解析器都能读取结果。
+        return None
     if hasattr(value, "detach"):
         value = value.detach().cpu()
     if hasattr(value, "tolist"):
-        return value.tolist()
+        return _json_safe(value.tolist())
     return value
 
 
@@ -71,14 +77,26 @@ class JsonlEpisodeRecorder:
         output_dir: str | Path,
         *,
         lerobot_config: LeRobotRecordingConfig | None = None,
+        diagnostic_frame_stride: int = 1,
     ):
+        if (
+            isinstance(diagnostic_frame_stride, bool)
+            or not isinstance(diagnostic_frame_stride, int)
+            or diagnostic_frame_stride < 1
+        ):
+            raise ValueError("diagnostic_frame_stride 必须是正整数")
         self._output_dir = Path(output_dir).expanduser().resolve()
         self._output_dir.mkdir(parents=True, exist_ok=True)
         self.events_path = self._output_dir / "events.jsonl"
         self.frames_path = self._output_dir / "frames.jsonl"
+        self.navigation_path_snapshots_path = (
+            self._output_dir / "navigation_path_snapshots.jsonl"
+        )
         self.events_path.write_text("", encoding="utf-8")
         self.frames_path.write_text("", encoding="utf-8")
+        self.navigation_path_snapshots_path.write_text("", encoding="utf-8")
         self._lerobot_config = lerobot_config or LeRobotRecordingConfig()
+        self._diagnostic_frame_stride = diagnostic_frame_stride
         self._dataset_writer = DwaEpisodeWriter(self._output_dir, self._lerobot_config)
         self._task_payload: dict[str, Any] = {}
         self._training_eligible = True
@@ -87,6 +105,9 @@ class JsonlEpisodeRecorder:
         self.event_count = 0
         self.frame_count = 0
         self.control_step_count = 0
+        self.navigation_path_snapshot_count = 0
+        self._navigation_path_snapshot_source_identities: set[str] = set()
+        self._navigation_path_snapshot_fingerprints: set[str] = set()
         self._last_logged_pipeline_state: str | None = None
 
     @property
@@ -120,21 +141,35 @@ class JsonlEpisodeRecorder:
         else:
             with profiler.measure("recorder.dataset_record"):
                 sample_report = self._dataset_writer.record(record)
+        self._record_navigation_path_snapshots(record)
         metadata = dict(record.metadata)
         if sample_report is not None:
             metadata["dataset_sample"] = sample_report
         state_changed = record.pipeline_state != self._last_logged_pipeline_state
         self.control_step_count += 1
-        # Full-physics diagnostics follow the 5 Hz dataset grid and always keep
-        # state transitions.  Non-recording smoke/dry-run modes retain every tick.
-        should_log_frame = bool(
+        stair_probe_frame = bool(
+            record.action.metadata.get("stair_fixed_command_probe") is True
+        )
+        diagnostic_stride_frame = bool(
             not self._lerobot_config.enabled
+            and (
+                self.control_step_count == 1
+                or self.control_step_count % self._diagnostic_frame_stride == 0
+            )
+        )
+        # Full-physics diagnostics follow the 5 Hz dataset grid and always keep
+        # state transitions. Non-recording smoke 默认 stride=1 保留每 tick；live
+        # 验收可显式降采样笨重 JSON 诊断。固定命令 probe 始终逐 control tick 留证。
+        should_log_frame = bool(
+            diagnostic_stride_frame
             or sample_report is not None
             or state_changed
+            or stair_probe_frame
         )
         self._last_logged_pipeline_state = record.pipeline_state
         if not should_log_frame:
             return
+        stair_probe_telemetry = _aligned_stair_probe_telemetry(record)
         payload = {
             "step_index": record.step_index,
             "timestamp": record.timestamp,
@@ -159,15 +194,112 @@ class JsonlEpisodeRecorder:
             ),
             "metadata": _json_safe(metadata),
             "diagnostic_log_reason": (
-                "state_transition" if state_changed else "dataset_sample"
+                "state_transition"
+                if state_changed
+                else (
+                    "stair_probe_low_level_telemetry"
+                    if stair_probe_frame
+                    else (
+                        "dataset_sample"
+                        if sample_report is not None
+                        else "diagnostic_stride"
+                    )
+                )
             ),
         }
+        if stair_probe_telemetry is not None:
+            # probe 专用大字段只在对应 action 的 frame 保存，避免普通导航帧
+            # 重复最后一份 height scan/contact 遥测。
+            payload["stair_probe_low_level_telemetry"] = (
+                stair_probe_telemetry
+            )
         if profiler is None:
             self._append_jsonl(self.frames_path, payload)
         else:
             with profiler.measure("recorder.frames_jsonl_write"):
                 self._append_jsonl(self.frames_path, payload)
         self.frame_count += 1
+
+    def _record_navigation_path_snapshots(self, record: StepRecord) -> None:
+        """每个 ROS Path 代际只保存一次完整点列，避免逐帧日志重复膨胀。"""
+
+        for captured_from, state in (
+            ("observation", record.observation),
+            ("post_step_observation", record.post_step_observation),
+        ):
+            report = state.metadata.get("scan_reference_path_last_report")
+            if not isinstance(report, dict):
+                continue
+            # compact frame 中只有哈希；只有运行时原始报告带该键，才有资格
+            # 成为后续 SCAN/DWA 复用的精确 Path 输入证据。
+            if "points_ground_xyz" not in report:
+                continue
+            points = report.get("points_ground_xyz")
+            try:
+                point_count: int | None = len(points)  # type: ignore[arg-type]
+            except TypeError:
+                point_count = None
+            # 运行时在新 Path 到达前会一直复用同一代际。先用小型身份跳过
+            # 逐 tick 重复项，避免为一条百点路径反复做 JSON 序列化和 SHA。
+            source_identity = json.dumps(
+                _json_safe(
+                    {
+                        "source": report.get("source"),
+                        "topic": report.get("topic"),
+                        "frame_id": report.get("frame_id"),
+                        "stamp": report.get("stamp"),
+                        "sequence": report.get("sequence"),
+                        "points_sha256": report.get("points_sha256"),
+                        "point_count": point_count,
+                        "terminal_yaw": report.get("terminal_yaw"),
+                        "cleared": report.get("cleared"),
+                    }
+                ),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            if (
+                source_identity
+                in self._navigation_path_snapshot_source_identities
+            ):
+                continue
+            report_payload = _json_safe(report)
+            canonical_report = json.dumps(
+                report_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+            fingerprint = hashlib.sha256(canonical_report).hexdigest()
+            if fingerprint in self._navigation_path_snapshot_fingerprints:
+                continue
+            payload = {
+                "schema": "navigation_path_snapshot_v1",
+                "snapshot_index": self.navigation_path_snapshot_count + 1,
+                "captured_from": captured_from,
+                "step_index": record.step_index,
+                "timestamp": record.timestamp,
+                "pipeline_state": record.pipeline_state,
+                "state_step_index": state.step_index,
+                "state_timestamp": state.timestamp,
+                "report_payload_sha256": fingerprint,
+                "report": report_payload,
+            }
+            profiler = self._performance_profiler
+            if profiler is None:
+                self._append_jsonl(self.navigation_path_snapshots_path, payload)
+            else:
+                with profiler.measure("recorder.navigation_path_snapshot_write"):
+                    self._append_jsonl(
+                        self.navigation_path_snapshots_path,
+                        payload,
+                    )
+            self._navigation_path_snapshot_fingerprints.add(fingerprint)
+            self._navigation_path_snapshot_source_identities.add(source_identity)
+            self.navigation_path_snapshot_count += 1
 
     def mark_training_eligible(self, eligible: bool, *, reason: str | None = None) -> None:
         """标记当前 episode 是否允许导出训练数据；失败样本只能保留诊断文件。"""
@@ -496,6 +628,12 @@ class JsonlEpisodeRecorder:
             "event_count": self.event_count,
             "frame_count": self.frame_count,
             "control_step_count": self.control_step_count,
+            "navigation_path_snapshot_count": (
+                self.navigation_path_snapshot_count
+            ),
+            "navigation_path_snapshots_path": str(
+                self.navigation_path_snapshots_path
+            ),
             "data_output_path": str(self.output_dir),
             "lerobot_training_eligible": bool(
                 training_quality_verified
@@ -578,7 +716,12 @@ class JsonlEpisodeRecorder:
                 reason=reason,
             )
             path.write_text(
-                json.dumps(_json_safe(payload), indent=2, ensure_ascii=False),
+                json.dumps(
+                    _json_safe(payload),
+                    indent=2,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                ),
                 encoding="utf-8",
             )
         update_subtask_task_gate(
@@ -675,7 +818,12 @@ class JsonlEpisodeRecorder:
     def _write_json(self, name: str, payload: Any) -> Path:
         path = self.output_dir / name
         path.write_text(
-            json.dumps(_json_safe(payload), indent=2, ensure_ascii=False),
+            json.dumps(
+                _json_safe(payload),
+                indent=2,
+                ensure_ascii=False,
+                allow_nan=False,
+            ),
             encoding="utf-8",
         )
         return path
@@ -683,7 +831,14 @@ class JsonlEpisodeRecorder:
     @staticmethod
     def _append_jsonl(path: Path, payload: Any) -> None:
         with path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(_json_safe(payload), ensure_ascii=False, separators=(",", ":")))
+            stream.write(
+                json.dumps(
+                    _json_safe(payload),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+            )
             stream.write("\n")
 
 
@@ -694,6 +849,14 @@ def _simulation_state_payload(
 ) -> dict[str, Any]:
     """序列化数值状态，但只记录相机名称，避免把像素写入 frames.jsonl。"""
 
+    metadata = (
+        dict(state.metadata)
+        if include_full_metadata
+        else _compact_simulation_metadata(state.metadata)
+    )
+    # probe 大字段只允许出现在 frame 顶层；从嵌套状态中移除可避免同一帧
+    # 重复两次，也避免 probe 结束后的状态切换帧误带上一控制步证据。
+    metadata.pop("stair_probe_low_level_telemetry", None)
     return {
         "step_index": state.step_index,
         "timestamp": state.timestamp,
@@ -705,16 +868,59 @@ def _simulation_state_payload(
         "object_pose": state.object_pose,
         "object_velocity": state.object_velocity,
         "camera_images": sorted(str(name) for name in state.camera_images),
-        "metadata": (
-            state.metadata
-            if include_full_metadata
-            else _compact_simulation_metadata(state.metadata)
-        ),
+        "metadata": metadata,
     }
 
 
+def _aligned_stair_probe_telemetry(
+    record: StepRecord,
+) -> dict[str, Any] | None:
+    """取出与当前 action 同拍的 probe 遥测，并验证 pre/post step 对齐。"""
+
+    if record.action.metadata.get("stair_fixed_command_probe") is not True:
+        return None
+    candidate = record.post_step_observation.metadata.get(
+        "stair_probe_low_level_telemetry"
+    )
+    if not isinstance(candidate, dict):
+        return {
+            "available": False,
+            "unavailable_reason": "runtime_probe_telemetry_missing",
+            "expected_pre_step_index": int(record.observation.step_index),
+            "expected_post_step_index": int(
+                record.post_step_observation.step_index
+            ),
+        }
+    alignment = candidate.get("alignment")
+    if not isinstance(alignment, dict):
+        return {
+            "available": False,
+            "unavailable_reason": "runtime_probe_alignment_missing",
+            "runtime_report": candidate,
+        }
+    expected_pre = int(record.observation.step_index)
+    expected_post = int(record.post_step_observation.step_index)
+    actual_pre = alignment.get("pre_step_state_step_index")
+    actual_post = alignment.get("post_step_state_step_index")
+    if (
+        actual_pre != expected_pre
+        or actual_post != expected_post
+        or candidate.get("complete") is not True
+    ):
+        return {
+            "available": False,
+            "unavailable_reason": "runtime_probe_step_alignment_mismatch",
+            "expected_pre_step_index": expected_pre,
+            "actual_pre_step_index": actual_pre,
+            "expected_post_step_index": expected_post,
+            "actual_post_step_index": actual_post,
+            "runtime_report": candidate,
+        }
+    return candidate
+
+
 def _compact_simulation_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    """Keep per-tick values without repeating static stage/planner reports."""
+    """保留逐拍关键值，并移除只需在终态汇总中保存的历史数组。"""
 
     keys = (
         "physics_dt",
@@ -736,5 +942,65 @@ def _compact_simulation_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         "used_visual_replay",
         "used_manipulation_base_lock",
         "used_manipulation_support_joint_lock",
+        # ROS 2 导航联调必须逐 tick 保留“收到什么、实际写了什么”以及传感器
+        # 发布新鲜度；否则超时后的终态只能看到零速，无法还原真实控制链。
+        "scan_cmd_vel_last_write_report",
+        "navigation_policy_gate_lifecycle_report",
+        "grid_map_observation_diagnostics_last_report",
+        "grid_map_observation_lifecycle_report",
+        "bspline_diagnostics_last_report",
+        "bspline_diagnostics_lifecycle_report",
+        "active_sensing_lifecycle_report",
+        "dynamic_navigation_evidence_report",
+        "dynamic_obstacle_runtime_report",
+        "dynamic_obstacle_lifecycle_report",
+        "dynamic_obstacle_raw_cloud_last_report",
+        "dynamic_obstacle_raw_cloud_lifecycle_report",
+        "scan_controller_status_last_report",
+        "scan_controller_status_lifecycle_report",
+        "scan_goal_reached_last_sample",
+        "navigation_stair_execution_frozen_last_publish_report",
+        "navigation_ros2_last_publish_report",
     )
-    return {key: metadata[key] for key in keys if key in metadata}
+    compact = {key: metadata[key] for key in keys if key in metadata}
+    lifecycle_history_keys = {
+        "navigation_policy_gate_lifecycle_report": {
+            "identity_verified_tracking_write_reports",
+        },
+        "grid_map_observation_lifecycle_report": {
+            "diagnostic_reports",
+        },
+        "bspline_diagnostics_lifecycle_report": {
+            "diagnostic_reports",
+            "trajectory_identities",
+        },
+        "active_sensing_lifecycle_report": {
+            "attempts",
+        },
+        "scan_controller_status_lifecycle_report": {
+            "accepted_status_reports",
+            "tracking_status_reports",
+            "accepted_trajectory_identities",
+        },
+    }
+    for report_key, omitted_keys in lifecycle_history_keys.items():
+        report = compact.get(report_key)
+        if not isinstance(report, dict):
+            continue
+        # 完整历史仍由 episode summary 原样保存；逐拍只需计数、首末样本
+        # 与最近状态，否则同一有界历史会在数百帧中重复写入数 GB JSONL。
+        compact[report_key] = {
+            key: value
+            for key, value in report.items()
+            if key not in omitted_keys
+        }
+    path_report = metadata.get("scan_reference_path_last_report")
+    if isinstance(path_report, dict):
+        # 点数组已由 executor 用同一几何哈希验证；逐帧只保留代际证据，避免
+        # 长路径在数千控制 tick 中重复膨胀 JSONL。
+        compact["scan_reference_path_last_report"] = {
+            key: value
+            for key, value in path_report.items()
+            if key != "points_ground_xyz"
+        }
+    return compact

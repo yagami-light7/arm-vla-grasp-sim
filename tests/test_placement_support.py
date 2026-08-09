@@ -6,8 +6,13 @@ import json
 import struct
 from pathlib import Path
 
+import pytest
+
 from scripts.scene.validate_placement_support import main
-from source.scene.placement_support import inspect_placement_support
+from source.scene.placement_support import (
+    inspect_nearest_ground_support,
+    inspect_placement_support,
+)
 
 
 def _write_triangle_ply(path: Path) -> None:
@@ -88,6 +93,47 @@ def test_inspect_placement_support_rejects_implausible_center_clearance(
     assert result.support is not None
     assert result.center_to_support_m == 0.30000000000000004
     assert result.geometry_verified is False
+
+
+def test_inspect_nearest_ground_support_uses_layer_hint(tmp_path: Path) -> None:
+    """多楼层查询必须选最近楼层，不能固定取最高或最低交点。"""
+
+    collision_ply = tmp_path / "collision.ply"
+    _write_triangle_ply(collision_ply)
+
+    lower = inspect_nearest_ground_support(
+        collision_ply,
+        (0.0, 0.0, 0.62),
+        maximum_hint_error_m=0.20,
+    )
+    upper = inspect_nearest_ground_support(
+        collision_ply,
+        (0.0, 0.0, 1.92),
+        maximum_hint_error_m=0.20,
+    )
+
+    assert lower.support.z == pytest.approx(0.5)
+    assert lower.hint_error_m == pytest.approx(0.12)
+    assert upper.support.z == pytest.approx(2.0)
+    assert upper.hint_error_m == pytest.approx(0.08)
+
+
+def test_inspect_nearest_ground_support_fails_closed(tmp_path: Path) -> None:
+    """无交点、非有限提示和超限楼层提示都不能静默猜测。"""
+
+    collision_ply = tmp_path / "collision.ply"
+    _write_triangle_ply(collision_ply)
+
+    with pytest.raises(ValueError, match="没有支撑面"):
+        inspect_nearest_ground_support(collision_ply, (2.0, 2.0, 0.5))
+    with pytest.raises(ValueError, match="NaN 或 Inf"):
+        inspect_nearest_ground_support(collision_ply, (0.0, 0.0, float("nan")))
+    with pytest.raises(ValueError, match="超过"):
+        inspect_nearest_ground_support(
+            collision_ply,
+            (0.0, 0.0, 1.25),
+            maximum_hint_error_m=0.20,
+        )
 
 
 def test_validate_placement_support_cli_writes_traceable_report(tmp_path: Path) -> None:

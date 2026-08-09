@@ -1,0 +1,498 @@
+# PCT + SCAN 生产调参覆盖层。
+#
+# 单位约定：
+#   m      米，表示空间距离；
+#   m/s    米每秒，表示机体或轨迹线速度；
+#   m/s^2  米每二次方秒，表示线加速度；
+#   m/s^3  米每三次方秒，表示 jerk（加速度变化率）；
+#   rad/s  弧度每秒，表示偏航角速度；
+#   rad/s^2 弧度每二次方秒，表示偏航角加速度；
+#   s      秒；无单位参数会在注释中明确说明。
+#
+# 该文件只包含影响路径质量、巡航速度、重规划频率与闭环稳定性的参数。
+# 资产路径、topic、frame、机器人碰撞包络和普通安全超时仍由各包基础配置维护；
+# controller 与 supervisor 必须共享的执行冻结预算在本文件中统一覆盖。
+# 组合 launch 按“基础配置 → 本文件 → 强制接口合同”的顺序加载，因此这里
+# 是主线性能参数的唯一修改入口。Isaac 的 cmd_vel→policy 安全适配器也读取
+# 本文件 scan_controller.limits.*，避免 ROS 与 policy 使用两套速度上限。
+
+# 跨 PCT、SCAN、点云过滤、controller 和 Isaac 楼梯执行共享的几何合同。
+# 这个块不会直接启动名为 navigation_contract 的 ROS 节点；组合启动脚本和
+# live runner 会读取它，再把同一个值显式传给所有消费者。
+navigation_contract:
+  ros__parameters:
+    # Go2-X5 携臂收纳姿态下，base_link 原点到碰撞网格支撑面的高度，单位 m。
+    # PCT 发布地面 z；SCAN 只在 Path 输入处加一次本值，得到 base_link 参考 z。
+    # 调大/调小都不是“提速旋钮”：必须来自静止实测。值不准会让每次局部重规划
+    # 先产生一次假上升/下降，触发加速度限幅并显著拉长 B-spline。
+    # 2026-08-02 seed=0 live 静止 51 样本：median=0.337957m，
+    # P05/P95=0.333646/0.338396m，因此生产值取 0.338m。
+    body_height_m: 0.338
+
+    # 首个 PCT goal 发布前的 live 静稳预检使用“快速窗口 + 完整回退”两级合同。
+    # 两级窗口都要求：唯一 policy writer 每拍精确写零、Odometry/写入序列严格
+    # 递增、底盘和机械臂未锁定、机械臂保持收纳、机体速度/倾角通过物理门。
+    # 快速窗口任一门失败时不会放行，也不会清除安全检查，而是继续收集完整窗口。
+    body_height_preflight.quick.enabled: true
+
+    # 快速窗口最少连续样本数。控制频率为 50Hz，26 点覆盖首尾约 0.50s。
+    # 调小会削弱对短暂静止的区分；调大只增加启动等待，不改变导航运动速度。
+    body_height_preflight.quick.minimum_samples: 26
+
+    # 快速窗口最短仿真持续时间，单位 s；样本数与时间必须同时满足。
+    body_height_preflight.quick.minimum_duration_s: 0.50
+
+    # 快速窗口的高度中位绝对偏差上限，单位 m。MAD 衡量典型抖动，越小越严格。
+    # 当前 phase220 完整窗口实测约 0.000008m，本门仍保留约 300 倍余量。
+    body_height_preflight.quick.maximum_mad_m: 0.0025
+
+    # 快速窗口 P95-P05 高度跨度上限，单位 m，用于拦截少量明显跳点。
+    # 当前 phase220 实测约 0.000413m；超过本值会自动回退完整窗口。
+    body_height_preflight.quick.maximum_p95_p05_m: 0.0075
+
+    # 快速窗口实测高度中位数与配置 body_height_m 的最大误差，单位 m。
+    # 该门比完整窗口严格四倍；配置明显漂移时不得靠短窗口提前放行。
+    body_height_preflight.quick.maximum_configured_height_error_m: 0.020
+
+    # 完整回退窗口仍保留历史 50 点和至少 1.0s 合同。快速门不通过时使用它，
+    # 因首尾时间差定义，50Hz 实际通常在第 51 个有效样本完成。
+    body_height_preflight.full.minimum_samples: 50
+    body_height_preflight.full.minimum_duration_s: 1.00
+
+    # 完整窗口的 MAD、P95-P05 和配置误差上限，单位均为 m。它们只用于安全
+    # 验证，不会把实测中位数写回配置，也不会用 task z 冒充物理高度。
+    body_height_preflight.full.maximum_mad_m: 0.010
+    body_height_preflight.full.maximum_p95_p05_m: 0.030
+    body_height_preflight.full.maximum_configured_height_error_m: 0.080
+
+    # 从预检开始到判定失败的总仿真时限，单位 s；快速失败后仍有足够时间完成
+    # 1.0s 回退窗口。调大只延后异常报告，调小可能让真实抖动恢复来不及完成。
+    body_height_preflight.timeout_s: 5.00
+
+# Isaac host runtime 的导航深度点云负载配置。这个名字不对应 ROS 节点；
+# full-physics runner 从同一 YAML 读取后创建相机点云配置，避免采样节拍继续
+# 藏在 Python 默认值里。显式 CLI 仍可用于隔离实验并覆盖这里的值。
+isaac_navigation_runtime:
+  ros__parameters:
+    # 深度图每隔多少像素取一个点，无单位。640×480 图像在 stride=8 时理论上限
+    # 为 4.8k 点，实际还会按深度范围过滤。在 SCAN 的 1.2m 局部前视范围内，
+    # 该角分辨率对应的横向采样仍小于 0.05m 地图栅格。stride 越小越密，但
+    # GridMap 必须为每个点做射线融合；phase206 的 stride=4 产生 1.5–1.9 万点
+    # 并形成秒级积压。
+    point_cloud.pixel_stride: 8
+
+    # 每多少个 50Hz 控制步发布一帧点云。10 步即 5Hz、0.20s 一帧，仍小于
+    # policy 点云 0.50s 超时门；不能调到 25 步或更大，否则正常节拍也会停车。
+    point_cloud.publish_interval_control_steps: 10
+
+    # 只保留相机前方该深度范围内的有限点，单位 m。近裁剪避免机身表面，远裁剪
+    # 限制无关背景；缩短 max_depth 会降低负载，但也会推迟远处障碍进入地图。
+    point_cloud.min_depth_m: 0.15
+    point_cloud.max_depth_m: 8.0
+
+    # 单帧硬上限与有效帧下限，单位均为点数。max_points 是分辨率变化时的资源门，
+    # 不是正常抽样目标；少于 minimum_valid_points 的帧不会刷新安全新鲜度。
+    point_cloud.max_points: 12000
+    point_cloud.minimum_valid_points: 64
+
+pct_ros2_adapter:
+  ros__parameters:
+    # PCT 原生 A* 每前进一步对地图代价的乘数。补丁已移除 cost<5 的死区，
+    # 因此 0.20 能持续区分走廊中心和墙边；调大更保守但容易明显绕远。
+    planner.upstream_astar_step_cost_weight: 0.20
+
+    # 是否从 collision PLY 生成 Go2-X5 机身高度带的 upstream 软净空层。
+    # 关闭后 PCT 仍能规划，但会再次按点机器人贴墙走，不适合作为生产设置。
+    planner.upstream_body_clearance_enabled: true
+
+    # 软净空影响半径，单位 m。它不是硬碰撞半径；在狭窄处仍允许通过。
+    # 调大：更早偏向走廊中心、路线可能更长；调小：更短但留给 SCAN 的余量少。
+    planner.upstream_body_clearance_radius_m: 0.80
+
+    # 障碍表面处写入的最大软代价，无单位。必须 <=20，才能保留窄门和任务终点；
+    # 当前 20 配合 0.20 步权重，在有空间时足以压过贴墙捷径。
+    planner.upstream_body_clearance_maximum_cost: 20.0
+
+    # 净空代价曲线指数。2.0 是二次曲线：影响区外缘温和，接近墙面时增长快。
+    # 小于 2 会让整条走廊都受较强惩罚；过大则只在临墙时才产生作用。
+    planner.upstream_body_clearance_power: 2.0
+
+    # 官方 upstream PCT 同楼层 A* 路径做视线压缩时要求的最小机身净空，单位 m。
+    # 当前值等于 Go2-X5 双圆柱半径 0.27m；实现还会额外加入半个 0.2m
+    # PCT 栅格对角线作为离散覆盖余量。调小可能切过障碍角点，禁止用来换速度；
+    # 调大更保守，但可能保留八邻域锯齿，使 SCAN 在折角处反复减速。
+    planner.upstream_same_layer_shortcut_clearance_m: 0.27
+
+    # 同楼层一次允许尝试直连的最长距离，单位 m。直连仍必须逐段通过上述净空门；
+    # 超过该长度会保留中间 A* 锚点。跨楼层路径不做同层视线压缩；其楼梯段由
+    # 基础配置指定的标定 profile 单独归一，平台与 gateway 拓扑仍来自 PCT。
+    # 当前 10m 覆盖本次约 5.1m 平地路线。
+    planner.upstream_same_layer_shortcut_max_segment_m: 10.0
+
+    # 发布 Path 时相邻点允许保留的最小三维间距，单位 m。
+    # 小于该距离的连续点会被去重，但 PCT 的精确终点一定保留。
+    # 调大：Path 点更少、更平滑、传输和 SCAN 处理更轻，但可能丢掉小转角。
+    # 调小：保留更多地形细节，但会增加锯齿、消息大小和局部拟合计算量。
+    path.minimum_point_spacing_m: 0.05
+
+    # 将 upstream PCT 原始折线重新按弧长采样的目标间距，单位 m。
+    # 它决定全局路线的几何分辨率，不是机器人的控制周期或前视距离。
+    # 调大：点更稀、路线更简洁；过大会漏掉楼梯平台或门口转角。
+    # 调小：点更密；过小会把体素地图的细碎折线完整传给 SCAN。
+    planner.path_sample_spacing_m: 0.20
+
+    # 网格路径做视线可达压缩时，一条直连线段允许的最大长度，单位 m。
+    # 只有碰撞检查通过且不破坏跨层拓扑的点才会被删掉。
+    # 调大：长直路 Path 更短；过大会在狭窄转角产生“抄近路”倾向。
+    # 调小：更忠实跟随网格，但局部轨迹段和转角数量增加。
+    planner.grid_compress_max_segment_m: 0.80
+
+    # 静态障碍周围参与 PCT 软代价计算的影响半径，单位 m。
+    # 这不是硬碰撞半径：半径内仍可能可走，只是越靠墙代价越高。
+    # 调大：更早远离墙和家具，但狭窄通道可能被过度惩罚。
+    # 调小：路线更短、更贴墙；过小会减少给 SCAN 留出的绕障余量。
+    planner.obstacle_clearance_radius_m: 0.60
+
+    # 上述障碍净空软代价的权重，无单位。
+    # 0 表示只比较可达性/基本路程；值越大越愿意绕远换取静态净空。
+    # 它不改变 Go2-X5 碰撞包络，也不负责在线推车等动态障碍。
+    planner.obstacle_clearance_cost_weight: 2.0
+
+    # 单次 PCT 网格规划允许占用的最长墙钟时间，单位 s。
+    # 超时会报告规划失败并保持停车，不会发布半条 Path。
+    # 该值只影响“等多久才判失败”，不会让 A* 本身算得更快。
+    planner.grid_timeout_sec: 10.0
+
+scan_planner_node:
+  ros__parameters:
+    # 从机器人在完整 PCT Path 上的当前单调进度向前截取的局部弧长，单位 m。
+    # 这是 SCAN 真正的“看多远”，不是传感器量程或时间长度。
+    # 调大：局部轨迹更长、更连贯、长直路重规划次数更少；过大会圆滑急转角，
+    #       也会让新障碍影响更长的一段优化问题。
+    # 调小：对急转和动态障碍更敏捷；过小会不断生成短轨迹并反复加减速。
+    fsm.planning_horizon: 1.20
+
+    # 机器人离当前局部轨迹起点超过该距离后，触发滚动重规划，单位 m。
+    # 当前 0.55m 是前视距离的 45.8%，让新旧局部轨迹仍有约 0.65m 重叠。
+    # 调大：重规划次数少、运行更顺，但新障碍响应更迟。
+    # 调小：更新更勤、响应更快，但 CPU 占用和轨迹切换次数增加。
+    fsm.thresh_replan: 0.55
+
+    # 机器人距当前局部目标小于该值时暂不为了“接近本段终点”立刻重规划，单位 m。
+    # 它防止在局部目标附近高频抖动；不是最终任务的到达容差。
+    # 调大：末段更安静，但可能较晚接入下一段；调小：接续更积极但易频繁切换。
+    fsm.thresh_no_replan: 0.22
+
+    # 非最终局部段在末端沿 PCT guide 切线保留的目标巡航速度，单位 m/s。
+    # 它消除旧实现“每个 0.3m 小段都准备停到 0”的主要耗时；只有完整 Path
+    # 最终点仍强制终端速度为 0。该值必须 <= manager.max_vel 和 limits.max_vx。
+    # 调大：直线明显更快；过大会在急转、坡面或 RL 跟踪滞后时产生过冲。
+    # 调小：更稳但平均速度下降。当前采用仓库已有快速楼梯 profile 已覆盖的
+    # 0.60m/s 巡航；它低于 0.65m/s 硬上限，仍保留 0.05m/s 纠偏余量。
+    # 这不是 redline 参数，后续仍需以完整跨层到达和急停计数验收。
+    fsm.reference_cruise_speed: 0.60
+
+    # SCAN 每次滚动重规划使用的实测 Odometry 速度低通时间常数，单位 s。
+    # 四足抬腿/落脚会让单帧 base 速度周期性接近 0；直接取单帧会让每段
+    # B-spline 都误从静止起步。该参数只平滑真实速度，不会用 cmd_vel 补速度。
+    # 调大：更能消除步态振荡、局部段接续更顺；过大会在急停后保留旧速度。
+    # 调小：急停响应更快；过小则重新暴露单帧振荡。0 表示完全关闭滤波。
+    # 快速楼梯 profile 已验证 0.12s；缩短每次滚动重规划后的速度建立时间，
+    # 同时仍覆盖多个 50Hz 控制周期，不直接使用单帧足端冲击速度。
+    fsm.reference_velocity_filter_time_constant_sec: 0.12
+
+    # planner 发布 stationary final hold 前，位置、终端航向和真实速度必须连续
+    # 合格的时间，单位 s。它必须长于 controller 的 0.50s 完成驻留，使 moving
+    # final 有机会先完成；否则单帧低速会把仍有步态回弹的底盘过早冻结。
+    fsm.reference_goal_hold_stable_dwell_sec: 0.75
+
+    # SCAN 末端安全目标与 stationary final hold 的 XY 内门，单位 m。
+    # 它不是最终成功阈值，且必须严格小于 controller 的
+    # 0.055m 捕获门和 0.08m 完成门。phase271 seed=2 在旧捕获门
+    # 后回弹到 0.0824m；0.04m 让碰撞安全 B-spline 先进入更深余量。
+    fsm.reference_goal_hold_distance_xy: 0.04
+
+    # stationary final hold 的垂直误差门，单位 m，与 controller 高度门一致。
+    fsm.reference_goal_hold_distance_z: 0.12
+
+    # stationary final hold 的终端航向误差门，单位 rad，严格小于 0.20rad
+    # 最终认证门，为下游连续驻留留出余量。
+    fsm.reference_goal_hold_yaw_error: 0.18
+
+    # stationary final hold 前允许的真实 XY 合成速度，单位 m/s。
+    fsm.reference_goal_hold_planar_speed: 0.05
+
+    # stationary final hold 前允许的真实竖直速度，单位 m/s。
+    fsm.reference_goal_hold_vertical_speed: 0.05
+
+    # stationary final hold 前允许的机体系偏航角速度 |wz|，单位 rad/s。
+    # Go2-X5 零命令站立仍有 roll/pitch 微摆；它们不能由导航 cmd_vel 消除，
+    # 因而不参与终点驻留。yaw 误差门与该 yaw-rate 门仍会阻止转向中误报。
+    fsm.reference_goal_hold_yaw_rate: 0.10
+
+    # B-spline 任意方向合成线速度的硬上限，单位 m/s。
+    # 这是规划轨迹的物理上限，不是期望巡航值；必须与 optimization.max_vel、
+    # controller limits.max_vx 以及 Isaac policy 适配器上限一致。
+    manager.max_vel: 0.65
+
+    # B-spline 合成线加速度硬上限，单位 m/s^2。
+    # 调大：起步、刹车更快；过大会给 RL policy 突然变化的命令并引起俯仰/打滑。
+    # 调小：更柔和，但短轨迹大部分时间都耗在加减速。采用快速楼梯 profile
+    # 已测试的 1.20m/s^2，仍低于 MoE-CTS 入口的 2.0m/s^2 能力门。
+    manager.max_acc: 1.20
+
+    # B-spline jerk 上限，单位 m/s^3，即每秒允许加速度变化多少。
+    # 调大：优化器可更快建立加速度，但冲击更明显；调小：动作更柔和，可能延长
+    # 短轨迹或增加动力学不可行。它应明显高于 max_acc，当前保守保持 4.0。
+    manager.max_jerk: 4.0
+
+    # 连续控制点可行性检查允许超过速度/加速度上限的数值比例，无单位。
+    # 它不是额外物理速度：max_vel × 本值 + 1e-4 必须不大于优化器最终
+    # vel_tolerance。0.65×0.0075+1e-4=0.004975 <= 0.005，且
+    # 1.20×0.0075+1e-4=0.0091 <= 0.01；不能放大最终门绕过合同。
+    manager.feasibility_tolerance: 0.0075
+
+    # 优化器控制点的目标空间间距，单位 m。
+    # 调小：控制点更多、能描述更细的绕障曲线，但计算更慢且可能出现局部摆动。
+    # 调大：计算更轻、曲线更硬；过大会跨过狭窄转角或小障碍。
+    manager.control_points_distance: 0.20
+
+    # 构造 reference 初始梯形速度剖面时使用的加速度占 manager.max_acc 的比例。
+    # 这不是最终物理限幅：最终 B-spline 仍必须通过完整 1.20m/s² 安全门。
+    # 快速楼梯 profile 使用 0.75，使 reference 建立速度所用加速度为
+    # 0.90m/s²；比直接用满物理门更平滑，又不会在每个短局部段长期爬升。
+    manager.reference_profile_acceleration_scale: 0.75
+
+    # 空旷局部 guide 含 45°–90° 栅格转角时，允许 SCAN 先尝试一次平滑候选。
+    # 候选只有同时满足真实 GridMap 双圆柱碰撞、0.10m ordered-reference 走廊、
+    # 0.035m 进度超前、完整速度/加速度门，并确实缩短轨迹时才会替换原折线；
+    # 任一门失败都自动保留原轨迹，因此这不是放宽碰撞或切角开关。
+    manager.reference_free_guide_refine_enabled: true
+
+    # 平滑候选相对原始安全折线至少应减少的局部轨迹时长，单位 s。
+    # 过滤只有浮点噪声级收益的候选，避免无意义改变轨迹几何。
+    manager.reference_free_guide_refine_minimum_duration_gain: 0.05
+
+    # planner_manager 用于拒绝异常超长初始化点集的空间尺度，单位 m。
+    # 注意：它不是局部前视距离；正常应 >= 2 × fsm.planning_horizon。
+    # 调得太小会把合法密采样 guide 误判为异常，太大则削弱输入资源保护。
+    manager.planning_horizon: 2.40
+
+    # B-spline 数值优化器内部使用的速度上限，单位 m/s。
+    # 必须等于 manager.max_vel，否则“生成可行”与“优化可行”的判据会冲突。
+    optimization.max_vel: 0.65
+
+    # B-spline 数值优化器内部使用的加速度上限，单位 m/s^2。
+    # 必须等于 manager.max_acc。
+    optimization.max_acc: 1.20
+
+scan_controller:
+  ros__parameters:
+    # controller 在 B-spline 当前执行时刻基础上向前取样的时间，单位 s。
+    # 调大：提前看弯、命令更平滑，但可能切弯和过冲；调小：更贴当前点，
+    # 但对 RL policy/ROS 延迟更敏感。它不是 SCAN 的空间 planning_horizon。
+    controller.time_forward: 0.60
+
+    # 位置误差转换为附加线速度的比例增益，量纲约为 1/s。
+    # 例如误差 0.10m、增益 0.80，会在轨迹前馈外增加约 0.08m/s 的纠偏。
+    # 调大：追轨更紧但易左右摆/过冲；调小：更平顺但跟踪滞后和误差增大。
+    controller.kp_position: 0.80
+
+    # yaw 误差转换为角速度的比例增益，量纲约为 1/s。
+    # 实际输出还会被 limits.max_yaw_rate 和 max_yaw_acc 限制。
+    # 调大：转头更快但易过冲；调小：更稳但原地对齐耗时增加。
+    controller.kp_yaw: 1.50
+
+    # 普通跟踪时进入“先原地转向、冻结轨迹时间”的 yaw 误差门，单位 rad。
+    # 0.45rad 约 25.8°。SCAN 行驶碰撞检查按 B-spline 切向放置前后
+    # 双圆柱，因此真实机体不能在窄走廊带着旧的 0.70rad 航向误差平移。
+    # 该门只收紧大角度误差；正常小误差跟踪仍边走边调整。
+    controller.heading_error_threshold: 0.45
+
+    # 已进入原地转向后，退出该状态所需的 yaw 误差门，单位 rad。
+    # 必须小于进入门，0.30rad 约 17.2°；0.15rad 的迟滞防止来回切换，
+    # 同时把进入窄段时的双圆柱横向偏差限制在可审计范围内。
+    controller.heading_error_release_threshold: 0.30
+
+    # 用于判断机器人是否已明显偏离完整 /initial_path 的 XY 横向距离，单位 m。
+    # 超过该值后，controller 会切换为“沿全局 Path 切线前进并横向回线”的恢复模式。
+    # 调小会更早回线，但也会让正常 RL 摆动频繁触发恢复；调大则允许更大侧偏。
+    controller.cross_track_alignment_distance: 0.12
+
+    # 已进入全局 Path 恢复模式后退出该模式的 XY 横向距离，单位 m。
+    # 必须小于上面的进入门，二者之间的迟滞用于避免在边界反复切换。
+    controller.cross_track_alignment_release_distance: 0.08
+
+    # 全局 Path 恢复模式下进入原地转向的航向误差门，单位 rad。
+    # 当前 0.20rad 约 11.5°，比普通 0.45rad 更严格；上次跨楼层实测中，
+    # 它是 F1/F2 原地转向占时较高的直接原因之一。只有 live 净空和稳定性
+    # 证明允许时才可调大，不能单纯为缩短时间跳过双圆柱姿态安全约束。
+    controller.cross_track_heading_error_threshold: 0.20
+
+    # 全局 Path 恢复模式下退出原地转向的航向误差门，单位 rad。
+    # 必须小于对应进入门；调小会转得更正但耗时增加，调大则更早恢复平移。
+    controller.cross_track_heading_error_release_threshold: 0.18
+
+    # 全局 Path 恢复模式允许的沿路径切线速度上限，单位 m/s。
+    # 它只在横向偏差超过恢复门时生效，不会限制正常 SCAN 巡航速度。
+    # 楼梯上 RL 步态横摆可能短时越过 0.12m 恢复门；旧 0.18m/s 会在此时
+    # 把爬楼动力降得过低。提高到 0.30m/s，仍只有正常巡航的一半，保留回线余量。
+    controller.cross_track_recovery_forward_speed: 0.30
+
+    # 接近完整 Path 最终点时，将恢复模式切向速度逐渐降为零的剩余弧长，单位 m。
+    # 调大更早减速；调小更接近终点才减速，但可能增加末端过冲。
+    controller.cross_track_recovery_taper_distance: 0.30
+
+    # 完整 Path 横向误差转换为回线侧向速度的比例增益，量纲约为 1/s。
+    # 调大回线更快但容易左右摆；调小更平滑但偏离路径的持续时间更长。
+    controller.cross_track_recovery_lateral_gain: 0.45
+
+    # 恢复模式额外回线侧向速度的模长上限，单位 m/s。
+    # 最终 vy 仍受 limits.max_vy 约束；该值不覆盖 SCAN 为绕障生成的反向侧移。
+    controller.cross_track_recovery_lateral_speed: 0.08
+
+    # 横向回线量转换为 Path 切线航向修正量的比例增益，量纲约为 rad/m。
+    # 该辅助只修正朝路径中心的方向，不替代 SCAN 轨迹自身的局部绕障方向。
+    controller.cross_track_heading_assist_gain: 1.00
+
+    # 恢复模式对 Path 切线施加的最大航向修正，单位 rad。
+    # 当前 0.16rad 约 9.2°，用于避免大幅斜转导致携臂四足横摆。
+    controller.cross_track_heading_assist_max: 0.16
+
+    # 携臂四足在一边高速前进、一边快速转向时，实际根轨迹会切入规划弯道
+    # 内侧。该开关只限制 controller 输出，不改变 PCT Path 或 SCAN B-spline。
+    controller.turning_speed_limit_enabled: true
+
+    # 触发转弯平移限速的目标 yaw 角速度，单位 rad/s。当前 0.35rad/s 约
+    # 20.1°/s：低于该值保持直线/缓弯速度，高于该值按下方合成速度过弯。
+    # 调小会更早减速、更稳但耗时增加；调大只在更急的弯才减速，易切弯。
+    controller.turning_yaw_rate_threshold: 0.35
+
+    # 急转时世界系二维合成平移速度上限，单位 m/s，不是 vx 单轴上限。
+    # phase286 在相同二楼拐角以约 0.26~0.53m/s 分段通过；phase287 持续
+    # 接近 0.60m/s 时切入墙体包络。因此首轮取 0.42m/s，只影响急转，
+    # 直线仍允许 0.65m/s。调大更快但切弯风险增大，调小更稳但转弯变慢。
+    controller.turning_max_planar_speed: 0.42
+
+    # 判断 B-spline 前视弦方向是否可信的最小 XY 弦长，单位 m。
+    # 低于该值时不因毫米级优化抖动进入原地转向；调大可减少伪转向，
+    # 但过大会忽略真实短转角。它不改变 B-spline 几何或碰撞检查。
+    controller.yaw_alignment_min_chord_distance: 0.03
+
+    # 机体系前后速度 vx 的硬上限，单位 m/s；正值向前、负值向后。
+    # 同一值也用于 Isaac cmd_vel→policy 适配器，必须等于 manager.max_vel。
+    limits.max_vx: 0.65
+
+    # 机体系侧向速度 vy 的硬上限，单位 m/s；用于横移纠偏和局部绕障。
+    # 调大能更快横向回线，但四足携臂横移通常比前进更易摆动。
+    limits.max_vy: 0.15
+
+    # 机体 yaw 角速度硬上限，单位 rad/s。
+    # 本轮使用 0.60rad/s，低于用户键盘观察到的 1.0rad/s 可用点；提高它主要
+    # 缩短原地转向，不会让 PCT 或 SCAN 规划计算更快。
+    limits.max_yaw_rate: 0.60
+
+    # vx 每秒允许变化的最大量，单位 m/s^2；同时作为 Isaac policy 的 vx rate limit。
+    # 必须 >= manager.max_acc 才不会把合法轨迹再次拖慢，过大会产生突然俯仰。
+    limits.max_ax: 1.20
+
+    # vy 每秒允许变化的最大量，单位 m/s^2。
+    limits.max_ay: 0.40
+
+    # yaw 角速度每秒允许变化的最大量，单位 rad/s^2。
+    # 调大缩短转向加速时间，过大会引起扭身和落脚扰动。
+    limits.max_yaw_acc: 1.50
+
+    # 完整 Path 最终点的 XY 平面到达误差，单位 m。
+    # controller 必须同时满足位置、姿态、速度和驻留条件才发布 GOAL_REACHED。
+    # 调大容易更早结束但降低定位精度；不要为了缩短时间放宽到旧 DWA 的 0.18m。
+    finish.distance_xy: 0.08
+
+    # 最终点垂直方向允许误差，单位 m。楼梯/坡面 z 噪声比平地 XY 大，故为 0.12m。
+    finish.distance_z: 0.12
+
+    # 运动 final 提前进入终点捕获的 XY 内门，单位 m；进入后先严格零平移并
+    # 做姿态/速度认证。名义轨迹已经结束时，controller 也会在 0.08m 完成门
+    # 内先刹停；若仍在 0.055~0.08m 环带，则恢复下方最低有效步态收进内门。
+    # 本值必须严格大于 planner 的 0.04m 末端目标门，且小于 0.08m 完成门。
+    finish.capture_entry_distance_xy: 0.055
+
+    # 已进入 0.055m 捕获内门后，严格零命令驻留允许的最大 XY 漂移，单位 m。
+    # phase290 seed1 在 0.065m 门附近来回穿越 181 次，最长完整稳定窗口仅
+    # 约 0.40s，随后重新起步；同一日志按 0.075m 统计仅穿越 31 次。
+    # 0.075m 仍严格小于 0.08m 真实完成门，且不会放宽位置、速度或 0.50s
+    # 连续驻留验收；调小会重新造成捕获/回收振荡，禁止调到 >= 0.08m。
+    finish.capture_zero_hold_distance_xy: 0.075
+
+    # 已进入终点捕获后允许保留该状态的 XY 外门，单位 m。
+    # 它只决定是否继续锁定任务 terminal yaw，不参与 GOAL_REACHED。phase238
+    # 在 0.45rad/s 转向下实测根位姿最远漂到约 0.23m；外门取 0.30m，
+    # 让位置保持闭环有机会把机体拉回，而不是在 0.14m 处退出后反复重规划。
+    # 严格完成门仍是上面的 0.08m，不能用该值宣称更早到达。
+    finish.capture_release_distance_xy: 0.30
+
+    # 首次进入捕获内门后保持三轴严格全零的时间，单位 s。该窗口让
+    # cmd_vel_to_policy 清掉上一条轨迹的限速历史，再启用位置保持补偿。
+    finish.capture_brake_hold_sec: 0.06
+
+    # 所有终点物理条件和严格零命令需要连续保持的时间，单位 s。
+    # 调大：完成更可信但更慢；调小：更快，但可能把瞬时经过终点误判为到达。
+    finish.capture_stable_dwell_sec: 0.50
+
+    # 终点捕获期间的 XY 位置保持比例增益，量纲约为 1/s。它主要抵消原始
+    # Go2-X5 policy 在 vx=vy=0、仅 yaw 或尚未稳定时产生的根位姿漂移；完成
+    # 制动后若仍在 0.055~0.08m 环带，会交还碰撞安全 B-spline 并使用下方
+    # 最低有效步态收进内门。它不改变任何 GOAL_REACHED 验收门。
+    # phase238 表明 0.80 增益在 8~12cm 误差时仅生成 0.06~0.10m/s，低于
+    # 原 policy 的稳定平移响应区；2.00 会在完成门附近生成约 0.15m/s 的
+    # 有效补偿，最终仍由 0.08m 严格门和连续驻留负责消除过冲误判。
+    finish.position_hold_gain: 2.00
+
+    # 位置保持合成线速度模长上限，单位 m/s；随后仍受 vx/vy 加速度门限制。
+    # phase238 的 0.10m/s 命令不能可靠抵消转向耦合漂移，故提高到当前
+    # 携臂横移硬上限 0.15m/s。该参数不是巡航速度，也不会放宽碰撞或完成判据。
+    finish.max_position_hold_speed: 0.15
+
+    # final B-spline 已进入终点外圈、但机器人仍在 0.055m 捕获内门之外时，
+    # 保持当前碰撞安全轨迹方向的最低平移模长，单位 m/s。该门同时覆盖
+    # 首次接近，以及已经进过捕获门、终点转向漂出后的 B-spline 位置回收。
+    # phase242 实测 0.04m/s 无法走完最后约 1~2cm；phase244 进一步证明
+    # 0.12m/s 斜向命令持续 4s 也只移动 7.3mm。0.22m/s 与旧 DWA 对同一
+    # 原始 policy 使用的近目标可执行下限一致。该值是二维合成速度，变换到
+    # 机体系后 vx/vy 仍分别受 0.55/0.15m/s 硬限幅和加速度门约束。
+    # 调小可能再次停在完成门外；调大容易末端过冲，不应借此放宽 0.08m 门。
+    finish.min_approach_speed: 0.28
+
+    # 终点原地转向专用角速度/角加速度上限。比普通 0.60/1.50 更保守，
+    # 但高于旧 0.25/0.50，减少末端 90° 转向耗时；位置保持闭环同时抑制漂移。
+    finish.max_capture_yaw_rate: 0.45
+    finish.max_capture_yaw_acc: 1.00
+
+    # 低于该 yaw 误差后停止继续发角速度，为严格 0.20rad 完成门保留余量。
+    finish.yaw_control_deadband: 0.18
+
+    # 完整 Path 末 Pose 的最终 yaw 误差门，单位 rad；不得用调大它换速度。
+    finish.max_yaw_error: 0.20
+
+    # 最终位置、姿态合格后仍需满足的真实运动速度门。
+    finish.max_planar_speed: 0.05
+    finish.max_vertical_speed: 0.05
+    finish.max_yaw_rate: 0.10
+    finish.max_angular_speed: 0.10
+
+    # 单次大角度对齐允许冻结 B-spline 名义时间的硬上限，单位 s。
+    # phase238 从进入捕获到旧 6s 截止前既要完成约 90° 转向，又要消除
+    # policy 漂移，实测在约 5.4s 被提前判为轨迹超时。12s 仍是有界保护，
+    # 但足够完成一次转向和位置回收；它不会延长普通巡航轨迹的软超时。
+    timeouts.max_yaw_alignment_freeze_sec: 12.0
+
+# supervisor 必须和 controller 使用同一份航向对齐冻结硬上限。该块只覆盖
+# 主线组合 launch；navigation_supervisor 独立启动时仍使用自身基础配置。
+navigation_supervisor:
+  ros__parameters:
+    # 单次合法原地转向允许延长 B-spline 有效期的最大时间，单位 s。
+    # phase291 证明 controller=12s、supervisor=6s 时，后者会在转向尚未完成
+    # 时把 Bspline 判旧并强制零速，和 controller 形成死锁。必须与上面的
+    # scan_controller.timeouts.max_yaw_alignment_freeze_sec 完全相等；调大只
+    # 延长单次异常转向的安全截止，不会改变普通巡航轨迹的过期时间。
+    timeouts.max_yaw_alignment_freeze_sec: 12.0

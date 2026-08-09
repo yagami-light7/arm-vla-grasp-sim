@@ -1,0 +1,33 @@
+manual_path_publisher:
+  ros__parameters:
+    use_sim_time: true
+    topic: /initial_path
+    frame_id: world
+
+    # 别墅真实 collision 场景的楼梯入口至第二级踏面诊断路径。
+    # XY 为 sim_to_pct_180deg 反变换后的仿真世界坐标；z 来自 collision PLY
+    # 垂直支撑面，始终表示地面高度，由 SCAN 统一增加一次 body_height。
+    points_xyz:
+      - 1.5
+      - 5.7
+      - -0.12757488791649585
+      - 1.5060733333333334
+      - 5.892276666666667
+      - -0.12973559188322342
+      - 1.5121466666666665
+      - 6.084553333333334
+      - -0.13441230906553495
+      - 1.51822
+      - 6.27683
+      - -0.0067505603638905705
+      - 1.541865882352941
+      - 6.468079411764706
+      - 0.06047143123673176
+      - 1.5655117647058823
+      - 6.659328823529412
+      - 0.17794769798269805
+    min_point_distance_m: 0.02
+    startup_delay_sec: 1.0
+    # 冻结索引含首尾点，必须与点几何哈希同时更新。
+    scan_stair_freeze_points_sha256: bcd508f67377ec846a5677d4521a791f85f38230793a87b9c3328af460a78569
+    scan_stair_freeze_stair_segment_indices: [2, 5]

@@ -13,7 +13,9 @@ import numpy as np
 
 from source.interfaces.navigation import NavGoal, NavPlan
 from source.interfaces.simulation import SimulationState
-from source.navigation import NavPlanner
+from source.navigation.adapters.dwa_nav_adapter import (
+    NavPlanner as LegacyDwaNavPlanner,
+)
 from source.navigation.executor import (
     DwaNavExecutor,
     PCT_STAIR_FLOAT_DOG_JOINT_NAMES,
@@ -3000,7 +3002,11 @@ class AStarDwaSmokeTest(unittest.TestCase):
                 json.dumps({"image": "occupancy.npy", "resolution": 0.1, "origin": [0.0, 0.0, 0.0]}),
                 encoding="utf-8",
             )
-            planner = NavPlanner(str(root / "map.json"), 0.0, DWAConfig(control_dt=0.05))
+            planner = LegacyDwaNavPlanner(
+                str(root / "map.json"),
+                0.0,
+                DWAConfig(control_dt=0.05),
+            )
             path = planner.plan_global_path((0.15, 0.15), (1.15, 0.15))
             command = planner.compute_command((0.15, 0.15, 0.0), (0.0, 0.0), path)
             self.assertEqual(len(command), 3)
@@ -3016,7 +3022,11 @@ class AStarDwaSmokeTest(unittest.TestCase):
                 json.dumps({"image": "occupancy.npy", "resolution": 0.1, "origin": [0.0, 0.0, 0.0]}),
                 encoding="utf-8",
             )
-            planner = NavPlanner(str(root / "map.json"), 0.0, DWAConfig(control_dt=0.05))
+            planner = LegacyDwaNavPlanner(
+                str(root / "map.json"),
+                0.0,
+                DWAConfig(control_dt=0.05),
+            )
             blocked_goal = planner.global_map.grid_to_world(18, 15)
             with self.assertRaisesRegex(ValueError, "goal cell .* is occupied"):
                 planner.plan_global_path((0.15, 0.15), blocked_goal)

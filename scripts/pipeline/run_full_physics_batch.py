@@ -36,6 +36,13 @@ _REAL_MODES = {
     "manipulation_apply_smoke": "--manipulation-apply-smoke",
 }
 
+_NAVIGATION_MODES = {
+    "full_physics",
+    "navigation_smoke",
+    "navigation_carry_smoke",
+    "stair_locomotion_smoke",
+}
+
 
 _COLORS = {
     "cyan": "\033[36m",
@@ -244,6 +251,25 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="转发 Isaac 到 PCT 的坐标变换模式。",
     )
+    for axis in "xyz":
+        parser.add_argument(
+            f"--pct-offset-{axis}",
+            type=float,
+            default=None,
+            help=f"转发 PCT 坐标 {axis.upper()} 偏移。",
+        )
+        parser.add_argument(
+            f"--pct-scale-{axis}",
+            type=float,
+            default=None,
+            help=f"转发 PCT 坐标 {axis.upper()} 缩放。",
+        )
+        parser.add_argument(
+            f"--pct-rotation-{axis}-rad",
+            type=float,
+            default=None,
+            help=f"转发 PCT 固定轴 {axis.upper()} 旋转弧度。",
+        )
     parser.add_argument(
         "--pct-cross-floor-gateway",
         action="append",
@@ -1059,6 +1085,21 @@ def _build_child_command(
             command.extend([f"--{argument_name.replace('_', '-')}", str(value)])
 
     for argument_name in (
+        "pct_offset_x",
+        "pct_offset_y",
+        "pct_offset_z",
+        "pct_scale_x",
+        "pct_scale_y",
+        "pct_scale_z",
+        "pct_rotation_x_rad",
+        "pct_rotation_y_rad",
+        "pct_rotation_z_rad",
+    ):
+        value = getattr(args, argument_name)
+        if value is not None:
+            command.extend([f"--{argument_name.replace('_', '-')}", str(value)])
+
+    for argument_name in (
         "pct_server_script",
         "pct_server_python",
         "pct_tomogram_path",
@@ -1377,10 +1418,27 @@ def _summary_elapsed_seconds(summary: dict[str, object] | None) -> float:
     return max(0.0, float(duration)) if isinstance(duration, (int, float)) else 0.0
 
 
+def _validate_pct_scan_batch_contract(args: argparse.Namespace) -> None:
+    """在 ROS 2 episode epoch 协议完成前拒绝批量导航与旧 planner 开关。"""
+
+    if args.mode not in _NAVIGATION_MODES:
+        return
+    if args.num_episodes != 1:
+        raise SystemExit(
+            "PCT→SCAN ROS 2 导航在 episode epoch/reset/ack 协议完成前"
+            "只允许单 episode；batch 多 episode 已失败关闭。"
+        )
+    if args.global_planner not in {None, "pct"}:
+        raise SystemExit("pct-scan batch 导航只允许 PCT 全局规划器。")
+    if args.pct_no_fallback is False:
+        raise SystemExit("pct-scan batch 导航禁止 PCT→A* fallback。")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.num_episodes < 1:
         raise SystemExit("--num-episodes must be positive.")
+    _validate_pct_scan_batch_contract(args)
     if not args.headless and args.num_episodes > 1:
         raise SystemExit("批量 GUI 运行容易阻塞自动化；多 episode 请使用 --headless。")
     if args.progress_interval_s <= 0.0:

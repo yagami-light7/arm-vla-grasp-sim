@@ -1,0 +1,67 @@
+isaac_navigation_bridge:
+  ros__parameters:
+    use_sim_time: true
+
+    topics.body_pose_input: /isaac/body_pose_raw
+    topics.cloud_input: /isaac/cloud_registered_raw
+    topics.body_pose_output: /body_pose
+    topics.cloud_output: /cloud_registered
+    topics.initial_path_input: /initial_path
+
+    frames.odom: world
+    frames.base: base_link
+    frames.cloud: world
+
+    qos.depth: 5
+    qos.path_depth: 1
+    warning_throttle_sec: 5.0
+
+    filters.drop_cloud_without_odom: true
+    # Path 地面过滤启用时，必须先收到有效 Path 再向 SCAN 发布点云；
+    # 否则启动阶段的坡面支撑点会先进入有状态占据地图，后续过滤无法追溯清除。
+    filters.drop_cloud_without_ground_path: true
+    # 与 Isaac runtime 的原始深度门一致；canonical empty 只能由足量有效
+    # 原始点分类后且障碍/支撑面自由射线都为空时产生。
+    filters.minimum_valid_input_points: 64
+    filters.odom_timeout_sec: 0.50
+    filters.max_cloud_odom_skew_sec: 0.20
+    filters.range_min_m: 0.0
+    filters.range_max_m: 8.0
+    filters.crop_min_xyz_m: [-5.0, -5.0, -0.60]
+    filters.crop_max_xyz_m: [5.0, 5.0, 2.00]
+
+    # 使用 Odometry 完整姿态转换到 base_link；地面中心为机体系
+    # z=-body_height，因此坡面上的 roll/pitch 不会把正常支撑面误写为障碍。
+    filters.filter_ground: true
+    filters.body_height_m: 0.30
+    filters.ground_clearance_m: 0.03
+    filters.ground_band_down_m: 0.03
+
+    # Path 的 z 是地面高度；先以机器人 XYZ 投影维护单调弧长进度，再只在
+    # 后退 1m、前向 3m 的有序局部窗口内插值，避免 XY 重叠楼层串层。
+    # 点间距与 SCAN fsm.min_path_point_spacing 保持一致。
+    filters.filter_path_ground: true
+    # 必须覆盖双圆柱半径 0.27m、SCAN 碰撞代价距离 0.20m 和点云噪声余量；
+    # 否则坡面廊道外的正常支撑点经障碍膨胀后会反向封死中心线。
+    filters.path_ground_corridor_radius_m: 0.70
+    # 平地/缓坡只忽略 Path 上方 5cm 支撑面；对 |dz|/dxy>=0.20 的楼梯段
+    # 上下均放宽到 9cm。collision PLY 在本次急停点审计到折线路径下方
+    # 6.50cm 的踏面三角形；旧 5cm 下窄带漏掉它后，0.05m 栅格膨胀会封住
+    # base 中心。楼梯专用门只作用于陡段，不会吞掉平地低矮障碍。
+    filters.path_ground_clearance_m: 0.05
+    filters.path_ground_stair_minimum_slope: 0.20
+    filters.path_ground_stair_clearance_m: 0.09
+    filters.path_ground_band_down_m: 0.05
+    filters.path_ground_stair_band_down_m: 0.09
+    filters.path_min_point_spacing_m: 0.05
+    filters.path_ground_backward_arc_m: 1.0
+    filters.path_ground_forward_arc_m: 3.0
+
+    # 由当前 DogOnly 导航收纳姿态的 URDF 碰撞体离线测量，并留出腿部摆动余量。
+    # 静态碰撞体相对 base_link 边界为
+    # x=[-0.384, 0.367]、y=[-0.155, 0.155]、z=[-0.354, 0.436] 米。
+    filters.filter_self: true
+    filters.double_cylinder_radius_m: 0.27
+    filters.double_cylinder_offset_m: 0.16
+    filters.self_z_min_m: -0.40
+    filters.self_z_max_m: 0.50

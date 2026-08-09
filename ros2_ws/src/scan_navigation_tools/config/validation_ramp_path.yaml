@@ -1,0 +1,41 @@
+manual_path_publisher:
+  ros__parameters:
+    use_sim_time: true
+    topic: /initial_path
+    frame_id: world
+
+    # 路径从 0.5 m 平地接近段进入 1.2 m / 0.18 m 连续坡面，
+    # 再沿顶平台前进 0.5 m。z 始终表示地面高度，由 SCAN 增加一次 body_height。
+    points_xyz:
+      - -0.5
+      - 0.0
+      - 0.0
+      - -0.25
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.3
+      - 0.0
+      - 0.045
+      - 0.6
+      - 0.0
+      - 0.09
+      - 0.9
+      - 0.0
+      - 0.135
+      - 1.2
+      - 0.0
+      - 0.18
+      - 1.45
+      - 0.0
+      - 0.18
+      - 1.7
+      - 0.0
+      - 0.18
+    min_point_distance_m: 0.02
+    startup_delay_sec: 1.0
+    # [-1,-1] 是显式“无台阶段”哨兵；几何哈希变化时必须重新审核。
+    scan_stair_freeze_points_sha256: 472b342ba1972859babca76a5759a7bb4554b94158b5f4d52c28875fb11370a8
+    scan_stair_freeze_stair_segment_indices: [-1, -1]

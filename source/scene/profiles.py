@@ -68,6 +68,7 @@ class SceneProfile:
     mode_defaults: Mapping[str, Mapping[str, Any]]
     required_assets: tuple[str, ...]
     usd_asset_bindings: tuple[SceneUsdAssetBinding, ...]
+    scan_stair_freeze_profile: str | None
     config_path: Path
 
     @property
@@ -263,6 +264,11 @@ def _load_profile_file(path: Path) -> SceneProfile:
         _parse_usd_asset_binding(value, path, index=index)
         for index, value in enumerate(bindings_raw)
     )
+    scan_stair_freeze_profile = _optional_project_relative_path(
+        payload,
+        "scan_stair_freeze_profile",
+        path,
+    )
 
     return SceneProfile(
         name=name,
@@ -284,6 +290,7 @@ def _load_profile_file(path: Path) -> SceneProfile:
         ),
         required_assets=tuple(required_assets_raw),
         usd_asset_bindings=usd_asset_bindings,
+        scan_stair_freeze_profile=scan_stair_freeze_profile,
         config_path=path.resolve(),
     )
 
@@ -293,6 +300,24 @@ def _required_text(payload: dict[str, Any], key: str, path: Path) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SceneProfileError(f"{key} 必须是非空字符串：{path}")
     return value.strip()
+
+
+def _optional_project_relative_path(
+    payload: dict[str, Any],
+    key: str,
+    path: Path,
+) -> str | None:
+    """读取可选项目内配置路径，拒绝绝对路径和父目录逃逸。"""
+
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise SceneProfileError(f"{key} 必须是非空项目相对路径：{path}")
+    relative_path = Path(value)
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        raise SceneProfileError(f"{key} 必须位于项目目录内：{path}")
+    return relative_path.as_posix()
 
 
 def _parse_usd_asset_binding(

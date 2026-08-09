@@ -1,0 +1,65 @@
+# 与一条 /planning/bspline 共享完整 identity 的有界几何证据。
+# ACTIVE_SENSING_* 事件只用于同一 yaw-only 主动观测 identity 的阶段快照；
+# 普通轨迹必须使用 NONE，并保持以下主动观测字段为默认值。
+uint8 ACTIVE_SENSING_EVENT_NONE=0
+uint8 ACTIVE_SENSING_EVENT_STARTED=1
+uint8 ACTIVE_SENSING_EVENT_CONTROLLER_ACCEPTED=2
+uint8 ACTIVE_SENSING_EVENT_YAW_STABLE=3
+uint8 ACTIVE_SENSING_EVENT_FUSION_PROGRESS=4
+uint8 ACTIVE_SENSING_EVENT_COMPLETED=5
+uint8 ACTIVE_SENSING_EVENT_FAILED=6
+
+std_msgs/Header header
+uint64 diagnostic_sequence
+builtin_interfaces/Time start_time
+builtin_interfaces/Time reference_path_stamp
+int64 traj_id
+bool is_final
+bool emergency_stop
+bool stationary
+
+# reference 模式下，只有通过 ordered corridor 门的轨迹才会被发布。
+bool ordered_reference_checked
+bool ordered_reference_safe
+float64 maximum_trajectory_deviation
+float64 maximum_guide_anchor_deviation
+float64 maximum_guide_progress_lead
+float64 maximum_deviation_limit
+float64 maximum_progress_lead_limit
+
+# 连续曲线安全下界所需的 typed 合同。速度上界由导数 B-spline
+# 控制点范数的最大值给出；双圆柱参数来自本次 planner 进程实际配置。
+float64 trajectory_duration
+float64 maximum_velocity_upper_bound
+float64 double_cylinder_radius
+float64 double_cylinder_offset
+
+# total_count 描述 0.01 s 稠密几何的点数；数组在全时域均匀有界抽样。
+uint32 trajectory_sample_count_total
+bool trajectory_samples_truncated
+geometry_msgs/Point[<=64] trajectory_samples
+
+# ordered reference 保留原始顺序，并在超限时覆盖首尾均匀抽样。
+uint32 ordered_reference_sample_count_total
+bool ordered_reference_samples_truncated
+geometry_msgs/Point[<=64] ordered_reference_samples
+
+# 主动观测生命周期快照。所有事件必须复用上方完整轨迹 identity；settle_stamp
+# 只在 yaw 已连续稳定后非零，fusion_* 只统计该时刻之后的真实非空融合。
+bool active_sensing
+uint8 active_sensing_event
+float64 active_sensing_start_yaw
+float64 active_sensing_target_yaw
+float64 active_sensing_yaw_offset
+float64 active_sensing_yaw_rate
+builtin_interfaces/Time active_sensing_settle_stamp
+float64 active_sensing_settle_yaw_error
+float64 active_sensing_settle_angular_speed
+float64 active_sensing_stable_duration
+uint64 active_sensing_fusion_baseline
+uint64 active_sensing_fusion_current
+uint32 active_sensing_fusion_distinct
+uint32 active_sensing_fusion_required
+bool active_sensing_completed
+bool active_sensing_failed
+string active_sensing_reason

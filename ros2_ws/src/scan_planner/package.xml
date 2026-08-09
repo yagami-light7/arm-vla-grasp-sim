@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>scan_planner</name>
+  <version>0.1.0</version>
+  <description>面向 PCT-SCAN 导航链的 SCAN ROS 2 局部规划节点。</description>
+  <maintainer email="iszhouxin@zju.edu.cn">SCAN-Planner maintainers</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>bspline_opt</depend>
+  <depend>eigen</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>path_searching</depend>
+  <depend>plan_env</depend>
+  <depend>rclcpp</depend>
+  <depend>scan_planner_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>traj_utils</depend>
+  <depend>visualization_msgs</depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

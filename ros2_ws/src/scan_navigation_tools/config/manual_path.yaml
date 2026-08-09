@@ -1,0 +1,21 @@
+manual_path_publisher:
+  ros__parameters:
+    use_sim_time: true
+    topic: /initial_path
+    frame_id: world
+
+    # 每三个数依次为 x、y、地面高度 z；SCAN 只在自身 adapter 中增加 body_height。
+    points_xyz:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+      - 0.0
+      - 0.0
+      - 2.0
+      - 0.0
+      - 0.0
+    min_point_distance_m: 0.02
+
+    # 给 SCAN 的里程计、点云和订阅端留出启动时间，单位为仿真秒。
+    startup_delay_sec: 1.0

@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>scan_navigation_tools</name>
+  <version>0.1.0</version>
+  <description>为 SCAN Planner 验收发布可配置的手工三维参考路径。</description>
+  <maintainer email="yagami-light7@users.noreply.github.com">pct_scan maintainers</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

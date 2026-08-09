@@ -32,11 +32,14 @@ checkpoints/go2_x5/pct_multifloor/training/
 *.usdz
 *.nurec
 *.ply
+# 运行时点云地图属于本地资产，不进入 Git。
+*.pcd
 *.pickle
 *.npy
 *.mp4
 *.rrd
-!checkpoints/go2_x5/pct_multifloor/*.pt
+# 小型确定性坡道验收场景属于源码；大型运行资产仍由上方规则忽略。
+!source/scene/validation_ramp/scan_ramp.usda
 events.out.tfevents*
 # 场景与物体资产统一通过网盘分发，不进入 Git。
 source/scene/liangzhu/
@@ -48,3 +51,11 @@ source/scene/objects/
 !checkpoints/go2_x5/pct_multifloor/model_26000.pt
 __pycache__/
 *.py[cod]
+
+# ROS 2 / colcon 生成目录。
+/build/
+/install/
+/log/
+/ros2_ws/build/
+/ros2_ws/install/
+/ros2_ws/log/

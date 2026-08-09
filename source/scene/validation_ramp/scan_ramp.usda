@@ -1,0 +1,129 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def Xform "VisualScene"
+    {
+        def Mesh "RampSurface"
+        {
+            bool doubleSided = 1
+            int[] faceVertexCounts = [
+                3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+                3, 3, 3, 3, 3, 3, 3, 3, 3, 3
+            ]
+            int[] faceVertexIndices = [
+                0, 2, 3, 0, 3, 1,
+                2, 4, 5, 2, 5, 3,
+                4, 6, 7, 4, 7, 5,
+                8, 9, 11, 8, 11, 10,
+                8, 10, 2, 10, 4, 2, 10, 6, 4, 8, 2, 0,
+                9, 1, 3, 9, 3, 11, 11, 3, 5, 11, 5, 7,
+                8, 0, 1, 8, 1, 9,
+                10, 11, 7, 10, 7, 6
+            ]
+            point3f[] points = [
+                (-1.3, -0.8, 0),
+                (-1.3, 0.8, 0),
+                (0, -0.8, 0),
+                (0, 0.8, 0),
+                (1.2, -0.8, 0.18),
+                (1.2, 0.8, 0.18),
+                (2.5, -0.8, 0.18),
+                (2.5, 0.8, 0.18),
+                (-1.3, -0.8, -0.12),
+                (-1.3, 0.8, -0.12),
+                (2.5, -0.8, -0.12),
+                (2.5, 0.8, -0.12)
+            ]
+            color3f[] primvars:displayColor = [(0.24, 0.34, 0.20)] (
+                interpolation = "constant"
+            )
+            uniform token subdivisionScheme = "none"
+        }
+    }
+
+    def Xform "CollisionScene"
+    {
+        def Mesh "RampSurface" (
+            prepend apiSchemas = [
+                "MaterialBindingAPI",
+                "PhysicsCollisionAPI",
+                "PhysxCollisionAPI"
+            ]
+        )
+        {
+            bool doubleSided = 1
+            int[] faceVertexCounts = [
+                3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+                3, 3, 3, 3, 3, 3, 3, 3, 3, 3
+            ]
+            int[] faceVertexIndices = [
+                0, 2, 3, 0, 3, 1,
+                2, 4, 5, 2, 5, 3,
+                4, 6, 7, 4, 7, 5,
+                8, 9, 11, 8, 11, 10,
+                8, 10, 2, 10, 4, 2, 10, 6, 4, 8, 2, 0,
+                9, 1, 3, 9, 3, 11, 11, 3, 5, 11, 5, 7,
+                8, 0, 1, 8, 1, 9,
+                10, 11, 7, 10, 7, 6
+            ]
+            rel material:binding:physics = </World/CollisionScene/RampSurface/RampPhysicsMaterial>
+            bool physics:collisionEnabled = 1
+            custom token physics:approximation = "none"
+            float physxCollision:contactOffset = 0.005
+            float physxCollision:restOffset = 0
+            point3f[] points = [
+                (-1.3, -0.8, 0),
+                (-1.3, 0.8, 0),
+                (0, -0.8, 0),
+                (0, 0.8, 0),
+                (1.2, -0.8, 0.18),
+                (1.2, 0.8, 0.18),
+                (2.5, -0.8, 0.18),
+                (2.5, 0.8, 0.18),
+                (-1.3, -0.8, -0.12),
+                (-1.3, 0.8, -0.12),
+                (2.5, -0.8, -0.12),
+                (2.5, 0.8, -0.12)
+            ]
+            color3f[] primvars:displayColor = [(0.30, 0.42, 0.24)] (
+                interpolation = "constant"
+            )
+            uniform token subdivisionScheme = "none"
+            token visibility = "inherited"
+
+            def Material "RampPhysicsMaterial" (
+                prepend apiSchemas = ["PhysicsMaterialAPI"]
+            )
+            {
+                float physics:dynamicFriction = 1
+                float physics:restitution = 0
+                float physics:staticFriction = 1.2
+            }
+        }
+    }
+
+    def Camera "overview"
+    {
+        float2 clippingRange = (0.01, 100)
+        float focalLength = 20
+        quatd xformOp:orient = (0.8660254037844386, 0.5, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.6, -3, 1.8)
+        uniform token[] xformOpOrder = [
+            "xformOp:translate",
+            "xformOp:orient",
+            "xformOp:scale"
+        ]
+    }
+
+    def DomeLight "DomeLight"
+    {
+        float inputs:intensity = 1000
+    }
+}

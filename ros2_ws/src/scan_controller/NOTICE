@@ -1,0 +1,8 @@
+scan_controller
+
+闭环跟踪思路参考 SCAN-Planner ROS 2 community 分支：
+https://github.com/wuyi2121/SCAN-Planner
+来源固定为 origin/ros2-community@d0b921c9b05a6d291d144d60882b2e0e88d2c0e0。
+
+本项目新增严格输入合同、ROS 仿真时钟、点云新鲜度门禁、速度变化率限制、
+轨迹完成锁存和可独立测试的跟踪核心。

@@ -77,6 +77,13 @@ def test_pct_robot_config_isolated_from_default_single_floor_asset() -> None:
     assert "stiffness=1000.0" in pct_arm_source
     assert "damping=50.0" in pct_arm_source
     assert "self.scene.robot = GO2_X5_PCT_DOG_ONLY_CFG.replace(" in task_source
+    assert (
+        "self.scene.robot.spawn.articulation_props."
+        "solver_velocity_iteration_count = 1"
+    ) in task_source
+    assert (
+        "self.sim.physx.enable_external_forces_every_iteration = True"
+    ) in task_source
     assert "self.scene.height_scanner.offset.pos = (0.0, 0.0, 1.0)" in task_source
     assert "self.scene.height_scanner_base.offset.pos = (0.0, 0.0, 1.0)" in task_source
     assert "class _Go2X5LeggedBaseEnvCfg" in task_source

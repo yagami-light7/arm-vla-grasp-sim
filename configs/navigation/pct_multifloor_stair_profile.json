@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "scene": "multi_floor",
+  "description": "从 pct-scene 基线提取的楼梯中心线；tomogram 只修复回转平台跨层拓扑，运行时另用标定接近段提前穿过一楼入口窄口。",
+  "source_branch": "pct-scene",
+  "asset_kind": "upstream_official_semantics_with_stair_profile_v1",
+  "collision_ply_sha256": "8975b79a74c9d2333a4f3eda7acedd830938a1c0c8d485a60671653aceffcabd",
+  "base_tomogram_contract": {
+    "data_sha256": "56cd41e941ee08ae3279a88f932eb9d1acbd53362ab571794cc55943c9c84641",
+    "shape": [5, 26, 430, 380],
+    "resolution": 0.2,
+    "center": [0.9032249450683594, 2.7362937927246094],
+    "slice_h0": -4.5,
+    "slice_dh": 0.5,
+    "simplified_slice_indices": [
+      0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+      14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 32
+    ]
+  },
+  "coordinate_transform": {
+    "coord_mode": "sim_to_pct_180deg",
+    "pct_offset_x": 0.0,
+    "pct_offset_y": 0.0,
+    "pct_offset_z": 0.0,
+    "pct_scale_x": 1.0,
+    "pct_scale_y": 1.0,
+    "pct_scale_z": 1.0,
+    "pct_rotation_x_rad": 0.0,
+    "pct_rotation_y_rad": 0.0,
+    "pct_rotation_z_rad": 0.0
+  },
+  "sampling_spacing_m": 0.1,
+  "corridor_radius_cells": 1,
+  "corridor_cost": 1.0,
+  "corridor_clearance_m": 2.0,
+  "projection_max_hint_error_m": 1.0,
+  "logical_layer_band": {
+    "first_layer": 8,
+    "last_layer": 15,
+    "ground_z_origin_m": 0.0,
+    "height_step_m": 0.5
+  },
+  "expected_final_gateway_counts": {
+    "up": 4520,
+    "down": 25804
+  },
+  "lower_floor_approach": {
+    "description": "沿一楼两组真实地形之间的窄口连续转向，避免原始 PCT 折线沿 +X 进入转角时让前圆柱撞入右下障碍。",
+    "anchors_sim_ground_xyz": [
+      [0.696775, 4.863706, 0.0],
+      [0.771658, 4.868804, 0.0],
+      [0.846830, 4.882051, 0.0],
+      [0.919883, 4.900378, 0.0],
+      [0.988409, 4.920717, 0.0],
+      [1.050000, 4.940000, 0.0],
+      [1.107498, 4.965110, 0.0],
+      [1.163710, 5.002452, 0.0],
+      [1.216173, 5.048239, 0.0],
+      [1.262424, 5.098685, 0.0],
+      [1.300000, 5.150000, 0.0],
+      [1.344832, 5.224989, 0.0],
+      [1.390273, 5.312431, 0.0],
+      [1.432418, 5.407988, 0.0],
+      [1.467359, 5.507326, 0.0],
+      [1.491189, 5.606109, 0.0],
+      [1.500000, 5.700000, 0.0]
+    ],
+    "clearance_audit": {
+      "double_cylinder_radius_m": 0.27,
+      "double_cylinder_offset_m": 0.16,
+      "obstacle_minimum_z_m": 0.05,
+      "obstacle_maximum_z_m": 0.75,
+      "sample_spacing_m": 0.01,
+      "maximum_yaw_step_rad": 0.02,
+      "minimum_surface_clearance_m": 0.285
+    }
+  },
+  "anchors_sim_ground_xyz": [
+    [1.5, 5.7, 0.0],
+    [1.51822, 6.27683, 0.29486],
+    [1.9202, 9.52807, 1.71919],
+    [2.74512, 9.14634, 1.71919],
+    [2.69841, 7.79872, 2.61031],
+    [2.7, 7.05, 3.0],
+    [2.7214885711669923, 6.056423950195313, 3.0]
+  ]
+}

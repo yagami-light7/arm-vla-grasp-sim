@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>isaac_navigation_bridge</name>
+  <version>0.1.0</version>
+  <description>将 Isaac Sim 原始里程计和点云规范化为 SCAN Planner ROS 2 接口。</description>
+  <maintainer email="yagami-light7@users.noreply.github.com">pct_scan maintainers</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>builtin_interfaces</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>navigation_supervisor</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>pct_ros2_adapter</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>scan_controller</exec_depend>
+  <exec_depend>scan_navigation_tools</exec_depend>
+  <exec_depend>scan_planner</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

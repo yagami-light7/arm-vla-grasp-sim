@@ -1,0 +1,91 @@
+{
+  "schema_version": 2,
+  "name": "PCT_planner",
+  "repository": "https://github.com/byangw/PCT_planner",
+  "commit": "35cd73fd82bcd51bc538429294af7646b2a09815",
+  "archive_sha256": "daf5f90b29c76cfa5fc6bf10d6dcfd200c1077778b22671c98aa51f9adb06d64",
+  "license": "GPL-2.0-or-later",
+  "local_source_root": "external/PCT_planner",
+  "source": {
+    "repository": "https://github.com/byangw/PCT_planner",
+    "commit": "35cd73fd82bcd51bc538429294af7646b2a09815",
+    "archive_url": "https://codeload.github.com/byangw/PCT_planner/tar.gz/35cd73fd82bcd51bc538429294af7646b2a09815",
+    "archive_sha256": "daf5f90b29c76cfa5fc6bf10d6dcfd200c1077778b22671c98aa51f9adb06d64",
+    "archive_root": "PCT_planner-35cd73fd82bcd51bc538429294af7646b2a09815",
+    "pristine_tree_sha256": "85cffb055d9d58673f9048235e6b7674d1e13a33c4b86e2177af6a1ff8fc2f6b",
+    "pristine_file_count": 5025,
+    "patched_tree_sha256": "dd01721ad3bf7534562961a79acd46699d343d10d541dec48288ca3c2af459f3",
+    "patched_file_count": 5025,
+    "generated_path_patterns": [
+      "planner/lib/build*/**",
+      "planner/lib/3rdparty/gtsam-4.1.1/build*/**",
+      "planner/lib/3rdparty/gtsam-4.1.1/install/**",
+      "planner/lib/3rdparty/osqp/build*/**",
+      "planner/lib/3rdparty/osqp/install/**",
+      "planner/lib/*.so",
+      "planner/lib/3rdparty/osqp/include/osqp_configure.h",
+      "planner/lib/3rdparty/osqp/lin_sys/direct/qdldl/qdldl_sources/include/qdldl_types.h",
+      "planner/scripts/__pycache__/**",
+      "planner/scripts/utils/__pycache__/**"
+    ]
+  },
+  "license_files": {
+    "LICENSE": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+    "NOTICE": "65812c5a3752aaa175ae35eacbcbad415a443cbe6f4ae015fa8834d4b886e7b7"
+  },
+  "patches": [
+    {
+      "id": "pct-scan-native-astar-cancel-cost-aware-no-corner-cut-gateway-v3",
+      "path": "patches/0001-native-astar-cancel-reset-relocatable.patch",
+      "sha256": "fa6f9364b7bdf07a9d698e40083617646829608e64727bf5c68df391589b4e1b",
+      "strip": 1,
+      "preimage_sha256": {
+        "planner/lib/CMakeLists.txt": "434f6afcf9c73c2a99bbbe4de40510ed383547c5446dee5cf5657657a23e368c",
+        "planner/lib/src/a_star/a_star_search.h": "4aee08aee368b847c16bea8e3761fa6bf271d85222c5ce9531b20e0d5b7aa1fe",
+        "planner/lib/src/a_star/a_star_search.cc": "432e704ed8a8da9e3c3768575c2d1aecd30eb2605408aaed9e6ab9a993c991cd",
+        "planner/lib/src/a_star/python_interface.cc": "e5304f018d07f3eb39d1eeb8149a7cff19489ff2738b4fdd24710b2b0b57e450",
+        "planner/lib/src/ele_planner/offline_ele_planner.h": "096c9684364f0f87068ad05cee70f73aec5e69968122081d91b9a57691ff91dc",
+        "planner/lib/src/ele_planner/python_interface.cc": "1275c3168847863639c6b120d2c54e213900431a074f9da7bfba61197eecf63b",
+        "planner/scripts/planner_wrapper.py": "6b68155938008b5188ef6cc8f0ac2b4ea7530288bcf983a7beda7259be649a7f"
+      },
+      "postimage_sha256": {
+        "planner/lib/CMakeLists.txt": "865efc6f76026a38a090a76a7c9895a313c9999b26814df81e80a7278dfe69d7",
+        "planner/lib/src/a_star/a_star_search.h": "264d2325d9d64be71d3ee6eab89179fd90037d6cb009196f73c058fec5e1bc0b",
+        "planner/lib/src/a_star/a_star_search.cc": "728bd418b4e8483decf026300f29c7be4d0581fbc06ba5b75cf9012346964d21",
+        "planner/lib/src/a_star/python_interface.cc": "58ba72d3449df9593d1ab9409f30df6ec7b2b8fc4b13a115a248ff522097f302",
+        "planner/lib/src/ele_planner/offline_ele_planner.h": "4bcd6637a6b7ee228b2dbb3c7a0fa17d8fc15562531ceb17ce2eb0c117f0a94e",
+        "planner/lib/src/ele_planner/python_interface.cc": "8c677ee8e3de0b4c1a8557d832b5fa9bc4733ec0843162b87f95688ff1ba0462",
+        "planner/scripts/planner_wrapper.py": "815b5265d6c5fea97e63c1dded547989d032b0878db60ccbcfe942e46a9a19d8"
+      }
+    }
+  ],
+  "build": {
+    "python_executable": "/usr/bin/python3",
+    "required_soabi": "cpython-310-x86_64-linux-gnu",
+    "python_include_dir": "/usr/include/python3.10",
+    "python_library": "/usr/lib/x86_64-linux-gnu/libpython3.10.so",
+    "build_type": "Release",
+    "cmake_policy_minimum": "3.5",
+    "gtsam_version": "4.1.1",
+    "gtsam_build_with_march_native": false,
+    "osqp_python_bindings": false
+  },
+  "runtime": {
+    "required_python_modules": [
+      "a_star",
+      "ele_planner",
+      "py_map_manager",
+      "traj_opt"
+    ],
+    "allowed_runpaths": [
+      "$ORIGIN",
+      "$ORIGIN/3rdparty/gtsam-4.1.1/install/lib",
+      "$ORIGIN/3rdparty/osqp/install/lib"
+    ],
+    "forbidden_absolute_runpath_prefixes": [
+      "/home/",
+      "/mnt/",
+      "/tmp/"
+    ]
+  }
+}

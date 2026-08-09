@@ -1,0 +1,72 @@
+{
+  "task_id": 17703,
+  "episode_id": 1,
+  "scene_profile": "multi_floor",
+  "scene_runtime": {
+    "collision_prim_path": "/World/scene_collision",
+    "visual_prim_path": "/World/gauss",
+    "collision_floor_proxy_profile": "yinluyuan_f2"
+  },
+  "navigation_execution": {
+    "extended_state_limits": false,
+    "require_yaw_alignment": true,
+    "require_stable_base": true
+  },
+  "instruction": "沿手工三维 Path 从楼梯入口完成完整第一跑，并在中间平台稳定停车。",
+  "scene_usd": "source/scene/multifloor/usda/multifloor.usda",
+  "nav_map": "source/scene/multifloor/nav_map/map.json",
+  "start": {
+    "x": 1.5,
+    "y": 5.7,
+    "z": 0.17242511208350414,
+    "yaw": 1.5392203958537976,
+    "floor_id": "F1",
+    "slice_id": null
+  },
+  "pick": {
+    "base_goal": {
+      "x": 1.9202,
+      "y": 9.52807,
+      "z": 1.7400354907123279,
+      "yaw": 1.447781636383858,
+      "floor_id": "F1",
+      "slice_id": null
+    },
+    "object_prim_path": null,
+    "grasp_mode": "none"
+  },
+  "place": {
+    "enabled": false,
+    "base_goal": null,
+    "place_pose_world": null
+  },
+  "carry": {
+    "mode": "none",
+    "arm_posture": "stow",
+    "gripper_hold_command": "close"
+  },
+  "loop": {
+    "enabled": false,
+    "num_cycles": 1
+  },
+  "recording": {
+    "dataset_dir": "episodes/scan_multifloor_stair_first_flight",
+    "front_camera": false,
+    "wrist_camera": false,
+    "save_every_n_steps": 10
+  },
+  "notes": {
+    "validation_only": true,
+    "online_reference_path": "ros2_ws/src/scan_navigation_tools/config/multifloor_stair_first_flight_path.yaml",
+    "collision_ply": "source/scene/multifloor/ply/3dgs_collision.ply",
+    "coord_mode": "sim_to_pct_180deg",
+    "path_height_semantics": "Path z 是 collision PLY 支撑面地面高度，SCAN 仅增加一次 0.30 m body_height。",
+    "task_goal_height_semantics": "start.z 与 pick.base_goal.z 是机器人 base 高度，分别等于路径首末地面高度加 0.30 m。",
+    "geometry": {
+      "segment": "stair_entry_to_first_landing",
+      "path_point_count": 21,
+      "nominal_sample_spacing_m": 0.19,
+      "terminal_yaw_source": "last_path_segment"
+    }
+  }
+}

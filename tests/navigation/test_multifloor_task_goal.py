@@ -8,6 +8,8 @@ import pytest
 from source.diagnostics import NavigationEpisodeVerifier
 from source.interfaces import SimulationState
 from source.pipeline import BaseGoalRandomizationSettings, RandomizationSettings
+from source.pipeline.config import FullPhysicsConfig
+from source.pipeline.factory import _manipulation_settings_for_episode
 from source.tasks import JsonTaskProvider, prepare_episode_spec
 
 
@@ -49,6 +51,40 @@ def test_prepare_episode_spec_preserves_multifloor_goal_fields() -> None:
     assert episode.place_goal.slice_id is None
 
 
+def test_multifloor_navigation_handoff_matches_strict_scan_completion() -> None:
+    """完整 pipeline 的交接门必须与 SCAN GOAL_REACHED 使用同一严格口径。"""
+
+    execution = JsonTaskProvider().load(TASK_PATH).raw_task[
+        "navigation_execution"
+    ]
+
+    assert execution == {
+        "extended_state_limits": True,
+        "final_position_tolerance": pytest.approx(0.08),
+        "place_position_tolerance": pytest.approx(0.08),
+        "final_yaw_tolerance": pytest.approx(0.20),
+        "stable_linear_velocity": pytest.approx(0.05),
+        "stable_angular_velocity": pytest.approx(0.10),
+        "require_yaw_alignment": True,
+        "require_stable_base": True,
+    }
+
+
+def test_multifloor_apple_uses_low_contact_release_clearance() -> None:
+    """球形苹果应轻触支撑面后松爪，不能从通用一厘米高度自由落下。"""
+
+    episode = JsonTaskProvider().load(TASK_PATH)
+    settings = _manipulation_settings_for_episode(
+        FullPhysicsConfig(
+            task_json=TASK_PATH,
+            output_dir=Path("/tmp/test-multifloor-release-clearance"),
+        ).manipulation,
+        episode,
+    )
+
+    assert settings.place_release_clearance_min_m == pytest.approx(0.004)
+
+
 def test_multifloor_fixed_base_goals_are_not_object_centers() -> None:
     base = JsonTaskProvider().load(TASK_PATH)
     assert base.object_initial_pose is not None
@@ -64,8 +100,9 @@ def test_multifloor_fixed_base_goals_are_not_object_centers() -> None:
         base.place_goal.y - base.place_target_pose[1],
     )
 
-    # 固定 pick 站位必须同时满足桌边安全距离和 X5 机械臂工作空间。
-    assert 0.45 <= pick_distance <= 0.60
+    # 固定 pick 站位必须同时满足 SCAN 任意航向 0.43 m 包络、
+    # 苹果/栅格离散余量和 X5 机械臂工作空间。
+    assert 0.55 <= pick_distance <= 0.60
     assert 0.20 <= place_distance <= 0.80
     assert base.object_prim_path == "/World/apple_01"
     assert base.object_initial_pose[:3] == pytest.approx(
@@ -77,6 +114,36 @@ def test_multifloor_fixed_base_goals_are_not_object_centers() -> None:
     assert base.raw_task["place"][
         "place_release_peak_downward_speed_tolerance_mps"
     ] == pytest.approx(0.55)
+
+
+def test_multifloor_place_goal_preserves_scan_clearance_and_arm_reach_margin() -> None:
+    """安全停靠点不能靠离开桌面换来机械臂不可达。"""
+
+    base = JsonTaskProvider().load(TASK_PATH)
+    assert base.place_goal is not None
+    assert base.place_target_pose is not None
+
+    # X5 arm_base_link 位于机器人 base 机体系 +X 0.12m；终点 yaw=-pi/2
+    # 时该偏置正好朝向桌面。最坏 0.06m SCAN 捕获误差也必须留在通用
+    # 0.58m 水平工作空间内，不能用一个只对导航安全、却无法 place 的站位。
+    settings = BaseGoalRandomizationSettings(enabled=False)
+    arm_base_x = (
+        base.place_goal.x
+        + settings.arm_base_offset_x_m * math.cos(base.place_goal.yaw)
+    )
+    arm_base_y = (
+        base.place_goal.y
+        + settings.arm_base_offset_x_m * math.sin(base.place_goal.yaw)
+    )
+    arm_target_radius = math.hypot(
+        base.place_target_pose[0] - arm_base_x,
+        base.place_target_pose[1] - arm_base_y,
+    )
+
+    assert base.place_goal.x == pytest.approx(0.40)
+    assert base.place_goal.y == pytest.approx(-0.02)
+    assert arm_target_radius == pytest.approx(0.5018446019436694)
+    assert arm_target_radius + 0.06 < settings.arm_workspace_max_xy_radius_m
 
 
 def test_multifloor_lerobot_uses_fixed_six_subtask_contract() -> None:

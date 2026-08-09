@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "name": "ramp_validation",
+  "aliases": ["scan_ramp", "slope_validation"],
+  "description": "用于 SCAN→cmd_vel→pct_multifloor policy 的最小确定性连续斜坡验收场景。",
+  "capabilities": [
+    "navigation",
+    "slope_locomotion_smoke"
+  ],
+  "task_scene_profile": "ramp_validation",
+  "runtime_asset_manifest": "source/scene/validation_ramp/runtime_asset_manifest.json",
+  "defaults": {
+    "task_json": "tasks/nav_smoke_scan_ramp.json",
+    "output_dir": "outputs/ramp_validation",
+    "global_planner": "pct",
+    "pct_no_fallback": true,
+    "pct_coord_mode": "identity",
+    "pct_cross_floor_gateway": [],
+    "pct_cross_floor_stair_exit": [],
+    "pct_cross_floor_stair_midpoint": [],
+    "pct_stair_float": false,
+    "policy_profile": "pct_multifloor",
+    "locomotion_task": "RobotLab-Isaac-Velocity-Rough-Go2-X5-DogOnly-v0",
+    "locomotion_checkpoint": "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
+    "randomize_task": false,
+    "randomize_base_goal": false,
+    "navigation_visual_mode": "collision",
+    "overview_camera_mode": "fixed",
+    "overview_camera_prim_path": "/World/overview",
+    "overview_camera_schedule": null,
+    "video_mode": "composite"
+  },
+  "mode_defaults": {},
+  "usd_asset_bindings": [],
+  "required_assets": [
+    "tasks/nav_smoke_scan_ramp.json",
+    "source/scene/validation_ramp/runtime_asset_manifest.json",
+    "source/scene/validation_ramp/scan_ramp.usda",
+    "ros2_ws/src/scan_navigation_tools/config/validation_ramp_path.yaml",
+    "checkpoints/go2_x5/pct_multifloor/model_26000.pt"
+  ]
+}

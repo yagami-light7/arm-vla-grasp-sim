@@ -28,6 +28,7 @@ from scripts.pipeline.run_full_physics_batch import (
     _read_summary,
     _run_child_process,
     _should_print_periodic_progress,
+    _validate_pct_scan_batch_contract,
 )
 from scripts.pipeline.run_full_physics_pipeline import (
     _parse_args as _parse_pipeline_args,
@@ -50,6 +51,24 @@ PLACE_PLAN = (
 
 
 class FullPhysicsBatchTest(unittest.TestCase):
+    def test_navigation_batch_fails_closed_without_epoch_protocol(self) -> None:
+        cases = (
+            (["--output-dir", "/tmp/batch", "--num-episodes", "2"], "epoch/reset/ack"),
+            (
+                ["--output-dir", "/tmp/batch", "--global-planner", "astar"],
+                "只允许 PCT",
+            ),
+            (
+                ["--output-dir", "/tmp/batch", "--pct-allow-fallback"],
+                "禁止 PCT→A\\* fallback",
+            ),
+        )
+        for argv, pattern in cases:
+            with self.subTest(argv=argv):
+                args = _build_parser().parse_args(argv)
+                with self.assertRaisesRegex(SystemExit, pattern):
+                    _validate_pct_scan_batch_contract(args)
+
     def test_reused_process_command_runs_all_episodes_in_one_output_root(self) -> None:
         args = _build_parser().parse_args(
             [
@@ -147,10 +166,54 @@ class FullPhysicsBatchTest(unittest.TestCase):
         )
         self.assertEqual(child_args.pct_coord_mode, "sim_to_pct_180deg")
         self.assertFalse(child_args.randomize_task)
-        self.assertTrue(child_args.pct_stair_float)
+        self.assertFalse(child_args.pct_stair_float)
         self.assertEqual(child_args.overview_camera_mode, "auto")
         self.assertTrue(child_args.record_video)
         self.assertEqual(child_args.video_mode, "composite")
+
+    def test_batch_forwards_complete_pct_coordinate_transform(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "--output-dir",
+                "/tmp/pct_coordinate_batch",
+                "--pct-offset-x",
+                "1.1",
+                "--pct-offset-y",
+                "-2.2",
+                "--pct-offset-z",
+                "3.3",
+                "--pct-scale-x",
+                "0.7",
+                "--pct-scale-y",
+                "-1.2",
+                "--pct-scale-z",
+                "1.4",
+                "--pct-rotation-x-rad",
+                "0.1",
+                "--pct-rotation-y-rad",
+                "-0.2",
+                "--pct-rotation-z-rad",
+                "0.3",
+            ]
+        )
+
+        command = _build_child_command(args, episode_index=0).command
+        child_args = _parse_pipeline_args(command[3:])
+        for field_name in (
+            "pct_offset_x",
+            "pct_offset_y",
+            "pct_offset_z",
+            "pct_scale_x",
+            "pct_scale_y",
+            "pct_scale_z",
+            "pct_rotation_x_rad",
+            "pct_rotation_y_rad",
+            "pct_rotation_z_rad",
+        ):
+            self.assertEqual(
+                getattr(child_args, field_name),
+                getattr(args, field_name),
+            )
 
     def test_full_physics_batch_builds_one_episode_command_without_plan_json(self) -> None:
         args = _build_parser().parse_args(

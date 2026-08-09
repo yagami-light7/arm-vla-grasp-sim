@@ -1,0 +1,77 @@
+{
+  "task_id": 17701,
+  "episode_id": 1,
+  "scene_profile": "ramp_validation",
+  "scene_runtime": {
+    "collision_prim_path": "/World/CollisionScene/RampSurface",
+    "visual_prim_path": "/World/VisualScene/RampSurface",
+    "collision_floor_proxy_profile": null
+  },
+  "navigation_execution": {
+    "extended_state_limits": false,
+    "require_yaw_alignment": true,
+    "require_stable_base": true
+  },
+  "instruction": "沿手工三维 Path 直行上连续斜坡，并在顶平台稳定停车。",
+  "scene_usd": "source/scene/validation_ramp/scan_ramp.usda",
+  "nav_map": "",
+  "start": {
+    "x": -0.5,
+    "y": 0.0,
+    "z": 0.3,
+    "yaw": 0.0,
+    "floor_id": "ramp_validation",
+    "slice_id": null
+  },
+  "pick": {
+    "base_goal": {
+      "x": 1.7,
+      "y": 0.0,
+      "z": 0.48,
+      "yaw": 0.0,
+      "floor_id": "ramp_validation",
+      "slice_id": null
+    },
+    "object_prim_path": null,
+    "grasp_mode": "none"
+  },
+  "place": {
+    "enabled": false,
+    "base_goal": null,
+    "place_pose_world": null
+  },
+  "carry": {
+    "mode": "none",
+    "arm_posture": "stow",
+    "gripper_hold_command": "close"
+  },
+  "loop": {
+    "enabled": false,
+    "num_cycles": 1
+  },
+  "recording": {
+    "dataset_dir": "episodes/ramp_validation",
+    "front_camera": false,
+    "wrist_camera": false,
+    "save_every_n_steps": 10
+  },
+  "notes": {
+    "validation_only": true,
+    "online_reference_path": "ros2_ws/src/scan_navigation_tools/config/validation_ramp_path.yaml",
+    "path_height_semantics": "Path z 是坡面地面高度，SCAN 仅增加一次 body_height。",
+    "policy_profile": "pct_multifloor",
+    "geometry": {
+      "path_flat_approach_m": 0.5,
+      "ramp_run_m": 1.2,
+      "ramp_rise_m": 0.18,
+      "ramp_grade": 0.15,
+      "ramp_angle_deg": 8.5307656099,
+      "path_top_platform_m": 0.5,
+      "surface_width_m": 1.6,
+      "task_base_height_m": 0.3,
+      "collision_solid_thickness_m": 0.12,
+      "support_padding_behind_start_m": 0.8,
+      "support_padding_beyond_goal_m": 0.8
+    }
+  }
+}

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import faulthandler
 import json
+import os
 import time
 import traceback
 from pathlib import Path
@@ -25,6 +27,9 @@ from source.recording.overview_video_recorder import OverviewVideoRecorder
 
 from .config import FullPhysicsConfig
 from .state_machine import FullPhysicsStateMachine
+
+
+_INITIAL_TICK_WATCHDOG_SECONDS = 90.0
 
 
 def _should_auto_switch_overview_camera(config: FullPhysicsConfig) -> bool:
@@ -101,6 +106,84 @@ class FullPhysicsPipeline:
         )
         video_closed = False
         current_operation = "pipeline_start"
+        startup_status_path = (
+            self.recorder.output_dir / "pipeline_startup_status.json"
+        )
+        startup_trace_path = (
+            self.recorder.output_dir / "pipeline_startup_traceback.log"
+        )
+        startup_phases: list[dict[str, Any]] = []
+        startup_watchdog_armed = False
+        startup_trace_stream: Any | None = None
+
+        def _record_startup_phase(
+            phase: str,
+            *,
+            status: str = "starting",
+            **details: Any,
+        ) -> None:
+            """原子记录首次状态机 tick 的细粒度进度，避免启动卡死时没有证据。"""
+
+            startup_phases.append(
+                {
+                    "phase": str(phase),
+                    "wall_time": time.time(),
+                    **details,
+                }
+            )
+            payload = {
+                "status": str(status),
+                "pid": os.getpid(),
+                "watchdog_timeout_s": _INITIAL_TICK_WATCHDOG_SECONDS,
+                "traceback_path": str(startup_trace_path),
+                "phases": startup_phases,
+            }
+            temporary_path = startup_status_path.with_suffix(".json.tmp")
+            try:
+                temporary_path.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                temporary_path.replace(startup_status_path)
+            except OSError as exc:
+                print(
+                    "[full-physics] 写入启动诊断失败："
+                    f"{type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+
+        def _arm_startup_watchdog() -> None:
+            """只监控首个状态机 tick；正常进入回合后立即取消。"""
+
+            nonlocal startup_trace_stream, startup_watchdog_armed
+            try:
+                startup_trace_stream = startup_trace_path.open(
+                    "w",
+                    encoding="utf-8",
+                )
+                faulthandler.dump_traceback_later(
+                    _INITIAL_TICK_WATCHDOG_SECONDS,
+                    repeat=False,
+                    file=startup_trace_stream,
+                )
+                startup_watchdog_armed = True
+            except (OSError, RuntimeError, ValueError) as exc:
+                if startup_trace_stream is not None:
+                    startup_trace_stream.close()
+                    startup_trace_stream = None
+                _record_startup_phase(
+                    "initial_tick_watchdog_unavailable",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+
+        def _cancel_startup_watchdog() -> None:
+            nonlocal startup_trace_stream, startup_watchdog_armed
+            if startup_watchdog_armed:
+                faulthandler.cancel_dump_traceback_later()
+                startup_watchdog_armed = False
+            if startup_trace_stream is not None:
+                startup_trace_stream.close()
+                startup_trace_stream = None
 
         def _close_video(status: str) -> dict[str, Any] | None:
             nonlocal video_closed
@@ -111,9 +194,15 @@ class FullPhysicsPipeline:
             with self._profiler.measure("pipeline.video_close"):
                 return video_recorder.close(status=status)
 
+        _record_startup_phase("run_episode_entered")
         with self._profiler.measure("pipeline.recorder_save_task"):
             self.recorder.save_task(self.episode_spec)
-        self.recorder.mark_training_eligible(False, reason="episode_not_verified_yet")
+        _record_startup_phase("task_saved")
+        self.recorder.mark_training_eligible(
+            False,
+            reason="episode_not_verified_yet",
+        )
+        _arm_startup_watchdog()
         try:
             if video_recorder is not None:
                 current_operation = "video_start_episode"
@@ -121,15 +210,37 @@ class FullPhysicsPipeline:
                     video_recorder.start_episode()
             while True:
                 current_operation = "simulation_read_before_tick"
-                with self._profiler.measure("pipeline.simulation_read_before_tick"):
+                if duration_steps == 0:
+                    _record_startup_phase("initial_simulation_read_started")
+                with self._profiler.measure(
+                    "pipeline.simulation_read_before_tick"
+                ):
                     observation = self.simulation.read()
+                if duration_steps == 0:
+                    _record_startup_phase(
+                        "initial_simulation_read_finished",
+                        simulation_step_index=int(observation.step_index),
+                    )
                 current_operation = "state_machine_tick"
                 state_before_tick = self.machine.state.value
+                if duration_steps == 0:
+                    _record_startup_phase(
+                        "initial_state_machine_tick_started",
+                        pipeline_state=state_before_tick,
+                    )
                 with self._profiler.measure("pipeline.state_machine_tick"):
                     with self._profiler.measure(
                         f"pipeline.state.{state_before_tick}.tick"
                     ):
                         decision = self.machine.tick(observation)
+                if duration_steps == 0:
+                    _cancel_startup_watchdog()
+                    _record_startup_phase(
+                        "initial_state_machine_tick_finished",
+                        status="completed",
+                        pipeline_state=state_before_tick,
+                        next_pipeline_state=decision.state.value,
+                    )
                 current_operation = "simulation_apply"
                 with self._profiler.measure("pipeline.simulation_apply"):
                     self.simulation.apply(decision.action)
@@ -214,6 +325,17 @@ class FullPhysicsPipeline:
             )
         except BaseException as exc:
             interrupted = isinstance(exc, KeyboardInterrupt)
+            if not any(
+                phase.get("phase") == "initial_state_machine_tick_finished"
+                for phase in startup_phases
+            ):
+                _record_startup_phase(
+                    "startup_failed",
+                    status="interrupted" if interrupted else "failed",
+                    operation=current_operation,
+                    exception_type=type(exc).__name__,
+                    message=str(exc),
+                )
             video_summary = _close_video("interrupted" if interrupted else "failed")
             failure_reason = "pipeline_interrupted" if interrupted else "pipeline_runtime_exception"
             exception_report = {
@@ -267,6 +389,7 @@ class FullPhysicsPipeline:
             )
             raise
         finally:
+            _cancel_startup_watchdog()
             _close_video("closed_without_summary")
             close_nav_planner = getattr(self.nav_planner, "close", None)
             if callable(close_nav_planner):
@@ -432,6 +555,21 @@ class FullPhysicsPipeline:
             "used_manipulation_support_joint_lock": bool(
                 final_state.metadata.get("used_manipulation_support_joint_lock", False)
             ),
+            "used_navigation_base_lock": bool(
+                final_state.metadata.get("used_navigation_base_lock", False)
+            ),
+            "used_navigation_support_joint_lock": bool(
+                final_state.metadata.get(
+                    "used_navigation_support_joint_lock",
+                    False,
+                )
+            ),
+            "used_navigation_joint_pose_lock": bool(
+                final_state.metadata.get(
+                    "used_navigation_joint_pose_lock",
+                    False,
+                )
+            ),
         }
         provenance_verified = bool(
             (not dry_run) and final_state.metadata.get("execution_provenance_verified", False)
@@ -448,6 +586,11 @@ class FullPhysicsPipeline:
             and not manipulation_apply_smoke
             and provenance_verified
             and not any(provenance.values())
+        )
+        # 楼梯 root lock 的非物理语义由实际 provenance 决定，不能只在
+        # stair-smoke 模式识别；完整 carry/place pipeline 同样会经过该动作。
+        navigation_root_lock_workaround = bool(
+            provenance["used_navigation_base_lock"]
         )
         stable_physics_success = bool(success and full_physics and provenance_verified)
         vla_training_action_requested = bool(
@@ -573,6 +716,31 @@ class FullPhysicsPipeline:
                 "manipulation_support_joint_lock_active",
                 "manipulation_support_joint_lock_apply_count",
                 "last_manipulation_support_joint_lock_report",
+                "used_navigation_base_lock",
+                "used_navigation_support_joint_lock",
+                "used_navigation_joint_pose_lock",
+                "last_navigation_base_lock_report",
+                "last_navigation_support_joint_lock_report",
+                "navigation_joint_pose_lock_active",
+                "navigation_joint_pose_lock_apply_count",
+                "last_navigation_joint_pose_lock_report",
+                "navigation_ros2_bridge_report",
+                "navigation_policy_gate_lifecycle_report",
+                "grid_map_observation_diagnostics_last_report",
+                "grid_map_observation_lifecycle_report",
+                "bspline_diagnostics_last_report",
+                "bspline_diagnostics_lifecycle_report",
+                "active_sensing_lifecycle_report",
+                "dynamic_navigation_evidence_report",
+                "dynamic_obstacle_configuration_report",
+                "dynamic_obstacle_runtime_report",
+                "dynamic_obstacle_lifecycle_report",
+                "dynamic_obstacle_raw_cloud_last_report",
+                "dynamic_obstacle_raw_cloud_lifecycle_report",
+                "dynamic_obstacle_pose_write_count",
+                "navigation_stair_execution_frozen_last_publish_report",
+                "scan_controller_status_last_report",
+                "scan_controller_status_lifecycle_report",
                 "object_reset_for_navigation_report",
                 "object_settle_begin_report",
                 "object_settle_final_report",
@@ -589,7 +757,11 @@ class FullPhysicsPipeline:
             success_semantics = "stage_build_and_reset_only"
         elif stair_locomotion_smoke:
             execution_mode = "stair_locomotion_smoke"
-            success_semantics = "pure_physics_stair_locomotion_without_dwa_or_float"
+            success_semantics = (
+                "scan_stair_root_lock_workaround"
+                if navigation_root_lock_workaround
+                else "pure_physics_stair_locomotion_without_dwa_or_float"
+            )
         elif navigation_smoke:
             execution_mode = "navigation_smoke"
             success_semantics = "physical_nav_to_pick_only"
@@ -618,6 +790,10 @@ class FullPhysicsPipeline:
         else:
             execution_mode = "full_physics"
             success_semantics = "physical_execution"
+        if navigation_root_lock_workaround and not stair_locomotion_smoke:
+            success_semantics = (
+                f"{success_semantics}_with_scan_stair_root_lock_workaround"
+            )
         navigation_acceptance = None
         if (
             navigation_smoke
@@ -744,9 +920,18 @@ class FullPhysicsPipeline:
                     or full_physics
                 )
                 and provenance_verified
+                and not navigation_root_lock_workaround
             ),
             "low_level_stair_locomotion_success": bool(
-                success and stair_locomotion_smoke and provenance_verified
+                success
+                and stair_locomotion_smoke
+                and provenance_verified
+                and not navigation_root_lock_workaround
+            ),
+            "navigation_root_lock_workaround_success": bool(
+                success
+                and navigation_root_lock_workaround
+                and provenance_verified
             ),
             "carry_control_success": bool(
                 success and (navigation_carry_smoke or full_physics)

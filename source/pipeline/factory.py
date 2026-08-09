@@ -19,73 +19,12 @@ from source.simulation import IsaacLabNavigationRuntime
 
 from .config import FullPhysicsConfig
 from .full_physics_pipeline import FullPhysicsPipeline
-from .navigation_smoke import create_navigation_components
-
-
-def _requires_extended_pct_navigation_limits(
-    config: FullPhysicsConfig,
-    episode_spec: EpisodeSpec,
-) -> bool:
-    """按任务声明或起终楼层关系决定是否使用跨楼层长时限。"""
-
-    if config.locomotion.policy_profile != "pct_multifloor":
-        return False
-    raw_execution = episode_spec.raw_task.get("navigation_execution") or {}
-    if not isinstance(raw_execution, dict):
-        raise ValueError("task.navigation_execution 必须是对象")
-    explicit = raw_execution.get("extended_state_limits")
-    if explicit is not None:
-        if not isinstance(explicit, bool):
-            raise ValueError(
-                "task.navigation_execution.extended_state_limits 必须是布尔值"
-            )
-        return explicit
-    start_floor = (episode_spec.raw_task.get("start") or {}).get("floor_id")
-    place_floor = (
-        ((episode_spec.raw_task.get("place") or {}).get("base_goal") or {}).get(
-            "floor_id"
-        )
-    )
-    if start_floor is not None and place_floor is not None:
-        return start_floor != place_floor
-    # 旧任务没有 scene_profile / navigation_execution 声明。保留其原有长时限，
-    # 新增场景则要求在 task 中显式声明能力，避免再按场景名称分支。
-    return "scene_profile" not in episode_spec.raw_task
-
-
-def _navigation_settings_for_episode(settings, episode_spec: EpisodeSpec):
-    """把任务声明的终点交接精度映射到现有 NavigationSettings。"""
-
-    raw_config = episode_spec.raw_task.get("navigation_execution")
-    if raw_config is None:
-        return settings
-    if not isinstance(raw_config, dict):
-        raise ValueError("task.navigation_execution 必须是对象")
-
-    numeric_fields = (
-        "final_position_tolerance",
-        "place_position_tolerance",
-        "final_yaw_tolerance",
-        "stable_linear_velocity",
-        "stable_angular_velocity",
-    )
-    boolean_fields = ("require_yaw_alignment", "require_stable_base")
-    updates = {}
-    for field_name in numeric_fields:
-        if field_name not in raw_config:
-            continue
-        value = float(raw_config[field_name])
-        if value <= 0.0:
-            raise ValueError(f"task.navigation_execution.{field_name} 必须大于零")
-        updates[field_name] = value
-    for field_name in boolean_fields:
-        if field_name not in raw_config:
-            continue
-        value = raw_config[field_name]
-        if not isinstance(value, bool):
-            raise ValueError(f"task.navigation_execution.{field_name} 必须是布尔值")
-        updates[field_name] = value
-    return replace(settings, **updates)
+from .navigation_smoke import (
+    _navigation_settings_for_episode,
+    _requires_extended_pct_navigation_limits,
+    create_navigation_components,
+    enable_production_pct_goal_body_height_calibration,
+)
 
 
 def _manipulation_settings_for_episode(settings, episode_spec: EpisodeSpec):
@@ -106,7 +45,10 @@ def _manipulation_settings_for_episode(settings, episode_spec: EpisodeSpec):
                 f"task.manipulation_execution.{field_name} 必须是布尔值"
             )
         updates[field_name] = value
-    for field_name in ("place_release_object_tcp_offset_tolerance_m",):
+    for field_name in (
+        "place_release_object_tcp_offset_tolerance_m",
+        "place_release_clearance_min_m",
+    ):
         if field_name not in raw_config:
             continue
         value = float(raw_config[field_name])
@@ -192,6 +134,10 @@ def create_full_physics_pipeline(
         config=full_physics_config,
         episode_spec=episode_spec,
     )
+    full_physics_config = enable_production_pct_goal_body_height_calibration(
+        full_physics_config,
+        planner=nav_planner,
+    )
     gripper = BinaryGripperController()
     post_motion_hold_duration = (
         full_physics_config.manipulation.arm_post_motion_hold_duration_s
@@ -261,6 +207,9 @@ def create_full_physics_pipeline(
         verifier=FullPhysicsVerifier(nav_verifier),
         recorder=JsonlEpisodeRecorder(
             episode_dir,
+            diagnostic_frame_stride=(
+                full_physics_config.diagnostic_frame_stride
+            ),
             lerobot_config=LeRobotRecordingConfig(
                 enabled=full_physics_config.recording.enabled,
                 control_dt=full_physics_config.navigation.control_dt,

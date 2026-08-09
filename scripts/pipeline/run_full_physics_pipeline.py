@@ -6,12 +6,15 @@ from __future__ import annotations
 import argparse
 import datetime as _datetime
 import json
+import math
 import os
 import sys
 import traceback
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
+
+import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -32,6 +35,14 @@ from source.pipeline import (  # noqa: E402
 )
 from source.pipeline.dry_run import create_dry_run_pipeline  # noqa: E402
 from source.pipeline.isaac_compat import patch_numpy_for_isaacsim  # noqa: E402
+from source.navigation.isaac_ros2_environment import (  # noqa: E402
+    validate_isaac_ros2_custom_message_environment,
+)
+from source.navigation.scan_stair_freeze_profile import (  # noqa: E402
+    ScanStairFreezeProfileError,
+    bind_pipeline_navigation_settings,
+    load_scene_scan_stair_freeze_profile,
+)
 from source.scene.profiles import (  # noqa: E402
     SceneProfileError,
     apply_scene_profile_defaults,
@@ -47,6 +58,10 @@ from source.tasks import JsonTaskProvider, prepare_episode_spec  # noqa: E402
 
 
 DEFAULT_SCENE_PROFILE = "liangzhu"
+DEFAULT_PCT_SCAN_TUNING_CONFIG = (
+    PROJECT_ROOT
+    / "ros2_ws/src/isaac_navigation_bridge/config/pct_scan_tuning.yaml"
+)
 
 # NuRec 体渲染必须在 Kit 首次 Hydra 同步之前锁定为单 GPU；运行期再改设置已太晚。
 NUREC_KIT_ARGS = (
@@ -98,6 +113,227 @@ def _optional_project_path(raw_path: str | Path | None) -> Path | None:
     return None if raw_path is None else _project_path(raw_path)
 
 
+def _load_cmd_vel_to_policy_limits(
+    raw_path: str | Path,
+) -> dict[str, float]:
+    """从统一 YAML 读取 controller 与 Isaac policy 共用的速度包络。"""
+
+    path = _project_path(raw_path)
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"PCT+SCAN 统一调参文件不存在：{path}") from exc
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError(f"PCT+SCAN 统一调参文件无法读取：{path}: {exc}") from exc
+    try:
+        parameters = payload["scan_controller"]["ros__parameters"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError(
+            "PCT+SCAN 统一调参文件缺少 scan_controller.ros__parameters"
+        ) from exc
+    if not isinstance(parameters, dict):
+        raise ValueError("scan_controller.ros__parameters 必须是映射")
+
+    parameter_to_field = {
+        "limits.max_vx": "max_vx",
+        "limits.max_vy": "max_vy",
+        "limits.max_yaw_rate": "max_wz",
+        "limits.max_ax": "max_vx_rate",
+        "limits.max_ay": "max_vy_rate",
+        "limits.max_yaw_acc": "max_wz_rate",
+    }
+    limits: dict[str, float] = {}
+    for parameter_name, field_name in parameter_to_field.items():
+        try:
+            value = float(parameters[parameter_name])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"统一调参缺少有限正数 {parameter_name}"
+            ) from exc
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(f"统一调参 {parameter_name} 必须是有限正数")
+        limits[field_name] = value
+    return limits
+
+
+def _load_navigation_point_cloud_settings(
+    raw_path: str | Path,
+) -> dict[str, int | float]:
+    """从统一 YAML 读取 Isaac 导航深度点云的负载参数。"""
+
+    path = _project_path(raw_path)
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"PCT+SCAN 统一调参文件不存在：{path}") from exc
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError(f"PCT+SCAN 统一调参文件无法读取：{path}: {exc}") from exc
+    try:
+        parameters = payload["isaac_navigation_runtime"]["ros__parameters"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError(
+            "PCT+SCAN 统一调参文件缺少 "
+            "isaac_navigation_runtime.ros__parameters"
+        ) from exc
+    if not isinstance(parameters, dict):
+        raise ValueError("isaac_navigation_runtime.ros__parameters 必须是映射")
+
+    integer_parameters = {
+        "point_cloud.pixel_stride": "ros2_point_cloud_stride",
+        "point_cloud.publish_interval_control_steps": (
+            "ros2_point_cloud_interval"
+        ),
+        "point_cloud.max_points": "ros2_point_cloud_max_points",
+        "point_cloud.minimum_valid_points": (
+            "ros2_point_cloud_minimum_valid_points"
+        ),
+    }
+    float_parameters = {
+        "point_cloud.min_depth_m": "ros2_point_cloud_min_depth",
+        "point_cloud.max_depth_m": "ros2_point_cloud_max_depth",
+    }
+    settings: dict[str, int | float] = {}
+    for parameter_name, field_name in integer_parameters.items():
+        value = parameters.get(parameter_name)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"统一调参 {parameter_name} 必须是正整数")
+        settings[field_name] = value
+    for parameter_name, field_name in float_parameters.items():
+        try:
+            value = float(parameters[parameter_name])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"统一调参 {parameter_name} 必须是有限数值"
+            ) from exc
+        if not math.isfinite(value):
+            raise ValueError(f"统一调参 {parameter_name} 必须是有限数值")
+        settings[field_name] = value
+
+    minimum_depth = float(settings["ros2_point_cloud_min_depth"])
+    maximum_depth = float(settings["ros2_point_cloud_max_depth"])
+    maximum_points = int(settings["ros2_point_cloud_max_points"])
+    minimum_valid_points = int(
+        settings["ros2_point_cloud_minimum_valid_points"]
+    )
+    if minimum_depth < 0.0 or maximum_depth <= minimum_depth:
+        raise ValueError(
+            "统一调参 point_cloud 深度范围必须满足 0 <= min_depth_m < max_depth_m"
+        )
+    if minimum_valid_points > maximum_points:
+        raise ValueError(
+            "统一调参 point_cloud.minimum_valid_points 不能大于 max_points"
+        )
+    return settings
+
+
+def _load_navigation_body_height_m(raw_path: str | Path) -> float:
+    """从统一 YAML 读取跨 ROS/Isaac 消费者共享的机体高度。"""
+
+    path = _project_path(raw_path)
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        value = float(
+            payload["navigation_contract"]["ros__parameters"][
+                "body_height_m"
+            ]
+        )
+    except FileNotFoundError as exc:
+        raise ValueError(f"PCT+SCAN 统一调参文件不存在：{path}") from exc
+    except (OSError, yaml.YAMLError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "PCT+SCAN 统一调参文件缺少有限正数 "
+            "navigation_contract.ros__parameters.body_height_m"
+        ) from exc
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError("统一调参 body_height_m 必须是有限正数")
+    return value
+
+
+def _load_body_height_preflight_settings(
+    raw_path: str | Path,
+) -> dict[str, bool | int | float]:
+    """从统一 YAML 读取快速/完整双窗口的机体高度预检参数。"""
+
+    path = _project_path(raw_path)
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        parameters = payload["navigation_contract"]["ros__parameters"]
+    except FileNotFoundError as exc:
+        raise ValueError(f"PCT+SCAN 统一调参文件不存在：{path}") from exc
+    except (OSError, yaml.YAMLError, KeyError, TypeError) as exc:
+        raise ValueError(
+            "PCT+SCAN 统一调参文件缺少 "
+            "navigation_contract.ros__parameters"
+        ) from exc
+    if not isinstance(parameters, dict):
+        raise ValueError("navigation_contract.ros__parameters 必须是映射")
+
+    boolean_mapping = {
+        "body_height_preflight.quick.enabled": (
+            "body_height_calibration_quick_enabled"
+        ),
+    }
+    integer_mapping = {
+        "body_height_preflight.quick.minimum_samples": (
+            "body_height_calibration_quick_min_samples"
+        ),
+        "body_height_preflight.full.minimum_samples": (
+            "body_height_calibration_min_samples"
+        ),
+    }
+    float_mapping = {
+        "body_height_preflight.quick.minimum_duration_s": (
+            "body_height_calibration_quick_min_duration_s"
+        ),
+        "body_height_preflight.quick.maximum_mad_m": (
+            "body_height_calibration_quick_max_mad_m"
+        ),
+        "body_height_preflight.quick.maximum_p95_p05_m": (
+            "body_height_calibration_quick_max_spread_m"
+        ),
+        "body_height_preflight.quick.maximum_configured_height_error_m": (
+            "body_height_calibration_quick_contract_tolerance_m"
+        ),
+        "body_height_preflight.full.minimum_duration_s": (
+            "body_height_calibration_min_duration_s"
+        ),
+        "body_height_preflight.full.maximum_mad_m": (
+            "body_height_calibration_max_mad_m"
+        ),
+        "body_height_preflight.full.maximum_p95_p05_m": (
+            "body_height_calibration_max_spread_m"
+        ),
+        "body_height_preflight.full.maximum_configured_height_error_m": (
+            "body_height_calibration_contract_tolerance_m"
+        ),
+        "body_height_preflight.timeout_s": (
+            "body_height_calibration_timeout_s"
+        ),
+    }
+    settings: dict[str, bool | int | float] = {}
+    for parameter_name, field_name in boolean_mapping.items():
+        value = parameters.get(parameter_name)
+        if not isinstance(value, bool):
+            raise ValueError(f"统一调参 {parameter_name} 必须是布尔值")
+        settings[field_name] = value
+    for parameter_name, field_name in integer_mapping.items():
+        value = parameters.get(parameter_name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 2:
+            raise ValueError(f"统一调参 {parameter_name} 必须是 >=2 的整数")
+        settings[field_name] = value
+    for parameter_name, field_name in float_mapping.items():
+        try:
+            value = float(parameters[parameter_name])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"统一调参 {parameter_name} 必须是有限正数"
+            ) from exc
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(f"统一调参 {parameter_name} 必须是有限正数")
+        settings[field_name] = value
+    return settings
+
+
 def _parse_xyz_points(
     raw_values: Sequence[str] | None,
     *,
@@ -120,7 +356,7 @@ def _parse_xyz_points(
 
 
 def _utc_now_iso() -> str:
-    return _datetime.datetime.now(_datetime.UTC).isoformat()
+    return _datetime.datetime.now(_datetime.timezone.utc).isoformat()
 
 
 def _json_safe(value: Any) -> Any:
@@ -198,7 +434,11 @@ def _record_startup_failure(
     )
 
 
-def _locomotion_runtime_kwargs(config: FullPhysicsConfig) -> dict[str, object]:
+def _locomotion_runtime_kwargs(
+    config: FullPhysicsConfig,
+    *,
+    navigation_ros2_bridge_enabled: bool = False,
+) -> dict[str, object]:
     kwargs: dict[str, object] = {}
     if config.locomotion.locomotion_task:
         kwargs["task_name"] = config.locomotion.locomotion_task
@@ -206,8 +446,11 @@ def _locomotion_runtime_kwargs(config: FullPhysicsConfig) -> dict[str, object]:
         kwargs["checkpoint"] = config.locomotion.locomotion_checkpoint
     if config.locomotion.policy_profile == "pct_multifloor":
         # DogOnly checkpoint 的 gait 奖励从 0.08 开始；更小命令按站立处理，
-        # 避免 DWA 起步爬升阶段触发原地换脚。
-        kwargs["standing_command_threshold"] = 0.08
+        # 旧链借此避免起步换脚。ROS 2 安全门已经对命令做变化率限制；
+        # 再施加死区会在跨过阈值时产生跳变，因此在线 SCAN 链必须禁用。
+        kwargs["standing_command_threshold"] = (
+            0.0 if navigation_ros2_bridge_enabled else 0.08
+        )
         kwargs["policy_action_warmup_steps"] = 50
     return kwargs
 
@@ -297,6 +540,84 @@ def _camera_sensor_runtime_kwargs(
     }
 
 
+def _navigation_ros2_runtime_kwargs(
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    """把 CLI 的 ROS 2/深度参数转换为 Isaac runtime 的成对配置。"""
+
+    if not bool(args.enable_navigation_ros2_bridge):
+        return {}
+
+    from source.navigation.cmd_vel_to_policy import CmdVelToPolicyConfig
+    from source.navigation.isaac_depth_point_cloud import DepthPointCloudConfig
+    from source.navigation.isaac_ros2_ogn_bridge import IsaacRos2OgnBridgeConfig
+
+    policy_limits = getattr(args, "pct_scan_policy_limits", None)
+    if policy_limits is None:
+        policy_limits = _load_cmd_vel_to_policy_limits(
+            args.pct_scan_tuning_config
+        )
+
+    return {
+        "ros2_ogn_bridge_config": IsaacRos2OgnBridgeConfig(
+            clock_topic=str(args.ros2_clock_topic),
+            odometry_topic=str(args.ros2_odometry_topic),
+            point_cloud_topic=str(args.ros2_point_cloud_topic),
+            command_topic=str(args.ros2_cmd_vel_topic),
+            goal_reached_topic=str(args.ros2_goal_reached_topic),
+            controller_status_topic=str(args.ros2_controller_status_topic),
+            grid_map_diagnostics_topic=str(
+                args.ros2_grid_map_diagnostics_topic
+            ),
+            bspline_diagnostics_topic=str(
+                args.ros2_bspline_diagnostics_topic
+            ),
+            navigation_status_topic=str(args.ros2_navigation_status_topic),
+            reference_path_topic=str(args.ros2_reference_path_topic),
+            pct_goal_topic=str(args.ros2_pct_goal_topic),
+            stair_execution_frozen_topic=str(
+                args.ros2_stair_execution_frozen_topic
+            ),
+            odom_frame_id=str(args.ros2_world_frame),
+            base_frame_id=str(args.ros2_base_frame),
+            point_cloud_frame_id=str(args.ros2_world_frame),
+            domain_id=args.ros2_domain_id,
+            odometry_source="direct",
+            enable_command_subscription=True,
+            enable_goal_reached_subscription=True,
+            enable_controller_status_subscription=True,
+            enable_grid_map_diagnostics_subscription=True,
+            enable_bspline_diagnostics_subscription=True,
+            enable_pct_goal_publisher=True,
+            enable_stair_execution_frozen_publisher=True,
+        ),
+        "depth_point_cloud_config": DepthPointCloudConfig(
+            sensor_name="head_camera",
+            depth_key="distance_to_image_plane",
+            environment_index=0,
+            pixel_stride=int(args.ros2_point_cloud_stride),
+            min_depth_m=float(args.ros2_point_cloud_min_depth),
+            max_depth_m=float(args.ros2_point_cloud_max_depth),
+            max_points=int(args.ros2_point_cloud_max_points),
+            minimum_valid_points=int(
+                args.ros2_point_cloud_minimum_valid_points
+            ),
+            publish_interval_control_steps=int(
+                args.ros2_point_cloud_interval
+            ),
+        ),
+        "cmd_vel_to_policy_config": CmdVelToPolicyConfig(
+            # 速度和变化率必须与 ROS controller 使用同一份 YAML；这里不再
+            # 维护第二套隐藏常量，只保留输入新鲜度等安全合同。
+            **policy_limits,
+            cmd_vel_timeout_s=0.25,
+            odometry_timeout_s=0.25,
+            point_cloud_timeout_s=0.50,
+            control_lease_timeout_s=0.50,
+        ),
+    }
+
+
 def _create_full_physics_runtime(
     *,
     config: FullPhysicsConfig,
@@ -316,7 +637,12 @@ def _create_full_physics_runtime(
         simulation_app=simulation_app,
         project_root=PROJECT_ROOT,
         config=IsaacLabNavigationRuntimeConfig(
-            **_locomotion_runtime_kwargs(config),
+            **_locomotion_runtime_kwargs(
+                config,
+                navigation_ros2_bridge_enabled=bool(
+                    args.enable_navigation_ros2_bridge
+                ),
+            ),
             **_navigation_visual_runtime_kwargs(
                 config.locomotion.policy_profile,
                 args.navigation_visual_mode,
@@ -326,6 +652,7 @@ def _create_full_physics_runtime(
             ),
             **runtime_overrides,
             **_camera_sensor_runtime_kwargs(config),
+            **_navigation_ros2_runtime_kwargs(args),
             auto_manage_viewport_camera=bool(
                 config.headless or config.video.overview_camera_mode == "fixed"
             ),
@@ -444,6 +771,182 @@ def _build_parser() -> argparse.ArgumentParser:
         help="是否以无界面模式运行；使用 --headless 关闭GUI渲染。",
     )
     parser.add_argument(
+        "--enable-navigation-ros2-bridge",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "启用 Isaac 内建 ROS 2 OGN 导航链；导航类模式默认强制启用，发布 /clock、Odometry、"
+            "在线深度点云，并让 /cmd_vel 独占 locomotion policy 速度入口。"
+            "pipeline 自身的 base_velocity 会被明确旁路；仅固定速度楼梯探针"
+            "允许关闭。"
+        ),
+    )
+    parser.add_argument(
+        "--pct-scan-tuning-config",
+        default=os.fspath(DEFAULT_PCT_SCAN_TUNING_CONFIG),
+        help=(
+            "PCT、SCAN、controller 与 Isaac cmd_vel→policy 共用的统一 YAML；"
+            "默认读取 ros2_ws/src/isaac_navigation_bridge/config/"
+            "pct_scan_tuning.yaml。"
+        ),
+    )
+    parser.add_argument(
+        "--ros2-domain-id",
+        type=int,
+        default=None,
+        help="Isaac ROS 2 domain；默认读取 ROS_DOMAIN_ID 环境变量。",
+    )
+    parser.add_argument(
+        "--ros2-clock-topic",
+        default="/clock",
+        help="Isaac 发布仿真时钟的绝对 ROS 2 topic。",
+    )
+    parser.add_argument(
+        "--ros2-odometry-topic",
+        default="/isaac/body_pose_raw",
+        help="Isaac 发布原始 Odometry 的绝对 ROS 2 topic。",
+    )
+    parser.add_argument(
+        "--ros2-point-cloud-topic",
+        default="/isaac/cloud_registered_raw",
+        help="Isaac 发布原始世界系 PointCloud2 的绝对 ROS 2 topic。",
+    )
+    parser.add_argument(
+        "--ros2-cmd-vel-topic",
+        default="/cmd_vel",
+        help="SCAN controller 发布、Isaac OGN 订阅的绝对 Twist topic。",
+    )
+    parser.add_argument(
+        "--ros2-goal-reached-topic",
+        default="/planning/goal_reached",
+        help="SCAN controller 发布、Isaac OGN 订阅的目标完成 Bool topic。",
+    )
+    parser.add_argument(
+        "--ros2-controller-status-topic",
+        default="/planning/controller_status",
+        help=(
+            "SCAN controller 发布、Isaac OGN 订阅的 typed 轨迹生命周期状态 topic。"
+        ),
+    )
+    parser.add_argument(
+        "--ros2-grid-map-diagnostics-topic",
+        default="/planning/grid_map_observation_diagnostics",
+        help=(
+            "SCAN GridMap 发布、Isaac OGN 订阅的过滤后 hit、explicit-free "
+            "与 ghost-clear typed 证据 topic。"
+        ),
+    )
+    parser.add_argument(
+        "--ros2-bspline-diagnostics-topic",
+        default="/planning/bspline_diagnostics",
+        help=(
+            "SCAN 发布、Isaac OGN 订阅的 B-spline identity、ordered corridor "
+            "与有界轨迹几何 typed 证据 topic。"
+        ),
+    )
+    parser.add_argument(
+        "--ros2-navigation-status-topic",
+        default="/navigation/status",
+        help=(
+            "supervisor 发布、Isaac OGN 订阅的 typed policy 安全许可 topic；"
+            "必须与组合 launch 的 navigation_status_topic 完全一致。"
+        ),
+    )
+    parser.add_argument(
+        "--ros2-reference-path-topic",
+        default="/pct/global_path",
+        help=(
+            "SCAN 与 Isaac OGN 同时消费的三维地面高度 Path topic；生产 "
+            "PCT 主线默认 /pct/global_path，手工 Path smoke 应显式传 /initial_path。"
+        ),
+    )
+    parser.add_argument(
+        "--ros2-pct-goal-topic",
+        default="/pct/goal",
+        help="Isaac OGN 发布 pipeline task base 目标的 PoseStamped topic。",
+    )
+    parser.add_argument(
+        "--ros2-stair-execution-frozen-topic",
+        default="/planning/stair_execution_frozen",
+        help=(
+            "Isaac OGN 发布楼梯底盘冻结生命周期的 typed StairExecutionFreeze "
+            "topic；SCAN 校验当前 Path identity、唯一写者、严格序列和新鲜度后，"
+            "抑制冻结期间的局部重规划和碰撞定时器。"
+        ),
+    )
+    parser.add_argument(
+        "--ros2-world-frame",
+        default="world",
+        help=(
+            "Isaac Odometry、点云、PCT Path 与 supervisor 共用的世界 frame；"
+            "必须与组合 launch 的 world_frame 完全一致。"
+        ),
+    )
+    parser.add_argument(
+        "--ros2-base-frame",
+        default="base_link",
+        help=(
+            "Isaac Odometry child frame；必须与组合 launch 的 base_frame 完全一致。"
+        ),
+    )
+    parser.add_argument(
+        "--scan-manual-path-goal-xyyaw",
+        type=float,
+        nargs=3,
+        default=None,
+        metavar=("X", "Y", "YAW"),
+        help=(
+            "仅用于 navigation-smoke + ROS 2 bridge 手工 Path 验收："
+            "把 pipeline 的终点验证覆盖为给定 x、y、yaw；z、楼层和 slice "
+            "沿用任务目标。本参数不生成 Path，也不切换 planner。"
+        ),
+    )
+    parser.add_argument(
+        "--ros2-point-cloud-stride",
+        type=int,
+        default=None,
+        help=(
+            "前视深度图像素抽样步长；默认从 PCT+SCAN 统一 YAML 读取，"
+            "显式 CLI 可覆盖。"
+        ),
+    )
+    parser.add_argument(
+        "--ros2-point-cloud-interval",
+        type=int,
+        default=None,
+        help=(
+            "点云发布控制步间隔；默认从 PCT+SCAN 统一 YAML 读取，"
+            "当前控制频率为 50 Hz。"
+        ),
+    )
+    parser.add_argument(
+        "--ros2-point-cloud-min-depth",
+        type=float,
+        default=None,
+        help="导航深度点云最小有效距离，单位米；默认从统一 YAML 读取。",
+    )
+    parser.add_argument(
+        "--ros2-point-cloud-max-depth",
+        type=float,
+        default=None,
+        help="导航深度点云最大有效距离，单位米；默认从统一 YAML 读取。",
+    )
+    parser.add_argument(
+        "--ros2-point-cloud-max-points",
+        type=int,
+        default=None,
+        help="单帧发布点数上限；默认从统一 YAML 读取。",
+    )
+    parser.add_argument(
+        "--ros2-point-cloud-minimum-valid-points",
+        type=int,
+        default=None,
+        help=(
+            "少于该有效点数的深度帧不发布，也不刷新安全门新鲜度；"
+            "默认从统一 YAML 读取。"
+        ),
+    )
+    parser.add_argument(
         "--navigation-visual-mode",
         choices=("auto", "collision", "full"),
         default=None,
@@ -487,6 +990,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="是否保存 LeRobot dataset 图像和数据；物理验收可用 --no-record-dataset 节省空间。",
+    )
+    parser.add_argument(
+        "--diagnostic-frame-stride",
+        type=int,
+        default=1,
+        help=(
+            "非 dataset smoke 的 frames.jsonl 诊断采样步长；默认 1 逐控制 tick，"
+            "状态切换与固定楼梯 probe 不受降采样影响。"
+        ),
     )
     parser.add_argument(
         "--dataset-camera-keys",
@@ -637,8 +1149,28 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--pct-offset-x", type=float, default=0.0, help="PCT 坐标 X 偏移。")
     parser.add_argument("--pct-offset-y", type=float, default=0.0, help="PCT 坐标 Y 偏移。")
+    parser.add_argument("--pct-offset-z", type=float, default=0.0, help="PCT 坐标 Z 偏移。")
     parser.add_argument("--pct-scale-x", type=float, default=1.0, help="PCT 坐标 X 缩放。")
     parser.add_argument("--pct-scale-y", type=float, default=1.0, help="PCT 坐标 Y 缩放。")
+    parser.add_argument("--pct-scale-z", type=float, default=1.0, help="PCT 坐标 Z 缩放。")
+    parser.add_argument(
+        "--pct-rotation-x-rad",
+        type=float,
+        default=0.0,
+        help="PCT 固定轴 X 旋转，单位弧度；应用顺序为 X、Y、Z。",
+    )
+    parser.add_argument(
+        "--pct-rotation-y-rad",
+        type=float,
+        default=0.0,
+        help="PCT 固定轴 Y 旋转，单位弧度；应用顺序为 X、Y、Z。",
+    )
+    parser.add_argument(
+        "--pct-rotation-z-rad",
+        type=float,
+        default=0.0,
+        help="PCT 固定轴 Z 旋转，单位弧度；应用顺序为 X、Y、Z。",
+    )
     parser.add_argument(
         "--pct-vertical-obstacle-min-slices",
         type=int,
@@ -781,12 +1313,53 @@ def _build_parser() -> argparse.ArgumentParser:
         help="携物跨楼层导航最大角速度。",
     )
     parser.add_argument(
+        "--stair-fixed-command-probe",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "在 stair-locomotion-smoke 中旁路 PCT、SCAN、Float 与航向控制，"
+            "先零速预热 1 秒，再向低层 policy 写入固定 (vx,0,0)。"
+        ),
+    )
+    parser.add_argument(
+        "--stair-probe-vx",
+        type=float,
+        choices=(0.20, 0.25, 0.30),
+        default=NavigationSettings().stair_probe_forward_velocity_mps,
+        help="固定速度楼梯探针的机体系 vx，只允许 0.20/0.25/0.30 m/s。",
+    )
+    parser.add_argument(
+        "--stair-probe-duration",
+        type=float,
+        default=NavigationSettings().stair_probe_drive_duration_s,
+        help="固定速度楼梯探针的驱动时长，必须位于 3 至 5 秒。",
+    )
+    parser.add_argument(
         "--pct-stair-float",
         action=argparse.BooleanOptionalAction,
         default=None,
         help=(
             "携物上楼阶段冻结底盘并沿 PCT 3D 路径漂移；"
             "PCT 稳定完整 pipeline 默认开启，可用 --no-pct-stair-float 关闭。"
+        ),
+    )
+    parser.add_argument(
+        "--scan-stair-freeze",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "SCAN 主链进入离散台阶段后由唯一 cmd_vel owner 当帧清零，"
+            "冻结底盘/全身姿态并沿同一三维 Path 推进；默认开启，连续斜坡不触发。"
+        ),
+    )
+    parser.add_argument(
+        "--navigation-body-height-m",
+        type=float,
+        default=None,
+        help=(
+            "生产导航唯一机体高度，单位 m；默认读取 --pct-scan-tuning-config "
+            "中的 navigation_contract.body_height_m，同一值会提供给 ROS 组合 "
+            "launch、host 楼梯冻结、live 标定和有效目标投影。"
         ),
     )
     parser.add_argument(
@@ -907,9 +1480,9 @@ def _build_parser() -> argparse.ArgumentParser:
         const="stair_locomotion_smoke",
         dest="mode",
         help=(
-            "从楼梯入口重置并沿 PCT 在线规划的 path_3d 纯物理上楼；"
-            "禁用 Float 和 DWA，默认开启 GUI、保留窗口并录制 overview 视频和数据集，"
-            "越过楼梯出口并进入 F2 平台后结束。"
+            "从楼梯入口重置并运行 PCT→SCAN 主链；认证楼梯段按当前工程方案"
+            "执行 root/support/full-body 底盘冻结，禁用 Float 和 DWA，"
+            "不能标记为纯物理上楼。"
         ),
     )
     mode_group.add_argument(
@@ -977,7 +1550,15 @@ def _resolve_runtime_defaults(args: argparse.Namespace) -> argparse.Namespace:
     args.scene_runtime_asset_manifest = profile.runtime_asset_manifest
     args.scene_profile_defaults_applied = applied_defaults
 
-    stair_locomotion_smoke = str(args.mode) == "stair_locomotion_smoke"
+    mode = str(args.mode)
+    stair_locomotion_smoke = mode == "stair_locomotion_smoke"
+    navigation_ros2_mode = mode in {
+        "full_physics",
+        "pick_smoke",
+        "navigation_smoke",
+        "navigation_carry_smoke",
+        "stair_locomotion_smoke",
+    }
     generic_defaults = {
         "output_dir": f"outputs/{profile.name}",
         "global_planner": "pct",
@@ -995,6 +1576,10 @@ def _resolve_runtime_defaults(args: argparse.Namespace) -> argparse.Namespace:
             stair_locomotion_smoke or str(args.mode) == "pct_plan_preview"
         ),
         "pct_stair_float": False,
+        "scan_stair_freeze": True,
+        "enable_navigation_ros2_bridge": bool(
+            navigation_ros2_mode and not args.stair_fixed_command_probe
+        ),
         "navigation_visual_mode": "full",
         "overview_camera_mode": "fixed",
         "overview_camera_prim_path": DEFAULT_OVERVIEW_CAMERA_PRIM_PATH,
@@ -1003,6 +1588,37 @@ def _resolve_runtime_defaults(args: argparse.Namespace) -> argparse.Namespace:
     for key, value in generic_defaults.items():
         if getattr(args, key) is None:
             setattr(args, key, value)
+
+    if args.navigation_body_height_m is None:
+        try:
+            args.navigation_body_height_m = _load_navigation_body_height_m(
+                args.pct_scan_tuning_config
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+
+    try:
+        args.pct_scan_body_height_preflight_settings = (
+            _load_body_height_preflight_settings(
+                args.pct_scan_tuning_config
+            )
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    if args.enable_navigation_ros2_bridge:
+        try:
+            args.pct_scan_policy_limits = _load_cmd_vel_to_policy_limits(
+                args.pct_scan_tuning_config
+            )
+            point_cloud_settings = _load_navigation_point_cloud_settings(
+                args.pct_scan_tuning_config
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        for field_name, value in point_cloud_settings.items():
+            if getattr(args, field_name) is None:
+                setattr(args, field_name, value)
 
     if args.task_json is None:
         raise SystemExit(
@@ -1102,6 +1718,55 @@ def _keep_gui_open(simulation_app: object, retained_simulation: object | None = 
         print("[full-physics] 收到 Ctrl+C，正在关闭 GUI。", flush=True)
 
 
+def _apply_scan_manual_path_goal_override(
+    episode_spec: Any,
+    raw_goal_xyyaw: Sequence[float] | None,
+) -> Any:
+    """让手工 SCAN Path 的终点与 pipeline 验证目标保持一致。
+
+    该覆盖只改变本次 navigation-smoke 的底盘目标；地面高度仍由 Path
+    表达，pipeline 侧的 base z、楼层和 slice 沿用已生成任务。
+    """
+
+    if raw_goal_xyyaw is None:
+        return episode_spec
+    values = tuple(float(value) for value in raw_goal_xyyaw)
+    if len(values) != 3 or not all(math.isfinite(value) for value in values):
+        raise ValueError("SCAN 手工 Path 目标必须是三个有限的 x、y、yaw 数值。")
+
+    original_goal = episode_spec.pick_goal
+    goal = replace(
+        original_goal,
+        x=values[0],
+        y=values[1],
+        yaw=values[2],
+    )
+    raw_task = dict(episode_spec.raw_task)
+    existing_override = raw_task.get("runtime_override")
+    runtime_override = (
+        dict(existing_override)
+        if isinstance(existing_override, dict)
+        else {}
+    )
+    runtime_override["scan_manual_path_goal"] = {
+        "mode": "navigation_smoke_ros2_bridge",
+        "xyyaw": [goal.x, goal.y, goal.yaw],
+        "base_z": goal.z,
+        "original_pick_goal_xyyaw": [
+            original_goal.x,
+            original_goal.y,
+            original_goal.yaw,
+        ],
+        "path_source": "external_ros2_nav_msgs_path",
+    }
+    raw_task["runtime_override"] = runtime_override
+    return replace(
+        episode_spec,
+        pick_goal=goal,
+        raw_task=raw_task,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     mode = str(args.mode)
@@ -1115,13 +1780,73 @@ def main(argv: Sequence[str] | None = None) -> int:
     manipulation_smoke = mode == "manipulation_smoke"
     manipulation_apply_smoke = mode == "manipulation_apply_smoke"
     full_physics = mode == "full_physics"
+    navigation_ros2_mode = mode in {
+        "full_physics",
+        "pick_smoke",
+        "navigation_smoke",
+        "navigation_carry_smoke",
+        "stair_locomotion_smoke",
+    }
+    if (
+        navigation_ros2_mode
+        and not args.stair_fixed_command_probe
+        and not args.enable_navigation_ros2_bridge
+    ):
+        raise SystemExit(
+            "pct-scan 主导航只允许 PCT→SCAN ROS 2 链；"
+            "--no-enable-navigation-ros2-bridge 仅用于固定速度楼梯探针。"
+        )
+    if (
+        navigation_ros2_mode
+        and not args.stair_fixed_command_probe
+        and str(args.global_planner) != "pct"
+    ):
+        raise SystemExit("pct-scan 主导航只允许 PCT 全局规划器。")
+    if (
+        navigation_ros2_mode
+        and not args.stair_fixed_command_probe
+        and not bool(args.pct_no_fallback)
+    ):
+        raise SystemExit("pct-scan 主导航禁止 PCT→A* fallback。")
     flat_episode_output = os.environ.get("FULL_PHYSICS_FLAT_EPISODE_OUTPUT") == "1"
+    if args.enable_navigation_ros2_bridge and mode not in {
+        "full_physics",
+        "pick_smoke",
+        "navigation_smoke",
+        "navigation_carry_smoke",
+        "stair_locomotion_smoke",
+    }:
+        raise SystemExit(
+            "--enable-navigation-ros2-bridge 只支持会创建 "
+            "IsaacLabNavigationRuntime 的 full-physics、pick-smoke、"
+            "navigation-smoke、navigation-carry-smoke 和 "
+            "stair-locomotion-smoke 模式。"
+        )
+    if args.scan_manual_path_goal_xyyaw is not None and not (
+        navigation_smoke and args.enable_navigation_ros2_bridge
+    ):
+        raise SystemExit(
+            "--scan-manual-path-goal-xyyaw 只允许用于 "
+            "--navigation-smoke + --enable-navigation-ros2-bridge。"
+        )
     if (full_physics or pick_smoke) and (args.pick_plan_json or args.place_plan_json):
         raise SystemExit("full-physics / pick-smoke 模式禁止使用离线 plan JSON；pick/place 必须按当前仿真状态在线规划。")
     if args.keep_window_open and args.headless:
         raise SystemExit("--keep-window-open 只能与 --no-headless 一起使用。")
     if stair_locomotion_smoke and args.pct_stair_float:
         raise SystemExit("--stair-locomotion-smoke 固定禁用 Float，请不要传 --pct-stair-float。")
+    if args.stair_fixed_command_probe and not stair_locomotion_smoke:
+        raise SystemExit(
+            "--stair-fixed-command-probe 只允许用于 --stair-locomotion-smoke。"
+        )
+    if args.stair_fixed_command_probe and args.enable_navigation_ros2_bridge:
+        raise SystemExit(
+            "楼梯固定速度探针不能同时启用 ROS 2 bridge/SCAN 命令入口。"
+        )
+    if args.stair_fixed_command_probe and not (
+        3.0 <= float(args.stair_probe_duration) <= 5.0
+    ):
+        raise SystemExit("--stair-probe-duration 必须位于 [3, 5] 秒。")
     if args.record_video and dry_run:
         raise SystemExit("--record-video 需要真实 Isaac stage / camera images，不能与 --dry-run 一起使用。")
     if args.export_video_camera_trajectory and not args.record_video:
@@ -1130,6 +1855,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--export-video-camera-trajectory 只支持 --video-mode overview 或 all。")
     if args.record_video and args.video_out and Path(args.video_out).suffix.lower() == ".mp4" and args.num_episodes != 1:
         raise SystemExit("--video-out 指向单个 .mp4 文件时只支持 --num-episodes 1；多 episode 请传输出目录。")
+    if (
+        args.enable_navigation_ros2_bridge
+        and args.num_episodes != 1
+    ):
+        raise SystemExit(
+            "ROS 2 导航桥在 episode epoch/reset/ack 协议完成前只允许 "
+            "--num-episodes 1，避免沿用上一 episode 的 B-spline。"
+        )
+    if (
+        args.enable_navigation_ros2_bridge
+        and args.navigation_visual_mode != "collision"
+    ):
+        raise SystemExit(
+            "--enable-navigation-ros2-bridge 必须显式使用 "
+            "--navigation-visual-mode collision，确保 RTX 深度可见碰撞场景。"
+        )
     multi_episode_real_supported = bool(
         full_physics and args.reuse_isaac_stage and args.headless
     )
@@ -1183,6 +1924,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         headless=args.headless,
         keep_window_open=args.keep_window_open,
         show_planned_trajectories=bool(args.show_planned_trajectories),
+        diagnostic_frame_stride=int(args.diagnostic_frame_stride),
         pick_plan_json=_project_path(args.pick_plan_json) if args.pick_plan_json else None,
         place_plan_json=_project_path(args.place_plan_json) if args.place_plan_json else None,
         dry_run=dry_run,
@@ -1208,8 +1950,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             pct_coord_mode=str(args.pct_coord_mode),
             pct_offset_x=float(args.pct_offset_x),
             pct_offset_y=float(args.pct_offset_y),
+            pct_offset_z=float(args.pct_offset_z),
             pct_scale_x=float(args.pct_scale_x),
             pct_scale_y=float(args.pct_scale_y),
+            pct_scale_z=float(args.pct_scale_z),
+            pct_rotation_x_rad=float(args.pct_rotation_x_rad),
+            pct_rotation_y_rad=float(args.pct_rotation_y_rad),
+            pct_rotation_z_rad=float(args.pct_rotation_z_rad),
             pct_vertical_obstacle_min_slices=int(args.pct_vertical_obstacle_min_slices),
             pct_vertical_obstacle_dilation_radius_cells=int(
                 args.pct_vertical_obstacle_dilation_radius_cells
@@ -1271,6 +2018,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             pct_carry_max_angular_velocity=float(
                 args.pct_carry_max_angular_velocity
             ),
+            stair_fixed_command_probe=bool(
+                args.stair_fixed_command_probe
+            ),
+            stair_probe_forward_velocity_mps=float(args.stair_probe_vx),
+            stair_probe_drive_duration_s=float(args.stair_probe_duration),
             pct_stair_float_enabled=bool(args.pct_stair_float),
             pct_stair_float_speed_mps=float(args.pct_stair_float_speed),
             pct_stair_float_activation_radius_m=float(
@@ -1297,7 +2049,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             pct_stair_float_release_root_z_offset_m=float(
                 args.pct_stair_float_release_root_z_offset
             ),
+            navigation_body_height_m=float(args.navigation_body_height_m),
+            scan_stair_freeze_enabled=bool(args.scan_stair_freeze),
             goal_z_tolerance=float(args.goal_z_tolerance),
+            **dict(args.pct_scan_body_height_preflight_settings),
         ),
         locomotion=LocomotionPolicySettings(
             locomotion_task=locomotion_task,
@@ -1371,11 +2126,42 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
         ),
     )
+    scene_profile = load_scene_profile(args.scene_profile, PROJECT_ROOT)
+    scan_stair_freeze_profile = None
+    if scene_profile.scan_stair_freeze_profile is not None:
+        try:
+            scan_stair_freeze_profile = (
+                load_scene_scan_stair_freeze_profile(
+                    scene_profile,
+                    PROJECT_ROOT,
+                )
+            )
+            config = replace(
+                config,
+                navigation=bind_pipeline_navigation_settings(
+                    config.navigation,
+                    scan_stair_freeze_profile,
+                ),
+            )
+        except (ScanStairFreezeProfileError, FileNotFoundError) as exc:
+            raise SystemExit(str(exc)) from exc
+    elif (
+        config.navigation.scan_stair_freeze_enabled
+        and scene_profile.supports("cross_floor_navigation")
+        and not config.navigation.stair_fixed_command_probe
+    ):
+        raise SystemExit(
+            "跨楼层 SCAN 主线必须由 scene profile 显式绑定楼梯冻结生产 profile。"
+        )
+    scan_stair_freeze_profile_audit = (
+        None
+        if scan_stair_freeze_profile is None
+        else scan_stair_freeze_profile.audit_report()
+    )
     _validate_external_plan_paths(config)
     base_spec = JsonTaskProvider().load(config.task_json)
     _validate_task_scene_profile(args, base_spec.raw_task)
     config.output_dir.mkdir(parents=True, exist_ok=True)
-    scene_profile = load_scene_profile(args.scene_profile, PROJECT_ROOT)
     scene_isaac_kit_args = _scene_isaac_kit_args(scene_profile)
     scene_isaac_app_overrides = _scene_isaac_app_overrides(scene_profile)
     scene_isaac_runtime_overrides = _scene_isaac_runtime_overrides(scene_profile)
@@ -1394,6 +2180,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         **base_spec.raw_task,
         "scene_usd": runtime_scene_usd,
         "scene_asset_binding_runtime": scene_binding_report,
+        "scan_stair_freeze_profile_runtime": (
+            scan_stair_freeze_profile_audit
+        ),
     }
     base_spec = replace(
         base_spec,
@@ -1449,6 +2238,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "scene_light_mode": config.lighting.scene_light_mode,
         "global_planner": config.navigation.global_planner,
         "pct_coord_mode": config.navigation.pct_coord_mode,
+        "navigation_body_height_m": (
+            config.navigation.navigation_body_height_m
+        ),
+        "scan_stair_freeze_profile_runtime": (
+            scan_stair_freeze_profile_audit
+        ),
         "policy_profile": config.locomotion.policy_profile,
         "pct_plan_preview_auto_keep_window_open": bool(
             pct_plan_preview and not config.headless
@@ -1474,6 +2269,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     retained_simulation = None
     shared_full_physics_simulation = None
     try:
+        if args.enable_navigation_ros2_bridge:
+            ros2_environment_report = (
+                validate_isaac_ros2_custom_message_environment()
+            )
+            if startup_status is not None:
+                startup_status["ros2_custom_message_environment_report"] = (
+                    ros2_environment_report
+                )
+            _record_startup_phase(
+                startup_status,
+                startup_status_path,
+                "ros2_custom_message_environment_verified",
+                report=ros2_environment_report,
+            )
         if config.full_physics or config.pick_smoke:
             from source.manipulation import (
                 CuroboPlannerServerProcess,
@@ -1523,6 +2332,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ((config.full_physics or config.pick_smoke) and config.recording.enabled)
                     or config.video.enabled
                     or config.randomization.show_debug_region
+                    or args.enable_navigation_ros2_bridge
                     or not config.headless
                 ),
                 kit_args=list(scene_isaac_kit_args),
@@ -1534,6 +2344,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ((config.full_physics or config.pick_smoke) and config.recording.enabled)
                     or config.video.enabled
                     or config.randomization.show_debug_region
+                    or args.enable_navigation_ros2_bridge
                     or not config.headless
                 ),
             }
@@ -1571,6 +2382,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 episode_id=base_spec.episode_id + episode_index,
                 seed=episode_seed,
                 settings=config.randomization,
+            )
+            episode_spec = _apply_scan_manual_path_goal_override(
+                episode_spec,
+                args.scan_manual_path_goal_xyyaw,
             )
             if config.randomization.enabled or config.randomization.base_goal.enabled:
                 pick_xy = (
@@ -1774,7 +2589,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         simulation_app=app_launcher.app,
                         project_root=PROJECT_ROOT,
                         config=IsaacLabNavigationRuntimeConfig(
-                            **_locomotion_runtime_kwargs(config),
+                            **_locomotion_runtime_kwargs(
+                                config,
+                                navigation_ros2_bridge_enabled=bool(
+                                    args.enable_navigation_ros2_bridge
+                                ),
+                            ),
                             **_navigation_visual_runtime_kwargs(
                                 config.locomotion.policy_profile,
                                 args.navigation_visual_mode,
@@ -1790,6 +2610,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 ),
                             ),
                             **_camera_sensor_runtime_kwargs(config),
+                            **_navigation_ros2_runtime_kwargs(args),
                             show_velocity_command_debug=bool(
                                 stair_locomotion_smoke
                                 and config.show_planned_trajectories

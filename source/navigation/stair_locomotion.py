@@ -76,6 +76,231 @@ class StairCenterlinePlanner:
         )
 
 
+class FixedCommandStairProbePlanner:
+    """为固定速度楼梯探针提供最小两点计划，不启动 PCT 或局部规划器。"""
+
+    def plan(self, state: SimulationState, goal: NavGoal) -> NavPlan:
+        start = (
+            float(state.robot_root_pose[0]),
+            float(state.robot_root_pose[1]),
+            float(state.robot_root_pose[2]),
+        )
+        end = (
+            float(goal.x),
+            float(goal.y),
+            float(start[2] if goal.z is None else goal.z),
+        )
+        return NavPlan(
+            goal=goal,
+            waypoints=(start, end),
+            metadata={
+                "planner": "fixed_command_stair_probe",
+                "path_3d": (start, end),
+                "controller": "fixed_body_velocity_probe",
+                "low_level_policy_isolation": True,
+                "pct_client_created": False,
+                "scan_created": False,
+            },
+        )
+
+
+@dataclass(frozen=True)
+class FixedCommandStairProbeConfig:
+    """固定机体系前进命令的楼梯 A/B 探针参数。"""
+
+    forward_velocity_mps: float = 0.25
+    warmup_duration_s: float = 1.0
+    drive_duration_s: float = 3.84
+
+    def __post_init__(self) -> None:
+        allowed_velocities = (0.20, 0.25, 0.30)
+        if not any(
+            math.isclose(
+                float(self.forward_velocity_mps),
+                allowed,
+                rel_tol=0.0,
+                abs_tol=1.0e-9,
+            )
+            for allowed in allowed_velocities
+        ):
+            raise ValueError("楼梯固定速度探针只允许 0.20、0.25 或 0.30 m/s。")
+        if not math.isfinite(float(self.warmup_duration_s)) or (
+            self.warmup_duration_s < 0.0
+        ):
+            raise ValueError("楼梯固定速度探针预热时长必须是非负有限数。")
+        if not math.isfinite(float(self.drive_duration_s)) or not (
+            3.0 <= self.drive_duration_s <= 5.0
+        ):
+            raise ValueError("楼梯固定速度探针驱动时长必须位于 [3, 5] 秒。")
+
+
+class FixedCommandStairProbeExecutor:
+    """先零速预热，再以固定 ``(vx, 0, 0)`` 隔离验证低层策略。"""
+
+    def __init__(self, config: FixedCommandStairProbeConfig | None = None):
+        self.config = config or FixedCommandStairProbeConfig()
+        self._plan: NavPlan | None = None
+        self._start_time_s: float | None = None
+        self._start_pose_xyz: tuple[float, float, float] | None = None
+        self._start_yaw_rad: float | None = None
+        self._done = False
+        self._failed = False
+        self._failure_reason = ""
+        self._driving_tick_count = 0
+        self._status: dict[str, Any] = {
+            "controller": "fixed_body_velocity_probe",
+            "ready": False,
+        }
+
+    def reset(self, plan: NavPlan) -> None:
+        if len(plan.waypoints) < 2:
+            raise ValueError("楼梯固定速度探针计划至少需要两个点。")
+        self._plan = plan
+        self._start_time_s = None
+        self._start_pose_xyz = None
+        self._start_yaw_rad = None
+        self._done = False
+        self._failed = False
+        self._failure_reason = ""
+        self._driving_tick_count = 0
+        self._status = {
+            "controller": "fixed_body_velocity_probe",
+            "ready": True,
+            "failed": False,
+            "done": False,
+            "phase": "waiting_first_observation",
+            "requested_command": [self.config.forward_velocity_mps, 0.0, 0.0],
+            "warmup_duration_s": self.config.warmup_duration_s,
+            "drive_duration_s": self.config.drive_duration_s,
+            "nominal_distance_m": (
+                self.config.forward_velocity_mps * self.config.drive_duration_s
+            ),
+            "float_enabled": False,
+            "base_pose_lock_requested": False,
+            "pct_client_created": False,
+            "scan_created": False,
+        }
+
+    def compute_action(self, state: SimulationState) -> RobotAction:
+        phase = self._update(state)
+        driving = phase == "driving" and not self._done and not self._failed
+        command = (
+            (self.config.forward_velocity_mps, 0.0, 0.0)
+            if driving
+            else (0.0, 0.0, 0.0)
+        )
+        if driving:
+            self._driving_tick_count += 1
+            self._status["driving_tick_count"] = self._driving_tick_count
+        metadata = {
+            "stair_locomotion_smoke": True,
+            "stair_fixed_command_probe": True,
+            "navigation_controller": "fixed_body_velocity_probe",
+            "stair_probe_phase": phase,
+            "stair_probe_requested_command": [
+                self.config.forward_velocity_mps,
+                0.0,
+                0.0,
+            ],
+            "stair_probe_effective_command": list(command),
+            "navigation_base_pose_lock": False,
+        }
+        if self._failed:
+            metadata.update(
+                {
+                    "navigation_emergency_stop": True,
+                    "navigation_emergency_stop_reason": self._failure_reason,
+                }
+            )
+        return RobotAction(
+            base_velocity=command,
+            source=(
+                "stair_fixed_command_probe"
+                if driving
+                else "stair_fixed_command_probe_zero"
+            ),
+            metadata=metadata,
+        )
+
+    def is_done(self, state: SimulationState) -> bool:
+        self._update(state)
+        return self._done
+
+    def status(self) -> dict[str, Any]:
+        return dict(self._status)
+
+    def _update(self, state: SimulationState) -> str:
+        if self._plan is None:
+            raise RuntimeError("楼梯固定速度探针尚未 reset。")
+        timestamp = float(state.timestamp)
+        pose = tuple(float(value) for value in state.robot_root_pose[:3])
+        yaw = _yaw_from_wxyz(state.robot_root_pose[3:7])
+        if not math.isfinite(timestamp) or not all(
+            math.isfinite(value) for value in (*pose, yaw)
+        ):
+            self._failed = True
+            self._failure_reason = "stair_probe_nonfinite_observation"
+            phase = "failed"
+        else:
+            if self._start_time_s is None:
+                self._start_time_s = timestamp
+                self._start_pose_xyz = pose
+                self._start_yaw_rad = yaw
+            assert self._start_pose_xyz is not None
+            assert self._start_yaw_rad is not None
+            elapsed = timestamp - self._start_time_s
+            if elapsed < -1.0e-9:
+                self._failed = True
+                self._failure_reason = "stair_probe_clock_rewind"
+                phase = "failed"
+            else:
+                elapsed = max(0.0, elapsed)
+                total_duration = (
+                    self.config.warmup_duration_s
+                    + self.config.drive_duration_s
+                )
+                self._done = elapsed >= total_duration
+                if self._done:
+                    phase = "completed"
+                elif elapsed < self.config.warmup_duration_s:
+                    phase = "warmup"
+                else:
+                    phase = "driving"
+
+                dx = pose[0] - self._start_pose_xyz[0]
+                dy = pose[1] - self._start_pose_xyz[1]
+                cosine = math.cos(self._start_yaw_rad)
+                sine = math.sin(self._start_yaw_rad)
+                self._status.update(
+                    {
+                        "elapsed_s": elapsed,
+                        "driving_elapsed_s": min(
+                            max(elapsed - self.config.warmup_duration_s, 0.0),
+                            self.config.drive_duration_s,
+                        ),
+                        "current_pose_xyz": list(pose),
+                        "xy_displacement_m": math.hypot(dx, dy),
+                        "longitudinal_displacement_m": cosine * dx + sine * dy,
+                        "lateral_displacement_m": -sine * dx + cosine * dy,
+                        "z_delta_m": pose[2] - self._start_pose_xyz[2],
+                        "yaw_drift_rad": _wrap_angle(yaw - self._start_yaw_rad),
+                    }
+                )
+
+        self._status.update(
+            {
+                "phase": phase,
+                "failed": self._failed,
+                "failure_reason": self._failure_reason,
+                "done": self._done,
+                "driving_tick_count": self._driving_tick_count,
+                "float_enabled": False,
+                "base_pose_lock_requested": False,
+            }
+        )
+        return phase
+
+
 @dataclass(frozen=True)
 class StairLocomotionExecutorConfig:
     """楼梯策略评测的固定控制参数。"""

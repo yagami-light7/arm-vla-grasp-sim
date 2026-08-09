@@ -8,7 +8,17 @@
     "collision_floor_proxy_profile": "yinluyuan_f2"
   },
   "navigation_execution": {
-    "extended_state_limits": true
+    "extended_state_limits": true,
+    "final_position_tolerance": 0.08,
+    "place_position_tolerance": 0.08,
+    "final_yaw_tolerance": 0.20,
+    "stable_linear_velocity": 0.05,
+    "stable_angular_velocity": 0.10,
+    "require_yaw_alignment": true,
+    "require_stable_base": true
+  },
+  "manipulation_execution": {
+    "place_release_clearance_min_m": 0.004
   },
   "instruction": "Template: use PCT multi-floor navigation to reach the apple, pick it, carry it to the upstairs place goal, and release it.",
   "scene_usd": "source/scene/multifloor/usda/multifloor.usda",
@@ -24,7 +34,7 @@
   "pick": {
     "base_goal": {
       "x": -3.50493,
-      "y": 6.7491,
+      "y": 6.6691,
       "z": 0.36742,
       "yaw": 1.5707963267948966,
       "floor_id": "F1",
@@ -45,7 +55,7 @@
     "enabled": true,
     "base_goal": {
       "x": 0.40,
-      "y": -0.10,
+      "y": -0.02,
       "z": 3.62628,
       "yaw": -1.5707963267948966,
       "floor_id": "F2",
@@ -138,8 +148,8 @@
     ],
     "asset_manifest": "source/scene/multifloor",
     "local_policy_checkpoint": "checkpoints/go2_x5/pct_multifloor/model_26000.pt",
-    "navigation_note": "当前 nav_map 是占位路径；PCT smoke 会从 PCT walkable slice 生成 DWA 局部避障地图。start 坐标来自机器狗起点 Transform，pick/place pose_world 坐标来自苹果 pick/place Transform，base_goal 是机器人底盘站位而不是苹果中心点。",
+    "navigation_note": "当前 nav_map 是占位路径；PCT 负责生成跨楼层三维路径。start 坐标来自机器狗起点 Transform，pick/place pose_world 坐标来自苹果 pick/place Transform，base_goal 是机器人底盘站位而不是苹果中心点。place base_goal.y=-0.02 已按 SCAN 携臂双圆柱、真实 collision PLY 和 0.06m 终点捕获误差联合校验；不得改回会侵入桌面的 -0.10m。",
     "visual_note": "source/scene/multifloor/usda/multifloor.usda 是当前唯一保留的高质量 NuRec 主场景，/World/gauss 为 clean 3DGS visual，/World/scene_collision 为隐藏 collision mesh，两者均按 Z 轴 180 度旋转对齐。",
-    "place_release_validation_note": "苹果约 1.5cm 的允许垂直落座对应 sqrt(2gh)≈0.543m/s；向下阈值取 0.55m/s，向上弹射与水平甩出继续使用更严格的默认门禁。"
+    "place_release_validation_note": "苹果约 1.5cm 的允许垂直落座对应 sqrt(2gh)≈0.543m/s；向下阈值取 0.55m/s，向上弹射与水平甩出继续使用更严格的默认门禁。球形苹果在当前二楼支撑面采用4mm最小松爪高度，使实际跟踪误差后仍在支撑面上方轻触落座；不放宽12rad/s弹射质量门。"
   }
 }

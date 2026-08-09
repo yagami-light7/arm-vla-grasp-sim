@@ -20,8 +20,6 @@ from typing import Any
 from source.interfaces.navigation import NavGoal, NavPlan
 from source.interfaces.simulation import SimulationState
 
-from .planner_adapter import AStarNavPlanner
-
 
 @dataclass(frozen=True)
 class PCTPlannerConfig:
@@ -63,9 +61,20 @@ class PCTPlannerConfig:
     coord_mode: str = "sim_to_pct_180deg"
     pct_offset_x: float = 0.0
     pct_offset_y: float = 0.0
+    pct_offset_z: float = 0.0
     pct_scale_x: float = 1.0
     pct_scale_y: float = 1.0
-    fallback_to_astar: bool = True
+    pct_scale_z: float = 1.0
+    pct_rotation_x_rad: float = 0.0
+    pct_rotation_y_rad: float = 0.0
+    pct_rotation_z_rad: float = 0.0
+    fallback_to_astar: bool = False
+
+    def __post_init__(self) -> None:
+        """拒绝旧 PCT→A* 回退开关，避免规划失败后静默换链。"""
+
+        if self.fallback_to_astar:
+            raise ValueError("pct-scan 分支禁止 PCT→A* fallback")
 
 
 def _path_from_env(name: str) -> Path | None:
@@ -78,7 +87,10 @@ def _path_from_env(name: str) -> Path | None:
 def _xyz(values: Sequence[float]) -> tuple[float, float, float]:
     if len(values) < 3:
         raise ValueError("expected an xyz sequence with at least three values")
-    return (float(values[0]), float(values[1]), float(values[2]))
+    xyz = (float(values[0]), float(values[1]), float(values[2]))
+    if not all(math.isfinite(value) for value in xyz):
+        raise ValueError("xyz coordinates must be finite")
+    return xyz
 
 
 def _refine_cross_floor_stair_centerline(
@@ -111,6 +123,17 @@ def _refine_cross_floor_stair_centerline(
         (gateway, *midpoints, stair_exit)
     )
     if len(anchors) < 2:
+        return path_3d, report
+    if float(path_3d[-1][2]) < float(path_3d[0][2]) - 0.25:
+        report["reason"] = "descending_refinement_unavailable"
+        return path_3d, report
+
+    anchors, partial_route = _anchors_for_observed_stair_extent(
+        path_3d,
+        anchors,
+    )
+    if len(anchors) < 2:
+        report["reason"] = "partial_stair_anchor_unavailable"
         return path_3d, report
 
     start_index = min(
@@ -162,7 +185,11 @@ def _refine_cross_floor_stair_centerline(
     report.update(
         {
             "applied": True,
-            "reason": "calibrated_stair_centerline",
+            "reason": (
+                "calibrated_stair_centerline_partial"
+                if partial_route
+                else "calibrated_stair_centerline"
+            ),
             "raw_start_index": int(start_index),
             "raw_end_index": int(end_index),
             "raw_start": list(path_3d[start_index]),
@@ -176,6 +203,42 @@ def _refine_cross_floor_stair_centerline(
         }
     )
     return refined, report
+
+
+def _anchors_for_observed_stair_extent(
+    path_3d: tuple[tuple[float, float, float], ...],
+    anchors: tuple[tuple[float, float, float], ...],
+) -> tuple[tuple[tuple[float, float, float], ...], bool]:
+    """部分上楼目标只保留当前路径真正到达的标定锚点。
+
+    旧逻辑会把落在一层半平台的目标先扩展到整段楼梯出口，再沿原始网格路径
+    倒退到目标。这里用原始路径最高切片与末点 XY 选择最后一个可达锚点，避免
+    生成越过目标、穿过楼板或随后回头的全局路径。
+    """
+
+    if len(anchors) < 2 or len(path_3d) < 2:
+        return anchors, False
+    maximum_path_z = max(float(point[2]) for point in path_3d)
+    terminal_anchor_z = float(anchors[-1][2])
+    if maximum_path_z >= terminal_anchor_z - 0.30:
+        return anchors, False
+
+    candidate_indices = [
+        index
+        for index, anchor in enumerate(anchors[1:], start=1)
+        if float(anchor[2]) <= maximum_path_z + 0.30
+    ]
+    if not candidate_indices:
+        return anchors[:1], True
+    raw_terminal = path_3d[-1]
+    terminal_index = min(
+        candidate_indices,
+        key=lambda index: _stair_anchor_path_score(
+            raw_terminal,
+            anchors[index],
+        ),
+    )
+    return anchors[: terminal_index + 1], terminal_index < len(anchors) - 1
 
 
 def _ordered_stair_centerline_midpoints(
@@ -373,13 +436,96 @@ def _deduplicate_path_3d(
 def _validate_coord_config(
     *,
     coord_mode: str,
+    pct_offset_x: float,
+    pct_offset_y: float,
+    pct_offset_z: float,
     pct_scale_x: float,
     pct_scale_y: float,
-) -> None:
+    pct_scale_z: float,
+    pct_rotation_x_rad: float,
+    pct_rotation_y_rad: float,
+    pct_rotation_z_rad: float,
+) -> tuple[
+    tuple[float, float, float],
+    tuple[float, float, float],
+    tuple[float, float, float],
+]:
     if coord_mode not in {"sim_to_pct_180deg", "identity"}:
         raise ValueError(f"unsupported PCT coord_mode: {coord_mode}")
-    if float(pct_scale_x) == 0.0 or float(pct_scale_y) == 0.0:
+    offset = (float(pct_offset_x), float(pct_offset_y), float(pct_offset_z))
+    scale = (float(pct_scale_x), float(pct_scale_y), float(pct_scale_z))
+    rotation = (
+        float(pct_rotation_x_rad),
+        float(pct_rotation_y_rad),
+        float(pct_rotation_z_rad),
+    )
+    if not all(
+        math.isfinite(value)
+        for value in (*offset, *scale, *rotation)
+    ):
+        raise ValueError("PCT coordinate transform values must be finite")
+    if any(value == 0.0 for value in scale):
         raise ValueError("PCT coordinate scales must be non-zero")
+    return offset, scale, rotation
+
+
+def _rotation_matrix_xyz(
+    rotation_xyz_rad: tuple[float, float, float],
+) -> tuple[tuple[float, float, float], ...]:
+    """返回固定轴 XYZ 欧拉旋转矩阵 ``Rz @ Ry @ Rx``。"""
+
+    rx, ry, rz = rotation_xyz_rad
+    sx, cx = math.sin(rx), math.cos(rx)
+    sy, cy = math.sin(ry), math.cos(ry)
+    sz, cz = math.sin(rz), math.cos(rz)
+    return (
+        (
+            cz * cy,
+            cz * sy * sx - sz * cx,
+            cz * sy * cx + sz * sx,
+        ),
+        (
+            sz * cy,
+            sz * sy * sx + cz * cx,
+            sz * sy * cx - cz * sx,
+        ),
+        (-sy, cy * sx, cy * cx),
+    )
+
+
+def _matrix_vector(
+    matrix: tuple[tuple[float, float, float], ...],
+    vector: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    return (
+        sum(matrix[0][index] * vector[index] for index in range(3)),
+        sum(matrix[1][index] * vector[index] for index in range(3)),
+        sum(matrix[2][index] * vector[index] for index in range(3)),
+    )
+
+
+def _transpose(
+    matrix: tuple[tuple[float, float, float], ...],
+) -> tuple[tuple[float, float, float], ...]:
+    return (
+        (matrix[0][0], matrix[1][0], matrix[2][0]),
+        (matrix[0][1], matrix[1][1], matrix[2][1]),
+        (matrix[0][2], matrix[1][2], matrix[2][2]),
+    )
+
+
+def _coord_mode_signs(coord_mode: str) -> tuple[float, float, float]:
+    if coord_mode == "identity":
+        return (1.0, 1.0, 1.0)
+    return (-1.0, -1.0, 1.0)
+
+
+def _finite_transform_result(
+    xyz: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    if not all(math.isfinite(value) for value in xyz):
+        raise ValueError("PCT coordinate transform produced non-finite output")
+    return xyz
 
 
 def sim_to_pct_xyz(
@@ -388,27 +534,47 @@ def sim_to_pct_xyz(
     coord_mode: str = "sim_to_pct_180deg",
     pct_offset_x: float = 0.0,
     pct_offset_y: float = 0.0,
+    pct_offset_z: float = 0.0,
     pct_scale_x: float = 1.0,
     pct_scale_y: float = 1.0,
+    pct_scale_z: float = 1.0,
+    pct_rotation_x_rad: float = 0.0,
+    pct_rotation_y_rad: float = 0.0,
+    pct_rotation_z_rad: float = 0.0,
 ) -> tuple[float, float, float]:
-    """将 Isaac Sim 世界坐标 xyz 转换到 PCT 规划坐标系。"""
+    """将 Sim 世界坐标转换到 PCT。
 
-    _validate_coord_config(
+    固定顺序为：``coord_mode`` 基础轴向、逐轴 scale、固定轴 X/Y/Z
+    欧拉旋转（矩阵 ``Rz @ Ry @ Rx``）、最后 XYZ offset。默认配置严格保持
+    ``pct=(-sim_x, -sim_y, sim_z)``。
+    """
+
+    offset, scale, rotation = _validate_coord_config(
         coord_mode=coord_mode,
+        pct_offset_x=pct_offset_x,
+        pct_offset_y=pct_offset_y,
+        pct_offset_z=pct_offset_z,
         pct_scale_x=pct_scale_x,
         pct_scale_y=pct_scale_y,
+        pct_scale_z=pct_scale_z,
+        pct_rotation_x_rad=pct_rotation_x_rad,
+        pct_rotation_y_rad=pct_rotation_y_rad,
+        pct_rotation_z_rad=pct_rotation_z_rad,
     )
-    sim_x, sim_y, sim_z = _xyz(xyz)
-    if coord_mode == "identity":
-        return (
-            sim_x * float(pct_scale_x) + float(pct_offset_x),
-            sim_y * float(pct_scale_y) + float(pct_offset_y),
-            sim_z,
+    sim = _xyz(xyz)
+    signs = _coord_mode_signs(coord_mode)
+    scaled = (
+        sim[0] * signs[0] * scale[0],
+        sim[1] * signs[1] * scale[1],
+        sim[2] * signs[2] * scale[2],
+    )
+    rotated = _matrix_vector(_rotation_matrix_xyz(rotation), scaled)
+    return _finite_transform_result(
+        (
+            rotated[0] + offset[0],
+            rotated[1] + offset[1],
+            rotated[2] + offset[2],
         )
-    return (
-        -sim_x * float(pct_scale_x) + float(pct_offset_x),
-        -sim_y * float(pct_scale_y) + float(pct_offset_y),
-        sim_z,
     )
 
 
@@ -418,28 +584,45 @@ def pct_to_sim_xyz(
     coord_mode: str = "sim_to_pct_180deg",
     pct_offset_x: float = 0.0,
     pct_offset_y: float = 0.0,
+    pct_offset_z: float = 0.0,
     pct_scale_x: float = 1.0,
     pct_scale_y: float = 1.0,
+    pct_scale_z: float = 1.0,
+    pct_rotation_x_rad: float = 0.0,
+    pct_rotation_y_rad: float = 0.0,
+    pct_rotation_z_rad: float = 0.0,
 ) -> tuple[float, float, float]:
-    """将 PCT 规划坐标 xyz 转回 Isaac Sim 世界坐标系。"""
+    """按 ``sim_to_pct_xyz`` 的精确逆序恢复 Sim 世界坐标。"""
 
-    _validate_coord_config(
+    offset, scale, rotation = _validate_coord_config(
         coord_mode=coord_mode,
+        pct_offset_x=pct_offset_x,
+        pct_offset_y=pct_offset_y,
+        pct_offset_z=pct_offset_z,
         pct_scale_x=pct_scale_x,
         pct_scale_y=pct_scale_y,
+        pct_scale_z=pct_scale_z,
+        pct_rotation_x_rad=pct_rotation_x_rad,
+        pct_rotation_y_rad=pct_rotation_y_rad,
+        pct_rotation_z_rad=pct_rotation_z_rad,
     )
-    pct_x, pct_y, pct_z = _xyz(xyz)
-    if coord_mode == "identity":
-        return (
-            (pct_x - float(pct_offset_x)) / float(pct_scale_x),
-            (pct_y - float(pct_offset_y)) / float(pct_scale_y),
-            pct_z,
-        )
-    return (
-        -(pct_x - float(pct_offset_x)) / float(pct_scale_x),
-        -(pct_y - float(pct_offset_y)) / float(pct_scale_y),
-        pct_z,
+    pct = _xyz(xyz)
+    translated = (
+        pct[0] - offset[0],
+        pct[1] - offset[1],
+        pct[2] - offset[2],
     )
+    unrotated = _matrix_vector(
+        _transpose(_rotation_matrix_xyz(rotation)),
+        translated,
+    )
+    signs = _coord_mode_signs(coord_mode)
+    sim = (
+        unrotated[0] / scale[0] * signs[0],
+        unrotated[1] / scale[1] * signs[1],
+        unrotated[2] / scale[2] * signs[2],
+    )
+    return _finite_transform_result(sim)
 
 
 class PCTPlannerClient:
@@ -723,8 +906,13 @@ class PCTPlannerClient:
             coord_mode=self.config.coord_mode,
             pct_offset_x=self.config.pct_offset_x,
             pct_offset_y=self.config.pct_offset_y,
+            pct_offset_z=self.config.pct_offset_z,
             pct_scale_x=self.config.pct_scale_x,
             pct_scale_y=self.config.pct_scale_y,
+            pct_scale_z=self.config.pct_scale_z,
+            pct_rotation_x_rad=self.config.pct_rotation_x_rad,
+            pct_rotation_y_rad=self.config.pct_rotation_y_rad,
+            pct_rotation_z_rad=self.config.pct_rotation_z_rad,
         )
 
 
@@ -736,26 +924,14 @@ class PCTNavPlanner:
         config: PCTPlannerConfig,
         *,
         client: PCTPlannerClient | None = None,
-        fallback_planner: AStarNavPlanner | None = None,
     ) -> None:
         self.config = config
         self.client = client or PCTPlannerClient(config)
-        self.fallback_planner = fallback_planner
 
     def plan(self, state: SimulationState, goal: NavGoal) -> NavPlan:
         try:
             return self._plan_with_pct(state, goal)
         except Exception as exc:
-            if self.config.fallback_to_astar and self.fallback_planner is not None:
-                fallback = self.fallback_planner.plan(state, goal)
-                metadata = dict(fallback.metadata)
-                metadata["planner"] = "astar_fallback_after_pct_failure"
-                metadata["pct_failure_reason"] = str(exc)
-                return NavPlan(
-                    goal=fallback.goal,
-                    waypoints=fallback.waypoints,
-                    metadata=metadata,
-                )
             raise RuntimeError(f"PCT global planning failed: {exc}") from exc
 
     def close(self) -> None:
@@ -807,9 +983,18 @@ class PCTNavPlanner:
             "snap_end_distance_m": response.get("snap_end_distance_m"),
             "snapped_start_pct_xyz": response.get("snapped_start_xyz"),
             "snapped_end_pct_xyz": response.get("snapped_end_xyz"),
+            "snapped_start_slice": response.get("snapped_start_slice"),
+            "snapped_end_slice": response.get("snapped_end_slice"),
+            "snap_start_slice_delta": response.get(
+                "snap_start_slice_delta"
+            ),
+            "snap_end_slice_delta": response.get("snap_end_slice_delta"),
             "goal_z_missing": goal_z_missing,
             "goal_z_source": "robot_root_pose" if goal_z_missing else "goal",
             "coord_mode": self.config.coord_mode,
+            "coordinate_transform_order": (
+                "coord_mode_then_scale_then_fixed_xyz_rotation_then_offset"
+            ),
             "pct_start": start_pct,
             "pct_end": end_pct,
             "pct_status": response.get("status"),
@@ -859,8 +1044,13 @@ class PCTNavPlanner:
             coord_mode=self.config.coord_mode,
             pct_offset_x=self.config.pct_offset_x,
             pct_offset_y=self.config.pct_offset_y,
+            pct_offset_z=self.config.pct_offset_z,
             pct_scale_x=self.config.pct_scale_x,
             pct_scale_y=self.config.pct_scale_y,
+            pct_scale_z=self.config.pct_scale_z,
+            pct_rotation_x_rad=self.config.pct_rotation_x_rad,
+            pct_rotation_y_rad=self.config.pct_rotation_y_rad,
+            pct_rotation_z_rad=self.config.pct_rotation_z_rad,
         )
 
     def _pct_to_sim(self, xyz: Sequence[float]) -> tuple[float, float, float]:
@@ -869,8 +1059,13 @@ class PCTNavPlanner:
             coord_mode=self.config.coord_mode,
             pct_offset_x=self.config.pct_offset_x,
             pct_offset_y=self.config.pct_offset_y,
+            pct_offset_z=self.config.pct_offset_z,
             pct_scale_x=self.config.pct_scale_x,
             pct_scale_y=self.config.pct_scale_y,
+            pct_scale_z=self.config.pct_scale_z,
+            pct_rotation_x_rad=self.config.pct_rotation_x_rad,
+            pct_rotation_y_rad=self.config.pct_rotation_y_rad,
+            pct_rotation_z_rad=self.config.pct_rotation_z_rad,
         )
 
 

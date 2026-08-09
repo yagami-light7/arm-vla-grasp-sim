@@ -36,8 +36,59 @@ def _quat_to_roll_pitch(quat_wxyz: Any) -> tuple[float, float]:
     return roll, pitch
 
 
+def _shape_tuple(value: Any) -> tuple[int, ...]:
+    """把 tensor/array 的 shape 转为可 JSON 化的整数元组。"""
+
+    return tuple(int(item) for item in getattr(value, "shape", ()))
+
+
+def _flat_float_values(value: Any) -> list[float]:
+    """把单环境 tensor/array 展平为 Python float，避免遥测持有 GPU 引用。"""
+
+    if hasattr(value, "detach"):
+        value = value.detach().cpu()
+    if hasattr(value, "reshape"):
+        value = value.reshape(-1)
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+
+    flattened: list[float] = []
+
+    def _append(item: Any) -> None:
+        if isinstance(item, (list, tuple)):
+            for child in item:
+                _append(child)
+            return
+        flattened.append(float(item))
+
+    _append(value)
+    return flattened
+
+
+def _numeric_summary(values: list[float]) -> dict[str, Any]:
+    """给观测项生成完整有限值统计，并显式报告非有限值数量。"""
+
+    finite_values = [value for value in values if math.isfinite(value)]
+    report: dict[str, Any] = {
+        "value_count": len(values),
+        "finite_count": len(finite_values),
+        "nonfinite_count": len(values) - len(finite_values),
+    }
+    if finite_values:
+        report.update(
+            {
+                "min": min(finite_values),
+                "max": max(finite_values),
+                "mean": sum(finite_values) / len(finite_values),
+            }
+        )
+    else:
+        report.update({"min": None, "max": None, "mean": None})
+    return report
+
+
 class Go2LocomotionAdapter:
-    """Bridge DWA body commands to an Isaac Lab command-conditioned policy."""
+    """把机体系速度命令写入 Isaac Lab command-conditioned policy。"""
 
     def __init__(
         self,
@@ -85,6 +136,7 @@ class Go2LocomotionAdapter:
         self._arm_joint_velocity_hold_enabled = False
         self._gripper_joint_target = None
         self._last_actions = None
+        self._last_stair_probe_policy_pre_step: dict[str, Any] | None = None
 
     def _write_root_pose_xyzyaw(self, x: float, y: float, z: float, yaw: float) -> None:
         """把水平 root pose 写入仿真，并清零 root 速度。"""
@@ -477,7 +529,7 @@ class Go2LocomotionAdapter:
         }
 
     def get_base_velocity(self) -> tuple[float, float]:
-        """Return measured body-frame ``vx, wz`` for DWA dynamic windows."""
+        """返回实测机体系 ``vx、wz``。"""
 
         linear = self.robot.data.root_lin_vel_b[0]
         angular = self.robot.data.root_ang_vel_b[0]
@@ -663,7 +715,757 @@ class Go2LocomotionAdapter:
             return actions
         return self._override_target_actions(actions, self.arm_action_indices, self._arm_joint_target)
 
-    def compute_policy_action(self, *, refresh_observations: bool = True) -> Any:
+    @staticmethod
+    def _clip_count_report(values: list[float]) -> dict[str, Any]:
+        """统计 height-scan 在 policy clip 边界的饱和值。"""
+
+        count = len(values)
+        clipped_low_count = sum(value <= -1.0 + 1.0e-6 for value in values)
+        clipped_high_count = sum(value >= 1.0 - 1.0e-6 for value in values)
+        return {
+            "clip_low_value": -1.0,
+            "clip_high_value": 1.0,
+            "clipped_low_count": clipped_low_count,
+            "clipped_low_ratio": (
+                float(clipped_low_count) / count if count else 0.0
+            ),
+            "clipped_high_count": clipped_high_count,
+            "clipped_high_ratio": (
+                float(clipped_high_count) / count if count else 0.0
+            ),
+            "interpretation": (
+                "-1 是 policy term clip 下界；需结合 ray_miss_count 区分射线未命中"
+            ),
+        }
+
+    def _height_scan_front_subset_report(
+        self,
+        *,
+        values: list[float],
+        policy_flat_index_start: int | None,
+    ) -> dict[str, Any]:
+        """按 GridPattern 实际生成顺序提取传感器局部 ``x>=0`` 前区。"""
+
+        report: dict[str, Any] = {
+            "available": False,
+            "selection_semantics": "height_scanner GridPattern local x >= 0",
+            "index_source": "height_scanner.cfg.pattern_cfg.func generated order",
+        }
+        try:
+            scene = self.runtime.scene
+            sensors = getattr(scene, "sensors", None)
+            if sensors is not None and "height_scanner" in sensors:
+                sensor = sensors["height_scanner"]
+            else:
+                sensor = scene["height_scanner"]
+            pattern_cfg = sensor.cfg.pattern_cfg
+            pattern_func = pattern_cfg.func
+            ray_starts, _ = pattern_func(pattern_cfg, "cpu")
+            local_x = _flat_float_values(ray_starts[:, 0])
+            local_y = _flat_float_values(ray_starts[:, 1])
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+            report["unavailable_reason"] = (
+                "height_scanner_grid_pattern_unavailable: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return report
+        if len(local_x) != len(values):
+            report.update(
+                {
+                    "unavailable_reason": (
+                        "height_scan_value_count_does_not_match_grid_pattern"
+                    ),
+                    "height_scan_value_count": len(values),
+                    "grid_ray_count": len(local_x),
+                }
+            )
+            return report
+
+        relative_indices = [
+            index for index, x_value in enumerate(local_x)
+            if x_value >= -1.0e-9
+        ]
+        front_values = [values[index] for index in relative_indices]
+        global_indices = (
+            None
+            if policy_flat_index_start is None
+            else [
+                int(policy_flat_index_start) + index
+                for index in relative_indices
+            ]
+        )
+        ray_miss_relative_indices: list[int] | None = None
+        try:
+            ray_hits = sensor.data.ray_hits_w[0]
+            ray_miss_relative_indices = []
+            for index in range(int(ray_hits.shape[0])):
+                hit = _flat_float_values(ray_hits[index])
+                if not hit or not all(math.isfinite(value) for value in hit):
+                    ray_miss_relative_indices.append(index)
+        except (AttributeError, IndexError, TypeError, ValueError):
+            # 老版本 RayCaster 可能不公开 hit tensor；前区仍可按 cfg 可靠提取。
+            ray_miss_relative_indices = None
+
+        ray_miss_index_set = (
+            set(ray_miss_relative_indices)
+            if ray_miss_relative_indices is not None
+            else None
+        )
+        front_miss_count = (
+            None
+            if ray_miss_index_set is None
+            else sum(
+                index in ray_miss_index_set
+                for index in relative_indices
+            )
+        )
+        ordering = str(getattr(pattern_cfg, "ordering", "unknown"))
+        x_count = len({round(value, 9) for value in local_x})
+        y_count = len({round(value, 9) for value in local_y})
+        inner_axis = "x" if ordering == "xy" else "y"
+        outer_axis = "y" if ordering == "xy" else "x"
+        inner_count = x_count if inner_axis == "x" else y_count
+        outer_count = y_count if outer_axis == "y" else x_count
+        report.update(
+            {
+                "available": True,
+                "unavailable_reason": None,
+                "pattern": {
+                    "type": type(pattern_cfg).__name__,
+                    "size_xy_m": [
+                        float(value) for value in getattr(pattern_cfg, "size", ())
+                    ],
+                    "resolution_m": float(
+                        getattr(pattern_cfg, "resolution", 0.0)
+                    ),
+                    "ordering": ordering,
+                    "x_sample_count": x_count,
+                    "y_sample_count": y_count,
+                    "flatten_inner_axis": inner_axis,
+                    "flatten_outer_axis": outer_axis,
+                    "flatten_shape_outer_inner": [outer_count, inner_count],
+                    "flatten_order_note": (
+                        f"ordering={ordering}: outer={outer_axis}({outer_count}), "
+                        f"inner={inner_axis}({inner_count}); indices 来自 cfg.func 实际输出"
+                    ),
+                    "ray_count": len(local_x),
+                },
+                "relative_height_scan_indices": relative_indices,
+                "policy_flat_indices": global_indices,
+                "value_count": len(front_values),
+                "values": front_values,
+                "statistics": _numeric_summary(front_values),
+                "clip_diagnostics": self._clip_count_report(front_values),
+                "ray_miss_count": (
+                    None
+                    if ray_miss_relative_indices is None
+                    else len(ray_miss_relative_indices)
+                ),
+                "front_ray_miss_count": front_miss_count,
+                "ray_miss_relative_indices": ray_miss_relative_indices,
+                "ray_miss_available": ray_miss_relative_indices is not None,
+            }
+        )
+        return report
+
+    def _policy_observation_term_report(
+        self,
+        *,
+        include_selected_values: bool,
+        values_are_exact_policy_input: bool = False,
+    ) -> dict[str, Any]:
+        """按 ObservationManager 的 term 名称和维度解析真实 policy 输入。
+
+        当前 checkpoint 的 policy group 是一维拼接向量。这里仍先读取 manager
+        公开的 ``active_terms/group_obs_term_dim``，只有确认每项均为一维后才给出
+        连续 flat index；不把任何历史 observation 偏移写死在 adapter 中。
+        """
+
+        selected_names = ("velocity_commands", "height_scan")
+        report: dict[str, Any] = {
+            "available": False,
+            "group": "policy",
+            "layout_source": (
+                "observation_manager.active_terms+group_obs_term_dim"
+            ),
+            "values_are_exact_policy_input": bool(
+                values_are_exact_policy_input
+            ),
+            "values_after_term_noise_clip_scale": True,
+            "selected_terms": {},
+        }
+        try:
+            manager = self.runtime.observation_manager
+            active_terms = manager.active_terms
+            term_dims_by_group = manager.group_obs_term_dim
+            concatenate_by_group = manager.group_obs_concatenate
+            term_names = list(active_terms["policy"])
+            raw_term_dims = list(term_dims_by_group["policy"])
+            concatenated = bool(concatenate_by_group["policy"])
+            policy_observation = self.observations["policy"]
+        except (AttributeError, KeyError, TypeError) as exc:
+            report["unavailable_reason"] = (
+                "observation_manager_layout_unavailable: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return report
+
+        term_dims: list[tuple[int, ...]] = []
+        try:
+            for raw_dims in raw_term_dims:
+                if isinstance(raw_dims, int):
+                    term_dims.append((int(raw_dims),))
+                else:
+                    term_dims.append(tuple(int(value) for value in raw_dims))
+        except (TypeError, ValueError) as exc:
+            report["unavailable_reason"] = (
+                "observation_term_dimension_invalid: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return report
+
+        report.update(
+            {
+                "policy_tensor_shape": list(_shape_tuple(policy_observation)),
+                "group_concatenated": concatenated,
+                "term_order": term_names,
+                "term_shapes": [list(dims) for dims in term_dims],
+            }
+        )
+        if len(term_names) != len(term_dims):
+            report["unavailable_reason"] = (
+                "observation_term_name_dimension_count_mismatch"
+            )
+            return report
+
+        selected_reports: dict[str, Any] = {}
+        term_layout: list[dict[str, Any]] = []
+        if concatenated:
+            # 对多维 term 沿任意 axis 拼接时，reshape 后未必仍是连续区间；此时
+            # 宁可显式降级，也不伪造 flat index。当前 locomotion policy 的每项
+            # 都是一维，因而能够可靠给出 [start, end) 范围。
+            if any(len(dims) != 1 for dims in term_dims):
+                report["unavailable_reason"] = (
+                    "concatenated_policy_contains_non_vector_term"
+                )
+                return report
+            try:
+                flat_values = _flat_float_values(policy_observation[0])
+            except (IndexError, TypeError, ValueError) as exc:
+                report["unavailable_reason"] = (
+                    "policy_tensor_flatten_failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                return report
+            expected_count = sum(dims[0] for dims in term_dims)
+            report["policy_flat_value_count"] = len(flat_values)
+            report["expected_flat_value_count"] = expected_count
+            if len(flat_values) != expected_count:
+                report["unavailable_reason"] = (
+                    "policy_tensor_length_does_not_match_manager_layout"
+                )
+                return report
+            start = 0
+            for name, dims in zip(term_names, term_dims):
+                end = start + dims[0]
+                layout = {
+                    "name": name,
+                    "shape": list(dims),
+                    "policy_flat_index_start": start,
+                    "policy_flat_index_end_exclusive": end,
+                }
+                term_layout.append(layout)
+                if name in selected_names:
+                    values = flat_values[start:end]
+                    selected = {
+                        **layout,
+                        "statistics": _numeric_summary(values),
+                    }
+                    if include_selected_values:
+                        selected["values"] = values
+                    if name == "height_scan":
+                        selected["clip_diagnostics"] = (
+                            self._clip_count_report(values)
+                        )
+                        if include_selected_values:
+                            selected["front_subset"] = (
+                                self._height_scan_front_subset_report(
+                                    values=values,
+                                    policy_flat_index_start=start,
+                                )
+                            )
+                    selected_reports[name] = selected
+                start = end
+        else:
+            if not isinstance(policy_observation, dict) and not hasattr(
+                policy_observation,
+                "keys",
+            ):
+                report["unavailable_reason"] = (
+                    "nonconcatenated_policy_observation_is_not_mapping"
+                )
+                return report
+            for name, dims in zip(term_names, term_dims):
+                layout = {
+                    "name": name,
+                    "shape": list(dims),
+                    "policy_flat_index_start": None,
+                    "policy_flat_index_end_exclusive": None,
+                }
+                term_layout.append(layout)
+                if name not in selected_names:
+                    continue
+                try:
+                    values = _flat_float_values(policy_observation[name][0])
+                except (IndexError, KeyError, TypeError, ValueError) as exc:
+                    selected_reports[name] = {
+                        **layout,
+                        "available": False,
+                        "unavailable_reason": (
+                            f"{type(exc).__name__}: {exc}"
+                        ),
+                    }
+                    continue
+                selected = {
+                    **layout,
+                    "statistics": _numeric_summary(values),
+                }
+                if include_selected_values:
+                    selected["values"] = values
+                if name == "height_scan":
+                    selected["clip_diagnostics"] = self._clip_count_report(
+                        values
+                    )
+                    if include_selected_values:
+                        selected["front_subset"] = (
+                            self._height_scan_front_subset_report(
+                                values=values,
+                                policy_flat_index_start=None,
+                            )
+                        )
+                selected_reports[name] = selected
+
+        missing_terms = [
+            name for name in selected_names if name not in selected_reports
+        ]
+        report["term_layout"] = term_layout
+        report["selected_terms"] = selected_reports
+        report["missing_selected_terms"] = missing_terms
+        report["available"] = not missing_terms and all(
+            term.get("available", True)
+            for term in selected_reports.values()
+        )
+        report["unavailable_reason"] = (
+            None
+            if report["available"]
+            else "required_policy_observation_term_unavailable"
+        )
+        return report
+
+    def _dog_action_probe_report(
+        self,
+        *,
+        raw_policy_actions: Any,
+        submitted_actions: Any,
+    ) -> dict[str, Any]:
+        """提取与当前关节名映射对应的 12 维腿部 action。"""
+
+        indices = list(self.dog_action_indices or [])
+        report: dict[str, Any] = {
+            "available": False,
+            "dog_joint_names": list(DOG_JOINT_NAMES),
+            "dog_action_indices": [int(index) for index in indices],
+            "raw_policy_action_shape": list(_shape_tuple(raw_policy_actions)),
+            "submitted_action_shape": list(_shape_tuple(submitted_actions)),
+            "submitted_action_semantics": (
+                "clip/warmup/optional_joint_override 后传给 ActionManager 的 action"
+            ),
+        }
+        if len(indices) != len(DOG_JOINT_NAMES):
+            report["unavailable_reason"] = "dog_action_index_count_mismatch"
+            return report
+        try:
+            raw_values = [
+                _item(raw_policy_actions[0, index]) for index in indices
+            ]
+            submitted_values = [
+                _item(submitted_actions[0, index]) for index in indices
+            ]
+        except (IndexError, TypeError, ValueError) as exc:
+            report["unavailable_reason"] = (
+                f"dog_action_extract_failed: {type(exc).__name__}: {exc}"
+            )
+            return report
+        report.update(
+            {
+                "available": True,
+                "unavailable_reason": None,
+                "raw_policy_dog_action": raw_values,
+                "submitted_dog_action": submitted_values,
+                "raw_statistics": _numeric_summary(raw_values),
+                "submitted_statistics": _numeric_summary(submitted_values),
+            }
+        )
+        return report
+
+    def _capture_stair_probe_policy_pre_step(
+        self,
+        *,
+        raw_policy_actions: Any,
+        submitted_actions: Any,
+    ) -> None:
+        """冻结一次 policy 推理的输入、命令 buffer 与腿部 action。"""
+
+        try:
+            command_readback = [
+                _item(value) for value in self.base_cmd_term.vel_command_b[0]
+            ]
+            command_report = {
+                "available": len(command_readback) >= 3,
+                "requested_adapter_command": [
+                    float(value) for value in self._command
+                ],
+                "written_effective_command": [
+                    float(value) for value in self._effective_command
+                ],
+                "command_buffer_attribute": "base_velocity.vel_command_b",
+                "command_buffer_readback": command_readback,
+                "write_readback_match": (
+                    len(command_readback) >= 3
+                    and all(
+                        math.isclose(
+                            float(written),
+                            float(readback),
+                            rel_tol=0.0,
+                            abs_tol=1.0e-6,
+                        )
+                        for written, readback in zip(
+                            self._effective_command,
+                            command_readback[:3],
+                        )
+                    )
+                ),
+            }
+        except (AttributeError, IndexError, TypeError, ValueError) as exc:
+            command_report = {
+                "available": False,
+                "unavailable_reason": (
+                    f"command_buffer_readback_failed: {type(exc).__name__}: {exc}"
+                ),
+            }
+
+        observation_report = self._policy_observation_term_report(
+            include_selected_values=True,
+            values_are_exact_policy_input=True,
+        )
+        try:
+            velocity_values = observation_report["selected_terms"][
+                "velocity_commands"
+            ]["values"]
+            command_readback = command_report["command_buffer_readback"]
+            command_report["policy_velocity_commands"] = list(
+                velocity_values
+            )
+            command_report["policy_observation_matches_command_buffer"] = (
+                len(velocity_values) >= 3
+                and len(command_readback) >= 3
+                and all(
+                    math.isclose(
+                        float(observed),
+                        float(readback),
+                        rel_tol=0.0,
+                        abs_tol=1.0e-6,
+                    )
+                    for observed, readback in zip(
+                        velocity_values[:3],
+                        command_readback[:3],
+                    )
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            command_report["policy_observation_matches_command_buffer"] = None
+        action_report = self._dog_action_probe_report(
+            raw_policy_actions=raw_policy_actions,
+            submitted_actions=submitted_actions,
+        )
+        self._last_stair_probe_policy_pre_step = {
+            "available": bool(
+                command_report.get("available")
+                and observation_report.get("available")
+                and action_report.get("available")
+            ),
+            "capture_phase": (
+                "policy inference 前写 command；同一推理输入与推理后 submitted action"
+            ),
+            "command_buffer": command_report,
+            "policy_observation": observation_report,
+            "dog_action": action_report,
+            "policy_action_step": int(self._policy_action_step),
+            "policy_action_warmup_scale": float(
+                self._policy_action_warmup_scale
+            ),
+        }
+
+    def get_stair_probe_policy_pre_step(self) -> dict[str, Any]:
+        """返回最近一次固定命令探针冻结的 pre-step 遥测。"""
+
+        if self._last_stair_probe_policy_pre_step is None:
+            return {
+                "available": False,
+                "unavailable_reason": "stair_probe_capture_not_requested",
+            }
+        return self._last_stair_probe_policy_pre_step
+
+    def _contact_force_probe_report(self) -> dict[str, Any]:
+        """读取最后一个 physics 子步的逐刚体净接触力与足端状态。"""
+
+        try:
+            contact_sensor = self.runtime.scene.sensors["contact_forces"]
+            body_names = [str(name) for name in contact_sensor.body_names]
+            force_vectors = contact_sensor.data.net_forces_w[0]
+            current_air_time = getattr(
+                contact_sensor.data,
+                "current_air_time",
+                None,
+            )
+            current_contact_time = getattr(
+                contact_sensor.data,
+                "current_contact_time",
+                None,
+            )
+            if len(body_names) != int(force_vectors.shape[0]):
+                return {
+                    "available": False,
+                    "unavailable_reason": "contact_body_name_force_count_mismatch",
+                    "body_name_count": len(body_names),
+                    "force_count": int(force_vectors.shape[0]),
+                }
+            contacts = []
+            for index, name in enumerate(body_names):
+                vector = _flat_float_values(force_vectors[index])
+                norm = math.sqrt(sum(value * value for value in vector))
+                contact = {
+                    "body_name": name,
+                    "net_force_world_xyz_n": vector,
+                    "net_force_norm_n": norm,
+                }
+                if current_air_time is not None:
+                    try:
+                        contact["current_air_time_s"] = _item(
+                            current_air_time[0, index]
+                        )
+                    except (IndexError, TypeError, ValueError):
+                        contact["current_air_time_s"] = None
+                if current_contact_time is not None:
+                    try:
+                        contact["current_contact_time_s"] = _item(
+                            current_contact_time[0, index]
+                        )
+                    except (IndexError, TypeError, ValueError):
+                        contact["current_contact_time_s"] = None
+                contacts.append(contact)
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+            return {
+                "available": False,
+                "unavailable_reason": (
+                    f"contact_sensor_unavailable: {type(exc).__name__}: {exc}"
+                ),
+            }
+
+        foot_contacts = [
+            contact for contact in contacts
+            if "foot" in contact["body_name"].lower()
+        ]
+        foot_state_report: dict[str, Any]
+        try:
+            robot_body_names = [str(name) for name in self.robot.body_names]
+            robot_body_index = {
+                name: index for index, name in enumerate(robot_body_names)
+            }
+            foot_states = []
+            missing_foot_bodies = []
+            for contact in foot_contacts:
+                name = contact["body_name"]
+                if name not in robot_body_index:
+                    missing_foot_bodies.append(name)
+                    continue
+                body_index = robot_body_index[name]
+                foot_states.append(
+                    {
+                        "body_name": name,
+                        "position_world_xyz_m": _flat_float_values(
+                            self.robot.data.body_pos_w[0, body_index]
+                        ),
+                        "linear_velocity_world_xyz_mps": _flat_float_values(
+                            self.robot.data.body_lin_vel_w[0, body_index]
+                        ),
+                    }
+                )
+            foot_state_report = {
+                "available": not missing_foot_bodies,
+                "feet": foot_states,
+                "missing_body_names": missing_foot_bodies,
+                "unavailable_reason": (
+                    None
+                    if not missing_foot_bodies
+                    else "contact_foot_not_found_in_robot_body_names"
+                ),
+            }
+        except (AttributeError, IndexError, TypeError, ValueError) as exc:
+            foot_state_report = {
+                "available": False,
+                "feet": [],
+                "unavailable_reason": (
+                    f"foot_body_state_unavailable: {type(exc).__name__}: {exc}"
+                ),
+            }
+
+        return {
+            "available": True,
+            "unavailable_reason": None,
+            "force_frame": "world",
+            "force_sample_semantics": (
+                "完整 control step 最后一个 physics 子步后 ContactSensor 净力"
+            ),
+            "all_body_contacts": contacts,
+            "foot_contacts": foot_contacts,
+            "foot_states": foot_state_report,
+            "contact_force_max_n": max(
+                (contact["net_force_norm_n"] for contact in contacts),
+                default=0.0,
+            ),
+            "foot_contact_force_max_n": max(
+                (contact["net_force_norm_n"] for contact in foot_contacts),
+                default=0.0,
+            ),
+        }
+
+    def capture_stair_probe_post_step(self) -> dict[str, Any]:
+        """捕获完整 decimation 后的 root、腿部关节、足端和接触状态。"""
+
+        report: dict[str, Any] = {
+            "available": True,
+            "capture_phase": (
+                "完整 control step 的全部 physics 子步与 scene.update 完成后"
+            ),
+        }
+        try:
+            pose = self.get_base_pose_full()
+            report["root_pose_world"] = {
+                "position_xyz_m": [pose["x"], pose["y"], pose["z"]],
+                "quaternion_wxyz": list(pose["quat_wxyz"]),
+                "yaw_rad": pose["yaw"],
+            }
+            report["root_velocity_body_vx_vy_wz"] = list(
+                self.get_base_velocity_full()
+            )
+        except (AttributeError, IndexError, TypeError, ValueError) as exc:
+            report["available"] = False
+            report["root_state_unavailable_reason"] = (
+                f"{type(exc).__name__}: {exc}"
+            )
+
+        if len(self.dog_joint_ids) == len(DOG_JOINT_NAMES):
+            try:
+                dog_joint_state = {
+                    "available": True,
+                    "joint_names": list(DOG_JOINT_NAMES),
+                    "joint_ids": [int(index) for index in self.dog_joint_ids],
+                    "positions_rad": _flat_float_values(
+                        self.robot.data.joint_pos[0, self.dog_joint_ids]
+                    ),
+                    "velocities_rad_s": _flat_float_values(
+                        self.robot.data.joint_vel[0, self.dog_joint_ids]
+                    ),
+                }
+                try:
+                    dog_joint_state["applied_torque_nm"] = (
+                        _flat_float_values(
+                            self.robot.data.applied_torque[
+                                0, self.dog_joint_ids
+                            ]
+                        )
+                    )
+                    dog_joint_state["applied_torque_available"] = True
+                    dog_joint_state["applied_torque_unavailable_reason"] = None
+                except (AttributeError, IndexError, TypeError, ValueError) as exc:
+                    dog_joint_state["applied_torque_available"] = False
+                    dog_joint_state["applied_torque_unavailable_reason"] = (
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                try:
+                    dog_joint_state["position_targets_rad"] = (
+                        _flat_float_values(
+                            self.robot.data.joint_pos_target[
+                                0, self.dog_joint_ids
+                            ]
+                        )
+                    )
+                    dog_joint_state["position_targets_available"] = True
+                    dog_joint_state["position_targets_unavailable_reason"] = None
+                except (AttributeError, IndexError, TypeError, ValueError) as exc:
+                    dog_joint_state["position_targets_available"] = False
+                    dog_joint_state["position_targets_unavailable_reason"] = (
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                report["dog_joint_state"] = dog_joint_state
+            except (AttributeError, IndexError, TypeError, ValueError) as exc:
+                report["dog_joint_state"] = {
+                    "available": False,
+                    "unavailable_reason": f"{type(exc).__name__}: {exc}",
+                }
+        else:
+            report["dog_joint_state"] = {
+                "available": False,
+                "unavailable_reason": "dog_joint_id_count_mismatch",
+                "joint_ids": [int(index) for index in self.dog_joint_ids],
+            }
+        report["contacts"] = self._contact_force_probe_report()
+        dog_state = report.get("dog_joint_state", {})
+        contacts = report.get("contacts", {})
+        foot_states = (
+            contacts.get("foot_states", {})
+            if isinstance(contacts, dict)
+            else {}
+        )
+        component_availability = {
+            "root_state": "root_pose_world" in report,
+            "dog_joint_state": bool(
+                isinstance(dog_state, dict)
+                and dog_state.get("available") is True
+            ),
+            "applied_torque": bool(
+                isinstance(dog_state, dict)
+                and dog_state.get("applied_torque_available") is True
+            ),
+            "position_targets": bool(
+                isinstance(dog_state, dict)
+                and dog_state.get("position_targets_available") is True
+            ),
+            "contacts": bool(
+                isinstance(contacts, dict)
+                and contacts.get("available") is True
+            ),
+            "foot_states": bool(
+                isinstance(foot_states, dict)
+                and foot_states.get("available") is True
+            ),
+        }
+        report["component_availability"] = component_availability
+        report["available"] = all(component_availability.values())
+        report["unavailable_reason"] = (
+            None
+            if report["available"]
+            else "required_post_step_component_unavailable"
+        )
+        return report
+
+    def compute_policy_action(
+        self,
+        *,
+        refresh_observations: bool = True,
+        capture_stair_probe_telemetry: bool = False,
+    ) -> Any:
         """写入速度命令并执行策略推理，但不推进仿真。"""
 
         import torch
@@ -686,15 +1488,16 @@ class Go2LocomotionAdapter:
         if hasattr(self.base_cmd_term, "heading_target"):
             self.base_cmd_term.heading_target[:] = 0.0
         if self.arm_term is not None:
-            if self._arm_joint_target is None:
-                self.arm_term.command_buffer[:] = 0.0
-            else:
+            if self._arm_joint_target is not None:
                 arm_target = torch.as_tensor(
                     self._arm_joint_target,
                     dtype=torch.float32,
                     device=self.arm_term.command_buffer.device,
                 ).reshape(1, -1)
                 self.arm_term.command_buffer[:, : arm_target.shape[1]] = arm_target
+            # 无外部目标时保留 command manager 已按
+            # use_default_offset=true 采样出的训练默认姿态。把 buffer 强制清零
+            # 会将 pct_multifloor 的 arm2/arm3 从 0.3/0.5 拉到 0，改变质心与观测分布。
 
         with torch.inference_mode():
             # 新 pipeline 的导航阶段不会开启这些锁；保留调用是为了兼容旧 manipulation 路径。
@@ -704,6 +1507,11 @@ class Go2LocomotionAdapter:
             if refresh_observations:
                 self.observations = self.env.get_observations()
             actions = self.policy(self.observations)
+            raw_policy_actions = (
+                actions.detach().clone()
+                if capture_stair_probe_telemetry
+                else None
+            )
             clip_actions = getattr(self.env, "clip_actions", None)
             if clip_actions is not None:
                 actions = torch.clamp(actions, -clip_actions, clip_actions)
@@ -724,6 +1532,23 @@ class Go2LocomotionAdapter:
             # 1 rad 级别的机械臂目标会被等效压成约 0.1 rad，表现为 pick 阶段原地等待。
             actions = self._override_arm_actions(actions)
             self._last_actions = actions.detach()
+            if capture_stair_probe_telemetry:
+                try:
+                    self._capture_stair_probe_policy_pre_step(
+                        raw_policy_actions=raw_policy_actions,
+                        submitted_actions=actions,
+                    )
+                except Exception as exc:
+                    # 遥测绝不能中断真实 policy 控制；失败必须留下可审计原因。
+                    self._last_stair_probe_policy_pre_step = {
+                        "available": False,
+                        "unavailable_reason": (
+                            "stair_probe_pre_step_capture_failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        ),
+                    }
+            else:
+                self._last_stair_probe_policy_pre_step = None
         return actions
 
     def update_observations(self, observations: Any | None = None) -> Any:
@@ -811,38 +1636,20 @@ class Go2LocomotionAdapter:
         }
         if self._last_actions is not None:
             values["action_abs_max"] = _item(self._last_actions[0].abs().max())
-            if len(self.dog_joint_ids) == 12:
-                values["dog_action_abs_mean"] = _item(self._last_actions[0, :12].abs().mean())
-        try:
-            policy_obs = self.observations["policy"]
-            if hasattr(policy_obs, "reshape"):
-                flat_obs = policy_obs[0].reshape(-1)
-                segments = {
-                    "base_lin_vel": (0, 3),
-                    "base_ang_vel": (3, 6),
-                    "projected_gravity": (6, 9),
-                    "velocity_commands": (9, 12),
-                    "joint_pos": (12, 30),
-                    "joint_vel": (30, 48),
-                    "last_action": (48, 66),
-                    "height_scan": (66, 253),
-                    "arm_joint_command": (253, 259),
-                    "gripper_command": (259, 260),
-                }
-                observation_report: dict[str, Any] = {
-                    "shape": tuple(int(value) for value in policy_obs.shape),
-                    "segments": {},
-                }
-                for name, (start, end) in segments.items():
-                    segment = flat_obs[start:end]
-                    observation_report["segments"][name] = {
-                        "min": _item(segment.min()),
-                        "max": _item(segment.max()),
-                        "mean": _item(segment.mean()),
-                    }
-                values["policy_observation_report"] = observation_report
-        except (IndexError, KeyError, RuntimeError, TypeError):
-            pass
+            if len(self.dog_action_indices or []) == len(DOG_JOINT_NAMES):
+                dog_indices = self.dog_action_indices or []
+                dog_actions = self._last_actions[0, dog_indices]
+                values["dog_action_abs_mean"] = _item(
+                    dog_actions.abs().mean()
+                )
+        # 常规诊断同样从 ObservationManager 元数据解析，但不逐拍复制完整
+        # height-scan values；固定命令 probe 才会保存完整选中项。
+        values["policy_observation_report"] = (
+            self._policy_observation_term_report(
+                include_selected_values=False,
+                values_are_exact_policy_input=False,
+            )
+        )
         try:
             contact_sensor = self.runtime.scene.sensors["contact_forces"]
             contact_forces = contact_sensor.data.net_forces_w[0].norm(dim=-1)

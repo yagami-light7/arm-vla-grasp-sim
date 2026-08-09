@@ -1,0 +1,42 @@
+scan_planner_node:
+  ros__parameters:
+    # 继续使用 height_scanner 发布的 world 坐标点和实测低平台高度。
+    # 快速实验只调整运动包络，不改变点云坐标、支撑面或碰撞语义。
+    grid_map.need_extrinsic: false
+    grid_map.ground_height: -2.47
+
+    # 保留 0.60 m 前视，避免超过 height_scanner 向前约 0.8 m 的有效观测。
+    # 巡航速度提高到 0.60 m/s，滤波时间缩短以减少每次重规划后的命令滞后。
+    fsm.planning_horizon: 0.60
+    fsm.thresh_replan: 0.30
+    fsm.reference_cruise_speed: 0.60
+    fsm.reference_velocity_filter_time_constant_sec: 0.12
+
+    # MoE-CTS 的 Isaac 入口允许 0.80 m/s 与 2.0 m/s^2。本实验采用
+    # 0.65 m/s、1.20 m/s^2，给接触冲击、横向纠偏和第二层限幅保留余量。
+    manager.max_vel: 0.65
+    manager.max_acc: 1.20
+    manager.max_jerk: 4.0
+    manager.control_points_distance: 0.20
+    manager.reference_profile_acceleration_scale: 0.75
+    # 0.65*0.0075+1e-4=0.004975 <= 0.005 m/s，且
+    # 1.20*0.0075+1e-4=0.0091 <= 0.01 m/s^2，严格不宽于最终采样门。
+    manager.feasibility_tolerance: 0.0075
+    optimization.max_vel: 0.65
+    optimization.max_acc: 1.20
+
+scan_controller:
+  ros__parameters:
+    # 与 50 Hz policy 控制周期一致；body_height 仍由组合 launch 唯一覆盖。
+    controller.publish_rate_hz: 50.0
+
+    # 只提高纵向爬楼能力。横移和转向保持保守配置，避免高速时横向失稳。
+    limits.max_vx: 0.65
+    limits.max_vy: 0.15
+    limits.max_yaw_rate: 0.45
+    limits.max_ax: 1.20
+    limits.max_ay: 0.40
+    limits.max_yaw_acc: 1.00
+
+    # 最终平台仍使用通用严格位置门；只避免在门外过早降到低效微速。
+    finish.min_approach_speed: 0.28

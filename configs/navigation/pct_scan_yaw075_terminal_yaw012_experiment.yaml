@@ -1,0 +1,22 @@
+# phase307 后续使用的“快速转向 + 更严格末端朝向”实验配方。
+#
+# phase303–305 证明 limits.max_yaw_rate=0.75rad/s 可把跨层平地受控时间
+# 平均缩短约 15.7%。phase307 的完整导航也成功，但在抓取点结束时 yaw 误差
+# 为 0.138rad；生产成功样本为 0.100rad。当前 0.18rad 的末端 yaw 控制死区
+# 会允许这类差异进入侧向抓取，随后该次放置出现苹果释放瞬时旋转超限。
+# 单次样本不能证明二者存在因果关系，因此本文件只是下一轮严格 A/B 假设，
+# 不是修复结论，也不得替换生产 YAML。
+#
+# 这里保留 0.75rad/s 的普通转向上限，同时把终点位置保持阶段的 yaw 控制
+# 死区收紧为 0.12rad。后者只要求抓取/放置前对得更正，不放宽碰撞、位置门、
+# 速度门或稳定驻留；预计只增加末端短暂对齐时间，保留大部分平地提速收益。
+# 使用 materialize_pct_scan_tuning_variant.py 生成完整 YAML 后才能运行。
+schema: pct_scan_tuning_variant_v1
+experiment_id: go2_x5_yaw075_terminal_yaw012
+base_config: ros2_ws/src/isaac_navigation_bridge/config/pct_scan_tuning.yaml
+expected_override_count: 2
+overrides:
+  scan_controller:
+    ros__parameters:
+      limits.max_yaw_rate: 0.75
+      finish.yaw_control_deadband: 0.12

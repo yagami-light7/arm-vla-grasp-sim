@@ -5,6 +5,7 @@ from __future__ import annotations
 import traceback
 from dataclasses import dataclass, field, replace
 import math
+from pathlib import Path
 from typing import Any, Callable
 
 from source.interfaces import (
@@ -16,11 +17,20 @@ from source.interfaces import (
     GripperController,
     ManipulationPlanner,
     NavExecutor,
+    NavGoal,
     NavPlanner,
     RobotAction,
     SimulationRuntime,
     SimulationState,
     VerificationResult,
+)
+from source.navigation.body_height_calibration import (
+    BodyHeightCalibrationConfig,
+    BodyHeightCalibrationResult,
+    BodyHeightCalibrationSample,
+    BodyHeightCalibrationUpdate,
+    GroundSurfaceProjectionError,
+    LiveBodyHeightCalibrator,
 )
 from source.simulation.object_initialization import (
     evaluate_object_initialization_pose,
@@ -51,6 +61,15 @@ _CARRY_ARM_HOME_HOLD_STATES = frozenset(
         PipelineState.PLAN_PLACE,
     }
 )
+_NAVIGATION_ARM_STOW_HOLD_STATES = frozenset(
+    {
+        PipelineState.PLAN_NAV_TO_PICK,
+        PipelineState.EXEC_NAV_TO_PICK,
+        PipelineState.VERIFY_PICK_REACHABLE,
+    }
+)
+_ARM_JOINT_NAMES = tuple(f"arm_joint{index}" for index in range(1, 7))
+_PCT_NAVIGATION_ARM_STOW_POSITIONS = (0.0, 0.3, 0.5, 0.0, 0.0, 0.0)
 _MANIPULATION_BASE_LOCK_STATES = frozenset(
     {
         PipelineState.PLAN_PICK,
@@ -82,6 +101,7 @@ _NAV_HANDOFF_ANGULAR_SPEED_MARGIN_RADPS = 0.040
 _NAV_HANDOFF_SETTLE_MAX_STEPS = 12
 _NAV_HANDOFF_SETTLE_LINEAR_SPEED_MARGIN_MPS = 0.060
 _NAV_HANDOFF_SETTLE_ANGULAR_SPEED_MARGIN_RADPS = 0.200
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _quat_wxyz_from_rpy(
@@ -1008,6 +1028,44 @@ class FullPhysicsStateMachine:
         self.export_result: dict[str, Any] = {}
         self._carry_gripper_target: dict[str, Any] | None = None
         self._carry_arm_home_target: dict[str, Any] | None = None
+        if self.config.locomotion.policy_profile == "pct_multifloor":
+            navigation_arm_stow_positions = (
+                _PCT_NAVIGATION_ARM_STOW_POSITIONS
+            )
+            navigation_arm_stow_source = (
+                "pct_multifloor_checkpoint_default"
+            )
+        else:
+            navigation_arm_stow_positions = (0.0,) * len(_ARM_JOINT_NAMES)
+            navigation_arm_stow_source = "go2_x5_default"
+        self._navigation_arm_stow_target = {
+            "arm_joint_names": _ARM_JOINT_NAMES,
+            "arm_joint_positions": navigation_arm_stow_positions,
+            "source": navigation_arm_stow_source,
+            "fixed_during_navigation": True,
+        }
+        self._body_height_preflight_required = bool(
+            self.config.navigation.body_height_calibration_enabled
+            and getattr(self.nav_planner, "publish_pct_goal", False) is True
+        )
+        self._body_height_calibrator: LiveBodyHeightCalibrator | None = None
+        if self._body_height_preflight_required:
+            self._body_height_calibrator = self._create_body_height_calibrator()
+        self._body_height_preflight_wait_for_post_reset_frame = False
+        self._body_height_preflight_started_state_tick: int | None = None
+        self._body_height_preflight_started_timestamp_s: float | None = None
+        self._body_height_preflight_last_odom_publish_count: int | None = None
+        self._body_height_preflight_arm_motion_baseline: (
+            tuple[float, tuple[float, ...]] | None
+        ) = None
+        self._body_height_preflight_arm_motion_audit: dict[str, Any] = {}
+        self._body_height_preflight_last_update: dict[str, Any] = {}
+        self._body_height_preflight_rejection_counts: dict[str, int] = {}
+        self._body_height_preflight_result: BodyHeightCalibrationResult | None = None
+        self._effective_pick_goal: NavGoal | None = None
+        self._effective_pick_goal_provenance: dict[str, Any] = {}
+        self._effective_place_goal: NavGoal | None = None
+        self._effective_place_goal_provenance: dict[str, Any] = {}
         self._carry_object_tcp_offset: tuple[float, float, float] | None = None
         self._pick_peak_object_lift_height_m: float | None = None
         self._pick_peak_object_pose: tuple[float, ...] | None = None
@@ -1053,10 +1111,30 @@ class FullPhysicsStateMachine:
             )
         if self.total_ticks >= self.config.limits.episode:
             events.extend(self._fail("episode_timeout", observation))
-            return self._decision(state_before, events)
+            decision = self._decision(state_before, events)
+            if (
+                state_before == PipelineState.RESET_EPISODE
+                and self._body_height_preflight_required
+                and self._body_height_preflight_result is None
+            ):
+                decision = replace(
+                    decision,
+                    action=self._body_height_preflight_zero_action(),
+                )
+            return decision
         if self.state_ticks >= self._state_limit(self.state):
             events.extend(self._fail(self._timeout_reason(self.state), observation))
-            return self._decision(state_before, events)
+            decision = self._decision(state_before, events)
+            if (
+                state_before == PipelineState.RESET_EPISODE
+                and self._body_height_preflight_required
+                and self._body_height_preflight_result is None
+            ):
+                decision = replace(
+                    decision,
+                    action=self._body_height_preflight_zero_action(),
+                )
+            return decision
 
         self.total_ticks += 1
         self.state_ticks += 1
@@ -1076,8 +1154,25 @@ class FullPhysicsStateMachine:
                     },
                 )
             )
+        if (
+            self.state == PipelineState.FAILED
+            and state_before
+            in {PipelineState.EXEC_NAV_TO_PICK, PipelineState.EXEC_NAV_TO_PLACE}
+        ):
+            # ROS bridge 模式会忽略 pipeline 的 base_velocity，因此普通 idle
+            # 不能保证失败终止 tick 写零。显式信号由 runtime 的唯一命令安全门
+            # 锁存并执行，executor 不得绕过该安全门直接接触 policy buffer。
+            action = self._navigation_emergency_stop_action(state_before)
+        elif (
+            self.state == PipelineState.FAILED
+            and state_before == PipelineState.RESET_EPISODE
+            and self._body_height_preflight_required
+            and self._body_height_preflight_result is None
+        ):
+            action = self._body_height_preflight_zero_action()
         action = self._with_carry_gripper_hold(action, state_before)
         action = self._with_carry_arm_home_hold(action, state_before)
+        action = self._with_navigation_arm_stow_hold(action, state_before)
         action = self._with_manipulation_base_lock(action, state_before)
         if self.state.terminal and self._physical_pick_enabled():
             # 终止帧也必须继续施加稳定目标；状态切到 FAILED/DONE 后撤锁一帧
@@ -1107,6 +1202,53 @@ class FullPhysicsStateMachine:
             "lerobot_export": dict(self.export_result),
             "carry_gripper_target": dict(self._carry_gripper_target or {}),
             "carry_arm_home_target": dict(self._carry_arm_home_target or {}),
+            "navigation_arm_stow_target": dict(
+                self._navigation_arm_stow_target
+            ),
+            "body_height_preflight_required": (
+                self._body_height_preflight_required
+            ),
+            "body_height_preflight_last_update": dict(
+                self._body_height_preflight_last_update
+            ),
+            "body_height_preflight_rejection_counts": dict(
+                self._body_height_preflight_rejection_counts
+            ),
+            "body_height_calibration": (
+                None
+                if self._body_height_preflight_result is None
+                else self._body_height_preflight_result.to_dict()
+            ),
+            "effective_pick_goal": (
+                None
+                if self._effective_pick_goal is None
+                else {
+                    "x": self._effective_pick_goal.x,
+                    "y": self._effective_pick_goal.y,
+                    "z": self._effective_pick_goal.z,
+                    "yaw": self._effective_pick_goal.yaw,
+                    "floor_id": self._effective_pick_goal.floor_id,
+                    "slice_id": self._effective_pick_goal.slice_id,
+                }
+            ),
+            "effective_pick_goal_provenance": dict(
+                self._effective_pick_goal_provenance
+            ),
+            "effective_place_goal": (
+                None
+                if self._effective_place_goal is None
+                else {
+                    "x": self._effective_place_goal.x,
+                    "y": self._effective_place_goal.y,
+                    "z": self._effective_place_goal.z,
+                    "yaw": self._effective_place_goal.yaw,
+                    "floor_id": self._effective_place_goal.floor_id,
+                    "slice_id": self._effective_place_goal.slice_id,
+                }
+            ),
+            "effective_place_goal_provenance": dict(
+                self._effective_place_goal_provenance
+            ),
             "pick_peak_object_lift_height_m": self._pick_peak_object_lift_height_m,
             "pick_peak_object_pose": self._pick_peak_object_pose,
             "pick_peak_step_index": self._pick_peak_step_index,
@@ -1192,6 +1334,12 @@ class FullPhysicsStateMachine:
         if not self._episode_reset_applied:
             self.simulation.reset(self.episode_spec, seed=self.episode_seed)
             self._episode_reset_applied = True
+            if self._body_height_preflight_required:
+                # 当前 observation 在 tick 入口读取，仍属于 reset 前状态；必须
+                # 等下一完整物理步和新的 policy 零写回执后才能计入 live 样本。
+                self._body_height_preflight_wait_for_post_reset_frame = True
+                self._body_height_preflight_arm_motion_baseline = None
+                self._body_height_preflight_arm_motion_audit = {}
             events.append(self._event("episode_reset", observation.step_index))
             if self._object_settle_enabled():
                 begin_settle = getattr(self.simulation, "begin_object_settle", None)
@@ -1261,6 +1409,16 @@ class FullPhysicsStateMachine:
                     reset_state,
                     pose_check,
                 )
+        if (
+            self._body_height_preflight_required
+            and self._body_height_preflight_result is None
+        ):
+            action, preflight_events, completed = (
+                self._advance_body_height_preflight(observation)
+            )
+            events.extend(preflight_events)
+            if not completed:
+                return action, events
         if self.config.simulation_smoke:
             events.append(self._event("simulation_smoke_success", observation.step_index))
             events.extend(self._transition(PipelineState.CLEANUP_EPISODE, observation.step_index))
@@ -1290,6 +1448,672 @@ class FullPhysicsStateMachine:
             return RobotAction.idle(source="episode_reset"), events
         events.extend(self._transition(PipelineState.PLAN_NAV_TO_PICK, observation.step_index))
         return RobotAction.idle(source="episode_reset"), events
+
+    def _create_body_height_calibrator(self) -> LiveBodyHeightCalibrator:
+        """从统一 pipeline 配置创建一次只读 collision PLY 校准器。"""
+
+        nav = self.config.navigation
+        raw_collision_ply = nav.pct_collision_ply_path
+        if raw_collision_ply is None:
+            raise ValueError("live body-height preflight 缺少 pct_collision_ply_path")
+        collision_ply = Path(raw_collision_ply).expanduser()
+        if not collision_ply.is_absolute():
+            collision_ply = _PROJECT_ROOT / collision_ply
+        return LiveBodyHeightCalibrator(
+            BodyHeightCalibrationConfig(
+                collision_ply=collision_ply.resolve(),
+                configured_body_height_hint_m=nav.navigation_body_height_m,
+                arm_stow_joint_positions=tuple(
+                    self._navigation_arm_stow_target["arm_joint_positions"]
+                ),
+                minimum_consecutive_samples=(
+                    nav.body_height_calibration_min_samples
+                ),
+                minimum_stable_duration_s=(
+                    nav.body_height_calibration_min_duration_s
+                ),
+                maximum_ground_hint_error_m=(
+                    nav.body_height_calibration_max_hint_error_m
+                ),
+                maximum_linear_speed_mps=(
+                    nav.body_height_calibration_max_linear_speed_mps
+                ),
+                maximum_angular_speed_rps=(
+                    nav.body_height_calibration_max_angular_speed_rps
+                ),
+                maximum_tilt_rad=nav.body_height_calibration_max_tilt_rad,
+                maximum_arm_stow_error_rad=(
+                    nav.body_height_calibration_arm_position_tolerance_rad
+                ),
+                maximum_body_height_mad_m=(
+                    nav.body_height_calibration_max_mad_m
+                ),
+                maximum_body_height_p95_p05_m=(
+                    nav.body_height_calibration_max_spread_m
+                ),
+                quick_minimum_consecutive_samples=(
+                    nav.body_height_calibration_quick_min_samples
+                    if nav.body_height_calibration_quick_enabled
+                    else None
+                ),
+                quick_minimum_stable_duration_s=(
+                    nav.body_height_calibration_quick_min_duration_s
+                    if nav.body_height_calibration_quick_enabled
+                    else None
+                ),
+                quick_maximum_body_height_mad_m=(
+                    nav.body_height_calibration_quick_max_mad_m
+                    if nav.body_height_calibration_quick_enabled
+                    else None
+                ),
+                quick_maximum_body_height_p95_p05_m=(
+                    nav.body_height_calibration_quick_max_spread_m
+                    if nav.body_height_calibration_quick_enabled
+                    else None
+                ),
+                quick_maximum_configured_height_error_m=(
+                    nav.body_height_calibration_quick_contract_tolerance_m
+                    if nav.body_height_calibration_quick_enabled
+                    else None
+                ),
+                coord_mode=nav.pct_coord_mode,
+                pct_offset_x=nav.pct_offset_x,
+                pct_offset_y=nav.pct_offset_y,
+                pct_offset_z=nav.pct_offset_z,
+                pct_scale_x=nav.pct_scale_x,
+                pct_scale_y=nav.pct_scale_y,
+                pct_scale_z=nav.pct_scale_z,
+                pct_rotation_x_rad=nav.pct_rotation_x_rad,
+                pct_rotation_y_rad=nav.pct_rotation_y_rad,
+                pct_rotation_z_rad=nav.pct_rotation_z_rad,
+            )
+        )
+
+    @staticmethod
+    def _body_height_preflight_zero_action() -> RobotAction:
+        """返回不带 PCT goal、由唯一 policy owner 执行的严格零速动作。"""
+
+        return RobotAction(
+            source="body_height_preflight",
+            metadata={
+                "body_height_calibration_active": True,
+                "navigation_cmd_vel_inhibit": True,
+                "navigation_cmd_vel_inhibit_reason": "body_height_preflight",
+            },
+        )
+
+    def _advance_body_height_preflight(
+        self,
+        observation: SimulationState,
+    ) -> tuple[RobotAction, list[PipelineEvent], bool]:
+        """在发布首个生产 PCT goal 前收集连续 live 稳态高度证据。"""
+
+        action = self._body_height_preflight_zero_action()
+        calibrator = self._body_height_calibrator
+        if calibrator is None:
+            return action, self._fail(
+                "body_height_preflight_unavailable",
+                observation,
+            ), False
+
+        if self._body_height_preflight_wait_for_post_reset_frame:
+            self._body_height_preflight_wait_for_post_reset_frame = False
+            self._body_height_preflight_started_state_tick = self.state_ticks
+            return action, [
+                self._event(
+                    "body_height_preflight_started",
+                    observation.step_index,
+                    {
+                        "minimum_samples": (
+                            calibrator.config.minimum_consecutive_samples
+                        ),
+                        "minimum_duration_s": (
+                            calibrator.config.minimum_stable_duration_s
+                        ),
+                        "quick_enabled": (
+                            calibrator.config.quick_minimum_consecutive_samples
+                            is not None
+                        ),
+                        "quick_minimum_samples": (
+                            calibrator.config.quick_minimum_consecutive_samples
+                        ),
+                        "quick_minimum_duration_s": (
+                            calibrator.config.quick_minimum_stable_duration_s
+                        ),
+                        "quick_maximum_body_height_mad_m": (
+                            calibrator.config.quick_maximum_body_height_mad_m
+                        ),
+                        "quick_maximum_body_height_p95_p05_m": (
+                            calibrator.config.quick_maximum_body_height_p95_p05_m
+                        ),
+                        "quick_maximum_configured_height_error_m": (
+                            calibrator.config.quick_maximum_configured_height_error_m
+                        ),
+                        "configured_body_height_m": (
+                            calibrator.config.configured_body_height_hint_m
+                        ),
+                        "raw_reset_start_z_preserved": self.episode_spec.start.z,
+                        "stale_reset_tick_sampled": False,
+                    },
+                )
+            ], False
+
+        timeout_ticks = max(
+            1,
+            int(
+                math.ceil(
+                    self.config.navigation.body_height_calibration_timeout_s
+                    / self.config.navigation.control_dt
+                )
+            ),
+        )
+        started_tick = self._body_height_preflight_started_state_tick
+        if started_tick is None:
+            started_tick = self.state_ticks
+            self._body_height_preflight_started_state_tick = started_tick
+        if self.state_ticks - started_tick >= timeout_ticks:
+            return action, self._fail(
+                "body_height_preflight_timeout",
+                observation,
+                {
+                    "timeout_s": (
+                        self.config.navigation.body_height_calibration_timeout_s
+                    ),
+                    "timeout_ticks": timeout_ticks,
+                    "last_update": dict(self._body_height_preflight_last_update),
+                    "rejection_counts": dict(
+                        self._body_height_preflight_rejection_counts
+                    ),
+                },
+            ), False
+
+        sample, rejection = self._body_height_sample_from_observation(observation)
+        if sample is None:
+            rejection_reason = rejection or "sample_contract_invalid"
+            update = self._reject_body_height_preflight_sample(
+                rejection_reason,
+                observation,
+                preserve_arm_motion_baseline=(
+                    rejection_reason
+                    == "arm_joint_position_baseline_initialized"
+                ),
+            )
+            return action, update, False
+
+        if self._body_height_preflight_started_timestamp_s is None:
+            self._body_height_preflight_started_timestamp_s = sample.timestamp_s
+        update = calibrator.observe(sample)
+        self._body_height_preflight_last_update = (
+            self._body_height_update_dict(update, observation)
+        )
+        if not update.accepted:
+            reason = update.reason
+            # calibrator 的 root/stow/lock 等门一旦拒绝，下一拍必须重新建立
+            # 关节位置差分 baseline，禁止跨过非法样本拼接速度证据。
+            self._body_height_preflight_arm_motion_baseline = None
+            self._body_height_preflight_rejection_counts[reason] = (
+                self._body_height_preflight_rejection_counts.get(reason, 0) + 1
+            )
+            return action, [
+                self._event(
+                    "body_height_preflight_sample_rejected",
+                    observation.step_index,
+                    dict(self._body_height_preflight_last_update),
+                )
+            ], False
+        if update.result is None:
+            return action, [], False
+
+        result = update.result
+        self._body_height_preflight_result = result
+        configured_height = float(
+            calibrator.config.configured_body_height_hint_m
+        )
+        contract_error = abs(result.body_height_median_m - configured_height)
+        contract_tolerance = float(
+            self.config.navigation.body_height_calibration_contract_tolerance_m
+        )
+        if contract_error > contract_tolerance:
+            return action, self._fail(
+                "body_height_contract_mismatch",
+                observation,
+                {
+                    "contract_error_m": contract_error,
+                    "contract_tolerance_m": contract_tolerance,
+                    "configured_body_height_m": configured_height,
+                    "calibration": result.to_dict(),
+                    "raw_task_z_used_as_height_evidence": False,
+                },
+            ), False
+
+        goals_to_project: list[tuple[str, NavGoal]] = []
+        if not self.config.navigation_carry_smoke:
+            goals_to_project.append(("pick", self.episode_spec.pick_goal))
+        if self.config.full_physics or self.config.navigation_carry_smoke:
+            place_goal = self.episode_spec.place_goal
+            if place_goal is None:
+                return action, self._fail(
+                    "body_height_effective_goal_missing",
+                    observation,
+                    {"navigation_phase": "place"},
+                ), False
+            goals_to_project.append(("place", place_goal))
+
+        completion_metadata: dict[str, Any] = {
+            "projected_navigation_phases": [],
+            "calibration_certification_mode": result.certification_mode,
+            "calibration_quick_fallback_reason": (
+                result.quick_fallback_reason
+            ),
+        }
+        for navigation_phase, raw_goal in goals_to_project:
+            if raw_goal.z is None:
+                return action, self._fail(
+                    "body_height_effective_goal_missing_floor_hint",
+                    observation,
+                    {"navigation_phase": navigation_phase},
+                ), False
+            try:
+                effective_goal, provenance = (
+                    self._project_effective_navigation_goal(
+                        raw_goal=raw_goal,
+                        navigation_phase=navigation_phase,
+                        configured_height=configured_height,
+                        calibrator=calibrator,
+                        calibration_result=result,
+                    )
+                )
+            except GroundSurfaceProjectionError as exc:
+                return action, self._fail(
+                    "body_height_effective_goal_projection_failed",
+                    observation,
+                    {
+                        "navigation_phase": navigation_phase,
+                        "projection_reason": exc.reason,
+                        "error": str(exc),
+                        "raw_task_goal_z": raw_goal.z,
+                    },
+                ), False
+            except RuntimeError as exc:
+                return action, self._fail(
+                    "body_height_collision_asset_changed",
+                    observation,
+                    {
+                        "navigation_phase": navigation_phase,
+                        "error": str(exc),
+                    },
+                ), False
+
+            if navigation_phase == "pick":
+                self._effective_pick_goal = effective_goal
+                self._effective_pick_goal_provenance = provenance
+            else:
+                self._effective_place_goal = effective_goal
+                self._effective_place_goal_provenance = provenance
+            completion_metadata["projected_navigation_phases"].append(
+                navigation_phase
+            )
+            completion_metadata[f"effective_{navigation_phase}_goal"] = {
+                "x": effective_goal.x,
+                "y": effective_goal.y,
+                "z": effective_goal.z,
+                "yaw": effective_goal.yaw,
+                "floor_id": effective_goal.floor_id,
+                "slice_id": effective_goal.slice_id,
+            }
+            completion_metadata[f"effective_{navigation_phase}_goal_provenance"] = (
+                dict(provenance)
+            )
+        return action, [
+            self._event(
+                "body_height_preflight_completed",
+                observation.step_index,
+                completion_metadata,
+            )
+        ], True
+
+    @staticmethod
+    def _project_effective_navigation_goal(
+        *,
+        raw_goal: NavGoal,
+        navigation_phase: str,
+        configured_height: float,
+        calibrator: LiveBodyHeightCalibrator,
+        calibration_result: BodyHeightCalibrationResult,
+    ) -> tuple[NavGoal, dict[str, Any]]:
+        """把任务 z 当楼层提示，生成唯一的 collision-ground+height 目标。"""
+
+        assert raw_goal.z is not None
+        goal_ground_hint_z = float(raw_goal.z) - configured_height
+        projection = calibrator.project_ground_surface(
+            (raw_goal.x, raw_goal.y, goal_ground_hint_z)
+        )
+        if (
+            projection.collision_ply_sha256
+            != calibration_result.collision_ply_sha256
+        ):
+            raise RuntimeError(
+                "collision PLY 在 live 标定与目标投影之间发生变化："
+                f"calibration={calibration_result.collision_ply_sha256}, "
+                f"projection={projection.collision_ply_sha256}"
+            )
+
+        effective_xyz = projection.projected_base_sim_xyz
+        effective_goal = NavGoal(
+            x=float(effective_xyz[0]),
+            y=float(effective_xyz[1]),
+            z=float(effective_xyz[2]),
+            yaw=float(raw_goal.yaw),
+            floor_id=raw_goal.floor_id,
+            slice_id=raw_goal.slice_id,
+        )
+        provenance = {
+            "schema": "pct_effective_goal_height_v1",
+            "navigation_phase": navigation_phase,
+            "height_semantics": "collision_ground_plus_configured_body_height",
+            "formula": (
+                "effective_base_z=collision_ground_z+configured_body_height_m"
+            ),
+            "configured_body_height_m": configured_height,
+            "raw_task_goal_z": raw_goal.z,
+            "raw_task_z_used_as_height_evidence": False,
+            "raw_task_z_used_as_floor_hint_only": True,
+            "goal_ground_hint_sim_z": goal_ground_hint_z,
+            "calibration": calibration_result.to_dict(),
+            "projection": projection.to_dict(),
+        }
+        return effective_goal, provenance
+
+    def _body_height_sample_from_observation(
+        self,
+        observation: SimulationState,
+    ) -> tuple[BodyHeightCalibrationSample | None, str | None]:
+        """把 runtime 的上一拍实写与新鲜 Odometry 组合为严格样本。"""
+
+        self._body_height_preflight_arm_motion_audit = {}
+        metadata = observation.metadata
+        policy_report = metadata.get("scan_cmd_vel_last_write_report")
+        if not isinstance(policy_report, dict):
+            return None, "policy_write_report_missing"
+        if policy_report.get("owner_id") != "scan_cmd_vel":
+            return None, "policy_write_owner_mismatch"
+        if policy_report.get("navigation_cmd_vel_inhibited") is not True:
+            return None, "policy_zero_not_preflight_inhibited"
+        if (
+            policy_report.get("navigation_cmd_vel_inhibit_reason")
+            != "body_height_preflight"
+        ):
+            return None, "policy_zero_inhibit_reason_mismatch"
+        written_command = policy_report.get("written_command")
+        write_sequence = policy_report.get("write_sequence")
+        if (
+            not isinstance(written_command, (list, tuple))
+            or len(written_command) != 3
+            or isinstance(write_sequence, bool)
+            or not isinstance(write_sequence, int)
+        ):
+            return None, "policy_write_report_invalid"
+
+        odom_report = metadata.get("navigation_ros2_last_publish_report")
+        if not isinstance(odom_report, dict):
+            return None, "odometry_publish_report_missing"
+        odom_count = odom_report.get("odometry_publish_count")
+        odom_step = odom_report.get("completed_control_step")
+        odom_timestamp = odom_report.get("timestamp")
+        if (
+            odom_report.get("odometry_published") is not True
+            or isinstance(odom_count, bool)
+            or not isinstance(odom_count, int)
+            or odom_count < 1
+            or isinstance(odom_step, bool)
+            or not isinstance(odom_step, int)
+            or odom_step != observation.step_index
+            or isinstance(odom_timestamp, bool)
+            or not isinstance(odom_timestamp, (int, float))
+            or not math.isfinite(float(odom_timestamp))
+            or float(odom_timestamp) <= 0.0
+        ):
+            return None, "odometry_publish_report_invalid"
+        previous_odom_count = self._body_height_preflight_last_odom_publish_count
+        if previous_odom_count is not None and odom_count <= previous_odom_count:
+            return None, "odometry_publish_count_not_strictly_increasing"
+        self._body_height_preflight_last_odom_publish_count = odom_count
+
+        joint_names = metadata.get("joint_names")
+        if not isinstance(joint_names, (list, tuple)):
+            return None, "joint_names_missing"
+        names = tuple(str(name) for name in joint_names)
+        if len(names) != len(observation.joint_positions) or len(names) != len(
+            observation.joint_velocities
+        ):
+            return None, "joint_state_length_mismatch"
+        if any(names.count(name) != 1 for name in _ARM_JOINT_NAMES):
+            return None, "arm_joint_names_missing_or_duplicated"
+        arm_indices = tuple(names.index(name) for name in _ARM_JOINT_NAMES)
+        arm_positions = tuple(
+            float(observation.joint_positions[index]) for index in arm_indices
+        )
+        arm_velocities = tuple(
+            float(observation.joint_velocities[index]) for index in arm_indices
+        )
+        if not all(math.isfinite(value) for value in (*arm_positions, *arm_velocities)):
+            return None, "arm_joint_state_nonfinite"
+        speed_limit = float(
+            self.config.navigation.body_height_calibration_max_joint_speed_rps
+        )
+        raw_peak_index = max(
+            range(len(arm_velocities)),
+            key=lambda index: abs(arm_velocities[index]),
+        )
+        raw_max_speed = abs(arm_velocities[raw_peak_index])
+        arm_stow_targets = tuple(
+            float(value)
+            for value in self._navigation_arm_stow_target[
+                "arm_joint_positions"
+            ]
+        )
+        arm_stow_errors = tuple(
+            abs(position - target)
+            for position, target in zip(
+                arm_positions,
+                arm_stow_targets,
+                strict=True,
+            )
+        )
+        arm_stow_peak_index = max(
+            range(len(arm_stow_errors)),
+            key=arm_stow_errors.__getitem__,
+        )
+        self._body_height_preflight_arm_motion_audit = {
+            "arm_joint_motion_gate_source": (
+                "consecutive_position_over_odometry_time"
+            ),
+            "arm_joint_speed_limit_rps": speed_limit,
+            "raw_arm_joint_max_speed_rps": raw_max_speed,
+            "raw_arm_joint_peak_name": _ARM_JOINT_NAMES[raw_peak_index],
+            "raw_arm_joint_speed_exceeded": raw_max_speed > speed_limit,
+            "derived_arm_joint_max_speed_rps": None,
+            "derived_arm_joint_peak_name": None,
+            "derived_arm_joint_speed_exceeded": None,
+            "arm_joint_position_delta_max_rad": None,
+            "arm_joint_position_delta_peak_name": None,
+            "arm_joint_position_dt_s": None,
+            "arm_joint_position_timestamp_s": float(odom_timestamp),
+            "arm_joint_position_previous_timestamp_s": None,
+            "arm_joint_stow_max_error_rad": arm_stow_errors[
+                arm_stow_peak_index
+            ],
+            "arm_joint_stow_error_peak_name": (
+                _ARM_JOINT_NAMES[arm_stow_peak_index]
+            ),
+        }
+
+        direct_joint_state = metadata.get("used_direct_joint_state")
+        if not isinstance(direct_joint_state, bool):
+            return None, "direct_joint_state_provenance_missing"
+        if direct_joint_state:
+            return None, "direct_joint_state_forbidden"
+
+        current_timestamp = float(odom_timestamp)
+        baseline = self._body_height_preflight_arm_motion_baseline
+        if baseline is None:
+            self._body_height_preflight_arm_motion_baseline = (
+                current_timestamp,
+                arm_positions,
+            )
+            return None, "arm_joint_position_baseline_initialized"
+
+        previous_timestamp, previous_positions = baseline
+        position_dt = current_timestamp - previous_timestamp
+        self._body_height_preflight_arm_motion_audit[
+            "arm_joint_position_previous_timestamp_s"
+        ] = previous_timestamp
+        self._body_height_preflight_arm_motion_audit[
+            "arm_joint_position_dt_s"
+        ] = position_dt
+        if position_dt <= 0.0:
+            return None, "arm_joint_position_timestamp_not_strictly_increasing"
+        if position_dt > (
+            self.config.navigation.body_height_calibration_max_joint_position_dt_s
+        ):
+            return None, "arm_joint_position_interval_exceeded"
+
+        position_deltas = tuple(
+            current - previous
+            for current, previous in zip(
+                arm_positions,
+                previous_positions,
+                strict=True,
+            )
+        )
+        derived_velocities = tuple(
+            delta / position_dt for delta in position_deltas
+        )
+        derived_peak_index = max(
+            range(len(derived_velocities)),
+            key=lambda index: abs(derived_velocities[index]),
+        )
+        delta_peak_index = max(
+            range(len(position_deltas)),
+            key=lambda index: abs(position_deltas[index]),
+        )
+        derived_max_speed = abs(derived_velocities[derived_peak_index])
+        self._body_height_preflight_arm_motion_audit.update(
+            {
+                "derived_arm_joint_max_speed_rps": derived_max_speed,
+                "derived_arm_joint_peak_name": (
+                    _ARM_JOINT_NAMES[derived_peak_index]
+                ),
+                "derived_arm_joint_speed_exceeded": (
+                    derived_max_speed > speed_limit
+                ),
+                "arm_joint_position_delta_max_rad": abs(
+                    position_deltas[delta_peak_index]
+                ),
+                "arm_joint_position_delta_peak_name": (
+                    _ARM_JOINT_NAMES[delta_peak_index]
+                ),
+            }
+        )
+        self._body_height_preflight_arm_motion_baseline = (
+            current_timestamp,
+            arm_positions,
+        )
+        if derived_max_speed > speed_limit:
+            return None, "arm_joint_speed_exceeded"
+
+        lock_keys = (
+            "manipulation_base_lock_active",
+            "manipulation_support_joint_lock_active",
+            "navigation_joint_pose_lock_active",
+            "navigation_object_follow_active",
+        )
+        if any(not isinstance(metadata.get(key), bool) for key in lock_keys):
+            return None, "current_lock_state_missing"
+        root_pose = tuple(observation.robot_root_pose)
+        root_velocity = tuple(observation.robot_root_velocity)
+        if len(root_pose) != 7 or len(root_velocity) != 6:
+            return None, "root_state_shape_invalid"
+        return BodyHeightCalibrationSample(
+            step_index=odom_step,
+            timestamp_s=float(odom_timestamp),
+            policy_write_sequence=write_sequence,
+            written_command=written_command,
+            root_position_sim_xyz=root_pose[:3],
+            root_orientation_wxyz=root_pose[3:],
+            root_linear_velocity_xyz=root_velocity[:3],
+            root_angular_velocity_xyz=root_velocity[3:],
+            arm_joint_positions=arm_positions,
+            base_lock_active=bool(metadata["manipulation_base_lock_active"]),
+            support_joint_lock_active=bool(
+                metadata["manipulation_support_joint_lock_active"]
+            ),
+            full_body_joint_lock_active=bool(
+                metadata["navigation_joint_pose_lock_active"]
+            ),
+            object_follow_active=bool(
+                metadata["navigation_object_follow_active"]
+            ),
+        ), None
+
+    def _reject_body_height_preflight_sample(
+        self,
+        reason: str,
+        observation: SimulationState,
+        *,
+        preserve_arm_motion_baseline: bool = False,
+    ) -> list[PipelineEvent]:
+        """清空连续窗口并记录 runtime 合同拒绝原因。"""
+
+        if self._body_height_calibrator is not None:
+            self._body_height_calibrator.reset()
+        if not preserve_arm_motion_baseline:
+            self._body_height_preflight_arm_motion_baseline = None
+        self._body_height_preflight_rejection_counts[reason] = (
+            self._body_height_preflight_rejection_counts.get(reason, 0) + 1
+        )
+        self._body_height_preflight_last_update = {
+            "accepted": False,
+            "reason": reason,
+            "window_reset": True,
+            "consecutive_sample_count": 0,
+            "stable_duration_s": 0.0,
+            "step_index": observation.step_index,
+            "timestamp_s": observation.timestamp,
+            **self._body_height_preflight_arm_motion_audit,
+        }
+        return [
+            self._event(
+                "body_height_preflight_sample_rejected",
+                observation.step_index,
+                dict(self._body_height_preflight_last_update),
+            )
+        ]
+
+    def _body_height_update_dict(
+        self,
+        update: BodyHeightCalibrationUpdate,
+        observation: SimulationState,
+    ) -> dict[str, Any]:
+        """把校准窗口更新转换为轻量运行元数据。"""
+
+        return {
+            "accepted": update.accepted,
+            "reason": update.reason,
+            "window_reset": update.window_reset,
+            "consecutive_sample_count": update.consecutive_sample_count,
+            "stable_duration_s": update.stable_duration_s,
+            "selected_ground_z_m": update.selected_ground_z_m,
+            "selected_ground_face_index": update.selected_ground_face_index,
+            "body_height_sample_m": update.body_height_sample_m,
+            "quick_candidate_evaluated": (
+                update.quick_candidate_evaluated
+            ),
+            "quick_rejection_reason": update.quick_rejection_reason,
+            "step_index": observation.step_index,
+            "timestamp_s": observation.timestamp,
+            **self._body_height_preflight_arm_motion_audit,
+        }
 
     def _advance_object_settle(
         self,
@@ -1552,17 +2376,47 @@ class FullPhysicsStateMachine:
 
     def _plan_nav_to_pick(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
         events = [self._event("nav_to_pick_start", observation.step_index)]
-        plan = self.nav_planner.plan(observation, self.episode_spec.pick_goal)
+        goal = self.episode_spec.pick_goal
+        if self._body_height_preflight_required:
+            if (
+                self._body_height_preflight_result is None
+                or self._effective_pick_goal is None
+                or not self._effective_pick_goal_provenance
+            ):
+                return self._body_height_preflight_zero_action(), self._fail(
+                    "body_height_effective_goal_missing",
+                    observation,
+                )
+            goal = self._effective_pick_goal
+        plan = self.nav_planner.plan(observation, goal)
         execution_metadata = _navigation_plan_execution_metadata(
             self.episode_spec.raw_task,
             include_carry_departure=False,
         )
+        plan_metadata = dict(plan.metadata)
+        if self._effective_pick_goal_provenance:
+            raw_pct_goal_request = plan_metadata.get("pct_goal_request")
+            if not isinstance(raw_pct_goal_request, dict):
+                return self._body_height_preflight_zero_action(), self._fail(
+                    "body_height_pct_goal_request_missing",
+                    observation,
+                )
+            plan_metadata["pct_goal_request"] = {
+                **raw_pct_goal_request,
+                "effective_goal_provenance_required": True,
+                "effective_goal_provenance": dict(
+                    self._effective_pick_goal_provenance
+                ),
+            }
         plan = replace(
             plan,
             metadata={
-                **plan.metadata,
+                **plan_metadata,
                 **execution_metadata,
                 "execution_phase": "nav_to_pick",
+                "effective_goal_height_provenance": dict(
+                    self._effective_pick_goal_provenance
+                ),
             },
         )
         self.nav_executor.reset(plan)
@@ -1584,13 +2438,225 @@ class FullPhysicsStateMachine:
         return RobotAction.idle(source="nav_plan_pick"), events
 
     def _exec_nav_to_pick(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
+        if self._strict_stair_navigation_completion_required():
+            return self._exec_strict_stair_nav_to_pick(observation)
         return self._execute_nav(observation, PipelineState.VERIFY_PICK_REACHABLE)
+
+    def _strict_stair_navigation_completion_required(self) -> bool:
+        """返回楼梯 smoke 是否必须以 SCAN 严格终态直接收口。"""
+
+        return bool(
+            self.config.stair_locomotion_smoke
+            and not self.config.navigation.stair_fixed_command_probe
+        )
+
+    def _exec_strict_stair_nav_to_pick(
+        self,
+        observation: SimulationState,
+    ) -> tuple[RobotAction, list[PipelineEvent]]:
+        """以 SCAN 终点合同结束楼梯 smoke，禁止回退到抓取校验器。"""
+
+        if observation.metadata.get("environment_terminated"):
+            return RobotAction.idle(source=self.state.value), self._fail(
+                "navigation_environment_terminated",
+                observation,
+                {"runtime_metadata": dict(observation.metadata)},
+            )
+        executor_status = self.nav_executor.status()
+        if executor_status.get("failed") is True:
+            return RobotAction.idle(source=self.state.value), self._fail(
+                str(
+                    executor_status.get("failure_reason")
+                    or "nav_tracking_failed"
+                ),
+                observation,
+                executor_status,
+            )
+        if self.nav_executor.is_done(observation):
+            self.latest_executor_status = dict(self.nav_executor.status())
+            return self._complete_strict_stair_navigation(observation)
+
+        action = self.nav_executor.compute_action(observation)
+        self.latest_executor_status = dict(self.nav_executor.status())
+        if self.latest_executor_status.get("failed") is True:
+            return RobotAction.idle(source=self.state.value), self._fail(
+                str(
+                    self.latest_executor_status.get("failure_reason")
+                    or "nav_tracking_failed"
+                ),
+                observation,
+                self.latest_executor_status,
+            )
+        if self.nav_executor.is_done(observation):
+            self.latest_executor_status = dict(self.nav_executor.status())
+            return self._complete_strict_stair_navigation(observation)
+        return action, []
+
+    def _complete_strict_stair_navigation(
+        self,
+        observation: SimulationState,
+    ) -> tuple[RobotAction, list[PipelineEvent]]:
+        """验证 SCAN 成功合同，并在收尾两拍继续保持楼梯底盘冻结。"""
+
+        status = dict(self.latest_executor_status)
+        strict_success = bool(
+            status.get("backend") == "scan_ros2_goal_event"
+            and status.get("done") is True
+            and status.get("success") is True
+            and status.get("failed") is False
+        )
+        if not strict_success:
+            return RobotAction.idle(source=self.state.value), self._fail(
+                "stair_navigation_executor_completion_invalid",
+                observation,
+                {"executor_status": status},
+            )
+
+        try:
+            hold_action = self._strict_stair_terminal_hold_action(
+                observation,
+                source="stair_navigation_complete",
+            )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            return RobotAction.idle(source=self.state.value), self._fail(
+                "stair_navigation_terminal_hold_invalid",
+                observation,
+                {
+                    "error": str(exc),
+                    "executor_status": status,
+                },
+            )
+        events = [
+            self._event(
+                "nav_to_pick_success",
+                observation.step_index,
+                status,
+            ),
+            self._event(
+                "stair_locomotion_smoke_success",
+                observation.step_index,
+                {"completion_contract": "scan_ros2_goal_event"},
+            ),
+        ]
+        events.extend(
+            self._transition(
+                PipelineState.CLEANUP_EPISODE,
+                observation.step_index,
+            )
+        )
+        return hold_action, events
+
+    def _strict_stair_terminal_hold_action(
+        self,
+        observation: SimulationState,
+        *,
+        source: str,
+    ) -> RobotAction:
+        """复用 executor 的终端冻结动作，并校验它仍绑定同一 root 目标。"""
+
+        status = dict(self.nav_executor.status())
+        stair_status = status.get("stair_freeze")
+        if not isinstance(stair_status, dict):
+            raise RuntimeError("SCAN 楼梯终态缺少 stair_freeze 证据。")
+        hold_xyzyaw = stair_status.get("hold_xyzyaw")
+        if (
+            stair_status.get("phase") != "terminal_hold"
+            or stair_status.get("finish_ready") is not True
+            or stair_status.get("terminal_goal_bound") is not True
+            or stair_status.get("terminal_supervisor_goal_acknowledged")
+            is not True
+            or not isinstance(hold_xyzyaw, (list, tuple))
+            or len(hold_xyzyaw) != 4
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                for value in hold_xyzyaw
+            )
+        ):
+            raise RuntimeError("SCAN 楼梯终态冻结证据不完整。")
+
+        action = self.nav_executor.compute_action(observation)
+        metadata = dict(action.metadata)
+        action_hold = metadata.get("navigation_base_pose_lock_xyzyaw")
+        expected_hold = tuple(float(value) for value in hold_xyzyaw)
+        if (
+            metadata.get("navigation_base_pose_lock") is not True
+            or metadata.get("navigation_base_pose_lock_phase")
+            != "terminal_hold"
+            or not isinstance(action_hold, (list, tuple))
+            or tuple(float(value) for value in action_hold) != expected_hold
+            or metadata.get("navigation_support_joint_lock") is not True
+            or metadata.get("navigation_full_body_joint_lock") is not True
+            or metadata.get("navigation_scan_stair_freeze") is not True
+            or metadata.get("navigation_scan_stair_freeze_phase")
+            != "terminal_hold"
+            or metadata.get("navigation_cmd_vel_inhibit") is not True
+            or metadata.get("navigation_cmd_vel_inhibit_reason")
+            != "scan_stair_terminal_hold"
+        ):
+            raise RuntimeError("SCAN 楼梯终态动作未保持完整底盘冻结合同。")
+        metadata.update(
+            {
+                "stair_navigation_strict_completion": True,
+                "stair_navigation_terminal_hold_preserved": True,
+            }
+        )
+        return replace(
+            action,
+            base_velocity=(0.0, 0.0, 0.0),
+            source=source,
+            metadata=metadata,
+        )
+
+    def _navigation_terminal_stair_hold_is_active(self) -> bool:
+        """返回最近成功的 SCAN 导航是否停在楼梯终端底盘锁。"""
+
+        stair_status = self.latest_executor_status.get("stair_freeze")
+        return bool(
+            self.latest_executor_status.get("backend")
+            == "scan_ros2_goal_event"
+            and self.latest_executor_status.get("done") is True
+            and self.latest_executor_status.get("success") is True
+            and self.latest_executor_status.get("failed") is False
+            and isinstance(stair_status, dict)
+            and stair_status.get("phase") == "terminal_hold"
+        )
+
+    def _navigation_terminal_hold_or_idle_action(
+        self,
+        observation: SimulationState,
+        *,
+        source: str,
+    ) -> RobotAction:
+        """跨状态交接时保持终端楼梯锁；普通路径仍返回零速 idle。"""
+
+        if not self._navigation_terminal_stair_hold_is_active():
+            return RobotAction.idle(source=source)
+        return self._strict_stair_terminal_hold_action(
+            observation,
+            source=source,
+        )
 
     def _verify_pick_reachable(
         self,
         observation: SimulationState,
     ) -> tuple[RobotAction, list[PipelineEvent]]:
-        result = self.verifier.verify_pick_reachable(observation, self.episode_spec)
+        verification_spec = self.episode_spec
+        if self._body_height_preflight_required:
+            if self._effective_pick_goal is None:
+                return self._body_height_preflight_zero_action(), self._fail(
+                    "body_height_effective_goal_missing",
+                    observation,
+                )
+            verification_spec = replace(
+                self.episode_spec,
+                pick_goal=self._effective_pick_goal,
+            )
+        result = self.verifier.verify_pick_reachable(
+            observation,
+            verification_spec,
+        )
         result = _accept_successful_navigation_handoff_drift(
             result,
             self.latest_executor_status,
@@ -1648,7 +2714,10 @@ class FullPhysicsStateMachine:
             )
             events.append(self._event(success_event, observation.step_index))
             events.extend(self._transition(PipelineState.CLEANUP_EPISODE, observation.step_index))
-            return RobotAction.idle(source="verify_pick_reachable"), events
+            return self._navigation_terminal_hold_or_idle_action(
+                observation,
+                source="verify_pick_reachable",
+            ), events
         events.extend(self._transition(PipelineState.PLAN_PICK, observation.step_index))
         return RobotAction.idle(source="verify_pick_reachable"), events
 
@@ -1851,19 +2920,50 @@ class FullPhysicsStateMachine:
                 {"detail": "task does not define an enabled place base goal"},
             )
         events = [self._event("nav_to_place_start", observation.step_index)]
-        plan = self.nav_planner.plan(observation, self.episode_spec.place_goal)
+        goal = self.episode_spec.place_goal
+        if self._body_height_preflight_required:
+            if (
+                self._effective_place_goal is None
+                or not self._effective_place_goal_provenance
+            ):
+                return self._body_height_preflight_zero_action(), self._fail(
+                    "body_height_effective_goal_missing",
+                    observation,
+                    {"navigation_phase": "place"},
+                )
+            goal = self._effective_place_goal
+        plan = self.nav_planner.plan(observation, goal)
         execution_metadata = _navigation_plan_execution_metadata(
             self.episode_spec.raw_task,
             include_carry_departure=True,
         )
+        plan_metadata = dict(plan.metadata)
+        if self._effective_place_goal_provenance:
+            raw_pct_goal_request = plan_metadata.get("pct_goal_request")
+            if not isinstance(raw_pct_goal_request, dict):
+                return self._body_height_preflight_zero_action(), self._fail(
+                    "body_height_pct_goal_request_missing",
+                    observation,
+                    {"navigation_phase": "place"},
+                )
+            plan_metadata["pct_goal_request"] = {
+                **raw_pct_goal_request,
+                "effective_goal_provenance_required": True,
+                "effective_goal_provenance": dict(
+                    self._effective_place_goal_provenance
+                ),
+            }
         plan = replace(
             plan,
             metadata={
-                **plan.metadata,
+                **plan_metadata,
                 **execution_metadata,
                 "execution_phase": "carry_nav_to_place",
                 "require_yaw_alignment": True,
                 "yaw_tolerance": self.config.navigation.final_yaw_tolerance,
+                "effective_goal_height_provenance": dict(
+                    self._effective_place_goal_provenance
+                ),
             },
         )
         self.nav_executor.reset(plan)
@@ -1910,7 +3010,22 @@ class FullPhysicsStateMachine:
         self,
         observation: SimulationState,
     ) -> tuple[RobotAction, list[PipelineEvent]]:
-        result = self.verifier.verify_place_reachable(observation, self.episode_spec)
+        verification_spec = self.episode_spec
+        if self._body_height_preflight_required:
+            if self._effective_place_goal is None:
+                return self._body_height_preflight_zero_action(), self._fail(
+                    "body_height_effective_goal_missing",
+                    observation,
+                    {"navigation_phase": "place"},
+                )
+            verification_spec = replace(
+                self.episode_spec,
+                place_goal=self._effective_place_goal,
+            )
+        result = self.verifier.verify_place_reachable(
+            observation,
+            verification_spec,
+        )
         result = _accept_successful_navigation_handoff_drift(
             result,
             self.latest_executor_status,
@@ -1948,7 +3063,11 @@ class FullPhysicsStateMachine:
                     )
             carry_check = self._verify_navigation_carry_targets(
                 observation,
-                latest_sample_only=self.config.full_physics,
+                # 到点交接只认证最后一个真实执行样本。全程 aggregate 仍写入
+                # summary 供审计，但其中包含 PLAN_NAV_TO_PLACE 首拍把机械臂
+                # 从 reset 姿态收拢到 carry 目标的瞬态，不能拿该历史峰值否决
+                # 已经稳定完成导航的交接姿态。
+                latest_sample_only=True,
             )
             if not carry_check["success"]:
                 return RobotAction.idle(source="verify_place_reachable"), self._fail(
@@ -1974,14 +3093,20 @@ class FullPhysicsStateMachine:
                 )
             )
             events.extend(self._transition(PipelineState.CLEANUP_EPISODE, observation.step_index))
-            return RobotAction.idle(source="verify_place_reachable"), events
+            return self._navigation_terminal_hold_or_idle_action(
+                observation,
+                source="verify_place_reachable",
+            ), events
         events.extend(self._transition(PipelineState.PLAN_PLACE, observation.step_index))
         return RobotAction.idle(source="verify_place_reachable"), events
 
     def _place_carry_handoff_action(self, observation: SimulationState) -> RobotAction:
         """进入 place 规划前继续保持 carry 姿态，避免交接帧释放夹持。"""
 
-        if not self.config.navigation.pct_stair_float_enabled:
+        if (
+            not self.config.navigation.scan_stair_freeze_enabled
+            or observation.metadata.get("used_navigation_base_lock") is not True
+        ):
             return RobotAction.idle(source="verify_place_reachable")
         root_pose = tuple(float(value) for value in observation.robot_root_pose)
         yaw = _yaw_from_wxyz(root_pose[3:7])  # type: ignore[arg-type]
@@ -1993,7 +3118,9 @@ class FullPhysicsStateMachine:
         )
         metadata = {
             "place_carry_handoff_hold": True,
-            "place_carry_handoff_reason": "preserve_tcp_object_before_place_plan",
+            "place_carry_handoff_reason": (
+                "preserve_scan_stair_freeze_carry_before_place_plan"
+            ),
             "navigation_base_pose_lock": True,
             "navigation_base_pose_lock_phase": "place_carry_handoff",
             "navigation_base_pose_lock_xyzyaw": root_xyzyaw,
@@ -2557,6 +3684,25 @@ class FullPhysicsStateMachine:
 
     def _cleanup_episode(self, observation: SimulationState) -> tuple[RobotAction, list[PipelineEvent]]:
         events = [self._event("episode_success", observation.step_index)]
+        if self._navigation_terminal_stair_hold_is_active():
+            try:
+                action = self._strict_stair_terminal_hold_action(
+                    observation,
+                    source="cleanup_episode",
+                )
+            except (RuntimeError, TypeError, ValueError) as exc:
+                return RobotAction.idle(source="cleanup_episode"), self._fail(
+                    "stair_navigation_terminal_hold_invalid",
+                    observation,
+                    {
+                        "error": str(exc),
+                        "executor_status": dict(self.nav_executor.status()),
+                    },
+                )
+            events.extend(
+                self._transition(PipelineState.DONE, observation.step_index)
+            )
+            return action, events
         events.extend(self._transition(PipelineState.DONE, observation.step_index))
         metadata = {}
         if self.config.simulation_smoke and self.config.keep_window_open:
@@ -2601,7 +3747,23 @@ class FullPhysicsStateMachine:
             )
         if self.nav_executor.is_done(observation):
             self.latest_executor_status = self.nav_executor.status()
-            return RobotAction.idle(source=self.state.value), self._transition(
+            try:
+                action = self._navigation_terminal_hold_or_idle_action(
+                    observation,
+                    source=self.state.value,
+                )
+            except (RuntimeError, TypeError, ValueError) as exc:
+                return RobotAction.idle(source=self.state.value), self._fail(
+                    "stair_navigation_terminal_hold_invalid",
+                    observation,
+                    {
+                        "error": str(exc),
+                        "executor_status": dict(
+                            self.latest_executor_status
+                        ),
+                    },
+                )
+            return action, self._transition(
                 next_state,
                 observation.step_index,
             )
@@ -2618,7 +3780,27 @@ class FullPhysicsStateMachine:
             )
         events: list[PipelineEvent] = []
         if self.nav_executor.is_done(observation):
-            events.extend(self._transition(next_state, observation.step_index))
+            self.latest_executor_status = self.nav_executor.status()
+            if self._navigation_terminal_stair_hold_is_active():
+                try:
+                    action = self._strict_stair_terminal_hold_action(
+                        observation,
+                        source=self.state.value,
+                    )
+                except (RuntimeError, TypeError, ValueError) as exc:
+                    return RobotAction.idle(source=self.state.value), self._fail(
+                        "stair_navigation_terminal_hold_invalid",
+                        observation,
+                        {
+                            "error": str(exc),
+                            "executor_status": dict(
+                                self.latest_executor_status
+                            ),
+                        },
+                    )
+            events.extend(
+                self._transition(next_state, observation.step_index)
+            )
         return action, events
 
     def _execute_arm(
@@ -3059,6 +4241,49 @@ class FullPhysicsStateMachine:
             metadata=metadata,
         )
 
+    def _with_navigation_arm_stow_hold(
+        self,
+        action: RobotAction,
+        state_before: PipelineState,
+    ) -> RobotAction:
+        """导航到抓取点期间固定机械臂在与策略训练一致的收纳姿态。"""
+
+        if self.state == PipelineState.FAILED:
+            return action
+        calibration_active = bool(
+            action.metadata.get("body_height_calibration_active") is True
+        )
+        if (
+            state_before not in _NAVIGATION_ARM_STOW_HOLD_STATES
+            and not calibration_active
+        ):
+            return action
+        if action.arm_joint_positions is not None:
+            return action
+
+        metadata = dict(action.metadata)
+        metadata.update(
+            {
+                "navigation_arm_stow_hold": True,
+                "navigation_arm_stow_phase": state_before.value,
+                "navigation_arm_stow_source": (
+                    self._navigation_arm_stow_target["source"]
+                ),
+                "arm_joint_names": self._navigation_arm_stow_target[
+                    "arm_joint_names"
+                ],
+                "arm_velocity_hold": True,
+            }
+        )
+        # 这里只持续写 position/velocity target，不直接改写 articulation 状态。
+        return replace(
+            action,
+            arm_joint_positions=tuple(
+                self._navigation_arm_stow_target["arm_joint_positions"]
+            ),
+            metadata=metadata,
+        )
+
     def _with_manipulation_base_lock(
         self,
         action: RobotAction,
@@ -3270,11 +4495,15 @@ class FullPhysicsStateMachine:
                     metadata,
                 )
             )
+        action = self._navigation_terminal_hold_or_idle_action(
+            observation,
+            source=f"nav_to_{phase}_handoff_settle",
+        )
         return (
-            RobotAction(
+            replace(
+                action,
                 base_velocity=(0.0, 0.0, 0.0),
-                source=f"nav_to_{phase}_handoff_settle",
-                metadata=metadata,
+                metadata={**action.metadata, **metadata},
             ),
             events,
         )
@@ -3544,12 +4773,36 @@ class FullPhysicsStateMachine:
         state_before: PipelineState,
         events: list[PipelineEvent],
     ) -> TickDecision:
+        if (
+            self.state == PipelineState.FAILED
+            and state_before
+            in {PipelineState.EXEC_NAV_TO_PICK, PipelineState.EXEC_NAV_TO_PLACE}
+        ):
+            action = self._navigation_emergency_stop_action(state_before)
+        else:
+            action = RobotAction.idle(source=state_before.value)
         return TickDecision(
             state=state_before,
-            action=RobotAction.idle(source=state_before.value),
+            action=action,
             events=tuple(events),
             terminal=self.state.terminal,
             metadata={"next_state": self.state.value},
+        )
+
+    def _navigation_emergency_stop_action(
+        self,
+        state_before: PipelineState,
+    ) -> RobotAction:
+        """要求 ROS policy 唯一写入门锁存导航失败并立即写零。"""
+
+        reason = self.failure_reason or "navigation_failed"
+        return RobotAction(
+            base_velocity=(0.0, 0.0, 0.0),
+            source=state_before.value,
+            metadata={
+                "navigation_emergency_stop": True,
+                "navigation_emergency_stop_reason": reason,
+            },
         )
 
 

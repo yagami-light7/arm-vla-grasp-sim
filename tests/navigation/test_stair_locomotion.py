@@ -6,6 +6,9 @@ import pytest
 
 from source.interfaces import NavGoal, NavPlan, SimulationState
 from source.navigation import (
+    FixedCommandStairProbeConfig,
+    FixedCommandStairProbeExecutor,
+    FixedCommandStairProbePlanner,
     StairCenterlinePlanner,
     StairLocomotionExecutor,
     StairLocomotionExecutorConfig,
@@ -68,6 +71,74 @@ def test_stair_centerline_planner_preserves_calibrated_path() -> None:
     assert plan.metadata["low_level_policy_isolation"] is True
     assert plan.metadata["path_3d"] == path
     assert plan.metadata["visualization_path_3d"] == visualization_path
+
+
+def test_fixed_command_probe_planner_does_not_create_pct_or_scan() -> None:
+    planner = FixedCommandStairProbePlanner()
+
+    plan = planner.plan(
+        _state(1.5, 5.7, 0.172425, 1.539220),
+        NavGoal(x=1.5655, y=6.6593, z=0.4779, yaw=1.4478),
+    )
+
+    assert plan.metadata["planner"] == "fixed_command_stair_probe"
+    assert plan.metadata["pct_client_created"] is False
+    assert plan.metadata["scan_created"] is False
+    assert plan.waypoints[0] == pytest.approx((1.5, 5.7, 0.172425))
+    assert plan.waypoints[-1] == pytest.approx((1.5655, 6.6593, 0.4779))
+
+
+def test_fixed_command_probe_preserves_command_and_stops_at_deadline() -> None:
+    executor = FixedCommandStairProbeExecutor(
+        FixedCommandStairProbeConfig(
+            forward_velocity_mps=0.25,
+            warmup_duration_s=1.0,
+            drive_duration_s=3.84,
+        )
+    )
+    executor.reset(_plan())
+
+    warmup = executor.compute_action(_state(0.0, 0.0, 0.4, 0.0, timestamp=10.0))
+    driving = executor.compute_action(
+        _state(0.3, -0.4, 0.6, 1.2, timestamp=11.0)
+    )
+    still_driving = executor.compute_action(
+        _state(0.1, 0.2, 0.7, 0.3, timestamp=14.83)
+    )
+    terminal_state = _state(0.1, 0.2, 0.7, 0.3, timestamp=14.84)
+
+    assert warmup.base_velocity == (0.0, 0.0, 0.0)
+    assert driving.base_velocity == pytest.approx((0.25, 0.0, 0.0))
+    assert still_driving.base_velocity == pytest.approx((0.25, 0.0, 0.0))
+    assert driving.metadata["stair_probe_effective_command"] == pytest.approx(
+        [0.25, 0.0, 0.0]
+    )
+    assert executor.is_done(terminal_state)
+    terminal = executor.compute_action(terminal_state)
+    assert terminal.base_velocity == (0.0, 0.0, 0.0)
+    assert terminal.source == "stair_fixed_command_probe_zero"
+    status = executor.status()
+    assert status["phase"] == "completed"
+    assert status["nominal_distance_m"] == pytest.approx(0.96)
+    assert status["xy_displacement_m"] == pytest.approx(math.hypot(0.1, 0.2))
+    assert status["z_delta_m"] == pytest.approx(0.3)
+    assert status["yaw_drift_rad"] == pytest.approx(0.3)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"forward_velocity_mps": 0.19},
+        {"drive_duration_s": 2.99},
+        {"drive_duration_s": 5.01},
+        {"warmup_duration_s": -0.1},
+    ],
+)
+def test_fixed_command_probe_rejects_out_of_contract_config(
+    kwargs: dict[str, float],
+) -> None:
+    with pytest.raises(ValueError):
+        FixedCommandStairProbeConfig(**kwargs)
 
 
 def test_stair_executor_commands_forward_motion_when_aligned() -> None:

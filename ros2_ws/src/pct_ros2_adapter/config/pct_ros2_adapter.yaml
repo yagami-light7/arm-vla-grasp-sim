@@ -1,0 +1,122 @@
+pct_ros2_adapter:
+  ros__parameters:
+    use_sim_time: true
+
+    topics.odometry_input: /body_pose
+    topics.goal_input: /pct/goal
+    topics.command_service: /pct/planning_command
+    topics.path_output: /pct/global_path
+    topics.scan_path_output: /initial_path
+    topics.status_output: /pct/planning_status
+
+    frames.world: world
+    frames.base: base_link
+
+    # Odometry 使用 SensorData QoS；全局 Path 与状态使用可靠、持久缓存 QoS。
+    qos.depth: 5
+    qos.path_depth: 1
+    qos.status_depth: 1
+
+    planning.odometry_timeout_sec: 0.50
+    planning.odometry_future_tolerance_sec: 0.20
+    planning.goal_future_tolerance_sec: 0.20
+    planning.maximum_start_drift_m: 0.20
+    path.minimum_point_spacing_m: 0.05
+
+    # 空值会从 PCT_SCAN_PROJECT_ROOT 或当前路径向上发现仓库根目录。
+    # 资产路径均相对该根目录解析，也可以改为绝对路径。
+    planner.project_root: ""
+    # 生产链固定使用官方 TomogramPlanner；官方扩展或共享库不可用时启动失败，
+    # 不会静默切回 compatible Python 3D A*。
+    planner.backend_kind: upstream
+    planner.upstream_source_root: external/PCT_planner
+    planner.upstream_use_quintic: true
+    planner.upstream_max_heading_rate: 10.0
+    # PCT 原生 A* 每一步对 tomogram 代价的权重。pct-scan 补丁已移除官方
+    # cost<5 的死区，因此 0.20 会连续区分走廊中心与贴墙单元；继续增大通常
+    # 只会绕远，并不会把 0.2m 栅格变得更精细。
+    planner.upstream_astar_step_cost_weight: 0.20
+    # 用 collision PLY 在每个逻辑层的机身高度带生成软净空代价。它只改变
+    # 平地选路代价，不把单元硬封死；楼梯 gateway 始终从原始 tomogram 推导。
+    planner.upstream_body_clearance_enabled: true
+    # 障碍物在该半径内逐渐增加代价，单位 m。0.80m 会让 A* 在可选时把
+    # Go2-X5 中心留到走廊内侧；真正碰撞包络仍由 SCAN 双圆柱参数负责。
+    planner.upstream_body_clearance_radius_m: 0.80
+    # 障碍表面处的软代价上限。20 仍是 upstream A* 的可通行上限，所以不会
+    # 因膨胀切断窄门、楼梯入口或靠墙任务终点。
+    planner.upstream_body_clearance_maximum_cost: 20.0
+    # 净空不足比例的幂指数。2 表示二次曲线：远处影响温和，贴近障碍时迅速增大。
+    planner.upstream_body_clearance_power: 2.0
+    planner.upstream_endpoint_layer_max_z_error_m: 0.25
+    # 对同层路径，以及跨层路径中楼梯前后的平地折线做视线压缩；标定楼梯
+    # 中心线始终原样保留。0.27m 与 SCAN 双圆柱半径一致，检查时还会加入
+    # 半个栅格对角线，并同时避开机身高度带障碍表面。它只负责全局路径整形，
+    # 不会替代 SCAN 对 radius+offset=0.43m 任意航向包络的最终碰撞门。
+    planner.upstream_same_layer_shortcut_clearance_m: 0.27
+    # 单条平地视线捷径的最大长度。数值越小越贴近 A* 栅格折线、转弯更多；
+    # 数值越大越容易形成长直段，但仍必须通过上述净空检查。
+    planner.upstream_same_layer_shortcut_max_segment_m: 10.0
+    # 上游 PCT 的楼梯 profile 只在 tomogram 中形成低代价走廊，不能保证 A*
+    # 恰好走中心线。跨层规划完成后，用同一份标定 profile 归一楼梯几何，
+    # 使 SCAN 与旧 DWA 基线接收相同的楼梯参考线；平地路径不受影响。
+    planner.upstream_stair_profile_path: configs/navigation/pct_multifloor_stair_profile.json
+    # 原生 A* 必须在该三维距离内同时匹配 profile 入口和出口才允许归一；
+    # 超过门限保留失败原因并拒绝发布，防止把不相关路径硬拉到楼梯上。
+    planner.upstream_stair_profile_match_tolerance_m: 0.60
+    # compatible 隔离回归与官方 backend 使用不同资产合同，禁止混用。
+    planner.tomogram_path: source/scene/multifloor/mutifloor.pickle
+    planner.upstream_tomogram_path: source/scene/multifloor/mutifloor_upstream.pickle
+    planner.walkable_path: source/scene/multifloor/mutifloor_ply_walkable.npy
+    planner.collision_ply_path: source/scene/multifloor/ply/3dgs_collision.ply
+
+    planner.coord_mode: sim_to_pct_180deg
+    # 固定变换顺序：coord_mode → XYZ scale → 固定轴 X/Y/Z 旋转
+    # （弧度，矩阵 Rz @ Ry @ Rx）→ XYZ offset。
+    planner.pct_offset_x: 0.0
+    planner.pct_offset_y: 0.0
+    planner.pct_offset_z: 0.0
+    planner.pct_scale_x: 1.0
+    planner.pct_scale_y: 1.0
+    planner.pct_scale_z: 1.0
+    planner.pct_rotation_x_rad: 0.0
+    planner.pct_rotation_y_rad: 0.0
+    planner.pct_rotation_z_rad: 0.0
+
+    # 端点硬门要求 base z=collision PLY ground+body_height；slice 查询必须使用
+    # 同一个 root-to-floor 高度，否则严格同层 snap 会落到错误 slice。0.30m 是
+    # 当前消息合同默认值，完整 Isaac smoke 前仍须用稳定 /body_pose 实测标定。
+    planner.slice_query_root_to_floor_m: 0.30
+    planner.goal_base_to_ground_m: 0.30
+
+    planner.global_vertical_obstacle_min_slices: 7
+    planner.cross_floor_vertical_obstacle_min_slices: 9
+    planner.cross_floor_gateway_points_xyz: [1.5, 5.7, 0.6]
+    planner.cross_floor_stair_exit_points_xyz: [2.70, 7.05, 3.0]
+    planner.cross_floor_stair_midpoint_points_xyz: [
+      1.51822, 6.27683, 0.29486,
+      2.74512, 9.14634, 1.64666,
+      1.92020, 9.52807, 1.71919,
+      2.69841, 7.79872, 2.61031,
+    ]
+    planner.cross_floor_gateway_radius_m: 0.60
+    planner.body_obstacle_min_height_m: 0.30
+    planner.body_obstacle_max_height_m: 1.00
+    planner.stair_min_horizontal_per_slice_m: 0.40
+    planner.stair_max_horizontal_per_slice_m: 0.90
+    planner.stair_vertical_radius_m: 0.60
+    planner.stair_progress_tolerance: 0.35
+    planner.stair_progress_cost_weight: 20.0
+    planner.obstacle_clearance_radius_m: 0.60
+    planner.obstacle_clearance_cost_weight: 2.0
+
+    # 实际 full route 的旧楼梯锚点 z 与 PLY 支撑面最大偏差为 0.5176m；
+    # 0.60m 留约 8cm 余量，跨层误选仍会被约 3m 的楼层间距拒绝。
+    planner.ground_projection_max_z_error_m: 0.60
+    # 目标 base z 必须在减去配置高度后贴合真实支撑面，避免发布不可达终点。
+    planner.start_ground_projection_max_z_error_m: 0.08
+    planner.terminal_ground_projection_max_z_error_m: 0.08
+    planner.path_sample_spacing_m: 0.20
+    planner.maximum_snap_distance_m: 0.25
+    planner.grid_max_expansions: 1500000
+    planner.grid_compress_max_segment_m: 0.80
+    planner.grid_timeout_sec: 10.0

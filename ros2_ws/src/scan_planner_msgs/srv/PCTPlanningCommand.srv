@@ -1,0 +1,29 @@
+# PCT 全局规划器的快速命令接收接口。规划结果仍异步发布到 Path/status。
+uint8 COMMAND_PLAN=1
+uint8 COMMAND_REPLAN=2
+uint8 COMMAND_CANCEL=3
+
+std_msgs/Header header
+uint8 command
+uint64 goal_id
+uint64 request_id
+geometry_msgs/PoseStamped goal
+builtin_interfaces/Time expected_path_stamp
+string reason
+---
+uint8 DISPOSITION_ACCEPTED=1
+uint8 DISPOSITION_DUPLICATE=2
+uint8 DISPOSITION_STALE=3
+uint8 DISPOSITION_CONFLICT=4
+uint8 DISPOSITION_REJECTED=5
+
+std_msgs/Header header
+uint8 disposition
+uint64 plan_id
+uint64 goal_id
+uint64 request_id
+builtin_interfaces/Time tombstone_stamp
+bool has_active_goal
+geometry_msgs/PoseStamped active_goal
+builtin_interfaces/Time active_path_stamp
+string message

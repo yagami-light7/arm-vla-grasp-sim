@@ -10,9 +10,10 @@ import json
 import os
 import pickle
 import sys
+import time
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -68,6 +69,9 @@ class _State:
         stair_progress_cost_weight: float = 20.0,
         obstacle_clearance_radius_m: float = 0.60,
         obstacle_clearance_cost_weight: float = 2.0,
+        grid_max_expansions: int = 1_500_000,
+        grid_compress_max_segment_m: float = 0.80,
+        grid_timeout_sec: float = 10.0,
     ) -> None:
         self.tomogram = tomogram
         self.traversability = np.asarray(tomogram["data"][0], dtype=np.float32)
@@ -140,6 +144,20 @@ class _State:
             raise ValueError("PCT 障碍净空半径不能为负数。")
         if self.obstacle_clearance_cost_weight < 0.0:
             raise ValueError("PCT 障碍净空代价权重不能为负数。")
+        self.grid_max_expansions = int(grid_max_expansions)
+        if self.grid_max_expansions < 1:
+            raise ValueError("PCT grid 最大扩展数必须为正数。")
+        self.grid_compress_max_segment_m = float(
+            grid_compress_max_segment_m
+        )
+        if (
+            not np.isfinite(self.grid_compress_max_segment_m)
+            or self.grid_compress_max_segment_m <= 0.0
+        ):
+            raise ValueError("PCT grid 最大压缩段长必须为正数。")
+        self.grid_timeout_sec = float(grid_timeout_sec)
+        if not np.isfinite(self.grid_timeout_sec) or self.grid_timeout_sec <= 0.0:
+            raise ValueError("PCT grid 规划超时必须为有限正数。")
         self.hard_obstacle_clearance_m = _approximate_obstacle_clearance(
             self.hard_obstacle_mask,
             resolution=self.resolution,
@@ -336,6 +354,13 @@ def _load_state() -> _State:
     obstacle_clearance_cost_weight = float(
         os.environ.get("PCT_OBSTACLE_CLEARANCE_COST_WEIGHT", "2.0")
     )
+    grid_max_expansions = int(
+        os.environ.get("PCT_GRID_MAX_EXPANSIONS", "1500000")
+    )
+    grid_compress_max_segment_m = float(
+        os.environ.get("PCT_GRID_COMPRESS_MAX_SEGMENT_M", "0.8")
+    )
+    grid_timeout_sec = float(os.environ.get("PCT_GRID_TIMEOUT_SEC", "10.0"))
     inserted_aliases = _install_numpy_pickle_aliases()
     try:
         with tomogram_path.open("rb") as stream:
@@ -382,7 +407,16 @@ def _load_state() -> _State:
         stair_progress_cost_weight=stair_progress_cost_weight,
         obstacle_clearance_radius_m=obstacle_clearance_radius_m,
         obstacle_clearance_cost_weight=obstacle_clearance_cost_weight,
+        grid_max_expansions=grid_max_expansions,
+        grid_compress_max_segment_m=grid_compress_max_segment_m,
+        grid_timeout_sec=grid_timeout_sec,
     )
+
+
+def load_state_from_environment() -> _State:
+    """按环境参数加载一次 PCT 地图，供 ROS 2 进程内 backend 复用。"""
+
+    return _load_state()
 
 
 def _install_numpy_pickle_aliases() -> tuple[str, ...]:
@@ -888,10 +922,38 @@ def _ordered_anchor_z_progress(
 
 
 def _handle_request(state: _State, line: str) -> dict[str, Any]:
+    """兼容历史 stdin/stdout 入口，并把实际规划转交给类型化函数。"""
+
     try:
         request = json.loads(line)
-        start = np.asarray(request["start"], dtype=np.float64)
-        end = np.asarray(request["end"], dtype=np.float64)
+        start = request["start"]
+        end = request["end"]
+    except Exception as exc:
+        return _error_response(exc)
+    return plan_request(state, start=start, end=end)
+
+
+def plan_request(
+    state: _State,
+    *,
+    start: Any,
+    end: Any,
+    cancel_check: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """直接规划一个 PCT xyz 请求，不经过 JSON、文件或子进程通信。"""
+
+    try:
+        deadline_monotonic = time.monotonic() + state.grid_timeout_sec
+        _check_planning_interrupt(
+            cancel_check=cancel_check,
+            deadline_monotonic=deadline_monotonic,
+        )
+        start = np.asarray(start, dtype=np.float64)
+        end = np.asarray(end, dtype=np.float64)
+        if start.shape != (3,) or end.shape != (3,):
+            raise ValueError("PCT start/end 必须各包含 3 个坐标")
+        if not np.isfinite(start).all() or not np.isfinite(end).all():
+            raise ValueError("PCT start/end 不能包含 NaN 或 Inf")
         start_floor_z = float(start[2]) - state.robot_root_to_floor_m
         end_floor_z = float(end[2]) - state.robot_root_to_floor_m
         start_slice = state.z_to_slice(start_floor_z)
@@ -913,6 +975,8 @@ def _handle_request(state: _State, line: str) -> dict[str, Any]:
             start_slice,
             hard_obstacle_mask=hard_obstacle_mask,
             preferred_xy=end[:2],
+            cancel_check=cancel_check,
+            deadline_monotonic=deadline_monotonic,
         )
         end_node, end_dist = _snap_to_walkable(
             state,
@@ -920,7 +984,11 @@ def _handle_request(state: _State, line: str) -> dict[str, Any]:
             end_slice,
             hard_obstacle_mask=hard_obstacle_mask,
             preferred_xy=start[:2],
+            cancel_check=cancel_check,
+            deadline_monotonic=deadline_monotonic,
         )
+        if start_node[0] != start_slice or end_node[0] != end_slice:
+            raise RuntimeError("PCT grid snap 不得跨越请求 slice。")
         snapped_start_xyz = state.grid_to_pct_xyz(start_node)
         snapped_end_xyz = state.grid_to_pct_xyz(end_node)
         snap_start_distance_m = float(
@@ -929,6 +997,10 @@ def _handle_request(state: _State, line: str) -> dict[str, Any]:
         snap_end_distance_m = float(
             np.linalg.norm(np.asarray(snapped_end_xyz[:2]) - end[:2])
         )
+        _check_planning_interrupt(
+            cancel_check=cancel_check,
+            deadline_monotonic=deadline_monotonic,
+        )
         gateway_mode: str | None = None
         if cross_floor and state.cross_floor_gateways:
             path, path_mode, gateway_mode = _plan_via_cross_floor_gateway(
@@ -936,6 +1008,8 @@ def _handle_request(state: _State, line: str) -> dict[str, Any]:
                 start_node,
                 end_node,
                 hard_obstacle_mask=hard_obstacle_mask,
+                cancel_check=cancel_check,
+                deadline_monotonic=deadline_monotonic,
             )
         else:
             path = _same_floor_direct_path(
@@ -943,6 +1017,10 @@ def _handle_request(state: _State, line: str) -> dict[str, Any]:
                 start_node,
                 end_node,
                 hard_obstacle_mask=hard_obstacle_mask,
+            )
+            _check_planning_interrupt(
+                cancel_check=cancel_check,
+                deadline_monotonic=deadline_monotonic,
             )
             path_mode = "same_floor_direct"
             if path is None:
@@ -957,8 +1035,14 @@ def _handle_request(state: _State, line: str) -> dict[str, Any]:
                     vertical_direction=(
                         _slice_direction(start_node, end_node) if cross_floor else 0
                     ),
+                    cancel_check=cancel_check,
+                    deadline_monotonic=deadline_monotonic,
                 )
                 path_mode = "astar_3d"
+        _check_planning_interrupt(
+            cancel_check=cancel_check,
+            deadline_monotonic=deadline_monotonic,
+        )
         if path is None:
             return {
                 "status": "no_path",
@@ -970,6 +1054,10 @@ def _handle_request(state: _State, line: str) -> dict[str, Any]:
                 "snap_end_distance_m": snap_end_distance_m,
                 "snapped_start_xyz": snapped_start_xyz,
                 "snapped_end_xyz": snapped_end_xyz,
+                "snapped_start_slice": int(start_node[0]),
+                "snapped_end_slice": int(end_node[0]),
+                "snap_start_slice_delta": int(start_node[0] - start_slice),
+                "snap_end_slice_delta": int(end_node[0] - end_slice),
                 "planner": "pct_grid",
                 "cross_floor": cross_floor,
                 "hard_obstacle_cells": int(hard_obstacle_mask.sum()),
@@ -1008,7 +1096,10 @@ def _handle_request(state: _State, line: str) -> dict[str, Any]:
             }
         return {
             "status": "ok",
-            "traj": _compress_path([state.grid_to_pct_xyz(node) for node in path]),
+            "traj": _compress_path(
+                [state.grid_to_pct_xyz(node) for node in path],
+                max_segment_length_m=state.grid_compress_max_segment_m,
+            ),
             "slice_start": start_slice,
             "slice_end": end_slice,
             "snap_start_dist": start_dist,
@@ -1017,6 +1108,10 @@ def _handle_request(state: _State, line: str) -> dict[str, Any]:
             "snap_end_distance_m": snap_end_distance_m,
             "snapped_start_xyz": snapped_start_xyz,
             "snapped_end_xyz": snapped_end_xyz,
+            "snapped_start_slice": int(start_node[0]),
+            "snapped_end_slice": int(end_node[0]),
+            "snap_start_slice_delta": int(start_node[0] - start_slice),
+            "snap_end_slice_delta": int(end_node[0] - end_slice),
             "planner": "pct_grid",
             "path_mode": path_mode,
             "cross_floor": cross_floor,
@@ -1053,9 +1148,19 @@ def _handle_request(state: _State, line: str) -> dict[str, Any]:
             "stair_progress_cost_weight": state.stair_progress_cost_weight,
         }
     except Exception as exc:
-        import traceback
+        return _error_response(exc)
 
-        return {"status": "error", "msg": str(exc), "traceback": traceback.format_exc()}
+
+def _error_response(exc: Exception) -> dict[str, Any]:
+    """把 grid core 异常转换为旧 server 与 ROS adapter 共用的诊断对象。"""
+
+    import traceback
+
+    return {
+        "status": "error",
+        "msg": str(exc),
+        "traceback": traceback.format_exc(),
+    }
 
 
 def _plan_via_cross_floor_gateway(
@@ -1064,6 +1169,8 @@ def _plan_via_cross_floor_gateway(
     end_node: tuple[int, int, int],
     *,
     hard_obstacle_mask: np.ndarray | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    deadline_monotonic: float | None = None,
 ) -> tuple[list[tuple[int, int, int]] | None, str, str]:
     """跨楼层路径先强制经过楼梯/坡道入口，再继续做三维搜索。"""
 
@@ -1074,6 +1181,8 @@ def _plan_via_cross_floor_gateway(
             np.asarray(gateway_xyz[:2], dtype=np.float64),
             start_node[0],
             hard_obstacle_mask=hard_obstacle_mask,
+            cancel_check=cancel_check,
+            deadline_monotonic=deadline_monotonic,
         )
         approach = _astar(
             state,
@@ -1081,6 +1190,8 @@ def _plan_via_cross_floor_gateway(
             gateway_node,
             hard_obstacle_mask=hard_obstacle_mask,
             allow_vertical_transitions=False,
+            cancel_check=cancel_check,
+            deadline_monotonic=deadline_monotonic,
         )
         if approach is None:
             continue
@@ -1108,6 +1219,8 @@ def _plan_via_cross_floor_gateway(
                 vertical_gateway_mask=vertical_mask,
                 vertical_direction=_slice_direction(current_node, target_node),
                 stair_slice_range=stair_slice_range,
+                cancel_check=cancel_check,
+                deadline_monotonic=deadline_monotonic,
             )
             if segment is None:
                 tail_ok = False
@@ -1194,39 +1307,46 @@ def _snap_to_walkable(
     *,
     hard_obstacle_mask: np.ndarray | None = None,
     preferred_xy: np.ndarray | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    deadline_monotonic: float | None = None,
 ) -> tuple[tuple[int, int, int], int]:
-    """Snap to a nearby free node without array-order directional bias.
+    """只在请求 slice 内选择最近可走格，并消除数组遍历方向偏置。
 
-    The previous breadth-first search returned the first walkable neighbor in a
-    fixed ``(-x, -y)`` enumeration order.  Equal-distance snaps could therefore
-    point behind the requested route and changed when a map axis/origin changed.
-    We still preserve minimum BFS radius, but rank all free nodes in that layer
-    by metric distance to the query and then by distance to ``preferred_xy``.
+    相邻楼层可能在同一 XY 上同时存在可走格。snap 若沿 slice 方向搜索，会把
+    被阻塞的一层请求静默吸附到另一层，因此这里明确把 BFS 限定在 ``si``。
+    同一 BFS 半径内再按请求点距离和路线目标距离稳定排序。
     """
 
     xi, yj = state.pct_xy_to_grid(pct_xy)
     start = (si, xi, yj)
+    _check_planning_interrupt(
+        cancel_check=cancel_check,
+        deadline_monotonic=deadline_monotonic,
+    )
     if state.is_walkable(start, hard_obstacle_mask=hard_obstacle_mask):
         return start, 0
-    visited = {(si, xi, yj)}
-    queue = deque([(si, xi, yj, 0)])
+    visited = {(xi, yj)}
+    queue = deque([(xi, yj, 0)])
     while queue:
-        layer_distance = int(queue[0][3])
+        _check_planning_interrupt(
+            cancel_check=cancel_check,
+            deadline_monotonic=deadline_monotonic,
+        )
+        layer_distance = int(queue[0][2])
         candidates: list[tuple[int, int, int]] = []
-        while queue and int(queue[0][3]) == layer_distance:
-            csi, cxi, cyj, dist = queue.popleft()
-            node = (csi, cxi, cyj)
+        while queue and int(queue[0][2]) == layer_distance:
+            cxi, cyj, dist = queue.popleft()
+            node = (si, cxi, cyj)
             if state.is_walkable(node, hard_obstacle_mask=hard_obstacle_mask):
                 candidates.append(node)
                 continue
-            for nsi in range(max(0, csi - 1), min(state.n_slice, csi + 2)):
-                for dx, dy in _xy_neighbor_offsets(include_center=True):
-                    nxt = (nsi, cxi + dx, cyj + dy)
-                    if nxt in visited:
-                        continue
-                    if 0 <= nxt[1] < state.dimx and 0 <= nxt[2] < state.dimy:
-                        visited.add(nxt)
-                        queue.append((nxt[0], nxt[1], nxt[2], dist + 1))
+            for dx, dy in _xy_neighbor_offsets(include_center=False):
+                nxt = (cxi + dx, cyj + dy)
+                if nxt in visited:
+                    continue
+                if 0 <= nxt[0] < state.dimx and 0 <= nxt[1] < state.dimy:
+                    visited.add(nxt)
+                    queue.append((nxt[0], nxt[1], dist + 1))
         if candidates:
             return min(
                 candidates,
@@ -1248,7 +1368,7 @@ def _snap_candidate_score(
     query_xy: np.ndarray,
     preferred_xy: np.ndarray | None,
     requested_slice: int,
-) -> tuple[float, float, int, int, int]:
+) -> tuple[int, float, float, int, int]:
     point_xy = np.asarray(state.grid_to_pct_xyz(node)[:2], dtype=np.float64)
     query_distance = float(np.linalg.norm(point_xy - np.asarray(query_xy)))
     preferred_distance = (
@@ -1257,12 +1377,28 @@ def _snap_candidate_score(
         else float(np.linalg.norm(point_xy - np.asarray(preferred_xy)))
     )
     return (
+        abs(int(node[0]) - int(requested_slice)),
         query_distance,
         preferred_distance,
-        abs(int(node[0]) - int(requested_slice)),
         int(node[1]),
         int(node[2]),
     )
+
+
+def _check_planning_interrupt(
+    *,
+    cancel_check: Callable[[], bool] | None,
+    deadline_monotonic: float | None,
+) -> None:
+    """在搜索边界统一处理取消与单调时钟截止时间。"""
+
+    if cancel_check is not None and cancel_check():
+        raise InterruptedError("PCT grid 规划已取消。")
+    if (
+        deadline_monotonic is not None
+        and time.monotonic() >= float(deadline_monotonic)
+    ):
+        raise TimeoutError("PCT grid 规划超过截止时间。")
 
 
 def _astar(
@@ -1275,15 +1411,23 @@ def _astar(
     allow_vertical_transitions: bool = True,
     vertical_direction: int = 0,
     stair_slice_range: tuple[int, int] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    deadline_monotonic: float | None = None,
 ) -> list[tuple[int, int, int]] | None:
+    """执行可取消且受截止时间约束的三维 A* 搜索。"""
+
     frontier: list[tuple[float, int, tuple[int, int, int]]] = []
     serial = 0
     heapq.heappush(frontier, (0.0, serial, start))
     came_from: dict[tuple[int, int, int], tuple[int, int, int] | None] = {start: None}
     cost_so_far: dict[tuple[int, int, int], float] = {start: 0.0}
-    max_expansions = int(os.environ.get("PCT_GRID_MAX_EXPANSIONS", "1500000"))
+    max_expansions = state.grid_max_expansions
     expansions = 0
     while frontier:
+        _check_planning_interrupt(
+            cancel_check=cancel_check,
+            deadline_monotonic=deadline_monotonic,
+        )
         _, _, current = heapq.heappop(frontier)
         expansions += 1
         if current == goal:
@@ -1853,13 +1997,19 @@ def _reconstruct(
     return path
 
 
-def _compress_path(path: list[list[float]]) -> list[list[float]]:
+def _compress_path(
+    path: list[list[float]],
+    *,
+    max_segment_length_m: float = 0.80,
+) -> list[list[float]]:
     if len(path) <= 2:
         return path
     compressed = [path[0]]
     last_direction: tuple[int, int, int] | None = None
     distance_since_keep = 0.0
-    max_segment_length = float(os.environ.get("PCT_GRID_COMPRESS_MAX_SEGMENT_M", "0.8"))
+    max_segment_length = float(max_segment_length_m)
+    if not np.isfinite(max_segment_length) or max_segment_length <= 0.0:
+        raise ValueError("PCT grid 最大压缩段长必须为有限正数。")
     prev = np.asarray(path[0], dtype=np.float64)
     for raw in path[1:]:
         current = np.asarray(raw, dtype=np.float64)

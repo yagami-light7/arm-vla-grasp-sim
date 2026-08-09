@@ -1,4 +1,4 @@
-"""逐 tick 输出底盘速度命令的 DWA 导航执行器。"""
+"""仅供隔离回归测试使用的旧 DWA 导航执行器。"""
 
 from __future__ import annotations
 
@@ -5106,12 +5106,6 @@ def _distance_3d(
     )
 
 
-DWAExecutor = DwaNavExecutor
-NavExecutor = DwaNavExecutor
-
-
 __all__ = [
-    "DWAExecutor",
     "DwaNavExecutor",
-    "NavExecutor",
 ]

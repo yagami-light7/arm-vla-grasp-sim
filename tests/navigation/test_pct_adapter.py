@@ -29,6 +29,10 @@ def _state(x: float, y: float, z: float = 0.35) -> SimulationState:
     )
 
 
+def test_pct_config_disables_astar_fallback_by_default() -> None:
+    assert PCTPlannerConfig().fallback_to_astar is False
+
+
 def test_pct_nav_planner_returns_xy_waypoints_and_path_3d_metadata() -> None:
     client = FakePCTClient(
         {
@@ -321,6 +325,52 @@ def test_pct_stair_refinement_preserves_post_exit_extension() -> None:
     assert exit_index < len(path) - 1
     assert path[-1] == pytest.approx(terminal)
     assert float(path[-1][1]) < float(path[exit_index][1])
+
+
+def test_pct_stair_refinement_truncates_at_partial_flight_goal() -> None:
+    raw_traj_sim = (
+        (1.5214885711669925, 5.656423950195313, 0.0),
+        (1.5214885711669925, 5.856423950195312, 0.0),
+        (1.5214885711669925, 6.656423950195313, 0.5),
+        (1.5214885711669925, 6.856423950195314, 0.5),
+        (1.7214885711669923, 7.656423950195313, 1.0),
+        (1.7214885711669923, 8.056423950195313, 1.0),
+        (1.9214885711669925, 8.856423950195314, 1.5),
+        (1.9214885711669925, 9.456423950195314, 1.5),
+    )
+    planner = PCTNavPlanner(
+        PCTPlannerConfig(enabled=True, fallback_to_astar=False),
+        client=FakePCTClient(
+            {
+                "status": "ok",
+                "cross_floor": True,
+                "traj": [[-x, -y, z] for x, y, z in raw_traj_sim],
+            }
+        ),
+    )
+
+    plan = planner.plan(
+        _state(1.5, 5.7, z=0.17242511208350414),
+        NavGoal(
+            x=1.9202,
+            y=9.52807,
+            z=1.7400354907123279,
+            yaw=1.447781636383858,
+        ),
+    )
+
+    report = plan.metadata["stair_centerline_refinement"]
+    assert report["applied"] is True
+    assert report["reason"] == "calibrated_stair_centerline_partial"
+    assert report["centerline_anchors"][-1][:2] == pytest.approx(
+        (1.9202, 9.52807)
+    )
+    path = plan.metadata["path_3d"]
+    assert max(float(point[2]) for point in path) <= 1.71919 + 1.0e-9
+    assert min(
+        math.dist(point[:2], (2.70, 7.05))
+        for point in path
+    ) > 1.0
 
 
 def test_pct_nav_planner_raises_clear_error_without_fallback() -> None:

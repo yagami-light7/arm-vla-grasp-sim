@@ -1,0 +1,40 @@
+scan_planner_node:
+  ros__parameters:
+    # height_scanner 已直接发布 world 坐标点，射线原点使用 /body_pose；不能
+    # 再套用主场景头部相机外参。低平台地面高度来自本轮 live 点云复核。
+    grid_map.need_extrinsic: false
+    grid_map.ground_height: -2.47
+
+    # 局部前视不超过 height_scanner 向前约 0.8 m 的真实观测范围。
+    fsm.planning_horizon: 0.60
+    fsm.thresh_replan: 0.30
+    fsm.reference_cruise_speed: 0.40
+    fsm.reference_velocity_filter_time_constant_sec: 0.20
+
+    # MoE-CTS 已独立通过 0.8 m/s 楼梯探针；闭环首轮只使用 0.45 m/s，
+    # 给横向纠偏和台阶接触冲击保留余量。
+    manager.max_vel: 0.45
+    manager.max_acc: 0.80
+    manager.max_jerk: 4.0
+    manager.control_points_distance: 0.20
+    manager.reference_profile_acceleration_scale: 0.50
+    manager.feasibility_tolerance: 0.01
+    optimization.max_vel: 0.45
+    optimization.max_acc: 0.80
+
+scan_controller:
+  ros__parameters:
+    # 与 MoE-CTS 50 Hz policy 控制周期一致。body_height 由 launch 的唯一
+    # 0.342 m 参数覆盖，避免在多个配置文件中重复维护高度语义。
+    controller.publish_rate_hz: 50.0
+
+    limits.max_vx: 0.45
+    limits.max_vy: 0.15
+    limits.max_yaw_rate: 0.45
+    limits.max_ax: 0.80
+    limits.max_ay: 0.40
+    limits.max_yaw_acc: 1.00
+
+    # 顶部平台仍使用通用 0.08 m / 0.12 m 位置门和连续驻留合同；这里只
+    # 保留标准 Go2 能稳定执行的最低接近速度，不放宽 GOAL_REACHED。
+    finish.min_approach_speed: 0.22

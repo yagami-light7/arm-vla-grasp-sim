@@ -68,6 +68,34 @@ class PlacementSupportResult:
 
 
 @dataclass(frozen=True)
+class NearestGroundSupportResult:
+    """按楼层高度提示选出的 collision PLY 支撑面。"""
+
+    collision_ply: Path
+    query_pct_xyz: tuple[float, float, float]
+    intersections: tuple[VerticalIntersection, ...]
+    support: VerticalIntersection
+    hint_error_m: float
+    maximum_hint_error_m: float | None
+
+    def to_dict(self) -> dict[str, Any]:
+        """转换为可写入 episode 元数据的高度来源报告。"""
+
+        return {
+            "collision_ply": str(self.collision_ply),
+            "query_pct_xyz": list(self.query_pct_xyz),
+            "support_surface": {
+                "z": self.support.z,
+                "face_index": self.support.face_index,
+            },
+            "hint_error_m": self.hint_error_m,
+            "maximum_hint_error_m": self.maximum_hint_error_m,
+            "vertical_intersection_count": len(self.intersections),
+            "selection": "nearest_z_hint_then_z_then_face_index",
+        }
+
+
+@dataclass(frozen=True)
 class _BinaryTrianglePlyLayout:
     """当前碰撞资产使用的 binary little-endian triangle PLY 布局。"""
 
@@ -118,6 +146,64 @@ def inspect_placement_support(
         center_to_support_m=clearance,
         minimum_clearance_m=float(minimum_clearance_m),
         maximum_clearance_m=float(maximum_clearance_m),
+    )
+
+
+def inspect_nearest_ground_support(
+    collision_ply: str | Path,
+    query_pct_xyz: Sequence[float],
+    *,
+    maximum_hint_error_m: float | None = None,
+) -> NearestGroundSupportResult:
+    """在固定 PCT XY 上选择最接近楼层 z 提示的真实支撑面。"""
+
+    path = Path(collision_ply).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"collision PLY 不存在: {path}")
+    if len(query_pct_xyz) < 3:
+        raise ValueError("query_pct_xyz 至少需要三个数值")
+    query = tuple(float(value) for value in query_pct_xyz[:3])
+    if not all(np.isfinite(value) for value in query):
+        raise ValueError("query_pct_xyz 不能包含 NaN 或 Inf")
+    maximum_error = None
+    if maximum_hint_error_m is not None:
+        maximum_error = float(maximum_hint_error_m)
+        if not np.isfinite(maximum_error) or maximum_error <= 0.0:
+            raise ValueError("maximum_hint_error_m 必须是有限正数")
+
+    vertices, face_indices = load_binary_triangle_ply(path)
+    intersections = _vertical_intersections(
+        vertices,
+        face_indices,
+        x=query[0],
+        y=query[1],
+    )
+    if not intersections:
+        raise ValueError(
+            "collision PLY 在 "
+            f"XY=({query[0]:.6f},{query[1]:.6f}) 没有支撑面"
+        )
+    support = min(
+        intersections,
+        key=lambda item: (
+            abs(float(item.z) - query[2]),
+            float(item.z),
+            int(item.face_index),
+        ),
+    )
+    hint_error = abs(float(support.z) - query[2])
+    if maximum_error is not None and hint_error > maximum_error:
+        raise ValueError(
+            "collision PLY 最近支撑面与楼层提示相差 "
+            f"{hint_error:.3f} m，超过 {maximum_error:.3f} m"
+        )
+    return NearestGroundSupportResult(
+        collision_ply=path,
+        query_pct_xyz=query,
+        intersections=intersections,
+        support=support,
+        hint_error_m=hint_error,
+        maximum_hint_error_m=maximum_error,
     )
 
 

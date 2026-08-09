@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "scene_profile": "ramp_validation",
+  "purpose": "SCAN ROS 2 连续斜坡首验的可提交小型确定性资产。",
+  "assets": {
+    "scene_usd": "source/scene/validation_ramp/scan_ramp.usda",
+    "task_json": "tasks/nav_smoke_scan_ramp.json",
+    "manual_path": "ros2_ws/src/scan_navigation_tools/config/validation_ramp_path.yaml",
+    "locomotion_checkpoint": "checkpoints/go2_x5/pct_multifloor/model_26000.pt"
+  },
+  "geometry_contract": {
+    "path_start_xyz": [-0.5, 0.0, 0.0],
+    "ramp_start_xyz": [0.0, 0.0, 0.0],
+    "ramp_end_xyz": [1.2, 0.0, 0.18],
+    "path_goal_xyz": [1.7, 0.0, 0.18],
+    "support_mesh_x_range_m": [-1.3, 2.5],
+    "surface_width_m": 1.6,
+    "path_flat_approach_m": 0.5,
+    "ramp_run_m": 1.2,
+    "ramp_rise_m": 0.18,
+    "path_top_platform_m": 0.5,
+    "task_base_height_m": 0.3,
+    "collision_solid_thickness_m": 0.12,
+    "support_padding_behind_start_m": 0.8,
+    "support_padding_beyond_goal_m": 0.8
+  },
+  "runtime_contract": {
+    "pipeline_entry": "scripts/pipeline/run_full_physics_pipeline.py",
+    "required_mode": "navigation_smoke",
+    "requires_navigation_ros2_bridge": true,
+    "navigation_visual_mode": "collision",
+    "policy_profile": "pct_multifloor",
+    "randomization_enabled": false,
+    "path_height_semantics": "ground_height"
+  }
+}

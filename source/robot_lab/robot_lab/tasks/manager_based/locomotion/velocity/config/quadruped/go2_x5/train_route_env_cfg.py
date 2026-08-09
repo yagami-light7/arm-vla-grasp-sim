@@ -963,6 +963,11 @@ class Go2X5DogOnlyRoughEnvCfg(_Go2X5LeggedBaseEnvCfg):
         self.scene.robot = GO2_X5_PCT_DOG_ONLY_CFG.replace(
             prim_path="{ENV_REGEX_NS}/Robot"
         )
+        # 仅对 pct_multifloor DogOnly 推理提高接触速度求解稳定性。保持训练时
+        # 4 次位置迭代、400Hz 物理与 50Hz policy 不变；Isaac Lab 对 TGS
+        # 速度噪声明确建议至少 1 次速度迭代并逐次施加外力。
+        self.scene.robot.spawn.articulation_props.solver_velocity_iteration_count = 1
+        self.sim.physx.enable_external_forces_every_iteration = True
         # 多楼层网格中 20 米高的射线会先命中上层楼板，需在层高以内发射。
         self.scene.height_scanner.offset.pos = (0.0, 0.0, 1.0)
         self.scene.height_scanner_base.offset.pos = (0.0, 0.0, 1.0)

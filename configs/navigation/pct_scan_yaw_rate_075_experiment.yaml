@@ -1,0 +1,18 @@
+# 原 Go2-X5 mobile-manipulation 主线的单变量转向速度 A/B 配方。
+#
+# 物理含义：limits.max_yaw_rate 是机体绕竖直轴的最大角速度，单位 rad/s。
+# 生产基准为 0.60rad/s；实验值 0.75rad/s 只用于验证能否缩短 F1/F2 的原地
+# 转向时间。它不会修改 PCT 路线、SCAN 轨迹速度、双圆柱包络、终点 0.08m
+# 到达门或楼梯冻结速度。角加速度仍保持 1.50rad/s²，避免一次同时改两个变量。
+#
+# 不要把这个小文件直接交给 ros2 launch。先用
+# scripts/navigation/materialize_pct_scan_tuning_variant.py 生成完整 YAML，再通过
+# run_pct_scan_live_acceptance.py --tuning-config-file 传入。
+schema: pct_scan_tuning_variant_v1
+experiment_id: go2_x5_mainline_yaw_rate_075
+base_config: ros2_ws/src/isaac_navigation_bridge/config/pct_scan_tuning.yaml
+expected_override_count: 1
+overrides:
+  scan_controller:
+    ros__parameters:
+      limits.max_yaw_rate: 0.75
