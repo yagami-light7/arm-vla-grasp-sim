@@ -1,9 +1,9 @@
 {
   "project": "pct_scan_navigation",
   "branch": "pct-scan",
-  "goal": "在现有 mobile manipulation pipeline 内使用原 Go2-X5 checkpoint，完成 PCT 三维全局路径、SCAN 三维局部轨迹、闭环 cmd_vel 与 RL locomotion 的稳定跨楼层导航，并在同口径下超过 DWA baseline；标准 Go2 MoE-CTS 用于独立的无机械臂 PCT+SCAN 导航验证，不替换主 pipeline。",
-  "current_phase": "phase_307_yaw075_full_navigation_passed_place_release_ejected_not_promoted",
-  "last_updated": "2026-08-08 22:25:59 CST",
+  "goal": "在现有 mobile manipulation pipeline 内使用原 Go2-X5 checkpoint，完成 PCT 三维全局路径、SCAN 三维局部轨迹、闭环 cmd_vel 与 RL locomotion 的稳定跨楼层导航，并保留后续 pick、place 和 LeRobot export；DWA 仅作为旧分支基线，不接回当前主线。",
+  "current_phase": "phase_309_pct_scan_readme_humanized",
+  "last_updated": "2026-08-09 14:00:56 CST",
   "status": {
     "navigation_robot_variant": "go2_x5_with_arm_stowed",
     "navigation_mechanical_arm_in_scope": true,
@@ -17264,6 +17264,66 @@
         "用户审阅发布差异后按建议命令暂存、提交并推送pct-scan分支；Codex依AGENTS不执行commit或push。",
         "在另一台机器按README准备ignored场景、PCT upstream与checkpoint资产，执行colcon build、--show-args和单episode smoke，确认Git clone后的可复现性。",
         "后续如继续研发，把移动推车动态绕障、live PCT重规划和纯物理楼梯分别作为独立验收，不改写本次静态稳定发布结论。"
+      ]
+    },
+    {
+      "time": "2026-08-09 14:00:56 CST",
+      "summary": "phase309按用户要求用humanizer规范重构根README。README现在以PCT全局规划、SCAN三维局部轨迹、闭环controller和Go2-X5 RL policy为主线，单独解释PCT与SCAN职责以及相对原DWA基线的实现差别。优势只落在三维轨迹、携臂包络、连续控制和本项目安全集成上，明确不把未完成的同条件耗时对照写成SCAN已超过DWA。安装、ignored运行资产、PCT upstream校验、ROS 2构建、独立验收、完整nav-pick-place运行、统一调参、测试和常见故障均整理为可执行入口；未启动Isaac。",
+      "files_changed": [
+        "README.md",
+        "project.json"
+      ],
+      "problems_and_fixes": [
+        {
+          "root_cause": "根README超过三千行，混入大量阶段日志、旧DWA实验数字和历史调试命令，GitHub读者难以辨认当前PCT+SCAN正式入口及发布边界。",
+          "fix": "将根README压缩为项目概览、架构、DWA差异、当前验收边界、安装运行和排障文档；历史过程继续留在docs与project.json。"
+        },
+        {
+          "root_cause": "用户要求突出SCAN优势，但仓库没有完成同全局路径、同速度限制和同终止合同的DWA公平对照。",
+          "fix": "只陈述可从实现核对的三维轨迹、双圆柱携臂包络、B-spline连续性和安全链优势，并明确不发布耗时胜负结论。"
+        },
+        {
+          "root_cause": "旧README容易引导用户运行不存在的scan_planner/run.launch.py；初稿中的尖括号domain占位符还会被shell解析成重定向。",
+          "fix": "统一写为isaac_navigation_bridge/pct_scan_navigation.launch.py，并改用可直接替换的ROS_DOMAIN_ID环境变量示例。"
+        }
+      ],
+      "tests": [
+        {
+          "command": "/usr/bin/python3 -B scripts/navigation/manage_pct_upstream.py --help",
+          "result": "passed",
+          "note": "README引用的prepare、apply、verify-source、build-plan与verify-binaries子命令存在。"
+        },
+        {
+          "command": "/usr/bin/python3 -B scripts/navigation/run_pct_scan_live_acceptance.py --help",
+          "result": "passed",
+          "note": "README列出的五种验收模式、output-dir、ros-domain-id与isaac-python参数均存在。"
+        },
+        {
+          "command": "README相对链接、Markdown fence、禁用标点与humanizer措辞扫描",
+          "result": "passed",
+          "note": "相对链接目标存在，代码围栏成对；没有em dash、en dash、弯引号、残留占位字符或宣传性AI套话。"
+        },
+        {
+          "command": "git diff --check",
+          "result": "passed",
+          "note": "README初稿与措辞修订后均无空白错误。"
+        }
+      ],
+      "data_results": {
+        "root_readme_refocused_on_pct_scan": true,
+        "scan_vs_dwa_structural_comparison_documented": true,
+        "scan_exceeds_dwa_claimed": false,
+        "concrete_pct_scan_tuning_values_removed_from_root_readme": true,
+        "production_launch_command_documented": true,
+        "ignored_asset_layout_documented": true,
+        "isaac_launched_in_phase309": false,
+        "git_commit_created": false,
+        "git_push_performed": false
+      },
+      "next_steps": [
+        "用户审阅README中的项目定位与DWA对比口径后自行提交并推送pct-scan分支。",
+        "在新clone中准备ignored场景、checkpoint和PCT upstream，按README完成build、launch参数检查与单episode smoke。",
+        "后续把动态推车、live PCT重规划和纯物理楼梯作为独立验收，避免改写当前静态稳定主线的结论。"
       ]
     }
   ],
